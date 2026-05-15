@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}{{ instrument }} {{ obsdate }} CCD{{ ccd }} — MuSCAT ObsLog{% endblock %}
+{% block content %}
+<h1><a href="/" style="color:var(--text-dim);font-weight:400;">Instruments</a>
+  / <a href="/{{ instrument }}" style="color:var(--text-dim);font-weight:400;">{{ instrument }}</a>
+  / <a href="/{{ instrument }}/{{ obsdate }}" style="color:var(--text-dim);font-weight:400;">{{ obsdate }}</a>
+  / CCD{{ ccd }}</h1>
+
+<table>
+<thead>
+  <tr>
+    <th>Frame</th>
+    <th>Object</th>
+    <th>JD</th>
+    <th>UT</th>
+    <th>Exptime</th>
+    <th>Mode</th>
+    <th>Filter</th>
+    <th>RA</th>
+    <th>Dec</th>
+    <th>Airmass</th>
+    <th>Focus</th>
+    {% if frames and frames[0].get("pa") %}
+    <th>PA</th>
+    {% endif %}
+  </tr>
+</thead>
+<tbody>
+{% for f in frames %}
+  <tr>
+    <td class="mono">{{ f.filename }}</td>
+    <td>{{ f.object }}</td>
+    <td class="mono">{{ f.jd_start }}</td>
+    <td class="mono">{{ f.ut_start }}</td>
+    <td class="mono">{{ f.exptime }}</td>
+    <td><span class="badge badge-blue">{{ f.read_mode }}</span></td>
+    <td><span class="badge badge-amber">{{ f.filter }}</span></td>
+    <td class="mono">{{ f.ra }}</td>
+    <td class="mono">{{ f.declination }}</td>
+    <td class="mono">{{ f.airmass }}</td>
+    <td class="mono">{{ f.focus }}</td>
+    {% if f.pa is not none %}
+    <td class="mono">{{ f.pa }}</td>
+    {% endif %}
+  </tr>
+{% else %}
+  <tr><td colspan="12">No frames for this CCD.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+{% endblock %}

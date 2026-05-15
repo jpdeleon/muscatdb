@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Logs — MuSCAT ObsLog{% endblock %}
+{% block content %}
+<h1>Logs</h1>
+
+<h2>Instruments</h2>
+<div class="card-grid">
+{% for inst in instruments %}
+  <div class="card">
+    <a href="/{{ inst.name }}">
+      <div class="name">{{ inst.name }}</div>
+      {% if inst.has_data %}
+        <div class="meta">Click to view observation dates</div>
+      {% else %}
+        <div class="meta" style="color: var(--text-dim);">No data yet — run <code>muscat-db scan-missing {{ inst.name }} &lt;yy&gt;</code></div>
+      {% endif %}
+    </a>
+  </div>
+{% else %}
+  <p>No instruments configured.</p>
+{% endfor %}
+</div>
+
+<h2 style="margin-top:2rem;">Targets ({{ targets|length }})</h2>
+
+<div class="search-bar">
+  <input id="target-search" type="text" placeholder="Search targets by name…" autocomplete="off">
+  <label><input id="regex-toggle" type="checkbox"> Regex</label>
+  <label><input id="case-toggle" type="checkbox"> Case-sensitive</label>
+  <span id="search-status" class="hint"></span>
+</div>
+
+{% if targets %}
+<table id="targets-table">
+  <thead>
+    <tr>
+      <th>Target</th>
+      <th>RA</th>
+      <th>Dec</th>
+      <th>Filters</th>
+      <th>Airmass</th>
+      <th># Frames</th>
+      <th>Instruments</th>
+      <th>Dates</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for t in targets %}
+    <tr data-name="{{ t.object }}">
+      <td><strong>{{ t.object }}</strong></td>
+      <td class="mono">{{ t.ra }}</td>
+      <td class="mono">{{ t.declination }}</td>
+      <td>
+        {% for f in t.filters %}
+          <span class="badge badge-amber">{{ f }}</span>
+        {% endfor %}
+      </td>
+      <td class="mono">
+        {% set amin = t.get('airmass_min') %}
+        {% set amax = t.get('airmass_max') %}
+        {% if amin is not none and amax is not none %}
+          {{ '%.2f'|format(amin) }}–{{ '%.2f'|format(amax) }}
+        {% else %}—{% endif %}
+      </td>
+      <td>{{ t.n_frames }}</td>
+      <td>
+        {% for inst in t.instruments %}
+          <a href="/{{ inst }}"><span class="badge badge-blue">{{ inst }}</span></a>
+        {% endfor %}
+      </td>
+      <td class="mono" style="white-space:normal;">
+        {% for d in t.dates %}
+          {% for inst in t.instruments %}
+            <a href="/{{ inst }}/{{ d }}">{{ d }}</a>{% if not loop.last %}/{% endif %}
+          {% endfor %}{% if not loop.last %}, {% endif %}
+        {% endfor %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>No targets found.</p>
+{% endif %}
+
+<script>
+  (function () {
+    const input  = document.getElementById('target-search');
+    const regex  = document.getElementById('regex-toggle');
+    const caseCB = document.getElementById('case-toggle');
+    const status = document.getElementById('search-status');
+    const rows   = Array.from(document.querySelectorAll('#targets-table tbody tr'));
+    const total  = rows.length;
+
+    function escapeRegex(s) {
+      return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    function filter() {
+      const q = input.value;
+      let visible = 0;
+      status.textContent = '';
+      status.className = 'hint';
+
+      if (!q) {
+        rows.forEach(r => r.style.display = '');
+        status.textContent = total + ' targets';
+        return;
+      }
+
+      let test;
+      try {
+        const flags = caseCB.checked ? '' : 'i';
+        const pattern = regex.checked ? q : escapeRegex(q);
+        const re = new RegExp(pattern, flags);
+        test = name => re.test(name);
+      } catch (err) {
+        status.textContent = 'Invalid regex: ' + err.message;
+        status.className = 'invalid';
+        return;
+      }
+
+      rows.forEach(r => {
+        const match = test(r.dataset.name || '');
+        r.style.display = match ? '' : 'none';
+        if (match) visible++;
+      });
+      status.textContent = visible + ' / ' + total + ' matching';
+    }
+
+    input.addEventListener('input', filter);
+    regex.addEventListener('change', filter);
+    caseCB.addEventListener('change', filter);
+    filter();
+  })();
+</script>
+{% endblock %}

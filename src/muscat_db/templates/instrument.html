@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}{{ instrument }} — MuSCAT ObsLog{% endblock %}
+{% block content %}
+<h1><a href="/" style="color:var(--text-dim);font-weight:400;">Instruments</a> / {{ instrument }}</h1>
+<table>
+<thead>
+  <tr><th>Date</th><th>CCDs</th><th>Frames</th></tr>
+</thead>
+<tbody>
+{% for d in dates %}
+  <tr>
+    <td><a href="/{{ instrument }}/{{ d.obsdate }}">{{ d.obsdate }}</a></td>
+    <td>{{ d.nccd }}</td>
+    <td>{{ d.nframes }}</td>
+  </tr>
+{% else %}
+  <tr><td colspan="3">No dates found for this instrument.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+{% endblock %}

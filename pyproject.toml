@@ -1,0 +1,29 @@
+[project]
+name = "muscat-db"
+version = "0.1.0"
+description = "MuSCAT observation log pipeline — scan FITS files, build database, serve web UI"
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.15",
+    "astropy>=7",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "jinja2>=3.1",
+    "rich>=13",
+]
+
+[project.scripts]
+muscat-db = "muscat_db.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-mock>=3.15.1",
+]
