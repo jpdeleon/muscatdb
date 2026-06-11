@@ -18,6 +18,7 @@
     <th>UT-STRT1</th>
     <th>UT-STRT2</th>
     <th>NFRAMES</th>
+    <th class="no-sort">PHOT</th>
   </tr>
 </thead>
 <tbody>
@@ -31,9 +32,10 @@
     <td class="mono">{{ s.ut_start }}</td>
     <td class="mono">{{ s.ut_end }}</td>
     <td class="mono">{{ s.nframes }}</td>
+    <td><a href="/photometry?inst={{ instrument }}&date={{ obsdate }}&target={{ s.object | urlencode }}" title="View photometry">🔭</a></td>
   </tr>
 {% else %}
-  <tr><td colspan="8">No data for this CCD.</td></tr>
+  <tr><td colspan="9">No data for this CCD.</td></tr>
 {% endfor %}
 </tbody>
 </table>

@@ -46,14 +46,43 @@ CREATE TABLE IF NOT EXISTS summaries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_summaries_inst_date ON summaries(instrument, obsdate);
+
+CREATE TABLE IF NOT EXISTS targets (
+    object        TEXT PRIMARY KEY,
+    n_dates       INTEGER NOT NULL,
+    n_frames      INTEGER NOT NULL,
+    instruments   TEXT,
+    dates         TEXT,
+    inst_dates    TEXT,
+    filters       TEXT,
+    total_exptime REAL,
+    ra            TEXT,
+    declination   TEXT,
+    airmass_min   REAL,
+    airmass_max   REAL,
+    is_identified INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS target_notes (
+    object     TEXT PRIMARY KEY,
+    note       TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
-def build_db(db_path: str) -> int:
+def build_db(db_path: str, progress=None) -> int:
+    """Rebuild the SQLite database from obslog CSVs.
+
+    If ``progress`` is a ``rich.progress.Progress`` instance, three tasks are
+    reported: CSV ingestion, summary aggregation, and targets aggregation.
+    """
     conn = sqlite3.connect(db_path)
     conn.executescript(SCHEMA)
-    conn.executescript("DELETE FROM frames; DELETE FROM summaries;")
-    count = 0
+    conn.executescript("DELETE FROM frames; DELETE FROM summaries; DELETE FROM targets;")
+
+    # Phase 1: discover all CSVs (cheap walk so we can size the progress bar).
+    csv_jobs: list[tuple[str, str, str, int]] = []  # (inst, obsdate, csv_path, ccd)
     for inst_name in INSTRUMENTS:
         inst_dir = f"{OBSLOG_BASE}/{inst_name}"
         if not os.path.isdir(inst_dir):
@@ -65,42 +94,60 @@ def build_db(db_path: str) -> int:
             for fname in sorted(os.listdir(obsdir)):
                 if not fname.endswith(".csv") or not fname.startswith("obslog-"):
                     continue
-                csv_path = f"{obsdir}/{fname}"
                 try:
                     ccd = int(fname.rstrip(".csv").rsplit("-ccd", 1)[1])
                 except (IndexError, ValueError):
                     continue
-                with open(csv_path) as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        inst_cfg = INSTRUMENTS[inst_name]
-                        airmass_key = inst_cfg.airmass_key
-                        focus_key = inst_cfg.focus_label
-                        pa_key = "PA (deg)" if inst_cfg.has_pa else None
-                        conn.execute(
-                            """INSERT INTO frames
-                               (instrument, obsdate, ccd, filename, object, jd_start, ut_start,
-                                exptime, read_mode, filter, ra, declination, airmass, focus, pa)
-                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                            (
-                                inst_name, entry, ccd,
-                                row.get("FRAME", ""),
-                                row.get("OBJECT", ""),
-                                _safe_float(row.get("JD-STRT", "0")),
-                                row.get("UT-STRT", ""),
-                                _safe_float(row.get("EXPTIME (s)", "0")),
-                                row.get("READ_MODE", ""),
-                                row.get("FILTER", ""),
-                                row.get("RA", ""),
-                                row.get("DEC", ""),
-                                _safe_float(row.get(airmass_key, "0")),
-                                _safe_float(row.get(focus_key, "0")),
-                                _safe_float(row.get(pa_key, "0")) if pa_key else None,
-                            ),
-                        )
-                        count += 1
+                csv_jobs.append((inst_name, entry, f"{obsdir}/{fname}", ccd))
+
+    # Phase 2: ingest frames.
+    ingest_task = None
+    if progress is not None:
+        ingest_task = progress.add_task(
+            "[cyan]Ingesting CSVs[/]", total=len(csv_jobs), filename="",
+        )
+
+    count = 0
+    for inst_name, obsdate, csv_path, ccd in csv_jobs:
+        inst_cfg = INSTRUMENTS[inst_name]
+        airmass_key = inst_cfg.airmass_key
+        focus_key = inst_cfg.focus_label
+        pa_key = "PA (deg)" if inst_cfg.has_pa else None
+        with open(csv_path) as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                conn.execute(
+                    """INSERT INTO frames
+                       (instrument, obsdate, ccd, filename, object, jd_start, ut_start,
+                        exptime, read_mode, filter, ra, declination, airmass, focus, pa)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        inst_name, obsdate, ccd,
+                        row.get("FRAME", ""),
+                        row.get("OBJECT", ""),
+                        _safe_float(row.get("JD-STRT", "0")),
+                        row.get("UT-STRT", ""),
+                        _safe_float(row.get("EXPTIME (s)", "0")),
+                        row.get("READ_MODE", ""),
+                        row.get("FILTER", ""),
+                        row.get("RA", ""),
+                        row.get("DEC", ""),
+                        _safe_float(row.get(airmass_key, "0")),
+                        _safe_float(row.get(focus_key, "0")),
+                        _safe_float(row.get(pa_key, "0")) if pa_key else None,
+                    ),
+                )
+                count += 1
+        if progress is not None:
+            progress.update(ingest_task, advance=1, filename=os.path.basename(csv_path))
     conn.commit()
 
+    # Phase 3: build summaries.
+    summary_task = None
+    if progress is not None:
+        summary_task = progress.add_task(
+            "[cyan]Building summaries[/]", total=None, filename="",
+        )
     rows = conn.execute(
         """SELECT instrument, obsdate, ccd, object, exptime, read_mode,
                   MIN(filename), MAX(filename),
@@ -108,6 +155,8 @@ def build_db(db_path: str) -> int:
            FROM frames
            GROUP BY instrument, obsdate, ccd, object, exptime, read_mode"""
     ).fetchall()
+    if progress is not None:
+        progress.update(summary_task, total=len(rows))
     for r in rows:
         conn.execute(
             """INSERT INTO summaries
@@ -116,9 +165,83 @@ def build_db(db_path: str) -> int:
                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             r,
         )
+        if progress is not None:
+            progress.update(summary_task, advance=1)
+    conn.commit()
+
+    # Phase 4: build targets (single aggregation query).
+    targets_task = None
+    if progress is not None:
+        targets_task = progress.add_task(
+            "[cyan]Building targets[/]", total=1, filename="",
+        )
+    _populate_targets(conn)
+    if progress is not None:
+        progress.update(targets_task, advance=1)
     conn.commit()
     conn.close()
     return count
+
+
+_TARGET_EXCLUDE_EXACT = (
+    "muscat", "muscat_fast", "test", "tic", "dark", "bias",
+    "movie", "misc", "misc.", "focus_adjust", "fov",
+)
+
+
+def _populate_targets(conn: sqlite3.Connection) -> None:
+    """Aggregate per-target summary into the targets table."""
+    cur = conn.execute(
+        """SELECT
+              object,
+              COUNT(DISTINCT obsdate)            AS n_dates,
+              COUNT(*)                           AS n_frames,
+              GROUP_CONCAT(DISTINCT instrument)  AS instruments,
+              GROUP_CONCAT(DISTINCT obsdate)     AS dates,
+              GROUP_CONCAT(DISTINCT instrument || ':' || obsdate) AS inst_dates,
+              GROUP_CONCAT(DISTINCT filter)      AS filters,
+              SUM(COALESCE(exptime, 0))          AS total_exptime,
+              MAX(ra)                            AS ra,
+              MAX(declination)                   AS declination,
+              MIN(NULLIF(airmass, 0))            AS airmass_min,
+              MAX(NULLIF(airmass, 0))            AS airmass_max,
+              CASE WHEN object GLOB '*[A-Za-z]*' THEN 1 ELSE 0 END
+                                                 AS is_identified
+           FROM frames
+           WHERE object IS NOT NULL
+             AND TRIM(object) <> ''
+             AND LOWER(TRIM(object)) NOT IN ({exact})
+             AND LOWER(TRIM(object)) NOT LIKE '%flat%'
+             AND LOWER(TRIM(object)) NOT LIKE 'dark%'
+             AND LOWER(TRIM(object)) NOT LIKE 'bias%'
+             AND LOWER(TRIM(object)) NOT LIKE 'muscat commission%'
+             AND LOWER(TRIM(object)) NOT LIKE '%test%'
+             AND LOWER(TRIM(object)) NOT LIKE '%pinhole%'
+             AND LOWER(TRIM(object)) NOT LIKE '%pointing%'
+             AND LOWER(TRIM(object)) NOT LIKE '%dust_spot%'
+             AND LOWER(TRIM(object)) NOT LIKE '%dust spot%'
+             AND LOWER(TRIM(object)) NOT LIKE '%domeflat%'
+             AND LOWER(TRIM(object)) NOT LIKE '%dome flat%'
+             AND TRIM(object) NOT GLOB '*:*:*'
+             AND TRIM(object) NOT GLOB '[0-9]*.[0-9]*'
+             -- Exclude pointing-frame names: pure P<digits>, length 1-4 digits.
+             AND TRIM(object) NOT GLOB '[Pp][0-9]'
+             AND TRIM(object) NOT GLOB '[Pp][0-9][0-9]'
+             AND TRIM(object) NOT GLOB '[Pp][0-9][0-9][0-9]'
+             AND TRIM(object) NOT GLOB '[Pp][0-9][0-9][0-9][0-9]'
+           GROUP BY object""".format(
+            exact=", ".join(f"'{s}'" for s in _TARGET_EXCLUDE_EXACT),
+        )
+    )
+    rows = cur.fetchall()
+    conn.executemany(
+        """INSERT INTO targets
+           (object, n_dates, n_frames, instruments, dates, inst_dates,
+            filters, total_exptime, ra, declination, airmass_min, airmass_max,
+            is_identified)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        rows,
+    )
 
 
 def _safe_float(v: str) -> float | None:
@@ -137,10 +260,19 @@ def get_instruments(db_path: str) -> list[dict]:
 
 
 def get_dates(db_path: str, instrument: str) -> list[dict]:
+    """Return one row per obsdate. Only YYMMDD-formatted dates are returned;
+    legacy/test directories like ``200722_2`` or ``csv_old_220914`` are skipped.
+    """
     conn = sqlite3.connect(db_path)
+    # Read from the pre-aggregated `summaries` table rather than `frames`: it is
+    # ~1000x smaller per instrument and SUM(nframes) reproduces COUNT(*) over
+    # frames exactly, turning a multi-second scan into a sub-second query.
     cur = conn.execute(
-        """SELECT obsdate, COUNT(DISTINCT ccd), COUNT(*)
-           FROM frames WHERE instrument = ?
+        """SELECT obsdate, COUNT(DISTINCT ccd), SUM(nframes)
+           FROM summaries
+           WHERE instrument = ?
+             AND length(obsdate) = 6
+             AND obsdate GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]'
            GROUP BY obsdate ORDER BY obsdate DESC""",
         (instrument,),
     )
@@ -165,32 +297,44 @@ def get_summaries(db_path: str, instrument: str, obsdate: str) -> list[dict]:
     return result
 
 
-def get_targets(db_path: str) -> list[dict]:
-    """Return a per-target summary: dates observed, instruments, filters, exposure."""
+def get_objects(db_path: str, instrument: str, obsdate: str) -> list[str]:
+    """Distinct real-target object names observed on one instrument/date.
+
+    Reuses the same calibration/junk exclusions as the materialized targets
+    table so the photometry picker only offers genuine science targets.
+    """
     conn = sqlite3.connect(db_path)
     cur = conn.execute(
-        """SELECT
-              object,
-              COUNT(DISTINCT obsdate)            AS n_dates,
-              COUNT(*)                           AS n_frames,
-              GROUP_CONCAT(DISTINCT instrument)  AS instruments,
-              GROUP_CONCAT(DISTINCT obsdate)     AS dates,
-              GROUP_CONCAT(DISTINCT filter)      AS filters,
-              SUM(COALESCE(exptime, 0))          AS total_exptime,
-              MAX(ra)                            AS ra,
-              MAX(declination)                   AS declination,
-              MIN(NULLIF(airmass, 0))            AS airmass_min,
-              MAX(NULLIF(airmass, 0))            AS airmass_max
-           FROM frames
-           WHERE object IS NOT NULL
-             AND TRIM(object) <> ''
-             AND LOWER(TRIM(object)) NOT IN ('muscat', 'muscat_fast', 'test', 'tic', 'dark', 'bias', 'movie', 'misc', 'misc.', 'focus_adjust', 'fov')
-             AND LOWER(TRIM(object)) NOT LIKE 'flat%'
+        """SELECT DISTINCT object FROM summaries
+           WHERE instrument = ? AND obsdate = ?
+             AND object IS NOT NULL AND TRIM(object) <> ''
+             AND LOWER(TRIM(object)) NOT IN ({exact})
+             AND LOWER(TRIM(object)) NOT LIKE '%flat%'
              AND LOWER(TRIM(object)) NOT LIKE 'dark%'
              AND LOWER(TRIM(object)) NOT LIKE 'bias%'
-             AND LOWER(TRIM(object)) NOT LIKE 'muscat commission%'
-           GROUP BY object
-           ORDER BY object COLLATE NOCASE"""
+             AND LOWER(TRIM(object)) NOT LIKE '%test%'
+             AND TRIM(object) NOT GLOB '*:*:*'
+           ORDER BY object COLLATE NOCASE""".format(
+            exact=", ".join(f"'{s}'" for s in _TARGET_EXCLUDE_EXACT),
+        ),
+        (instrument, obsdate),
+    )
+    result = [r[0] for r in cur.fetchall()]
+    conn.close()
+    return result
+
+
+def get_targets(db_path: str) -> list[dict]:
+    """Return the per-target summary materialized at build_db time."""
+    conn = sqlite3.connect(db_path)
+    conn.executescript(SCHEMA)  # ensure target_notes exists on first read
+    cur = conn.execute(
+        """SELECT t.object, t.n_dates, t.n_frames, t.instruments, t.dates, t.filters,
+                  t.total_exptime, t.ra, t.declination, t.airmass_min, t.airmass_max,
+                  t.is_identified, COALESCE(n.note, ''), COALESCE(t.inst_dates, '')
+           FROM targets t
+           LEFT JOIN target_notes n ON n.object = t.object
+           ORDER BY t.object COLLATE NOCASE"""
     )
     result = []
     for r in cur.fetchall():
@@ -209,9 +353,92 @@ def get_targets(db_path: str) -> list[dict]:
             "declination": r[8] or "",
             "airmass_min": r[9],
             "airmass_max": r[10],
+            "is_identified": bool(r[11]),
+            "note": r[12] or "",
+            "date_to_inst": _parse_inst_dates(r[13]),
+            "filter_chips": _normalize_filters(filters),
         })
     conn.close()
     return result
+
+
+_FILTER_COLOR_ALIAS = {
+    "g":  "g",  "gp": "g",
+    "r":  "r",  "rp": "r",  "R": "r",
+    "i":  "i",  "ip": "i",  "I": "i",
+    "z":  "z",  "zp": "z",  "zs": "z",  "z_s": "z",
+}
+
+
+def _normalize_filters(filters: list[str]) -> list[dict]:
+    """Map raw filter names to display chips with band-color + narrow flag.
+
+    g/gp -> 'g' (blue), r/rp/R -> 'r' (green), i/ip/I -> 'i' (yellow),
+    z/zs/z_s/zp -> 'z' (red). Any *_narrow suffix renders as a darker chip
+    of the same color and keeps the suffix in the label. Anything else falls
+    through to the neutral 'other' colour with the original label.
+    Deduplicates so a target with both 'g' and 'gp' shows a single 'g' chip.
+    """
+    chips: list[dict] = []
+    seen: set[tuple[str, str, bool]] = set()
+    for f in filters or []:
+        if not f:
+            continue
+        narrow = f.endswith("_narrow")
+        base = f[:-7] if narrow else f
+        color = _FILTER_COLOR_ALIAS.get(base) or _FILTER_COLOR_ALIAS.get(base.lower(), "other")
+        label = (color if color != "other" else base) + ("_narrow" if narrow else "")
+        key = (label, color, narrow)
+        if key in seen:
+            continue
+        seen.add(key)
+        chips.append({"label": label, "color": color, "narrow": narrow})
+    return chips
+
+
+def _parse_inst_dates(s: str) -> dict[str, str]:
+    """Parse 'inst1:date1,inst2:date2,...' into {date: inst}.
+
+    When the same date appears for multiple instruments, the lexicographically
+    first instrument wins (deterministic, matches sorted iteration order).
+    """
+    out: dict[str, str] = {}
+    if not s:
+        return out
+    for pair in s.split(","):
+        if ":" not in pair:
+            continue
+        inst, date = pair.split(":", 1)
+        if date not in out or inst < out[date]:
+            out[date] = inst
+    return out
+
+
+def set_note(db_path: str, obj: str, note: str) -> None:
+    """Upsert a per-target note. Empty/whitespace `note` deletes the row."""
+    conn = sqlite3.connect(db_path, timeout=30)
+    conn.executescript(SCHEMA)
+    note = (note or "").strip()
+    if not note:
+        conn.execute("DELETE FROM target_notes WHERE object = ?", (obj,))
+    else:
+        conn.execute(
+            """INSERT INTO target_notes(object, note, updated_at)
+               VALUES (?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(object) DO UPDATE
+                 SET note = excluded.note, updated_at = CURRENT_TIMESTAMP""",
+            (obj, note),
+        )
+    conn.commit()
+    conn.close()
+
+
+def delete_note(db_path: str, obj: str) -> None:
+    conn = sqlite3.connect(db_path, timeout=30)
+    conn.executescript(SCHEMA)
+    conn.execute("DELETE FROM target_notes WHERE object = ?", (obj,))
+    conn.commit()
+    conn.close()
 
 
 def get_frames(db_path: str, instrument: str, obsdate: str, ccd: int) -> list[dict]:

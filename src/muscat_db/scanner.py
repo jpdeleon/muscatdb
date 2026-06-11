@@ -3,40 +3,115 @@ from __future__ import annotations
 import csv
 import os
 import pathlib
-import subprocess
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
-
-from astropy.io import fits
 
 from muscat_db.instruments import INSTRUMENTS, OBSLOG_BASE, InstrumentConfig
 
+# FITS header blocks are 2880 bytes; almost all real headers fit in <=8 blocks.
+_FITS_HEADER_MAX_BYTES = 2880 * 16
+
+
+def _normalize_numeric(val: str) -> str:
+    """Round-trip a numeric FITS value to match astropy formatting.
+
+    FITS cards without a decimal point or exponent are typed as integers by
+    astropy; preserve that distinction so downstream comparisons (e.g.
+    ``read_mode == "1"``) keep working.
+    """
+    try:
+        f = float(val)
+    except ValueError:
+        return val
+    if "." not in val and "e" not in val and "E" not in val:
+        return str(int(f))
+    return str(f)
+
+
+def _parse_fits_cards(text: str, wanted: set[str]) -> tuple[dict[str, str], bool]:
+    """Parse 80-char FITS header cards. Returns (values, end_found)."""
+    result: dict[str, str] = {}
+    end_found = False
+    for i in range(0, len(text) - 79, 80):
+        card = text[i:i + 80]
+        key = card[:8].strip()
+        if key == "END":
+            end_found = True
+            break
+        if key not in wanted or card[8:10] != "= ":
+            continue
+        val_part = card[10:]
+        if val_part.lstrip().startswith("'"):
+            stripped = val_part.lstrip()
+            end_quote = stripped.find("'", 1)
+            val = stripped[1:end_quote] if end_quote > 0 else stripped[1:]
+            result[key] = val.strip()
+        else:
+            slash = val_part.find("/")
+            val = (val_part[:slash] if slash >= 0 else val_part).strip()
+            result[key] = _normalize_numeric(val)
+    return result, end_found
+
+
+def _read_fits_header_raw(filepath: str, keys: list[str]) -> dict[str, str] | None:
+    """Fast path: read FITS primary-HDU header cards directly from disk.
+
+    Returns ``None`` to signal that astropy should be tried (well-formed primary
+    HDU with no requested keys — typical of MEF files). Returns an empty-values
+    dict for corrupt files (no ``END`` card within the first ~46 KB) so the
+    caller skips the file instead of feeding it to astropy, which can hang on
+    pathological headers.
+    """
+    try:
+        with open(filepath, "rb") as f:
+            data = f.read(_FITS_HEADER_MAX_BYTES)
+    except OSError:
+        return None
+    if len(data) < 80 or not data.startswith(b"SIMPLE  ="):
+        return None
+    text = data.decode("ascii", errors="replace")
+    values, end_found = _parse_fits_cards(text, set(keys))
+    if values:
+        # Got at least one requested key — use whatever we parsed.
+        return {k: values.get(k, "") for k in keys}
+    if end_found:
+        # Well-formed primary HDU with none of our keys → MEF, try astropy.
+        return None
+    # No END card and no values → corrupt/truncated header. Return empties so
+    # the caller skips it; astropy is liable to hang on these.
+    return {k: "" for k in keys}
+
+
+def _read_fits_header_astropy(filepath: str, keys: list[str]) -> dict[str, str]:
+    """Fallback: full astropy parse, including MEF extension scan."""
+    from astropy.io import fits  # imported lazily so workers don't pay for it
+    result: dict[str, str] = {k: "" for k in keys}
+    try:
+        with fits.open(filepath, memmap=False) as hdul:
+            for hdu in hdul:
+                header = hdu.header
+                for key in keys:
+                    if not result[key]:
+                        try:
+                            val = header[key]
+                            if val is not None and str(val).strip():
+                                result[key] = str(val).strip()
+                        except (KeyError, ValueError):
+                            pass
+                if all(result.values()):
+                    break
+    except Exception:
+        pass
+    return result
+
 
 def _read_fits_header_keys(filepath: str, keys: list[str]) -> dict[str, str]:
-    result: dict[str, str] = {}
-    try:
-        with fits.open(filepath, memmap=True) as hdul:
-            header = hdul[0].header
-            for key in keys:
-                try:
-                    val = header[key]
-                    result[key] = str(val).strip() if val is not None else ""
-                except (KeyError, ValueError):
-                    result[key] = ""
-    except Exception:
-        try:
-            keys_arg = " ".join(f"{k} 2" for k in keys)
-            info = subprocess.run(
-                ["fitsheader_list", "-frame", filepath, "-keys", keys_arg],
-                capture_output=True, text=True, timeout=30,
-            )
-            if info.returncode == 0:
-                words = info.stdout.strip().split()
-                for i, key in enumerate(keys):
-                    result[key] = words[i] if i < len(words) else ""
-        except Exception:
-            pass
-    return result
+    raw = _read_fits_header_raw(filepath, keys)
+    if raw is not None:
+        return raw
+    # Only MEF-like files (well-formed primary HDU, no requested keys) reach
+    # this path; corrupt files are skipped by the raw parser above.
+    return _read_fits_header_astropy(filepath, keys)
 
 
 def _process_single_file(filepath: str, inst: InstrumentConfig) -> dict[str, str] | None:
@@ -86,7 +161,10 @@ def _find_fits_files(inst: InstrumentConfig, obsdate: str, ccd: int) -> list[str
         pattern = f"{inst.prefix}{ep}*e91.fits"
     else:
         pattern = f"{inst.prefix}{ccd}*.fits"
-    matches = sorted(pathlib.Path(datadir).glob(pattern))
+    try:
+        matches = sorted(pathlib.Path(datadir).glob(pattern))
+    except (PermissionError, OSError):
+        return []
     return [str(p) for p in matches]
 
 
@@ -102,7 +180,11 @@ def scan_date(
     """
     inst = INSTRUMENTS[inst_name]
     logdir = f"{OBSLOG_BASE}/{inst_name}/{obsdate}"
-    os.makedirs(logdir, exist_ok=True)
+    try:
+        os.makedirs(logdir, exist_ok=True)
+    except (PermissionError, OSError) as e:
+        print(f"[warn] cannot create {logdir}: {e}")
+        return {}
 
     file_ccd_pairs: list[tuple[str, int]] = []
     for ccd in range(inst.nccd):
@@ -113,7 +195,7 @@ def scan_date(
         return {}
 
     total = len(file_ccd_pairs)
-    max_workers = max_workers or min(16, os.cpu_count() or 4)
+    max_workers = max_workers or (os.cpu_count() or 4)
     rows_by_ccd: dict[int, list[dict[str, str]]] = {}
 
     task_id = None
@@ -123,30 +205,33 @@ def scan_date(
             f"[cyan]{inst_name} {obsdate} {ccd_label}[/]", total=total, filename=""
         )
 
+    # CPU-bound header parsing dominates per-file cost, so processes scale where
+    # threads can't (the GIL serialises the parse loop). Chunked map keeps
+    # dispatch overhead low.
+    paths = [fp for fp, _ in file_ccd_pairs]
+    ccds  = [ccd for _, ccd in file_ccd_pairs]
+    chunksize = max(1, total // (max_workers * 4))
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        fut_map = {
-            executor.submit(_process_single_file, fp, inst): (fp, ccd)
-            for fp, ccd in file_ccd_pairs
-        }
-        for fut in as_completed(fut_map):
-            fp, ccd = fut_map[fut]
-            try:
-                row = fut.result()
-                if row:
-                    rows_by_ccd.setdefault(ccd, []).append(row)
-            except Exception:
-                pass
+        for (fp, ccd, row) in zip(
+            paths, ccds,
+            executor.map(_process_single_file, paths, [inst] * total, chunksize=chunksize),
+        ):
+            if row:
+                rows_by_ccd.setdefault(ccd, []).append(row)
             if progress is not None:
                 progress.update(task_id, advance=1, filename=os.path.basename(fp))
 
     for ccd in sorted(rows_by_ccd):
         csv_path = f"{logdir}/obslog-{inst_name}-{obsdate}-ccd{ccd}.csv"
         fieldnames = inst.csv_header.split(",")
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            for row in sorted(rows_by_ccd[ccd], key=lambda r: r["FRAME"]):
-                writer.writerow({k: row.get(k, "") for k in fieldnames})
+        try:
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for row in sorted(rows_by_ccd[ccd], key=lambda r: r["FRAME"]):
+                    writer.writerow({k: row.get(k, "") for k in fieldnames})
+        except (PermissionError, OSError) as e:
+            print(f"[warn] cannot write {csv_path}: {e}")
 
     return {
         "total": total,
@@ -159,32 +244,60 @@ def scan_missing_dates(
     year_prefix: str,
     max_workers: int | None = None,
     progress=None,
+    force: bool = False,
 ) -> list[str]:
+    """Scan dates for an instrument.
+
+    ``year_prefix`` filters date directories by leading characters (e.g. ``"25"``).
+    Pass ``"all"`` (case-insensitive) to scan every date directory under the
+    instrument's data dir.
+
+    By default, only dates without an existing obslog CSV are scanned.
+    With ``force=True``, every date with FITS data is rescanned, overwriting
+    any existing CSVs — useful for fixing legacy malformed obslogs.
+    """
+    prefix = "" if year_prefix.lower() == "all" else year_prefix
     inst = INSTRUMENTS[inst_name]
     data_dir = inst.data_dir
     obslog_dir = f"{OBSLOG_BASE}/{inst_name}"
     existing = set()
-    if os.path.isdir(obslog_dir):
-        for d in os.listdir(obslog_dir):
-            if os.path.isdir(f"{obslog_dir}/{d}") and d.startswith(year_prefix):
+    if not force and os.path.isdir(obslog_dir):
+        try:
+            entries = os.listdir(obslog_dir)
+        except (PermissionError, OSError) as e:
+            print(f"[warn] cannot list {obslog_dir}: {e}")
+            entries = []
+        for d in entries:
+            if os.path.isdir(f"{obslog_dir}/{d}") and d.startswith(prefix):
                 existing.add(d)
     scanned: list[str] = []
     if not os.path.isdir(data_dir):
         return scanned
+    try:
+        data_entries = sorted(os.listdir(data_dir))
+    except (PermissionError, OSError) as e:
+        print(f"[warn] cannot list {data_dir}: {e}")
+        return scanned
     missing = [
-        d for d in sorted(os.listdir(data_dir))
-        if os.path.isdir(f"{data_dir}/{d}") and d.startswith(year_prefix) and d not in existing
+        d for d in data_entries
+        if os.path.isdir(f"{data_dir}/{d}") and d.startswith(prefix) and d not in existing
     ]
     if not missing:
         return scanned
     task_id = None
     if progress is not None:
+        label = "all" if prefix == "" else f"{prefix}xx"
         task_id = progress.add_task(
-            f"[cyan]{inst_name} {year_prefix}xx[/]", total=len(missing), filename=""
+            f"[cyan]{inst_name} {label}[/]", total=len(missing), filename=""
         )
     for d in missing:
-        scan_date(inst_name, d, max_workers=max_workers, progress=None)
-        scanned.append(d)
+        try:
+            scan_date(inst_name, d, max_workers=max_workers, progress=None)
+            scanned.append(d)
+        except (PermissionError, OSError) as e:
+            print(f"[warn] skipping {inst_name} {d}: {e}")
+        except Exception as e:
+            print(f"[warn] {inst_name} {d} failed: {type(e).__name__}: {e}")
         if progress is not None:
             progress.update(task_id, advance=1, filename=d)
     return scanned

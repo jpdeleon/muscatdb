@@ -1,0 +1,345 @@
+{% extends "base.html" %}
+{% block title %}Photometry — MuSCAT-db{% endblock %}
+{% block content %}
+<style>
+  .phot-selectors {
+    display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap;
+    margin-bottom: 1.5rem;
+  }
+  .phot-selectors .field { display: flex; flex-direction: column; gap: 0.3rem; }
+  .phot-selectors label {
+    font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .phot-selectors select {
+    background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.45rem 0.6rem; font-size: 0.9rem; min-width: 11rem;
+  }
+  .phot-selectors select:focus { outline: none; border-color: var(--accent); }
+  .phot-selectors select:disabled { opacity: 0.5; }
+  .phot-empty {
+    margin-top: 1rem; padding: 2.5rem 2rem; text-align: center;
+    background: var(--surface); border: 1px dashed var(--border);
+    border-radius: 10px;
+  }
+  .phot-section { margin: 2rem 0 1rem; }
+  .phot-section h2 { color: var(--text); margin-bottom: 0.75rem; }
+  .fig-grid {
+    display: grid; gap: 1rem;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  }
+  .fig {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0.75rem; overflow: hidden;
+  }
+  .fig .cap {
+    font-size: 0.8rem; color: var(--text-dim); margin-bottom: 0.5rem;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .fig img {
+    width: 100%; height: auto; display: block; border-radius: 6px;
+    background: #fff;
+  }
+  .fig.wide { grid-column: 1 / -1; max-width: 760px; }
+  .band-tabs { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .band-tab {
+    background: var(--surface2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 0.3rem 0.9rem; font-size: 0.85rem; cursor: pointer;
+  }
+  .band-tab.active { border-color: var(--accent); color: var(--accent); }
+  .band-panel { display: none; }
+  .band-panel.active { display: block; }
+  .csv-wrap { overflow-x: auto; margin-top: 0.5rem; }
+  .run-cmd {
+    display: flex; gap: 0.5rem; align-items: stretch; margin: 1rem auto 0;
+    max-width: 720px;
+  }
+  .run-cmd code {
+    flex: 1; text-align: left; background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.6rem 0.75rem; font-family: 'JetBrains Mono', monospace;
+    font-size: 0.78rem; overflow-x: auto; white-space: pre;
+  }
+  .btn {
+    background: var(--surface2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.5rem 1rem; font-size: 0.85rem; cursor: pointer;
+    font-family: inherit;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { border-color: var(--accent2); color: var(--accent2); }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+  .warn {
+    color: var(--red); font-size: 0.85rem; margin-top: 0.75rem;
+  }
+  #run-log {
+    display: none; margin-top: 1rem; text-align: left;
+    background: #0b0d13; color: #cdd3e0; border: 1px solid var(--border);
+    border-radius: 8px; padding: 0.75rem; max-height: 22rem; overflow: auto;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .dl-row { margin-top: 0.75rem; display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.85rem; }
+</style>
+
+<h1>Photometry</h1>
+
+<form class="phot-selectors" method="get" action="/photometry" id="phot-form">
+  <div class="field">
+    <label for="sel-inst">Instrument</label>
+    <select id="sel-inst" name="inst">
+      <option value="">— select —</option>
+      {% for name in instruments %}
+      <option value="{{ name }}" {% if name == sel_inst %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label for="sel-date">Obs date</label>
+    <select id="sel-date" name="date" {% if not sel_inst %}disabled{% endif %}>
+      <option value="">— select —</option>
+      {% for d in dates %}
+      <option value="{{ d }}" {% if d == sel_date %}selected{% endif %}>{{ d }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label for="sel-target">Target</label>
+    <select id="sel-target" name="target" {% if not sel_date %}disabled{% endif %}>
+      <option value="">— select —</option>
+      {% for t in targets %}
+      <option value="{{ t }}" {% if t == sel_target %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <noscript><button class="btn" type="submit">View</button></noscript>
+</form>
+
+{% if not (sel_inst and sel_date and sel_target) %}
+  <div class="phot-empty">
+    <div style="font-size: 2rem; margin-bottom: 0.75rem;">🔭</div>
+    <p style="color: var(--text-dim);">
+      Pick an instrument, observation date, and target to view its reduction.
+    </p>
+  </div>
+
+{% elif outputs and outputs.has_any %}
+  <p class="mono" style="color: var(--text-dim);">
+    {{ sel_target }} · {{ sel_inst }} · {{ sel_date }}
+  </p>
+
+  {% if outputs.summary %}
+  <div class="phot-section">
+    <h2>Light curves &amp; systematics</h2>
+    <div class="fig-grid">
+      {% for key in ['lightcurves', 'systematics', 'stacks'] %}
+        {% if outputs.summary.get(key) %}
+        <figure class="fig {% if key == 'lightcurves' %}wide{% endif %}">
+          <figcaption class="cap"><span>{{ key }}</span></figcaption>
+          <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.summary[key] }}" target="_blank">
+            <img loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.summary[key] }}" alt="{{ key }}">
+          </a>
+        </figure>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if outputs.bands %}
+  <div class="phot-section">
+    <h2>Per-band products</h2>
+    <div class="band-tabs">
+      {% for band in outputs.bands %}
+      <button type="button" class="band-tab {% if loop.first %}active{% endif %}"
+              data-band="{{ band }}">{{ band }}</button>
+      {% endfor %}
+    </div>
+    {% for band, prods in outputs.bands.items() %}
+    <div class="band-panel {% if loop.first %}active{% endif %}" data-band="{{ band }}">
+      <div class="fig-grid">
+        {% for key in ['ref', 'apertures', 'alignment', 'gif'] %}
+          {% if prods.get(key) %}
+          <figure class="fig">
+            <figcaption class="cap"><span>{{ band }} · {{ key }}</span></figcaption>
+            <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods[key] }}" target="_blank">
+              <img loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods[key] }}" alt="{{ band }} {{ key }}">
+            </a>
+          </figure>
+          {% endif %}
+        {% endfor %}
+      </div>
+      {% if previews.get(band) and previews[band].headers %}
+      <div class="csv-wrap">
+        <table>
+          <thead><tr>{% for h in previews[band].headers %}<th>{{ h }}</th>{% endfor %}</tr></thead>
+          <tbody>
+            {% for row in previews[band].rows %}
+            <tr>{% for cell in row %}<td class="mono">{{ cell }}</td>{% endfor %}</tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+      {% if prods.get('csv') %}
+      <div class="dl-row">
+        <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods['csv'] }}" download>⬇ {{ band }} light curve (CSV)</a>
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="phot-section">
+    <div class="dl-row">
+      {% if outputs.npz %}
+      <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.npz }}" download>⬇ data archive (.npz)</a>
+      {% endif %}
+      {% if outputs.log %}
+      <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.log }}" target="_blank">📄 pipeline log</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="phot-section" style="border-top: 1px solid var(--border); padding-top: 1rem;">
+    <button class="btn" type="button" id="rerun-btn">↻ Re-run test reduction</button>
+    <pre id="run-log"></pre>
+  </div>
+
+{% else %}
+  <div class="phot-empty">
+    <div style="font-size: 2rem; margin-bottom: 0.75rem;">🧪</div>
+    <h2 style="color: var(--text);">No reduction found</h2>
+    <p style="color: var(--text-dim);">
+      No prose outputs yet for <span class="mono">{{ sel_target }}</span>
+      on {{ sel_inst }} {{ sel_date }}.
+    </p>
+    {% if raw_missing %}
+    <p class="warn">⚠ Raw data directory not found — a run will fail until the frames are available.</p>
+    {% endif %}
+    <p style="margin-top: 1.25rem;">
+      <button class="btn primary" type="button" id="run-btn" {% if raw_missing %}disabled{% endif %}>
+        ▶ Run test reduction (first 10 frames)
+      </button>
+    </p>
+    <p style="color: var(--text-dim); font-size: 0.8rem; margin-top: 1.25rem;">
+      Full reduction (all frames) — run from a shell:
+    </p>
+    <div class="run-cmd">
+      <code id="full-cmd">{{ command }}</code>
+      <button class="btn" type="button" id="copy-cmd">Copy</button>
+    </div>
+    <pre id="run-log"></pre>
+  </div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var inst   = {{ sel_inst|tojson }};
+  var date   = {{ sel_date|tojson }};
+  var target = {{ sel_target|tojson }};
+
+  // ----- cascading selectors: navigate on change -----
+  var selInst   = document.getElementById('sel-inst');
+  var selDate   = document.getElementById('sel-date');
+  var selTarget = document.getElementById('sel-target');
+
+  function go(params) {
+    var qs = Object.keys(params)
+      .filter(function (k) { return params[k]; })
+      .map(function (k) { return k + '=' + encodeURIComponent(params[k]); })
+      .join('&');
+    window.location = '/photometry' + (qs ? '?' + qs : '');
+  }
+  if (selInst)   selInst.addEventListener('change', function () { go({ inst: this.value }); });
+  if (selDate)   selDate.addEventListener('change', function () { go({ inst: selInst.value, date: this.value }); });
+  if (selTarget) selTarget.addEventListener('change', function () { go({ inst: selInst.value, date: selDate.value, target: this.value }); });
+
+  // ----- band tabs -----
+  var tabs = document.querySelectorAll('.band-tab');
+  tabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      var band = this.dataset.band;
+      document.querySelectorAll('.band-tab').forEach(function (t) {
+        t.classList.toggle('active', t.dataset.band === band);
+      });
+      document.querySelectorAll('.band-panel').forEach(function (p) {
+        p.classList.toggle('active', p.dataset.band === band);
+      });
+    });
+  });
+
+  // ----- copy full command -----
+  var copyBtn = document.getElementById('copy-cmd');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', function () {
+      var cmd = document.getElementById('full-cmd').textContent;
+      navigator.clipboard.writeText(cmd).then(function () {
+        copyBtn.textContent = 'Copied';
+        setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1500);
+      });
+    });
+  }
+
+  // ----- run / re-run a test reduction with live log polling -----
+  var runBtn = document.getElementById('run-btn') || document.getElementById('rerun-btn');
+  var logEl  = document.getElementById('run-log');
+  var polling = null;
+
+  function poll() {
+    var qs = 'inst=' + encodeURIComponent(inst) +
+             '&date=' + encodeURIComponent(date) +
+             '&target=' + encodeURIComponent(target);
+    fetch('/photometry/status?' + qs)
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        if (s.log) { logEl.textContent = s.log; logEl.scrollTop = logEl.scrollHeight; }
+        if (s.state === 'done') {
+          clearInterval(polling);
+          logEl.textContent += '\n\n✓ done (' + s.elapsed + 's) — reloading…';
+          setTimeout(function () { window.location.reload(); }, 1200);
+        } else if (s.state === 'error') {
+          clearInterval(polling);
+          if (runBtn) { runBtn.disabled = false; runBtn.textContent = '▶ Retry test reduction'; }
+          logEl.textContent += '\n\n✗ pipeline exited with code ' + s.returncode;
+        }
+      })
+      .catch(function () {});
+  }
+
+  if (runBtn) {
+    runBtn.addEventListener('click', function () {
+      runBtn.disabled = true;
+      runBtn.textContent = 'Running…';
+      logEl.style.display = 'block';
+      logEl.textContent = 'Launching pipeline…';
+      fetch('/photometry/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inst: inst, date: date, target: target, test_run: true })
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (res) {
+          if (!res.ok) {
+            runBtn.disabled = false;
+            runBtn.textContent = '▶ Run test reduction';
+            logEl.textContent = 'Error: ' + (res.error || 'failed to start');
+            return;
+          }
+          polling = setInterval(poll, 2000);
+          poll();
+        })
+        .catch(function (err) {
+          runBtn.disabled = false;
+          logEl.textContent = 'Error: ' + err.message;
+        });
+    });
+  }
+})();
+</script>
+{% endblock %}

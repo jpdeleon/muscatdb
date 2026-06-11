@@ -65,7 +65,7 @@ def _complete_ccd() -> list[str]:
 
 def _complete_year() -> list[str]:
     this_year = date.today().year
-    return [str(y)[2:] for y in range(this_year, this_year - 5, -1)]
+    return ["all", *(str(y)[2:] for y in range(this_year, this_year - 5, -1))]
 
 
 def _complete_obsdate(ctx: typer.Context) -> list[str]:
@@ -127,11 +127,16 @@ def scan_missing(
         click_type=_INST_CHOICES,
     ),
     year: str = typer.Argument(
-        ..., help="Year prefix (e.g. 25)", autocompletion=_complete_year,
+        ..., help="Year prefix (e.g. 25) or 'all' for every date dir",
+        autocompletion=_complete_year,
     ),
     workers: int | None = _WORKER_OPTION,
+    force: bool = typer.Option(
+        False, "--force", "-f",
+        help="Rescan every date with FITS data, overwriting existing obslog CSVs.",
+    ),
 ):
-    """Scan all dates for an instrument that don't yet have an obslog."""
+    """Scan all dates for an instrument that don't yet have an obslog (or all, with --force)."""
     with Progress(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
@@ -139,17 +144,21 @@ def scan_missing(
         TimeRemainingColumn(),
         console=console,
     ) as progress:
-        dates = scan_missing_dates(instrument, year, max_workers=workers, progress=progress)
+        dates = scan_missing_dates(
+            instrument, year, max_workers=workers, progress=progress, force=force,
+        )
+    label = "Rescanned" if force else "Scanned"
     if dates:
-        console.print(f"[green]Scanned {len(dates)} new dates for {instrument}[/]")
+        console.print(f"[green]{label} {len(dates)} dates for {instrument}[/]")
     else:
-        console.print(f"[yellow]No missing dates found for {instrument} {year}[/]")
+        console.print(f"[yellow]No dates found for {instrument} {year}[/]")
 
 
 @app.command(cls=_Cmd)
 def scan_all(
     year: str = typer.Argument(
-        ..., help="Year prefix (e.g. 25)", autocompletion=_complete_year,
+        ..., help="Year prefix (e.g. 25) or 'all' for every date dir",
+        autocompletion=_complete_year,
     ),
     workers: int | None = _WORKER_OPTION,
 ):
@@ -223,8 +232,14 @@ def build_db(
 ):
     """Build SQLite database from all CSV observation logs."""
     from muscat_db.database import build_db as _build_db
-    console.print("[blue]Building database...[/]")
-    count = _build_db(db)
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[bold]{task.fields[filename]}"),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        count = _build_db(db, progress=progress)
     console.print(f"[green]Database built: {count} frames indexed in {db}[/]")
 
 

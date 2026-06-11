@@ -21,7 +21,10 @@
 {% endfor %}
 </div>
 
-<h2 style="margin-top:2rem;">Targets ({{ targets|length }})</h2>
+{% set identified   = targets | selectattr('is_identified') | list %}
+{% set unidentified = targets | rejectattr('is_identified') | list %}
+
+<h2 style="margin-top:2rem;">Targets ({{ identified|length }})</h2>
 
 <div class="search-bar">
   <input id="target-search" type="text" placeholder="Search targets by name…" autocomplete="off">
@@ -30,29 +33,50 @@
   <span id="search-status" class="hint"></span>
 </div>
 
-{% if targets %}
-<table id="targets-table">
+{% macro target_table(rows, table_id) %}
+<table id="{{ table_id }}">
   <thead>
     <tr>
-      <th>Target</th>
-      <th>RA</th>
-      <th>Dec</th>
-      <th>Filters</th>
-      <th>Airmass</th>
-      <th># Frames</th>
-      <th>Instruments</th>
-      <th>Dates</th>
+      <th data-sort-attr="name">Target</th>
+      <th data-sort-attr="ra"          data-sort-type="ra">RA</th>
+      <th data-sort-attr="dec"         data-sort-type="dec">Dec</th>
+      <th data-sort-attr="filters">Filters</th>
+      <th data-sort-attr="airmassMax"  data-sort-type="number">Airmass</th>
+      <th data-sort-attr="frames"      data-sort-type="number"># Frames</th>
+      <th data-sort-attr="instruments">Instruments</th>
+      <th data-sort-attr="dates">Dates</th>
+      <th data-sort-attr="note">Notes</th>
+    </tr>
+    <tr class="filter-row">
+      <th><input type="text" data-col="name"        placeholder="contains…"></th>
+      <th><input type="text" data-col="ra"          placeholder="hr: >10  5-15"></th>
+      <th><input type="text" data-col="dec"         placeholder="deg: >0  -30:30"></th>
+      <th><input type="text" data-col="filter"      placeholder="g, r, i, z"></th>
+      <th><input type="text" data-col="airmass"     placeholder="<1.5  1.1-2"></th>
+      <th><input type="text" data-col="frames"      placeholder="<100  >500"></th>
+      <th><input type="text" data-col="instrument"  placeholder="muscat2"></th>
+      <th><input type="text" data-col="date"        placeholder="YYMMDD"></th>
+      <th><input type="text" data-col="note"        placeholder="contains…"></th>
     </tr>
   </thead>
   <tbody>
-  {% for t in targets %}
-    <tr data-name="{{ t.object }}">
+  {% for t in rows %}
+    <tr data-name="{{ t.object }}"
+        data-ra="{{ t.ra }}"
+        data-dec="{{ t.declination }}"
+        data-filters="{{ t.filters|join(',') }}"
+        data-frames="{{ t.n_frames }}"
+        data-airmass-min="{{ t.airmass_min if t.airmass_min is not none else '' }}"
+        data-airmass-max="{{ t.airmass_max if t.airmass_max is not none else '' }}"
+        data-instruments="{{ t.instruments|join(',') }}"
+        data-dates="{{ t.dates|join(',') }}"
+        data-note="{{ t.note|default('', true) }}">
       <td><strong>{{ t.object }}</strong></td>
       <td class="mono">{{ t.ra }}</td>
       <td class="mono">{{ t.declination }}</td>
       <td>
-        {% for f in t.filters %}
-          <span class="badge badge-amber">{{ f }}</span>
+        {% for c in t.filter_chips %}
+          <span class="badge badge-filter-{{ c.color }}{% if c.narrow %} narrow{% endif %}">{{ c.label }}</span>
         {% endfor %}
       </td>
       <td class="mono">
@@ -70,17 +94,36 @@
       </td>
       <td class="mono" style="white-space:normal;">
         {% for d in t.dates %}
-          {% for inst in t.instruments %}
-            <a href="/{{ inst }}/{{ d }}">{{ d }}</a>{% if not loop.last %}/{% endif %}
-          {% endfor %}{% if not loop.last %}, {% endif %}
+          {% set inst = t.date_to_inst.get(d, t.instruments[0] if t.instruments else '') %}
+          <a href="/{{ inst }}/{{ d }}">{{ d }}</a><a href="/photometry?inst={{ inst }}&date={{ d }}&target={{ t.object | urlencode }}" title="photometry" style="text-decoration:none;font-size:0.8em;margin-left:1px;">🔭</a>{% if not loop.last %}, {% endif %}
         {% endfor %}
+      </td>
+      <td class="note-cell" data-object="{{ t.object }}" style="white-space:normal;">
+        <span class="note-text">{{ t.note }}</span>
+        <span class="note-placeholder" {% if t.note %}style="display:none;"{% endif %}>+ add note</span>
       </td>
     </tr>
   {% endfor %}
   </tbody>
 </table>
+{% endmacro %}
+
+{% if identified %}
+  {{ target_table(identified, 'targets-table') }}
 {% else %}
-<p>No targets found.</p>
+  <p>No identified targets found.</p>
+{% endif %}
+
+{% if unidentified %}
+<details style="margin-top:1.5rem;">
+  <summary style="cursor:pointer; padding:0.5rem 0; color:var(--text-dim); font-size:1rem;">
+    Unidentified targets ({{ unidentified|length }})
+    <span class="hint">— bare numeric OBJECT names, no catalog prefix</span>
+  </summary>
+  <div style="margin-top:0.75rem;">
+    {{ target_table(unidentified, 'unidentified-table') }}
+  </div>
+</details>
 {% endif %}
 
 <script>
@@ -89,48 +132,146 @@
     const regex  = document.getElementById('regex-toggle');
     const caseCB = document.getElementById('case-toggle');
     const status = document.getElementById('search-status');
-    const rows   = Array.from(document.querySelectorAll('#targets-table tbody tr'));
-    const total  = rows.length;
+    const rows = Array.from(document.querySelectorAll(
+      '#targets-table tbody tr, #unidentified-table tbody tr'
+    ));
+    const total = rows.length;
+    const colInputs = Array.from(document.querySelectorAll('tr.filter-row input'));
 
     function escapeRegex(s) {
       return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
+    // ---- Column-filter parsers --------------------------------------------
+    // Returns a predicate function or null on empty / invalid.
+    function makeNumeric(raw) {
+      const s = raw.trim();
+      if (!s) return null;
+      let m;
+      if ((m = s.match(/^(<=|>=|<|>|=)?\s*(-?\d+(?:\.\d+)?)$/))) {
+        const op = m[1] || '=', v = parseFloat(m[2]);
+        return x => {
+          if (x == null || isNaN(x)) return false;
+          if (op === '<')  return x <  v;
+          if (op === '<=') return x <= v;
+          if (op === '>')  return x >  v;
+          if (op === '>=') return x >= v;
+          return Math.abs(x - v) < 1e-9;
+        };
+      }
+      if ((m = s.match(/^(-?\d+(?:\.\d+)?)\s*(?:-|\.\.|:|to)\s*(-?\d+(?:\.\d+)?)$/))) {
+        const a = parseFloat(m[1]), b = parseFloat(m[2]);
+        const lo = Math.min(a,b), hi = Math.max(a,b);
+        return x => x != null && !isNaN(x) && x >= lo && x <= hi;
+      }
+      return 'INVALID';
+    }
+
+    function makeText(raw) {
+      const s = raw.trim();
+      if (!s) return null;
+      const needles = s.toLowerCase().split(/\s*,\s*/).filter(Boolean);
+      // comma-separated: ANY-match (handy for filters like "g,r")
+      return hay => {
+        const h = (hay || '').toLowerCase();
+        return needles.some(n => h.includes(n));
+      };
+    }
+
+    // Whole-token match against a comma-joined list. "muscat" matches only the
+    // exact "muscat" token, not "muscat2"/"muscat3"; "muscat2" still matches.
+    // Comma-separated needles are ANY-match (e.g. "muscat,sinistro").
+    function makeToken(raw) {
+      const s = raw.trim();
+      if (!s) return null;
+      const needles = s.toLowerCase().split(/\s*,\s*/).filter(Boolean);
+      return hay => {
+        const tokens = (hay || '').toLowerCase().split(',')
+          .map(t => t.trim()).filter(Boolean);
+        return needles.some(n => tokens.includes(n));
+      };
+    }
+
+    function raToHours(s) {
+      const m = (s || '').match(/^\s*(-?\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      return parseInt(m[1], 10) + parseInt(m[2], 10)/60 + (parseFloat(m[3]) || 0)/3600;
+    }
+    function decToDegrees(s) {
+      const m = (s || '').match(/^\s*([+-]?)(\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      const sign = m[1] === '-' ? -1 : 1;
+      const d = parseInt(m[2], 10);
+      return sign * (d + parseInt(m[3], 10)/60 + (parseFloat(m[4]) || 0)/3600);
+    }
+
+    // Map data-col → (row → value, parser builder)
+    const colSpec = {
+      name:       { val: r => r.dataset.name,        build: makeText    },
+      ra:         { val: r => raToHours(r.dataset.ra),   build: makeNumeric },
+      dec:        { val: r => decToDegrees(r.dataset.dec), build: makeNumeric },
+      filter:     { val: r => r.dataset.filters,     build: makeText    },
+      airmass:    { val: r => parseFloat(r.dataset.airmassMax),  build: makeNumeric },
+      frames:     { val: r => parseInt(r.dataset.frames, 10),    build: makeNumeric },
+      instrument: { val: r => r.dataset.instruments, build: makeToken   },
+      date:       { val: r => r.dataset.dates,       build: makeText    },
+      note:       { val: r => r.dataset.note,        build: makeText    },
+    };
+
+    function buildColPredicates() {
+      const preds = [];
+      colInputs.forEach(inp => {
+        const spec = colSpec[inp.dataset.col];
+        if (!spec) return;
+        const p = spec.build(inp.value);
+        inp.classList.remove('invalid');
+        if (p === 'INVALID') {
+          inp.classList.add('invalid');
+          return;
+        }
+        if (p) preds.push(row => p(spec.val(row)));
+      });
+      return preds;
+    }
+
     function filter() {
       const q = input.value;
-      let visible = 0;
       status.textContent = '';
       status.className = 'hint';
 
-      if (!q) {
-        rows.forEach(r => r.style.display = '');
-        status.textContent = total + ' targets';
-        return;
+      let textTest = () => true;
+      if (q) {
+        try {
+          const flags = caseCB.checked ? '' : 'i';
+          const pattern = regex.checked ? q : escapeRegex(q);
+          const re = new RegExp(pattern, flags);
+          textTest = name => re.test(name);
+        } catch (err) {
+          status.textContent = 'Invalid regex: ' + err.message;
+          status.className = 'invalid';
+          return;
+        }
       }
 
-      let test;
-      try {
-        const flags = caseCB.checked ? '' : 'i';
-        const pattern = regex.checked ? q : escapeRegex(q);
-        const re = new RegExp(pattern, flags);
-        test = name => re.test(name);
-      } catch (err) {
-        status.textContent = 'Invalid regex: ' + err.message;
-        status.className = 'invalid';
-        return;
-      }
-
+      const colPreds = buildColPredicates();
+      let visible = 0;
       rows.forEach(r => {
-        const match = test(r.dataset.name || '');
-        r.style.display = match ? '' : 'none';
-        if (match) visible++;
+        let ok = textTest(r.dataset.name || '');
+        for (let i = 0; ok && i < colPreds.length; i++) ok = colPreds[i](r);
+        r.style.display = ok ? '' : 'none';
+        if (ok) visible++;
       });
-      status.textContent = visible + ' / ' + total + ' matching';
+      if (q || colPreds.length) {
+        status.textContent = visible + ' / ' + total + ' matching';
+      } else {
+        status.textContent = total + ' targets';
+      }
     }
 
     input.addEventListener('input', filter);
     regex.addEventListener('change', filter);
     caseCB.addEventListener('change', filter);
+    colInputs.forEach(inp => inp.addEventListener('input', filter));
     filter();
   })();
 </script>

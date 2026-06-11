@@ -74,6 +74,7 @@
     width: 100%; border-collapse: collapse; margin: 1rem 0;
     font-size: 0.85rem;
   }
+  table.resizable-init { table-layout: fixed; }
   th {
     background: var(--surface2);
     color: var(--text-dim);
@@ -82,11 +83,38 @@
     padding: 0.6rem 0.75rem;
     border-bottom: 1px solid var(--border);
     white-space: nowrap;
+    position: relative;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   td {
     padding: 0.5rem 0.75rem;
     border-bottom: 1px solid var(--border);
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  th .col-resizer {
+    position: absolute;
+    top: 0; right: -3px;
+    width: 8px; height: 100%;
+    cursor: col-resize;
+    user-select: none;
+    z-index: 5;
+  }
+  th .col-resizer::after {
+    content: ''; display: block;
+    position: absolute; top: 25%; right: 3px;
+    width: 2px; height: 50%;
+    background: var(--border);
+    transition: background 0.15s;
+  }
+  th .col-resizer:hover::after,
+  th .col-resizer.resizing::after {
+    background: var(--accent);
+  }
+  th.resizing, td.col-resizing {
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
   }
   tr:hover td { background: var(--surface); }
   .badge {
@@ -97,8 +125,68 @@
     font-weight: 500;
   }
   .badge-green  { background: #065f46; color: #6ee7b7; }
-  .badge-blue   { background: #1e3a5f; color: #93c5fd; }
+  .badge-blue   { background: #1e3a5f; color: #ffffff; }
   .badge-amber  { background: #5c3d0e; color: #fcd34d; }
+  .badge-filter-g   { background: #2a3f6b; color: #c9d4ee; }
+  .badge-filter-r   { background: #2b4a3a; color: #c4e0cf; }
+  .badge-filter-i   { background: #5a4520; color: #ecd9a8; }
+  .badge-filter-z   { background: #5a2e2e; color: #ecc8c8; }
+  .badge-filter-g.narrow { background: #16223c; color: #8fa3cc; }
+  .badge-filter-r.narrow { background: #142e22; color: #88b69d; }
+  .badge-filter-i.narrow { background: #382912; color: #c2a76d; }
+  .badge-filter-z.narrow { background: #381c1c; color: #c08e8e; }
+  .badge-filter-other { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  [data-theme="light"] .badge-filter-g        { background: #dde6f5; color: #1e3a6b; }
+  [data-theme="light"] .badge-filter-r        { background: #d9ebe0; color: #1f4a3a; }
+  [data-theme="light"] .badge-filter-i        { background: #f1e6cd; color: #5a4520; }
+  [data-theme="light"] .badge-filter-z        { background: #f1d9d9; color: #6e2a2a; }
+  [data-theme="light"] .badge-filter-g.narrow { background: #aebfdd; color: #0d2247; }
+  [data-theme="light"] .badge-filter-r.narrow { background: #afcfba; color: #0d2c20; }
+  [data-theme="light"] .badge-filter-i.narrow { background: #d6bf86; color: #3b2a0a; }
+  [data-theme="light"] .badge-filter-z.narrow { background: #d6a8a8; color: #4a1818; }
+  .note-cell { cursor: text; min-width: 140px; position: relative; }
+  .note-cell .note-text { color: var(--text); word-break: break-word; }
+  .note-cell .note-placeholder { color: var(--text-dim); font-style: italic; font-size: 0.8rem; }
+  .note-cell:hover .note-placeholder { color: var(--accent); }
+  .note-cell.editing { padding: 0.25rem; }
+  .note-cell textarea {
+    width: 100%; min-height: 2.2rem; resize: vertical;
+    background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--accent); border-radius: 4px;
+    padding: 0.35rem 0.5rem; font: inherit;
+  }
+  .note-cell .note-actions { margin-top: 0.25rem; display: flex; gap: 0.35rem; }
+  .note-cell .note-actions button {
+    background: var(--surface2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 0.2rem 0.55rem; font-size: 0.75rem; cursor: pointer;
+  }
+  .note-cell .note-actions button.save { border-color: var(--accent2); color: var(--accent2); }
+  .note-cell .note-actions button.del  { border-color: var(--red);     color: var(--red); margin-left: auto; }
+  .note-cell .note-actions button:hover { filter: brightness(1.2); }
+  tr.filter-row th { padding: 0.3rem 0.4rem; background: var(--surface); }
+  tr.filter-row th input {
+    width: 100%; box-sizing: border-box;
+    background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 0.25rem 0.45rem;
+    font-size: 0.78rem; font-family: inherit;
+  }
+  tr.filter-row th input:focus { outline: none; border-color: var(--accent); }
+  tr.filter-row th input.invalid { border-color: var(--red); }
+  tr.filter-row th input::placeholder { color: var(--text-dim); font-style: italic; }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--accent); }
+  th.sortable::after {
+    content: '';
+    display: inline-block;
+    margin-left: 0.35rem;
+    font-size: 0.7em;
+    color: var(--text-dim);
+    opacity: 0.4;
+  }
+  th.sortable[data-sort-dir="asc"]::after  { content: '▲'; opacity: 1; color: var(--accent); }
+  th.sortable[data-sort-dir="desc"]::after { content: '▼'; opacity: 1; color: var(--accent); }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
   .mono { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.8rem; }
@@ -186,6 +274,7 @@
 <nav>
   <a class="brand" href="/">MuSCAT-db</a>
   <a href="/">Logs</a>
+  <a href="/photometry">Photometry</a>
   <span class="spacer"></span>
   <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">
     <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
@@ -243,7 +332,13 @@
         text.textContent = 'Ready';
         setTimeout(function () { status.classList.remove('visible'); }, 700);
       }
-      setTimeout(function () { bar.remove(); }, 400);
+      // Keep the bar in the DOM so we can re-show it on the next navigation.
+    }
+
+    function showLoading(label) {
+      bar.classList.remove('done');
+      text.textContent = label || 'Loading…';
+      status.classList.add('visible');
     }
 
     if (document.readyState === 'complete') {
@@ -251,7 +346,306 @@
     } else {
       window.addEventListener('load', done);
     }
+
+    // Re-show the bar when the user navigates away via a same-origin link.
+    document.addEventListener('click', function (e) {
+      const link = e.target.closest('a');
+      if (!link) return;
+      if (link.target && link.target !== '_self') return;
+      if (link.hasAttribute('download')) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+      const href = link.getAttribute('href');
+      if (!href || href.startsWith('#') || href.startsWith('javascript:') || href.startsWith('mailto:')) return;
+      const url = new URL(link.href, window.location.href);
+      if (url.origin !== window.location.origin) return;
+      // Skip pure in-page hash changes (same path, different fragment).
+      if (url.pathname === window.location.pathname && url.hash) return;
+      showLoading('Loading…');
+    }, true);
+
+    // Restore on bfcache restores (back/forward navigation).
+    window.addEventListener('pageshow', function (e) {
+      if (e.persisted) done();
+    });
+  })();
+
+  // ----- resizable table columns ------------------------------------------
+  (function () {
+    function initTable(table) {
+      if (table.dataset.resizableInit === '1') return;
+      table.dataset.resizableInit = '1';
+      const headRow = table.tHead && table.tHead.rows[0];
+      if (!headRow) return;
+      const ths = Array.from(headRow.cells);
+      const tableId = table.id || 'tbl-' + Math.random().toString(36).slice(2);
+      // Lock in current natural widths (measured under table-layout: auto) so
+      // dragging one column doesn't shove the others around.
+      const measured = ths.map(function (th, i) {
+        const stored = localStorage.getItem('colw:' + tableId + ':' + i);
+        return stored ? parseFloat(stored) : th.getBoundingClientRect().width;
+      });
+      ths.forEach(function (th, i) {
+        th.style.width = measured[i] + 'px';
+      });
+      // Now switch to fixed layout so column widths are honoured exactly.
+      table.classList.add('resizable-init');
+      ths.forEach(function (th, i) {
+        if (i === ths.length - 1) return;  // no handle on the last column
+        const handle = document.createElement('div');
+        handle.className = 'col-resizer';
+        handle.title = 'Drag to resize column';
+        th.appendChild(handle);
+        handle.addEventListener('mousedown', function (e) {
+          startResize(e, table, th, i, tableId);
+        });
+        handle.addEventListener('dblclick', function () {
+          // Double-click resets this column to auto-fit content.
+          th.style.width = '';
+          localStorage.removeItem('colw:' + tableId + ':' + i);
+          th.style.width = th.getBoundingClientRect().width + 'px';
+          localStorage.setItem('colw:' + tableId + ':' + i,
+                               parseFloat(th.style.width));
+        });
+      });
+    }
+
+    function startResize(e, table, th, idx, tableId) {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = th.getBoundingClientRect().width;
+      const handle = e.currentTarget;
+      handle.classList.add('resizing');
+      th.classList.add('resizing');
+      document.body.style.cursor = 'col-resize';
+      function onMove(ev) {
+        const newW = Math.max(40, startW + (ev.clientX - startX));
+        th.style.width = newW + 'px';
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        handle.classList.remove('resizing');
+        th.classList.remove('resizing');
+        document.body.style.cursor = '';
+        const finalW = parseFloat(th.style.width);
+        if (!isNaN(finalW)) {
+          localStorage.setItem('colw:' + tableId + ':' + idx, finalW);
+        }
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    }
+
+    function initAll() {
+      document.querySelectorAll('table').forEach(initTable);
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAll);
+    } else {
+      initAll();
+    }
+
+    // Re-init tables inside <details> when expanded (their cells have no
+    // measured width while hidden).
+    // ----- click-to-sort columns ------------------------------------------
+    function raToHours(s) {
+      const m = (s || '').match(/^\s*(-?\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      return parseInt(m[1], 10) + parseInt(m[2], 10)/60 + (parseFloat(m[3]) || 0)/3600;
+    }
+    function decToDegrees(s) {
+      const m = (s || '').match(/^\s*([+-]?)(\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      const sign = m[1] === '-' ? -1 : 1;
+      return sign * (parseInt(m[2], 10) + parseInt(m[3], 10)/60 + (parseFloat(m[4]) || 0)/3600);
+    }
+
+    function detectKind(values) {
+      const non = values.filter(v => v && v.trim() !== '');
+      if (!non.length) return 'string';
+      if (non.every(v => /^[+-]\d{1,2}:\d{2}(:\d+(\.\d+)?)?$/.test(v.trim()))) return 'dec';
+      if (non.every(v => /^\d{1,2}:\d{2}(:\d+(\.\d+)?)?$/.test(v.trim()))) return 'ra';
+      if (non.every(v => !isNaN(parseFloat(v.replace(/[^\d.+\-eE]/g, ''))))) return 'number';
+      return 'string';
+    }
+    function keyFor(kind, raw) {
+      if (raw == null) return null;
+      if (kind === 'number') {
+        const n = parseFloat(raw.replace(/[^\d.+\-eE]/g, ''));
+        return isNaN(n) ? null : n;
+      }
+      if (kind === 'ra')  { const h = raToHours(raw);   return isNaN(h) ? null : h; }
+      if (kind === 'dec') { const d = decToDegrees(raw); return isNaN(d) ? null : d; }
+      return (raw || '').toString().toLowerCase();
+    }
+    function rowKey(row, colIdx, sortAttr, kind) {
+      if (sortAttr && row.dataset[sortAttr] !== undefined) {
+        const raw = row.dataset[sortAttr];
+        if (kind === 'number') {
+          const n = parseFloat(raw);
+          return isNaN(n) ? null : n;
+        }
+        if (kind === 'ra')  { const h = raToHours(raw);    return isNaN(h) ? null : h; }
+        if (kind === 'dec') { const d = decToDegrees(raw); return isNaN(d) ? null : d; }
+        return (raw || '').toString().toLowerCase();
+      }
+      const cell = row.cells[colIdx];
+      return keyFor(kind, cell ? cell.textContent.trim() : '');
+    }
+
+    function initSortable(table) {
+      if (table.dataset.sortableInit === '1') return;
+      table.dataset.sortableInit = '1';
+      const headerRow = table.tHead && table.tHead.rows[0];
+      const tbody = table.tBodies[0];
+      if (!headerRow || !tbody) return;
+      // Snapshot original row order so a third click can restore it.
+      const originalOrder = Array.from(tbody.rows);
+      originalOrder.forEach((r, i) => { r.dataset._origIdx = i; });
+
+      Array.from(headerRow.cells).forEach((th, colIdx) => {
+        if (th.classList.contains('no-sort')) return;
+        th.classList.add('sortable');
+        th.addEventListener('click', function (e) {
+          if (e.target.closest('.col-resizer')) return;  // ignore handle clicks
+          const dir = th.dataset.sortDir;
+          const next = dir === 'asc' ? 'desc' : dir === 'desc' ? '' : 'asc';
+          Array.from(headerRow.cells).forEach(h => h.removeAttribute('data-sort-dir'));
+          if (next) th.dataset.sortDir = next;
+
+          if (!next) {
+            // Restore original order.
+            originalOrder.forEach(r => tbody.appendChild(r));
+            return;
+          }
+
+          // Decide sort kind: explicit hint or auto-detect from cell text.
+          let kind = th.dataset.sortType;
+          if (!kind) {
+            const samples = Array.from(tbody.rows).slice(0, 25)
+              .map(r => r.cells[colIdx] ? r.cells[colIdx].textContent.trim() : '');
+            kind = detectKind(samples);
+          }
+          const sortAttr = th.dataset.sortAttr;  // camelCase data-* key
+
+          const dirSign = next === 'asc' ? 1 : -1;
+          const sorted = Array.from(tbody.rows).slice().sort((a, b) => {
+            const ka = rowKey(a, colIdx, sortAttr, kind);
+            const kb = rowKey(b, colIdx, sortAttr, kind);
+            if (ka == null && kb == null) return 0;
+            if (ka == null) return 1;   // nulls always last
+            if (kb == null) return -1;
+            if (ka < kb) return -1 * dirSign;
+            if (ka > kb) return  1 * dirSign;
+            // stable tiebreak on original index
+            return (parseInt(a.dataset._origIdx, 10) - parseInt(b.dataset._origIdx, 10));
+          });
+          sorted.forEach(r => tbody.appendChild(r));
+        });
+      });
+    }
+
+    function initAllSortable() {
+      document.querySelectorAll('table').forEach(initSortable);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAllSortable);
+    } else {
+      initAllSortable();
+    }
+
+    // ----- inline notes editor (delegated) --------------------------------
+    document.addEventListener('click', function (e) {
+      const cell = e.target.closest('.note-cell');
+      if (!cell || cell.classList.contains('editing')) return;
+      if (e.target.closest('a, button')) return;
+      openEditor(cell);
+    });
+
+    function openEditor(cell) {
+      const obj = cell.dataset.object;
+      const current = cell.querySelector('.note-text').textContent;
+      cell.classList.add('editing');
+      cell.innerHTML = '';
+      const ta = document.createElement('textarea');
+      ta.value = current;
+      ta.rows = 2;
+      ta.placeholder = 'Type a note…';
+      const actions = document.createElement('div');
+      actions.className = 'note-actions';
+      const save = document.createElement('button');
+      save.className = 'save'; save.textContent = 'Save';
+      const cancel = document.createElement('button');
+      cancel.textContent = 'Cancel';
+      const del = document.createElement('button');
+      del.className = 'del'; del.textContent = 'Delete';
+      actions.append(save, cancel, del);
+      cell.append(ta, actions);
+      ta.focus(); ta.select();
+
+      function close(note) {
+        cell.classList.remove('editing');
+        cell.innerHTML =
+          '<span class="note-text">' + escapeHtml(note) + '</span>' +
+          '<span class="note-placeholder"' + (note ? ' style="display:none;"' : '') + '>+ add note</span>';
+      }
+      function escapeHtml(s) {
+        return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      }
+
+      async function commit() {
+        const value = ta.value.trim();
+        try {
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({note: value}),
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          close(value);
+        } catch (err) {
+          alert('Save failed: ' + err.message);
+        }
+      }
+      async function destroy() {
+        try {
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {method: 'DELETE'});
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          close('');
+        } catch (err) {
+          alert('Delete failed: ' + err.message);
+        }
+      }
+
+      save.addEventListener('click', commit);
+      del.addEventListener('click', destroy);
+      cancel.addEventListener('click', () => close(current));
+      ta.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); }
+        else if (e.key === 'Escape') { e.preventDefault(); close(current); }
+      });
+    }
+
+    document.addEventListener('toggle', function (e) {
+      if (e.target.tagName === 'DETAILS' && e.target.open) {
+        e.target.querySelectorAll('table').forEach(function (t) {
+          delete t.dataset.resizableInit;
+          t.classList.remove('resizable-init');
+          // Clear previously-set widths so we re-measure from real layout.
+          if (t.tHead && t.tHead.rows[0]) {
+            Array.from(t.tHead.rows[0].cells).forEach(function (th) {
+              th.querySelectorAll('.col-resizer').forEach(h => h.remove());
+              th.style.width = '';
+            });
+          }
+          initTable(t);
+        });
+      }
+    }, true);
   })();
 </script>
+{% block scripts %}{% endblock %}
 </body>
 </html>
