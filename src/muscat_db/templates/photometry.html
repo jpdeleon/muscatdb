@@ -38,7 +38,7 @@
     display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;
   }
   .fig img { width: 100%; height: auto; display: block; border-radius: 6px; background: #fff; }
-  /* Default summary layout: one vertical column (light curve, stack, systematics). */
+  /* Default summary layout: one vertical column (light curve, stack, covariates). */
   .fig-grid.col { grid-template-columns: 1fr; max-width: 780px; }
   /* drag-to-reorder */
   .drag-handle {
@@ -168,9 +168,9 @@
   {% if outputs and outputs.has_any %}
     {% if outputs.summary %}
     <div class="phot-section">
-      <h2>Light curves &amp; systematics <span style="font-size:0.75rem;color:var(--text-dim);font-weight:400;">— drag ⠿ to rearrange</span></h2>
+      <h2>Light curves &amp; Covariates <span style="font-size:0.75rem;color:var(--text-dim);font-weight:400;">— drag ⠿ to rearrange</span></h2>
       <div class="fig-grid col sortable" data-sort-key="summary">
-        {% for key in ['lightcurves', 'stacks', 'systematics'] %}
+        {% for key in ['lightcurves', 'covariates', 'stacks'] %}
           {% if outputs.summary.get(key) %}
           <figure class="fig" data-fig-id="{{ key }}">
             <figcaption class="cap">
@@ -197,7 +197,7 @@
       </div>
       {% for band, prods in outputs.bands.items() %}
       <div class="band-panel {% if loop.first %}active{% endif %}" data-band="{{ band }}">
-        <div class="fig-grid sortable" data-sort-key="band">
+        <div class="fig-grid col sortable" data-sort-key="band">
           {% for key in ['ref', 'apertures', 'alignment', 'gif'] %}
             {% if prods.get(key) %}
             <figure class="fig" data-fig-id="{{ key }}">
@@ -331,6 +331,7 @@
           <input type="number" id="opt-test_run_frames" value="{{ run_defaults.test_run_frames }}" min="1">
         </div>
         <div class="opt check"><input type="checkbox" id="opt-make_gif" checked><label for="opt-make_gif">Make GIF</label></div>
+        <div class="opt check"><input type="checkbox" id="opt-plot_gaia_sources" checked><label for="opt-plot_gaia_sources">Plot Gaia sources</label></div>
         <div class="opt check"><input type="checkbox" id="opt-use_barycorrpy"><label for="opt-use_barycorrpy">Use barycorrpy (BJD-TDB)</label></div>
         <div class="opt check"><input type="checkbox" id="opt-overwrite" checked><label for="opt-overwrite">Overwrite existing products</label></div>
       </div>
@@ -369,6 +370,25 @@
   var date   = {{ sel_date|tojson }};
   var target = {{ sel_target|tojson }};
   var rawMissing = {{ raw_missing|tojson }};
+
+  var SEL_KEY = 'phot:last';
+  var OPT_KEY = 'phot:options';
+
+  // ----- restore the last selection on a bare /photometry visit -----
+  (function () {
+    if (inst || date || target || window.location.search) return;
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(SEL_KEY) || 'null'); } catch (e) { saved = null; }
+    if (saved && saved.inst) {
+      var qs = ['inst', 'date', 'target'].filter(function (k) { return saved[k]; })
+        .map(function (k) { return k + '=' + encodeURIComponent(saved[k]); }).join('&');
+      window.location.replace('/photometry?' + qs);
+    }
+  })();
+  // ...and remember the current selection for next time.
+  if (inst) {
+    try { localStorage.setItem(SEL_KEY, JSON.stringify({ inst: inst, date: date, target: target })); } catch (e) {}
+  }
 
   // ----- cascading selectors: navigate on change -----
   var selInst   = document.getElementById('sel-inst');
@@ -505,6 +525,7 @@
       glob: val('opt-glob'),
       gif_stride: val('opt-gif_stride'),
       make_gif: chk('opt-make_gif'),
+      plot_gaia_sources: chk('opt-plot_gaia_sources'),
       use_barycorrpy: chk('opt-use_barycorrpy'),
       test_run_frames: val('opt-test_run_frames'),
       min_star_separation: val('opt-min_star_separation'),

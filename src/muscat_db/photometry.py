@@ -11,7 +11,7 @@ per instrument/date under ``$MUSCAT_PROSE_DIR/<inst>/<date>/`` with filenames
     {target}_{inst}_{band}_{date}.gif            # per-band animation
     {target}_{inst}_{band}_{date}.csv            # per-band light curve
     {target}_{inst}_{date}_lightcurves.png       # multi-band summary
-    {target}_{inst}_{date}_systematics.png       # multi-band summary
+    {target}_{inst}_{date}_covariates.png        # multi-band summary
     {target}_{inst}_{date}_stacks.png            # multi-band summary
     {target}_{inst}_{date}.npz                   # data archive
     {iso-timestamp}.log                          # pipeline log
@@ -58,6 +58,7 @@ RUN_DEFAULTS: dict = {
     "glob": "*.fits",
     "gif_stride": 100,
     "make_gif": True,
+    "plot_gaia_sources": True,
     "use_barycorrpy": False,
     "test_run_frames": 10,
     "min_star_separation": 10.0,
@@ -81,7 +82,8 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
 # Summary (multi-band) plot suffixes -> short key used by the template.
 _SUMMARY_SUFFIX = {
     "_lightcurves.png": "lightcurves",
-    "_systematics.png": "systematics",
+    "_covariates.png": "covariates",
+    "_systematics.png": "covariates",   # backward compat with old pipeline
     "_stacks.png": "stacks",
 }
 # Per-band product suffixes -> short key.
@@ -379,7 +381,7 @@ def normalize_run_options(raw: dict | None) -> dict:
             if fv is not None:
                 o[key] = fv
 
-    for key in ("make_gif", "use_barycorrpy", "overwrite"):
+    for key in ("make_gif", "plot_gaia_sources", "use_barycorrpy", "overwrite"):
         if key in raw:
             o[key] = _to_bool(raw[key])
 
@@ -469,6 +471,8 @@ def build_command(
 
     if not o.get("make_gif", True):
         args.append("--no_gif")
+    if not o.get("plot_gaia_sources", True):
+        args.append("--no_plot_gaia_sources")
     if o.get("use_barycorrpy"):
         args.append("--use_barycorrpy")
 

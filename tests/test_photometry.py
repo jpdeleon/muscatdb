@@ -82,7 +82,7 @@ class TestListOutputs:
     def test_classifies_all_products(self, prose_dir):
         out = phot.list_outputs(INST, DATE, TARGET)
         assert out["has_any"]
-        assert set(out["summary"]) == {"lightcurves", "systematics", "stacks"}
+        assert set(out["summary"]) == {"lightcurves", "covariates", "stacks"}
         assert out["summary"]["lightcurves"] == f"{TARGET}_{INST}_{DATE}_lightcurves.png"
         assert out["npz"] == f"{TARGET}_{INST}_{DATE}.npz"
         assert out["log"].endswith(".log")
@@ -232,6 +232,14 @@ class TestRunOptions:
         assert "--no_gif" in cmd
         assert "--use_barycorrpy" in cmd
         assert "--gif_stride 50" in s
+
+    def test_plot_gaia_sources_default_on(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        # checked by default -> no flag emitted (pipeline default is True)
+        assert "--no_plot_gaia_sources" not in phot.build_command(INST, DATE, TARGET, {})
+        # unchecked -> emit the opt-out flag
+        cmd = phot.build_command(INST, DATE, TARGET, {"plot_gaia_sources": False})
+        assert "--no_plot_gaia_sources" in cmd
 
     def test_validate_requires_band(self):
         assert phot.validate_run_options(phot.normalize_run_options({"bands": []}))
@@ -413,14 +421,14 @@ class TestRoutes:
         html = r.text
         # single-column sortable summary container
         assert 'fig-grid col sortable" data-sort-key="summary"' in html
-        # default order: light curve, then stack, then systematics
+        # default order: light curve, then stack, then covariates
         i_lc = html.index('data-fig-id="lightcurves"')
         i_st = html.index('data-fig-id="stacks"')
-        i_sy = html.index('data-fig-id="systematics"')
+        i_sy = html.index('data-fig-id="covariates"')
         assert i_lc < i_st < i_sy
         # drag affordance + per-band grids are sortable too
         assert "drag-handle" in html
-        assert 'fig-grid sortable" data-sort-key="band"' in html
+        assert 'fig-grid col sortable" data-sort-key="band"' in html
 
 
 # ── real example output (optional) ───────────────────────────────────────────
@@ -432,6 +440,6 @@ class TestRealExample:
         os.environ.pop("MUSCAT_PROSE_DIR", None)
         out = phot.list_outputs(INST, DATE, TARGET)
         assert out["has_any"]
-        assert set(out["summary"]) == {"lightcurves", "systematics", "stacks"}
+        assert set(out["summary"]) == {"lightcurves", "covariates", "stacks"}
         assert list(out["bands"]) == BANDS
         assert out["npz"] == f"{TARGET}_{INST}_{DATE}.npz"
