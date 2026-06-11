@@ -117,6 +117,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
         outputs = phot.list_outputs(inst, date, target)
         command = phot.command_str(inst, date, target, test_run=False)
         raw_missing = not phot.raw_data_dir(inst, date).is_dir()
+        # fall through; previews computed below when outputs exist
         if outputs["has_any"]:
             rdir = phot.results_dir(inst, date)
             for band, prods in outputs["bands"].items():
@@ -132,6 +133,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
         outputs=outputs, previews=previews,
         command=command, raw_missing=raw_missing,
         default_bands=phot.DEFAULT_BANDS,
+        run_defaults=phot.RUN_DEFAULTS,
     )
 
 
@@ -148,12 +150,25 @@ def photometry_run(payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
     target = (payload.get("target") or "").strip()
-    bands = payload.get("bands") or None
+    options = payload.get("options") or {}
     test_run = bool(payload.get("test_run", True))
-    result = phot.start_run(inst, date, target, bands=bands, test_run=test_run)
+    result = phot.start_run(inst, date, target, options=options, test_run=test_run)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
     return JSONResponse(result)
+
+
+@app.post("/photometry/command")
+def photometry_command(payload: dict = Body(...)):
+    """Preview the exact prose command for the chosen options (live form echo)."""
+    inst = (payload.get("inst") or "").strip()
+    date = (payload.get("date") or "").strip()
+    target = (payload.get("target") or "").strip()
+    options = payload.get("options") or {}
+    test_run = bool(payload.get("test_run", False))
+    error = phot.validate_run_options(phot.normalize_run_options(options))
+    command = phot.command_str(inst, date, target, options=options, test_run=test_run)
+    return JSONResponse({"command": command, "error": error})
 
 
 @app.get("/photometry/status")

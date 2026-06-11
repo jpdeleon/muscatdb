@@ -192,6 +192,66 @@ class TestCommand:
         assert "--target_name TOI-6715" in s
 
 
+class TestRunOptions:
+    def test_defaults_emit_minimal_command(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        cmd = phot.build_command(INST, DATE, TARGET, {}, test_run=False)
+        # default numerics are NOT echoed
+        for flag in ("--gif_stride", "--max_num_stars", "--cutout_size",
+                     "--ccd_trim", "--bin_size_minutes", "--ref_band",
+                     "--aper_radii", "--no_gif", "--use_barycorrpy"):
+            assert flag not in cmd
+        assert cmd[cmd.index("--bands") + 1:cmd.index("--bands") + 5] == BANDS
+
+    def test_options_are_passed_through(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        opts = {
+            "bands": ["gp", "rp"],
+            "ref_band": "gp",
+            "refid": "3",
+            "aper_radii": "10,20,2",
+            "annulus": "25,40",
+            "aper_unit": "fwhm",
+            "max_num_stars": "6",
+            "min_star_separation": "12",
+            "ccd_trim": "5,5",
+            "make_gif": False,
+            "use_barycorrpy": True,
+            "gif_stride": "50",
+        }
+        cmd = phot.build_command(INST, DATE, TARGET, opts, test_run=False)
+        s = " ".join(cmd)
+        assert cmd[cmd.index("--bands") + 1:cmd.index("--bands") + 3] == ["gp", "rp"]
+        assert "--ref_band gp" in s
+        assert "--refid 3" in s
+        assert "--aper_radii 10,20,2" in s
+        assert "--annulus 25,40" in s
+        assert "--aper_unit fwhm" in s
+        assert "--max_num_stars 6" in s
+        assert "--ccd_trim 5,5" in s
+        assert "--no_gif" in cmd
+        assert "--use_barycorrpy" in cmd
+        assert "--gif_stride 50" in s
+
+    def test_validate_requires_band(self):
+        assert phot.validate_run_options(phot.normalize_run_options({"bands": []}))
+
+    def test_validate_aper_requires_annulus(self):
+        err = phot.validate_run_options(
+            phot.normalize_run_options({"aper_radii": "10,20,2"})
+        )
+        assert err and "annulus" in err
+
+    def test_validate_bad_aper_format(self):
+        err = phot.validate_run_options(
+            phot.normalize_run_options({"aper_radii": "abc", "annulus": "25,40"})
+        )
+        assert err and "MIN,MAX,DR" in err
+
+    def test_validate_ok(self):
+        assert phot.validate_run_options(phot.normalize_run_options({})) is None
+
+
 # ── job runner ───────────────────────────────────────────────────────────────
 
 class TestStartRun:
@@ -267,6 +327,32 @@ class TestRoutes:
         })
         assert r.status_code == 400
         assert r.json()["ok"] is False
+
+    def test_command_route_echoes_options(self, client):
+        r = client.post("/photometry/command", json={
+            "inst": INST, "date": DATE, "target": TARGET, "test_run": False,
+            "options": {"bands": ["gp"], "use_barycorrpy": True, "max_num_stars": 7},
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["error"] is None
+        assert "--use_barycorrpy" in body["command"]
+        assert "--max_num_stars 7" in body["command"]
+
+    def test_command_route_reports_validation_error(self, client):
+        r = client.post("/photometry/command", json={
+            "inst": INST, "date": DATE, "target": TARGET,
+            "options": {"aper_radii": "10,20,2"},  # missing annulus
+        })
+        assert r.status_code == 200
+        assert "annulus" in r.json()["error"]
+
+    def test_page_has_options_form(self, client):
+        r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
+        assert r.status_code == 200
+        for token in ("opt-ref_band", "opt-aper_radii", "opt-max_num_stars",
+                      "opt-use_barycorrpy", "Pipeline options"):
+            assert token in r.text
 
 
 # ── real example output (optional) ───────────────────────────────────────────
