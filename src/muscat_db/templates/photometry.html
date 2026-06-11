@@ -161,9 +161,9 @@
     </p>
   </div>
 {% else %}
-  <p class="mono" style="color: var(--text-dim);">
-    {{ sel_target }} · {{ sel_inst }} · {{ sel_date }}
-  </p>
+  <div class="phot-section" style="margin: 1rem 0 0;">
+    <h2><a href="/{{ sel_inst }}/{{ sel_date }}" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">Show Obslog</a></h2>
+  </div>
 
   {% if outputs and outputs.has_any %}
     {% if outputs.summary %}
