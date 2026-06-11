@@ -35,10 +35,20 @@
   }
   .fig .cap {
     font-size: 0.8rem; color: var(--text-dim); margin-bottom: 0.5rem;
-    display: flex; justify-content: space-between; align-items: center;
+    display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;
   }
   .fig img { width: 100%; height: auto; display: block; border-radius: 6px; background: #fff; }
-  .fig.wide { grid-column: 1 / -1; max-width: 760px; }
+  /* Default summary layout: one vertical column (light curve, stack, systematics). */
+  .fig-grid.col { grid-template-columns: 1fr; max-width: 780px; }
+  /* drag-to-reorder */
+  .drag-handle {
+    cursor: grab; color: var(--text-dim); font-size: 1rem; line-height: 1;
+    padding: 0 0.2rem; user-select: none; touch-action: none;
+  }
+  .drag-handle:hover { color: var(--accent); }
+  .drag-handle:active { cursor: grabbing; }
+  .fig.drag-ghost { opacity: 0.4; }
+  .fig-grid.sortable .fig { will-change: transform; }
   .band-tabs { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 1rem; }
   .band-tab {
     background: var(--surface2); color: var(--text);
@@ -158,14 +168,17 @@
   {% if outputs and outputs.has_any %}
     {% if outputs.summary %}
     <div class="phot-section">
-      <h2>Light curves &amp; systematics</h2>
-      <div class="fig-grid">
-        {% for key in ['lightcurves', 'systematics', 'stacks'] %}
+      <h2>Light curves &amp; systematics <span style="font-size:0.75rem;color:var(--text-dim);font-weight:400;">— drag ⠿ to rearrange</span></h2>
+      <div class="fig-grid col sortable" data-sort-key="summary">
+        {% for key in ['lightcurves', 'stacks', 'systematics'] %}
           {% if outputs.summary.get(key) %}
-          <figure class="fig {% if key == 'lightcurves' %}wide{% endif %}">
-            <figcaption class="cap"><span>{{ key }}</span></figcaption>
+          <figure class="fig" data-fig-id="{{ key }}">
+            <figcaption class="cap">
+              <span>{{ key }}</span>
+              <span class="drag-handle" title="Drag to reorder">⠿</span>
+            </figcaption>
             <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.summary[key] }}" target="_blank">
-              <img loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.summary[key] }}" alt="{{ key }}">
+              <img draggable="false" loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.summary[key] }}" alt="{{ key }}">
             </a>
           </figure>
           {% endif %}
@@ -184,13 +197,16 @@
       </div>
       {% for band, prods in outputs.bands.items() %}
       <div class="band-panel {% if loop.first %}active{% endif %}" data-band="{{ band }}">
-        <div class="fig-grid">
+        <div class="fig-grid sortable" data-sort-key="band">
           {% for key in ['ref', 'apertures', 'alignment', 'gif'] %}
             {% if prods.get(key) %}
-            <figure class="fig">
-              <figcaption class="cap"><span>{{ band }} · {{ key }}</span></figcaption>
+            <figure class="fig" data-fig-id="{{ key }}">
+              <figcaption class="cap">
+                <span>{{ band }} · {{ key }}</span>
+                <span class="drag-handle" title="Drag to reorder">⠿</span>
+              </figcaption>
               <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods[key] }}" target="_blank">
-                <img loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods[key] }}" alt="{{ band }} {{ key }}">
+                <img draggable="false" loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods[key] }}" alt="{{ band }} {{ key }}">
               </a>
             </figure>
             {% endif %}
@@ -368,6 +384,103 @@
       document.querySelectorAll('.band-panel').forEach(function (p) { p.classList.toggle('active', p.dataset.band === band); });
     });
   });
+
+  // ----- smooth drag-to-reorder figures (native DnD + FLIP) -----
+  function figItems(container) {
+    return Array.prototype.slice.call(container.children).filter(function (c) {
+      return c.classList && c.classList.contains('fig');
+    });
+  }
+  function orderKey(container) { return 'figorder:' + (container.dataset.sortKey || 'default'); }
+
+  function restoreOrder(container) {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(orderKey(container)) || 'null'); } catch (e) { saved = null; }
+    if (!saved || !saved.length) return;
+    var byId = {};
+    figItems(container).forEach(function (el) { byId[el.dataset.figId] = el; });
+    saved.forEach(function (id) { if (byId[id]) { container.appendChild(byId[id]); delete byId[id]; } });
+  }
+  function saveOrder(container) {
+    try {
+      localStorage.setItem(orderKey(container),
+        JSON.stringify(figItems(container).map(function (el) { return el.dataset.figId; })));
+    } catch (e) {}
+  }
+
+  // FLIP: animate siblings smoothly to their new positions after a DOM move.
+  function flip(container, mutate) {
+    var els = figItems(container);
+    var first = els.map(function (el) { return [el, el.getBoundingClientRect()]; });
+    mutate();
+    first.forEach(function (pair) {
+      var el = pair[0], f = pair[1], l = el.getBoundingClientRect();
+      var dx = f.left - l.left, dy = f.top - l.top;
+      if (dx || dy) {
+        el.style.transition = 'none';
+        el.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
+        requestAnimationFrame(function () {
+          el.style.transition = 'transform 180ms ease';
+          el.style.transform = '';
+        });
+      }
+    });
+  }
+
+  // Reference node to insert the dragged item before (null -> append), chosen by
+  // nearest figure center so it works for both the column and the band grids.
+  function insertRef(container, dragEl, x, y) {
+    var els = figItems(container).filter(function (el) { return el !== dragEl; });
+    if (!els.length) return null;
+    var best = null, bestD = Infinity, before = true;
+    els.forEach(function (el) {
+      var b = el.getBoundingClientRect();
+      var cx = b.left + b.width / 2, cy = b.top + b.height / 2;
+      var d = Math.hypot(x - cx, y - cy);
+      if (d < bestD) {
+        bestD = d; best = el;
+        before = (y < cy - 1) || (y <= b.bottom && y >= b.top && x < cx);
+      }
+    });
+    return before ? best : best.nextElementSibling;
+  }
+
+  function makeSortable(container) {
+    restoreOrder(container);
+    var dragEl = null;
+    figItems(container).forEach(function (el) {
+      var handle = el.querySelector('.drag-handle');
+      // Only let a drag start from the grip handle (keeps image links clickable).
+      if (handle) {
+        handle.addEventListener('mousedown', function () { el.setAttribute('draggable', 'true'); });
+        handle.addEventListener('touchstart', function () { el.setAttribute('draggable', 'true'); }, { passive: true });
+      }
+      el.addEventListener('dragstart', function (e) {
+        dragEl = el; el.classList.add('drag-ghost');
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move';
+          try { e.dataTransfer.setData('text/plain', el.dataset.figId || ''); } catch (_) {}
+        }
+      });
+      el.addEventListener('dragend', function () {
+        el.classList.remove('drag-ghost');
+        el.removeAttribute('draggable');
+        dragEl = null;
+        saveOrder(container);
+      });
+    });
+    container.addEventListener('dragover', function (e) {
+      if (!dragEl) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      var ref = insertRef(container, dragEl, e.clientX, e.clientY);
+      if (ref === dragEl || ref === dragEl.nextElementSibling) return;
+      flip(container, function () { container.insertBefore(dragEl, ref); });
+    });
+    container.addEventListener('drop', function (e) { e.preventDefault(); });
+  }
+
+  document.querySelectorAll('.fig-grid.sortable').forEach(makeSortable);
 
   // ----- options form -----
   function val(id) { var e = document.getElementById(id); return e ? e.value : ''; }

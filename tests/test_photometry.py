@@ -354,6 +354,20 @@ class TestRoutes:
                       "opt-use_barycorrpy", "Pipeline options"):
             assert token in r.text
 
+    def test_summary_is_sortable_single_column(self, client):
+        r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
+        html = r.text
+        # single-column sortable summary container
+        assert 'fig-grid col sortable" data-sort-key="summary"' in html
+        # default order: light curve, then stack, then systematics
+        i_lc = html.index('data-fig-id="lightcurves"')
+        i_st = html.index('data-fig-id="stacks"')
+        i_sy = html.index('data-fig-id="systematics"')
+        assert i_lc < i_st < i_sy
+        # drag affordance + per-band grids are sortable too
+        assert "drag-handle" in html
+        assert 'fig-grid sortable" data-sort-key="band"' in html
+
 
 # ── real example output (optional) ───────────────────────────────────────────
 
