@@ -138,6 +138,36 @@
     const total = rows.length;
     const colInputs = Array.from(document.querySelectorAll('tr.filter-row input'));
 
+    // ── persist search state across page navigations ──────────────────────
+    function saveFilters() {
+      try {
+        localStorage.setItem('home:search', input.value);
+        localStorage.setItem('home:regex', JSON.stringify(regex.checked));
+        localStorage.setItem('home:case', JSON.stringify(caseCB.checked));
+        const colVals = {};
+        colInputs.forEach(inp => { colVals[inp.dataset.col] = inp.value; });
+        localStorage.setItem('home:cols', JSON.stringify(colVals));
+      } catch (_) {}
+    }
+    function restoreFilters() {
+      try {
+        const sv = localStorage.getItem('home:search');
+        if (sv != null) input.value = sv;
+        const rv = localStorage.getItem('home:regex');
+        if (rv != null) regex.checked = JSON.parse(rv);
+        const cv = localStorage.getItem('home:case');
+        if (cv != null) caseCB.checked = JSON.parse(cv);
+        const colRaw = localStorage.getItem('home:cols');
+        if (colRaw) {
+          const colVals = JSON.parse(colRaw);
+          colInputs.forEach(inp => {
+            if (colVals[inp.dataset.col] != null) inp.value = colVals[inp.dataset.col];
+          });
+        }
+      } catch (_) {}
+    }
+    restoreFilters();
+
     function escapeRegex(s) {
       return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
@@ -268,10 +298,10 @@
       }
     }
 
-    input.addEventListener('input', filter);
-    regex.addEventListener('change', filter);
-    caseCB.addEventListener('change', filter);
-    colInputs.forEach(inp => inp.addEventListener('input', filter));
+    input.addEventListener('input', function () { filter(); saveFilters(); });
+    regex.addEventListener('change', function () { filter(); saveFilters(); });
+    caseCB.addEventListener('change', function () { filter(); saveFilters(); });
+    colInputs.forEach(inp => inp.addEventListener('input', function () { filter(); saveFilters(); }));
     filter();
   })();
 </script>

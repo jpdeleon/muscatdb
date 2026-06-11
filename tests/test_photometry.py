@@ -421,11 +421,11 @@ class TestRoutes:
         html = r.text
         # single-column sortable summary container
         assert 'fig-grid col sortable" data-sort-key="summary"' in html
-        # default order: light curve, then stack, then covariates
+        # default order: light curve, then covariates, then stacks
         i_lc = html.index('data-fig-id="lightcurves"')
-        i_st = html.index('data-fig-id="stacks"')
         i_sy = html.index('data-fig-id="covariates"')
-        assert i_lc < i_st < i_sy
+        i_st = html.index('data-fig-id="stacks"')
+        assert i_lc < i_sy < i_st
         # drag affordance + per-band grids are sortable too
         assert "drag-handle" in html
         assert 'fig-grid col sortable" data-sort-key="band"' in html

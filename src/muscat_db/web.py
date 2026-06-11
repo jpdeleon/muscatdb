@@ -73,7 +73,9 @@ _index_cache: dict[str, tuple] = {}
 @app.get("/", response_class=HTMLResponse)
 async def index():
     db = _db_path()
-    key = _db_mtime(db)
+    tpl_path = TEMPLATE_DIR / "index.html"
+    tpl_mtime = str(tpl_path.stat().st_mtime_ns) if tpl_path.is_file() else ""
+    key = (tpl_mtime, _db_mtime(db))
     cached = _index_cache.get("index")
     if cached is not None and cached[0] == key:
         return HTMLResponse(cached[1])
