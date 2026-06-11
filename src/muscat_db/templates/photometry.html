@@ -122,6 +122,11 @@
 
 <h1>Photometry</h1>
 
+<div id="job-banner" style="display:none; margin-bottom:1rem; padding:0.6rem 1rem; border-radius:8px; background:var(--surface2); border:1px solid var(--accent); font-size:0.9rem;">
+  <span id="job-banner-msg"></span>
+  <a id="job-banner-link" style="margin-left:0.5rem; font-weight:600;" href="#">view</a>
+</div>
+
 <form class="phot-selectors" method="get" action="/photometry" id="phot-form">
   <div class="field">
     <label for="sel-inst">Instrument</label>
@@ -260,9 +265,14 @@
       <div class="opt-grid">
         <div class="opt opt-span2">
           <label>Bands</label>
+          {% set band_list = ['gp', 'rp', 'ip', 'zs', 'g_narrow', 'r_narrow', 'i_narrow', 'z_narrow', 'Na_D'] %}
+          {% set band_label = {'gp': 'gp', 'rp': 'rp', 'ip': 'ip', 'zs': 'zs',
+                               'g_narrow': 'g_narrow', 'r_narrow': 'r_narrow',
+                               'i_narrow': 'i_narrow', 'z_narrow': 'z_narrow',
+                               'Na_D': 'NaD'} %}
           <div class="band-checks">
-            {% for b in ['gp', 'rp', 'ip', 'zs'] %}
-            <label><input type="checkbox" name="band" value="{{ b }}" {% if b in run_defaults.bands %}checked{% endif %}> {{ b }}</label>
+            {% for b in band_list %}
+            <label><input type="checkbox" name="band" value="{{ b }}" {% if b in run_defaults.bands %}checked{% endif %}> {{ band_label.get(b, b) }}</label>
             {% endfor %}
           </div>
         </div>
@@ -270,7 +280,7 @@
           <label for="opt-ref_band">Reference band</label>
           <select id="opt-ref_band">
             <option value="">per-band self-reference</option>
-            {% for b in ['gp', 'rp', 'ip', 'zs'] %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
+            {% for b in band_list %}<option value="{{ b }}">{{ band_label.get(b, b) }}</option>{% endfor %}
           </select>
         </div>
         <div class="opt">
@@ -373,6 +383,7 @@
 
   var SEL_KEY = 'phot:last';
   var OPT_KEY = 'phot:options';
+  var JOB_KEY = 'phot:job';
 
   // ----- restore the last selection on a bare /photometry visit -----
   (function () {
@@ -389,6 +400,40 @@
   if (inst) {
     try { localStorage.setItem(SEL_KEY, JSON.stringify({ inst: inst, date: date, target: target })); } catch (e) {}
   }
+
+  // ----- persistent job: resume or show banner across page navigations -----
+  function saveJob() { try { localStorage.setItem(JOB_KEY, JSON.stringify({ inst: inst, date: date, target: target })); } catch (e) {} }
+  function clearJob() { try { localStorage.removeItem(JOB_KEY); } catch (e) {} }
+  (function checkSavedJob() {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(JOB_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved || !saved.inst) return;
+    if (saved.inst === inst && saved.date === date && saved.target === target) {
+      if (logEl) logEl.style.display = 'block';
+      if (!polling) polling = setInterval(poll, 2000);
+      poll();
+      return;
+    }
+    var banner = document.getElementById('job-banner');
+    var bannerMsg = document.getElementById('job-banner-msg');
+    var bannerLink = document.getElementById('job-banner-link');
+    if (!banner) return;
+    (function pollBanner() {
+      var qs = 'inst=' + encodeURIComponent(saved.inst) + '&date=' + encodeURIComponent(saved.date) + '&target=' + encodeURIComponent(saved.target);
+      fetch('/photometry/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
+        if (s.state === 'none') { clearJob(); banner.style.display = 'none'; return; }
+        banner.style.display = '';
+        bannerMsg.textContent = '⚡ ' + saved.target + ' @ ' + saved.inst + '/' + saved.date + ' — ' + s.state;
+        bannerLink.href = '/photometry?inst=' + encodeURIComponent(saved.inst) + '&date=' + encodeURIComponent(saved.date) + '&target=' + encodeURIComponent(saved.target);
+        if (s.state === 'done' || s.state === 'error' || s.state === 'cancelled') {
+          clearJob();
+          setTimeout(function () { banner.style.display = 'none'; }, 15000);
+          return;
+        }
+        setTimeout(pollBanner, 3000);
+      }).catch(function () { setTimeout(pollBanner, 5000); });
+    })();
+  })();
 
   // ----- cascading selectors: navigate on change -----
   var selInst   = document.getElementById('sel-inst');
@@ -594,14 +639,14 @@
     fetch('/photometry/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
       if (s.log) { logEl.textContent = s.log; logEl.scrollTop = logEl.scrollHeight; }
       if (s.state === 'done') {
-        stopPolling();
+        stopPolling(); clearJob();
         logEl.textContent += '\n\n✓ done (' + s.elapsed + 's) — reloading…';
         setTimeout(function () { window.location.reload(); }, 1200);
       } else if (s.state === 'error') {
-        stopPolling(); setRunning(false);
+        stopPolling(); setRunning(false); clearJob();
         logEl.textContent += '\n\n✗ pipeline exited with code ' + s.returncode;
       } else if (s.state === 'cancelled') {
-        stopPolling(); setRunning(false);
+        stopPolling(); setRunning(false); clearJob();
         logEl.textContent += '\n\n■ cancelled';
       }
     }).catch(function () {});
@@ -620,6 +665,7 @@
         logEl.textContent = 'Error: ' + (res.error || 'failed to start');
         return;
       }
+      saveJob();
       if (!polling) polling = setInterval(poll, 2000);
       poll();
     }).catch(function (err) {
