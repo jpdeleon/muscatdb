@@ -176,6 +176,17 @@ def photometry_status(inst: str, date: str, target: str):
     return JSONResponse(phot.job_status(inst, date, target))
 
 
+@app.post("/photometry/cancel")
+def photometry_cancel(payload: dict = Body(...)):
+    inst = (payload.get("inst") or "").strip()
+    date = (payload.get("date") or "").strip()
+    target = (payload.get("target") or "").strip()
+    result = phot.cancel_run(inst, date, target)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=400)
+    return JSONResponse(result)
+
+
 @app.put("/api/targets/{obj}/note")
 async def api_set_note(obj: str, payload: dict = Body(...)):
     note = (payload.get("note") or "").strip()

@@ -27,6 +27,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -504,8 +505,9 @@ class Job:
     logf: IO
     log_path: Path
     started_at: float = field(default_factory=time.time)
-    state: str = "running"  # running | done | error
+    state: str = "running"  # running | done | error | cancelled
     returncode: int | None = None
+    cancelled: bool = False
 
 
 _JOBS: dict[str, Job] = {}
@@ -560,6 +562,9 @@ def start_run(
                 stdout=logf,
                 stderr=subprocess.STDOUT,
                 text=True,
+                # Own session/process group so Cancel can kill the whole tree
+                # (prose spawns multiprocessing workers via SequenceParallel).
+                start_new_session=True,
             )
         except (FileNotFoundError, OSError) as exc:
             logf.write(f"\nfailed to launch pipeline: {exc}\n")
@@ -591,10 +596,13 @@ def job_status(inst: str, date: str, target: str) -> dict:
             return {"state": "none", "log": "", "returncode": None, "elapsed": 0}
         rc = job.proc.poll()
         if rc is None:
-            state = "running"
+            state = "cancelling" if job.cancelled else "running"
         else:
-            state = "done" if rc == 0 else "error"
-            if job.state == "running":
+            if job.cancelled:
+                state = "cancelled"
+            else:
+                state = "done" if rc == 0 else "error"
+            if job.state in ("running",):
                 job.state = state
                 job.returncode = rc
                 try:
@@ -609,3 +617,43 @@ def job_status(inst: str, date: str, target: str) -> dict:
         "log": _tail(log_path),
         "elapsed": round(elapsed),
     }
+
+
+def _kill_after(proc: subprocess.Popen, grace: float = 6.0) -> None:
+    """Escalate to SIGKILL on the process group if SIGTERM was ignored."""
+    try:
+        proc.wait(timeout=grace)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def cancel_run(inst: str, date: str, target: str) -> dict:
+    """Cancel a running reduction. Sends SIGTERM to the job's process group
+    and escalates to SIGKILL after a short grace period."""
+    key = job_key(inst, date, target)
+    with _LOCK:
+        job = _JOBS.get(key)
+        if job is None:
+            return {"ok": False, "error": "no job to cancel"}
+        if job.proc.poll() is not None:
+            return {"ok": True, "already_finished": True}
+        job.cancelled = True
+        proc = job.proc
+
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+    threading.Thread(target=_kill_after, args=(proc,), daemon=True).start()
+    return {"ok": True, "key": key}

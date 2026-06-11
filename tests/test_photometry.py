@@ -279,6 +279,45 @@ class TestStartRun:
         s = phot.job_status(INST, "111111", "Nobody")
         assert s["state"] == "none"
 
+    def test_cancel_no_job(self):
+        r = phot.cancel_run(INST, "222222", "Nobody")
+        assert r["ok"] is False
+
+    def test_cancel_running_job(self, monkeypatch, tmp_path):
+        # Launch a harmless long-running process as the "pipeline" and cancel it.
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path / "out"))
+        monkeypatch.setenv("MUSCAT_PROSE_PYTHON", "/bin/sh")
+        from dataclasses import replace
+        from muscat_db.instruments import INSTRUMENTS as _INST
+        raw = tmp_path / "raw" / DATE
+        raw.mkdir(parents=True)
+        patched = dict(_INST)
+        patched[INST] = replace(_INST[INST], data_dir=str(tmp_path / "raw"))
+        monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
+
+        # Replace build_command so the "pipeline" is just `sleep 60`.
+        monkeypatch.setattr(
+            phot, "build_command",
+            lambda *a, **k: ["/bin/sh", "-c", "sleep 60"],
+        )
+        res = phot.start_run(INST, DATE, TARGET, test_run=True)
+        assert res["ok"], res
+        assert phot.job_status(INST, DATE, TARGET)["state"] in ("running", "cancelling")
+
+        cancel = phot.cancel_run(INST, DATE, TARGET)
+        assert cancel["ok"] is True
+
+        # The process should terminate; status becomes 'cancelled'.
+        import time as _t
+        deadline = _t.time() + 10
+        state = None
+        while _t.time() < deadline:
+            state = phot.job_status(INST, DATE, TARGET)["state"]
+            if state == "cancelled":
+                break
+            _t.sleep(0.2)
+        assert state == "cancelled"
+
 
 # ── routes (FastAPI TestClient) ──────────────────────────────────────────────
 
@@ -353,6 +392,21 @@ class TestRoutes:
         for token in ("opt-ref_band", "opt-aper_radii", "opt-max_num_stars",
                       "opt-use_barycorrpy", "Pipeline options"):
             assert token in r.text
+
+    def test_page_has_run_and_cancel_buttons(self, client):
+        r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
+        html = r.text
+        assert 'id="run-test-btn"' in html
+        assert 'id="run-full-btn"' in html
+        assert 'id="cancel-btn"' in html
+        assert "Run full reduction" in html
+
+    def test_cancel_route_no_job(self, client):
+        r = client.post("/photometry/cancel", json={
+            "inst": INST, "date": "222222", "target": "Nobody",
+        })
+        assert r.status_code == 400
+        assert r.json()["ok"] is False
 
     def test_summary_is_sortable_single_column(self, client):
         r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")

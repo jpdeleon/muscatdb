@@ -338,11 +338,17 @@
 
     <div id="opt-error"></div>
     <div class="run-actions">
-      <button class="btn primary" type="button" id="run-btn" {% if raw_missing %}disabled{% endif %}>
+      <button class="btn primary" type="button" id="run-test-btn" {% if raw_missing %}disabled{% endif %}>
         ▶ Run test reduction (first {{ run_defaults.test_run_frames }} frames)
       </button>
+      <button class="btn primary" type="button" id="run-full-btn" {% if raw_missing %}disabled{% endif %}>
+        ▶ Run full reduction (all frames)
+      </button>
+      <button class="btn" type="button" id="cancel-btn" style="display:none;border-color:var(--red);color:var(--red);">
+        ■ Cancel
+      </button>
       <span class="hint" style="color: var(--text-dim); font-size: 0.8rem;">
-        Test run uses the options below but limits frames per band.
+        Both use the options above; the test run limits frames per band.
       </span>
     </div>
 
@@ -362,6 +368,7 @@
   var inst   = {{ sel_inst|tojson }};
   var date   = {{ sel_date|tojson }};
   var target = {{ sel_target|tojson }};
+  var rawMissing = {{ raw_missing|tojson }};
 
   // ----- cascading selectors: navigate on change -----
   var selInst   = document.getElementById('sel-inst');
@@ -510,10 +517,15 @@
     };
   }
 
-  var cmdEl   = document.getElementById('full-cmd');
-  var errEl   = document.getElementById('opt-error');
-  var runBtn  = document.getElementById('run-btn');
-  var logEl   = document.getElementById('run-log');
+  var cmdEl     = document.getElementById('full-cmd');
+  var errEl     = document.getElementById('opt-error');
+  var testBtn   = document.getElementById('run-test-btn');
+  var fullBtn   = document.getElementById('run-full-btn');
+  var cancelBtn = document.getElementById('cancel-btn');
+  var logEl     = document.getElementById('run-log');
+  var runBtns   = [testBtn, fullBtn].filter(Boolean);
+  var hasOptError = false;
+  var polling = null;
 
   function debounce(fn, ms) {
     var t; return function () { clearTimeout(t); t = setTimeout(fn, ms); };
@@ -526,7 +538,10 @@
     }).then(function (r) { return r.json(); }).then(function (d) {
       if (d.command) cmdEl.textContent = d.command;
       if (errEl) errEl.textContent = d.error || '';
-      if (runBtn) runBtn.disabled = !!d.error;
+      hasOptError = !!d.error;
+      if (!polling) {
+        runBtns.forEach(function (b) { b.disabled = hasOptError || rawMissing; });
+      }
     }).catch(function () {});
   }
   var panel = document.querySelector('.run-panel');
@@ -546,47 +561,65 @@
     });
   }
 
-  // ----- run a test reduction with live log polling -----
-  var polling = null;
+  // ----- launch / cancel a reduction with live log polling -----
+  function setRunning(on) {
+    runBtns.forEach(function (b) { b.disabled = on || hasOptError || rawMissing; });
+    if (cancelBtn) cancelBtn.style.display = on ? '' : 'none';
+  }
+  function stopPolling() { if (polling) { clearInterval(polling); polling = null; } }
+
   function poll() {
     var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
     fetch('/photometry/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
       if (s.log) { logEl.textContent = s.log; logEl.scrollTop = logEl.scrollHeight; }
       if (s.state === 'done') {
-        clearInterval(polling);
+        stopPolling();
         logEl.textContent += '\n\n✓ done (' + s.elapsed + 's) — reloading…';
         setTimeout(function () { window.location.reload(); }, 1200);
       } else if (s.state === 'error') {
-        clearInterval(polling);
-        if (runBtn) { runBtn.disabled = false; runBtn.textContent = '▶ Retry test reduction'; }
+        stopPolling(); setRunning(false);
         logEl.textContent += '\n\n✗ pipeline exited with code ' + s.returncode;
+      } else if (s.state === 'cancelled') {
+        stopPolling(); setRunning(false);
+        logEl.textContent += '\n\n■ cancelled';
       }
     }).catch(function () {});
   }
-  if (runBtn) {
-    runBtn.addEventListener('click', function () {
-      runBtn.disabled = true;
-      runBtn.textContent = 'Running…';
-      logEl.style.display = 'block';
-      logEl.textContent = 'Launching pipeline…';
-      fetch('/photometry/run', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inst: inst, date: date, target: target, test_run: true, options: collectOptions() })
-      }).then(function (r) { return r.json(); }).then(function (res) {
-        if (!res.ok) {
-          runBtn.disabled = false;
-          runBtn.textContent = '▶ Run test reduction';
-          logEl.textContent = 'Error: ' + (res.error || 'failed to start');
-          return;
-        }
-        polling = setInterval(poll, 2000);
-        poll();
-      }).catch(function (err) {
-        runBtn.disabled = false;
-        logEl.textContent = 'Error: ' + err.message;
-      });
+
+  function launch(testRun) {
+    setRunning(true);
+    logEl.style.display = 'block';
+    logEl.textContent = 'Launching ' + (testRun ? 'test' : 'full') + ' reduction…';
+    fetch('/photometry/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target, test_run: testRun, options: collectOptions() })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (!res.ok) {
+        setRunning(false);
+        logEl.textContent = 'Error: ' + (res.error || 'failed to start');
+        return;
+      }
+      if (!polling) polling = setInterval(poll, 2000);
+      poll();
+    }).catch(function (err) {
+      setRunning(false);
+      logEl.textContent = 'Error: ' + err.message;
     });
   }
+
+  if (testBtn) testBtn.addEventListener('click', function () { launch(true); });
+  if (fullBtn) fullBtn.addEventListener('click', function () { launch(false); });
+  if (cancelBtn) cancelBtn.addEventListener('click', function () {
+    cancelBtn.disabled = true;
+    logEl.textContent += '\n\n■ cancelling…';
+    fetch('/photometry/cancel', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target })
+    }).then(function (r) { return r.json(); }).then(function () {
+      cancelBtn.disabled = false;
+      if (!polling) { polling = setInterval(poll, 2000); poll(); }
+    }).catch(function () { cancelBtn.disabled = false; });
+  });
 
   // initial command reflects default options
   refreshCmd();
