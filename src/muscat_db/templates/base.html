@@ -281,8 +281,10 @@
 <div id="loading-bar" role="progressbar" aria-label="Loading"></div>
 <nav>
   <a class="brand" href="/">MuSCAT-db</a>
-  <a href="/">Logs</a>
+  <a href="/logs">Logs</a>
   <a href="/photometry">Photometry</a>
+  <a href="/transit-fit">Transit Fit</a>
+  <a href="/jobs">Jobs</a>
   <span class="spacer"></span>
   <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">
     <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
@@ -348,10 +350,12 @@
       text.textContent = label || 'Loading…';
       status.classList.add('visible');
     }
+    window.showLoading = showLoading;
 
     if (document.readyState === 'complete') {
       done();
     } else {
+      showLoading('Loading…');
       window.addEventListener('load', done);
     }
 

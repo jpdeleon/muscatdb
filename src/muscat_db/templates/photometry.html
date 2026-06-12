@@ -99,6 +99,27 @@
   .opt.check { flex-direction: row; align-items: center; gap: 0.45rem; }
   .opt.check label { color: var(--text); font-size: 0.85rem; }
   .opt .hint { font-size: 0.7rem; color: var(--text-dim); }
+  .help-tooltip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 13px;
+    height: 13px;
+    font-size: 0.65rem;
+    font-weight: bold;
+    border-radius: 50%;
+    background: var(--border);
+    color: var(--text-dim);
+    cursor: help;
+    margin-left: 4px;
+    vertical-align: middle;
+    border: 1px solid var(--border);
+  }
+  .help-tooltip:hover {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
   .band-checks { display: flex; gap: 0.75rem; flex-wrap: wrap; }
   .band-checks label { display: flex; align-items: center; gap: 0.3rem; color: var(--text); font-size: 0.85rem; }
   .opt-span2 { grid-column: span 2; }
@@ -120,7 +141,7 @@
   }
 </style>
 
-<h1>Photometry</h1>
+<h1>Photometry <span class="help-tooltip" style="width: 18px; height: 18px; font-size: 0.8rem; margin-left: 6px;" title="Tips:&#10;1. Select Instrument, Date, and Target to view products.&#10;2. If no products exist, use options below to run a reduction.&#10;3. Drag figures to reorder them (orders are saved).&#10;4. Download CSVs or the full NPZ archive at the bottom.">?</span></h1>
 
 <div id="job-banner" style="display:none; margin-bottom:1rem; padding:0.6rem 1rem; border-radius:8px; background:var(--surface2); border:1px solid var(--accent); font-size:0.9rem;">
   <span id="job-banner-msg"></span>
@@ -254,6 +275,24 @@
     </div>
     {% endif %}
 
+    {% if outputs.masters %}
+    <div class="phot-section">
+      <h2>Master Calibration Images</h2>
+      <div class="fig-grid" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
+        {% for filename in outputs.masters %}
+        <figure class="fig">
+          <figcaption class="cap">
+            <span>{{ filename }}</span>
+          </figcaption>
+          <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ filename }}" target="_blank">
+            <img draggable="false" loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ filename }}" alt="{{ filename }}">
+          </a>
+        </figure>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
     <div class="phot-section">
       <div class="dl-row">
         {% if outputs.npz %}<a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.npz }}" download>⬇ data archive (.npz)</a>{% endif %}
@@ -277,9 +316,12 @@
 
     <details class="adv" id="opt-panel">
       <summary>Pipeline options (all run_photometry arguments)</summary>
+      <div style="display: flex; justify-content: flex-end; margin-top: 0.25rem; margin-bottom: 0.5rem;">
+        <button class="btn" type="button" id="defaults-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2;">Use defaults</button>
+      </div>
       <div class="opt-grid">
         <div class="opt opt-span2">
-          <label>Bands</label>
+          <label>Bands <span class="help-tooltip" title="Filter bands to reduce.">?</span></label>
           {% set band_list = ['gp', 'rp', 'ip', 'zs', 'Na_D', 'g_narrow', 'i_narrow', 'z_narrow'] %}
           {% set band_label = {'gp': 'gp', 'rp': 'rp', 'ip': 'ip', 'zs': 'zs',
                                'Na_D': 'Na_D',
@@ -292,74 +334,78 @@
           </div>
         </div>
         <div class="opt">
-          <label for="opt-target_id">Target ID</label>
+          <label for="opt-target_id">Target ID <span class="help-tooltip" title="Target index in Gaia catalog (corresponds to --tID). Empty means auto-detect target at center.">?</span></label>
           <input type="text" id="opt-target_id" placeholder="auto" value="{{ run_defaults.target_id }}">
           <span class="hint">--tID; empty → auto</span>
         </div>
         <div class="opt">
-          <label for="opt-comparison_ids">Comparison IDs</label>
+          <label for="opt-comparison_ids">Comparison IDs <span class="help-tooltip" title="Indexes of reference/comparison stars (corresponds to --cID). Comma-separated (e.g. 1,2,3). Empty means auto-detect.">?</span></label>
           <input type="text" id="opt-comparison_ids" placeholder="auto" value="{{ run_defaults.comparison_ids }}">
           <span class="hint">--cID; comma-separated, empty → auto</span>
         </div>
         <div class="opt">
-          <label for="opt-ref_band">Reference band</label>
+          <label for="opt-ref_band">Reference band <span class="help-tooltip" title="Band used as alignment reference across other bands (corresponds to --ref_band). Empty means per-band self-reference.">?</span></label>
           <select id="opt-ref_band">
             <option value="">per-band self-reference</option>
             {% for b in band_list %}<option value="{{ b }}">{{ band_label.get(b, b) }}</option>{% endfor %}
           </select>
         </div>
         <div class="opt">
-          <label for="opt-refid">Reference frame index</label>
+          <label for="opt-refid">Reference frame index <span class="help-tooltip" title="Frame index to use as alignment reference (corresponds to --refid). Empty means auto (middle/best frame).">?</span></label>
           <input type="number" id="opt-refid" placeholder="auto" min="0">
         </div>
         <div class="opt">
-          <label for="opt-aper_unit">Aperture unit</label>
+          <label for="opt-aper_unit">Aperture unit <span class="help-tooltip" title="Units for aperture radii (pixels or FWHM) (corresponds to --aper_unit).">?</span></label>
           <select id="opt-aper_unit">
              <option value="pix" selected>pix</option>
             <option value="fwhm">fwhm</option>
           </select>
         </div>
         <div class="opt">
-          <label for="opt-aper_radii">Aperture radii (MIN,MAX,DR)</label>
+          <label for="opt-aper_radii">Aperture radii (MIN,MAX,DR) <span class="help-tooltip" title="Radius grid search parameters as MIN,MAX,DR (corresponds to --aper_radii). Required if annulus is set. Empty means use Gaia heuristic.">?</span></label>
           <input type="text" id="opt-aper_radii" placeholder="Gaia heuristic">
           <span class="hint">blank → auto from Gaia</span>
         </div>
         <div class="opt">
-          <label for="opt-annulus">Sky annulus (RIN,ROUT)</label>
+          <label for="opt-annulus">Sky annulus (RIN,ROUT) <span class="help-tooltip" title="Inner and outer radii of background sky subtraction annulus (corresponds to --annulus). Required if aperture radii is set.">?</span></label>
           <input type="text" id="opt-annulus" placeholder="e.g. 25,40">
           <span class="hint">required with aperture radii</span>
         </div>
         <div class="opt">
-          <label for="opt-max_num_stars">Max # stars (PSF)</label>
+          <label for="opt-max_num_stars">Max # stars (PSF) <span class="help-tooltip" title="Max number of stars to detect for PSF modeling or alignment (corresponds to --max_num_stars).">?</span></label>
           <input type="number" id="opt-max_num_stars" value="{{ run_defaults.max_num_stars }}" min="1">
         </div>
         <div class="opt">
-          <label for="opt-n_stars_align"># stars for alignment</label>
+          <label for="opt-n_stars_align"># stars for alignment <span class="help-tooltip" title="Number of stars to use for alignment (corresponds to --n_stars_align). Empty means same as Max # stars.">?</span></label>
           <input type="number" id="opt-n_stars_align" placeholder="= max # stars" min="1">
         </div>
         <div class="opt">
-          <label for="opt-min_star_separation">Min star separation (px)</label>
+          <label for="opt-min_star_separation">Min star separation (px) <span class="help-tooltip" title="Minimum pixel separation between stars to avoid blended sources (corresponds to --min_star_separation).">?</span></label>
           <input type="number" id="opt-min_star_separation" value="{{ run_defaults.min_star_separation }}" step="0.5" min="0">
         </div>
         <div class="opt">
-          <label for="opt-cutout_size">Cutout size (px)</label>
+          <label for="opt-cutout_size">Cutout size (px) <span class="help-tooltip" title="Postage stamp cutout size around each star (corresponds to --cutout_size).">?</span></label>
           <input type="number" id="opt-cutout_size" value="{{ run_defaults.cutout_size }}" min="1">
         </div>
         <div class="opt">
-          <label for="opt-ccd_trim">CCD trim (Y,X)</label>
+          <label for="opt-ccd_trim">CCD trim (Y,X) <span class="help-tooltip" title="Number of pixels to trim from the borders of the image (corresponds to --ccd_trim).">?</span></label>
           <input type="text" id="opt-ccd_trim" value="{{ run_defaults.ccd_trim }}">
         </div>
         <div class="opt">
-          <label for="opt-bin_size_minutes">Bin size (min)</label>
+          <label for="opt-bin_size_minutes">Bin size (min) <span class="help-tooltip" title="Time binning interval in minutes for plotting light curves (corresponds to --bin_size_minutes).">?</span></label>
           <input type="number" id="opt-bin_size_minutes" value="{{ run_defaults.bin_size_minutes }}" step="0.5" min="0">
         </div>
-        <div class="opt check"><input type="checkbox" id="opt-make_gif" checked><label for="opt-make_gif">Make GIF</label></div>
-        <div class="opt check"><input type="checkbox" id="opt-plot_gaia_sources" checked><label for="opt-plot_gaia_sources">Plot Gaia sources</label></div>
-        <div class="opt check"><input type="checkbox" id="opt-use_barycorrpy"><label for="opt-use_barycorrpy">Use barycorrpy (BJD-TDB)</label></div>
-        <div class="opt check"><input type="checkbox" id="opt-overwrite" checked><label for="opt-overwrite">Overwrite existing products</label></div>
+        <div class="opt check"><input type="checkbox" id="opt-make_gif" checked><label for="opt-make_gif">Make GIF <span class="help-tooltip" title="Generate an animated GIF showing target/alignment field over time (corresponds to --gif).">?</span></label></div>
+        <div class="opt check"><input type="checkbox" id="opt-plot_gaia_sources" checked><label for="opt-plot_gaia_sources">Plot Gaia sources <span class="help-tooltip" title="Overlay Gaia DR3 catalog sources on check plots (corresponds to --plot_gaia_sources).">?</span></label></div>
+        <div class="opt check"><input type="checkbox" id="opt-use_barycorrpy"><label for="opt-use_barycorrpy">Use barycorrpy (BJD-TDB) <span class="help-tooltip" title="Use barycorrpy to perform high-precision BJD time conversion (corresponds to --use_barycorrpy).">?</span></label></div>
+        <div class="opt check"><input type="checkbox" id="opt-overwrite" checked><label for="opt-overwrite">Overwrite existing products <span class="help-tooltip" title="Overwrite existing reduction products for this target (corresponds to --overwrite).">?</span></label></div>
         <div class="opt">
-          <label for="opt-test_run_frames"># of test-run frames</label>
+          <label for="opt-test_run_frames"># of test-run frames <span class="help-tooltip" title="Number of frames to process during a test-run reduction (corresponds to --test_run_frames).">?</span></label>
           <input type="number" id="opt-test_run_frames" value="{{ run_defaults.test_run_frames }}" min="1">
+        </div>
+        <div class="opt">
+          <label for="opt-gif_stride">GIF stride <span class="help-tooltip" title="Frame step/stride when generating the animated GIF (corresponds to --gif_stride).">?</span></label>
+          <input type="number" id="opt-gif_stride" value="{{ run_defaults.gif_stride }}" min="1">
         </div>
       </div>
     </details>
@@ -458,6 +504,9 @@
   var selDate   = document.getElementById('sel-date');
   var selTarget = document.getElementById('sel-target');
   function go(params) {
+    if (typeof window.showLoading === 'function') {
+      window.showLoading('Loading…');
+    }
     var qs = Object.keys(params).filter(function (k) { return params[k]; })
       .map(function (k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
     window.location = '/photometry' + (qs ? '?' + qs : '');
@@ -597,6 +646,7 @@
       cutout_size: val('opt-cutout_size'),
       ccd_trim: val('opt-ccd_trim'),
       bin_size_minutes: val('opt-bin_size_minutes'),
+      gif_stride: val('opt-gif_stride'),
       overwrite: chk('opt-overwrite')
     };
   }
@@ -612,7 +662,7 @@
     });
     ['ref_band','refid','aper_unit','aper_radii','annulus',
      'target_id','comparison_ids','test_run_frames','min_star_separation','max_num_stars',
-     'n_stars_align','cutout_size','ccd_trim','bin_size_minutes'].forEach(function (id) {
+     'n_stars_align','cutout_size','ccd_trim','bin_size_minutes','gif_stride'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
     });
@@ -622,6 +672,28 @@
     });
   }
   restoreOptions();
+
+  var DEFAULTS = {{ run_defaults | tojson }};
+  var defaultsBtn = document.getElementById('defaults-btn');
+  if (defaultsBtn) {
+    defaultsBtn.addEventListener('click', function () {
+      document.querySelectorAll('input[name="band"]').forEach(function (c) {
+        c.checked = DEFAULTS.bands && DEFAULTS.bands.indexOf(c.value) !== -1;
+      });
+      ['ref_band','refid','aper_unit','aper_radii','annulus',
+       'target_id','comparison_ids','test_run_frames','min_star_separation','max_num_stars',
+       'n_stars_align','cutout_size','ccd_trim','bin_size_minutes','gif_stride'].forEach(function (id) {
+        var el = document.getElementById('opt-'+id);
+        if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';
+      });
+      ['make_gif','plot_gaia_sources','use_barycorrpy','overwrite'].forEach(function (id) {
+        var el = document.getElementById('opt-'+id);
+        if (el) el.checked = !!DEFAULTS[id];
+      });
+      saveOptions();
+      refreshCmd();
+    });
+  }
   (function () {
     var panel = document.getElementById('opt-panel');
     if (!panel) return;
@@ -693,6 +765,9 @@
       if (s.state === 'done') {
         stopPolling(); clearJob();
         logEl.textContent += '\n\n✓ done (' + s.elapsed + 's) — reloading…';
+        if (typeof window.showLoading === 'function') {
+          window.showLoading('Reloading…');
+        }
         setTimeout(function () { window.location.reload(); }, 1200);
       } else if (s.state === 'error') {
         stopPolling(); setRunning(false); clearJob();

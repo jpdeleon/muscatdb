@@ -20,6 +20,7 @@ from muscat_db.database import (
     get_dates as _get_dates,
     get_frames as _get_frames,
     get_instruments as _get_instruments,
+    get_instruments_summary as _get_instruments_summary,
     get_objects as _get_objects,
     get_summaries as _get_summaries,
     get_targets as _get_targets,
@@ -94,17 +95,28 @@ async def index():
     if cached is not None and cached[0] == key:
         return HTMLResponse(cached[1])
 
+    targets = _get_targets(db)
+    html = jinja.get_template("index.html").render(
+        targets=targets,
+    )
+    _index_cache["index"] = (key, html)
+    return HTMLResponse(html)
+
+
+@app.get("/logs", response_class=HTMLResponse)
+async def logs_page():
+    db = _db_path()
     with_data = {row["name"] for row in _get_instruments(db)}
     instruments = [
         {"name": name, "has_data": name in with_data}
         for name in INSTRUMENTS
     ]
-    targets = _get_targets(db)
-    html = jinja.get_template("index.html").render(
-        instruments=instruments, targets=targets,
+    summaries = _get_instruments_summary(db)
+    return _render(
+        "logs.html",
+        instruments=instruments,
+        summaries=summaries,
     )
-    _index_cache["index"] = (key, html)
-    return HTMLResponse(html)
 
 
 @app.get("/api/targets/export.csv")
@@ -187,6 +199,16 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
         run_defaults=phot.RUN_DEFAULTS,
         wiki_url=_wiki_url(inst, target),
     )
+
+
+@app.get("/transit-fit", response_class=HTMLResponse)
+def transit_fit_page():
+    return _render("transit_fit.html")
+
+
+@app.get("/jobs", response_class=HTMLResponse)
+def jobs_page():
+    return _render("jobs.html", jobs=phot.get_all_jobs())
 
 
 @app.get("/photometry/file/{inst}/{date}/{name}")

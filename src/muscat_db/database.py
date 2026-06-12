@@ -260,6 +260,48 @@ def get_instruments(db_path: str) -> list[dict]:
     return result
 
 
+def get_instruments_summary(db_path: str) -> list[dict]:
+    """Return count of dates, frames, and targets for all instruments."""
+    conn = sqlite3.connect(db_path)
+    cur = conn.execute("SELECT DISTINCT instrument FROM summaries ORDER BY instrument")
+    instruments = [r[0] for r in cur.fetchall()]
+    
+    result = []
+    for inst in instruments:
+        cur_stats = conn.execute(
+            """SELECT COUNT(DISTINCT obsdate), SUM(nframes)
+               FROM summaries
+               WHERE instrument = ?""",
+            (inst,)
+        )
+        n_dates, n_frames = cur_stats.fetchone()
+        
+        cur_targets = conn.execute(
+            """SELECT COUNT(DISTINCT object) FROM summaries
+               WHERE instrument = ?
+                 AND object IS NOT NULL AND TRIM(object) <> ''
+                 AND LOWER(TRIM(object)) NOT IN ({exact})
+                 AND LOWER(TRIM(object)) NOT LIKE '%flat%'
+                 AND LOWER(TRIM(object)) NOT LIKE 'dark%'
+                 AND LOWER(TRIM(object)) NOT LIKE 'bias%'
+                 AND LOWER(TRIM(object)) NOT LIKE '%test%'
+                 AND TRIM(object) NOT GLOB '*:*:*'""".format(
+                exact=", ".join(f"'{s}'" for s in _TARGET_EXCLUDE_EXACT)
+            ),
+            (inst,)
+        )
+        n_targets = cur_targets.fetchone()[0] or 0
+        
+        result.append({
+            "name": inst,
+            "n_dates": n_dates or 0,
+            "n_frames": n_frames or 0,
+            "n_targets": n_targets
+        })
+    conn.close()
+    return result
+
+
 def get_dates(db_path: str, instrument: str) -> list[dict]:
     """Return one row per obsdate. Only YYMMDD-formatted dates are returned;
     legacy/test directories like ``200722_2`` or ``csv_old_220914`` are skipped.
@@ -351,12 +393,23 @@ def get_targets(db_path: str) -> list[dict]:
            ORDER BY t.object COLLATE NOCASE"""
     )
     result = []
+    from muscat_db import photometry as phot
     for r in cur.fetchall():
         # Keep only canonical YYMMDD obsdates; drop junk like '240129.org'.
         dates = sorted(d for d in set((r[4] or "").split(",")) if _is_obsdate(d)) if r[4] else []
         filters = sorted(f for f in set((r[5] or "").split(",")) if f) if r[5] else []
         total_s = r[6] or 0.0
         date_to_inst = {d: i for d, i in _parse_inst_dates(r[13]).items() if _is_obsdate(d)}
+        
+        phot_status = "none"
+        for d, inst in date_to_inst.items():
+            status = phot.get_photometry_status(inst, d, r[0])
+            if status == "full":
+                phot_status = "full"
+                break
+            elif status == "test":
+                phot_status = "test"
+
         result.append({
             "object": r[0],
             "n_dates": len(dates),
@@ -373,6 +426,7 @@ def get_targets(db_path: str) -> list[dict]:
             "note": r[12] or "",
             "date_to_inst": date_to_inst,
             "filter_chips": _normalize_filters(filters),
+            "phot": phot_status,
         })
     conn.close()
     return result

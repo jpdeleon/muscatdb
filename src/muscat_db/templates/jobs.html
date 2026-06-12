@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Jobs — MuSCAT-db{% endblock %}
+{% block content %}
+<h1>Jobs</h1>
+
+<div style="margin: 1.5rem 0;">
+  <h2>Background Job Queue</h2>
+  {% if jobs %}
+  <table>
+    <thead>
+      <tr>
+        <th>Target</th>
+        <th>Instrument</th>
+        <th>Date</th>
+        <th>Elapsed</th>
+        <th>Status</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for j in jobs %}
+        <tr>
+          <td><strong><a href="/photometry?inst={{ j.inst }}&amp;date={{ j.date }}&amp;target={{ j.target | urlencode }}">{{ j.target }}</a></strong></td>
+          <td><span class="badge badge-blue">{{ j.inst }}</span></td>
+          <td class="mono">{{ j.date }}</td>
+          <td class="mono">{{ j.elapsed }}s</td>
+          <td>
+            {% if j.state == 'done' %}
+              <span class="badge badge-green">Done</span>
+            {% elif j.state == 'error' %}
+              <span class="badge" style="background: var(--red); color: white;">Failed</span>
+            {% elif j.state == 'cancelled' %}
+              <span class="badge" style="background: var(--text-dim); color: white;">Cancelled</span>
+            {% elif j.state == 'running' %}
+              <span class="badge badge-amber" style="animation: pulse 1.5s infinite;">Running</span>
+            {% else %}
+              <span class="badge badge-filter-other">{{ j.state }}</span>
+            {% endif %}
+          </td>
+          <td>
+            <a href="/photometry?inst={{ j.inst }}&amp;date={{ j.date }}&amp;target={{ j.target | urlencode }}" class="btn" style="padding: 0.15rem 0.5rem; font-size: 0.75rem; display: inline-block;">View reduction</a>
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div style="background: var(--surface); border: 1px dashed var(--border); border-radius: 10px; padding: 2.5rem; text-align: center; margin-top: 1.5rem;">
+    <div style="font-size: 2.5rem; margin-bottom: 1rem;">💼</div>
+    <p style="color: var(--text-dim);">No photometry jobs have been launched in this session.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -67,6 +67,7 @@ RUN_DEFAULTS: dict = {
     "bin_size_minutes": 10.0,
     "target_id": "",           # "" -> auto
     "comparison_ids": "",      # "" -> auto, or "1,2,3"
+    "gif_stride": 100,
     "overwrite": True,
 }
 
@@ -225,6 +226,7 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
         "npz": None,
         "log": None,
         "has_any": False,
+        "masters": [],
     }
     rdir = results_dir(inst, date)
     if not rdir.is_dir():
@@ -264,6 +266,14 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
                 continue
             out["bands"].setdefault(m.group("band"), {})[key] = name
             out["has_any"] = True
+
+    if inst in ("muscat", "muscat2"):
+        try:
+            for p in sorted(rdir.glob("master_*.png")):
+                if p.is_file():
+                    out["masters"].append(p.name)
+        except OSError:
+            pass
 
     if logs:
         out["log"] = max(logs, key=lambda p: p.stat().st_mtime).name
@@ -311,6 +321,62 @@ def safe_artifact_path(inst: str, date: str, name: str) -> Path | None:
     except ValueError:
         return None
     return candidate if candidate.is_file() else None
+
+
+def get_photometry_status(inst: str, date: str, target: str) -> str:
+    """Determine the status of photometry for a target: none, test, or full."""
+    rdir = results_dir(inst, date)
+    if not rdir.is_dir():
+        return "none"
+
+    out = list_outputs(inst, date, target)
+    if not out.get("has_any"):
+        return "none"
+
+    # Fallback/Optimization: Check CSV files. If any CSV has more than 15 lines, it is a full run.
+    csv_found = False
+    max_rows = 0
+    for band_data in out.get("bands", {}).values():
+        csv_name = band_data.get("csv")
+        if csv_name:
+            csv_path = rdir / csv_name
+            if csv_path.is_file():
+                csv_found = True
+                try:
+                    with open(csv_path, errors="replace") as f:
+                        row_count = sum(1 for _ in f)
+                        if row_count > max_rows:
+                            max_rows = row_count
+                except Exception:
+                    pass
+    if csv_found and max_rows > 15:
+        return "full"
+
+    # Check log files to distinguish test vs full
+    log_files = list(rdir.glob("*.log"))
+    if (rdir / _RUN_LOG_NAME).is_file():
+        log_files.append(rdir / _RUN_LOG_NAME)
+
+    has_target_log = False
+    has_full_log = False
+    target_clean = target.replace(" ", "")
+
+    for lf in log_files:
+        try:
+            content = lf.read_text(errors="replace")
+            if target in content or target_clean in content:
+                has_target_log = True
+                # If the log doesn't indicate a test run, then it's a full run
+                if "--test_run" not in content and "--test-run" not in content and "test-run:" not in content:
+                    has_full_log = True
+                    break
+        except Exception:
+            pass
+
+    if has_target_log:
+        return "full" if has_full_log else "test"
+
+    return "full"
 
 
 # --------------------------- command building ---------------------------
@@ -369,7 +435,7 @@ def normalize_run_options(raw: dict | None) -> dict:
             val = str(raw.get(key, "")).strip()
             o[key] = "" if val == "" else (_to_int(val) if _to_int(val) is not None else "")
 
-    for key in ("test_run_frames", "max_num_stars", "cutout_size"):
+    for key in ("test_run_frames", "max_num_stars", "cutout_size", "gif_stride"):
         if str(raw.get(key, "")).strip() != "":
             iv = _to_int(raw[key])
             if iv is not None:
@@ -461,6 +527,7 @@ def build_command(
         ("--max_num_stars", "max_num_stars"),
         ("--cutout_size", "cutout_size"),
         ("--bin_size_minutes", "bin_size_minutes"),
+        ("--gif_stride", "gif_stride"),
     ):
         val = o.get(key)
         if val in (None, ""):
@@ -624,6 +691,41 @@ def job_status(inst: str, date: str, target: str) -> dict:
         "log": _tail(log_path),
         "elapsed": round(elapsed),
     }
+
+
+def get_all_jobs() -> list[dict]:
+    """Retrieve all background jobs, polling/updating their state."""
+    with _LOCK:
+        res = []
+        for key, job in _JOBS.items():
+            rc = job.proc.poll()
+            if rc is None:
+                state = "cancelling" if job.cancelled else "running"
+            else:
+                if job.cancelled:
+                    state = "cancelled"
+                else:
+                    state = "done" if rc == 0 else "error"
+                if job.state in ("running",):
+                    job.state = state
+                    job.returncode = rc
+                    try:
+                        job.logf.close()
+                    except OSError:
+                        pass
+            
+            elapsed = time.time() - job.started_at
+            res.append({
+                "key": job.key,
+                "inst": job.inst,
+                "date": job.date,
+                "target": job.target,
+                "state": state,
+                "returncode": rc,
+                "elapsed": round(elapsed),
+                "started_at": job.started_at,
+            })
+        return sorted(res, key=lambda j: j["started_at"], reverse=True)
 
 
 def _kill_after(proc: subprocess.Popen, grace: float = 6.0) -> None:

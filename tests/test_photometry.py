@@ -87,6 +87,19 @@ class TestListOutputs:
         assert out["npz"] == f"{TARGET}_{INST}_{DATE}.npz"
         assert out["log"].endswith(".log")
 
+    def test_discovers_masters_for_muscat(self, prose_dir):
+        mdir = prose_dir / "muscat" / DATE
+        mdir.mkdir(parents=True, exist_ok=True)
+        (mdir / "master_flat_gp.png").write_bytes(b"\x89PNG\r\n")
+        (mdir / "master_bias.png").write_bytes(b"\x89PNG\r\n")
+        stem = f"{TARGET}_muscat_{DATE}"
+        (mdir / (stem + "_lightcurves.png")).write_bytes(b"\x89PNG\r\n")
+
+        out = phot.list_outputs("muscat", DATE, TARGET)
+        assert out["has_any"]
+        assert out["masters"] == ["master_bias.png", "master_flat_gp.png"]
+
+
     def test_bands_ordered_and_complete(self, prose_dir):
         out = phot.list_outputs(INST, DATE, TARGET)
         assert list(out["bands"]) == BANDS  # canonical order gp, rp, ip, zs
@@ -116,6 +129,27 @@ class TestListOutputs:
         assert headers == ["BJD_TDB", "Flux", "Flux_Err"]
         assert len(rows) == 2
         assert rows[0][1] == "1.0001"
+
+    def test_get_photometry_status_none(self, prose_dir):
+        status = phot.get_photometry_status(INST, DATE, "UnknownTarget")
+        assert status == "none"
+
+    def test_get_photometry_status_full_from_csv(self, prose_dir):
+        rdir = prose_dir / INST / DATE
+        bstem = f"{TARGET}_{INST}_gp_{DATE}"
+        (rdir / (bstem + ".csv")).write_text(
+            "BJD_TDB,Flux,Flux_Err\n" + "\n".join("2460807.84,1.0001,0.0019" for _ in range(20))
+        )
+        status = phot.get_photometry_status(INST, DATE, TARGET)
+        assert status == "full"
+
+    def test_get_photometry_status_test_run(self, prose_dir):
+        rdir = prose_dir / INST / DATE
+        for lf in rdir.glob("*.log"):
+            lf.unlink()
+        (rdir / "run.log").write_text(f"Running reduction for {TARGET}\n--test_run option enabled\n")
+        status = phot.get_photometry_status(INST, DATE, TARGET)
+        assert status == "test"
 
 
 # ── safe file serving ────────────────────────────────────────────────────────
@@ -430,6 +464,25 @@ class TestRoutes:
         # drag affordance + per-band grids are sortable too
         assert "drag-handle" in html
         assert 'fig-grid col sortable" data-sort-key="band"' in html
+
+    def test_logs_page(self, client):
+        r = client.get("/logs")
+        assert r.status_code == 200
+        assert "Logs" in r.text
+        assert "Instruments" in r.text
+        assert "Data Summary" in r.text
+
+    def test_transit_fit_page(self, client):
+        r = client.get("/transit-fit")
+        assert r.status_code == 200
+        assert "Transit Fit" in r.text
+        assert "Coming Soon" in r.text
+
+    def test_jobs_page(self, client):
+        r = client.get("/jobs")
+        assert r.status_code == 200
+        assert "Jobs" in r.text
+        assert "Background Job Queue" in r.text
 
 
 # ── real example output (optional) ───────────────────────────────────────────

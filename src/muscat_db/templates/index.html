@@ -1,30 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Logs — MuSCAT ObsLog{% endblock %}
+{% block title %}Targets — MuSCAT-db{% endblock %}
 {% block content %}
-<h1>Logs</h1>
-
-<h2>Instruments</h2>
-<div class="card-grid">
-{% for inst in instruments %}
-  <div class="card">
-    <a href="/{{ inst.name }}">
-      <div class="name">{{ inst.name }}</div>
-      {% if inst.has_data %}
-        <div class="meta">Click to view observation dates</div>
-      {% else %}
-        <div class="meta" style="color: var(--text-dim);">No data yet — run <code>muscat-db scan-missing {{ inst.name }} &lt;yy&gt;</code></div>
-      {% endif %}
-    </a>
-  </div>
-{% else %}
-  <p>No instruments configured.</p>
-{% endfor %}
-</div>
+<h1>MuSCAT-db</h1>
 
 {% set identified   = targets | selectattr('is_identified') | list %}
 {% set unidentified = targets | rejectattr('is_identified') | list %}
 
-<h2 style="margin-top:2rem;">Targets ({{ identified|length }})</h2>
+<h2 style="margin-top:1.5rem;">Targets ({{ identified|length }})</h2>
 
 <div class="search-bar">
   <input id="target-search" type="text" placeholder="Search targets by name…" autocomplete="off">
@@ -46,6 +28,7 @@
       <th data-sort-attr="frames"      data-sort-type="number"># Frames</th>
       <th data-sort-attr="instruments">Instruments</th>
       <th data-sort-attr="dates">Dates</th>
+      <th data-sort-attr="phot">Phot</th>
       <th data-sort-attr="note">Notes</th>
     </tr>
     <tr class="filter-row">
@@ -57,6 +40,7 @@
       <th><input type="text" data-col="frames"      placeholder="<100  >500"></th>
       <th><input type="text" data-col="instrument"  placeholder="muscat2"></th>
       <th><input type="text" data-col="date"        placeholder="YYMMDD"></th>
+      <th><input type="text" data-col="phot"        placeholder="check/X"></th>
       <th><input type="text" data-col="note"        placeholder="contains…"></th>
     </tr>
   </thead>
@@ -71,6 +55,7 @@
         data-airmass-max="{{ t.airmass_max if t.airmass_max is not none else '' }}"
         data-instruments="{{ t.instruments|join(',') }}"
         data-dates="{{ t.dates|join(',') }}"
+        data-phot="{{ 'check' if t.phot == 'full' else 'X' }}"
         data-note="{{ t.note|default('', true) }}">
       <td><strong>{{ t.object }}</strong></td>
       <td class="mono">{{ t.ra }}</td>
@@ -98,6 +83,13 @@
           {% set inst = t.date_to_inst.get(d, t.instruments[0] if t.instruments else '') %}
           <a href="/{{ inst }}/{{ d }}">{{ d }}</a><a href="/photometry?inst={{ inst }}&date={{ d }}&target={{ t.object | urlencode }}" title="photometry" style="text-decoration:none;font-size:0.8em;margin-left:1px;">🔭</a>{% if not loop.last %}, {% endif %}
         {% endfor %}
+      </td>
+      <td style="text-align:center;">
+        {% if t.phot == 'full' %}
+          <span style="color: var(--green); font-weight: bold;" title="Full photometry exists">✓</span>
+        {% else %}
+          <span style="color: var(--red);" title="No photometry or test-run only">✗</span>
+        {% endif %}
       </td>
       <td class="note-cell" data-object="{{ t.object }}" style="white-space:normal;">
         <span class="note-text">{{ t.note }}</span>
@@ -246,6 +238,7 @@
       frames:     { val: r => parseInt(r.dataset.frames, 10),    build: makeNumeric },
       instrument: { val: r => r.dataset.instruments, build: makeToken   },
       date:       { val: r => r.dataset.dates,       build: makeText    },
+      phot:       { val: r => r.dataset.phot,        build: makeText    },
       note:       { val: r => r.dataset.note,        build: makeText    },
     };
 
