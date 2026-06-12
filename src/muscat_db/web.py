@@ -5,9 +5,12 @@ import pathlib
 import re
 import sqlite3
 
+import csv
+import io
+
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from jinja2 import Environment, FileSystemLoader
 
 from muscat_db import photometry as phot
@@ -102,6 +105,41 @@ async def index():
     )
     _index_cache["index"] = (key, html)
     return HTMLResponse(html)
+
+
+@app.get("/api/targets/export.csv")
+def export_targets_csv():
+    db = _db_path()
+    targets = _get_targets(db)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([
+        "object", "ra", "dec", "filters", "airmass_min", "airmass_max",
+        "n_dates", "n_frames", "instruments", "dates",
+        "total_exptime_hr", "note", "is_identified",
+    ])
+    for t in targets:
+        filters = ", ".join(c["label"] for c in t["filter_chips"])
+        w.writerow([
+            t["object"],
+            t["ra"],
+            t["declination"],
+            filters,
+            t["airmass_min"] if t["airmass_min"] is not None else "",
+            t["airmass_max"] if t["airmass_max"] is not None else "",
+            t["n_dates"],
+            t["n_frames"],
+            ", ".join(t["instruments"]),
+            ", ".join(t["dates"]),
+            t["total_exptime_hr"],
+            t["note"],
+            "yes" if t["is_identified"] else "no",
+        ])
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=targets.csv"},
+    )
 
 
 @app.get("/photometry", response_class=HTMLResponse)
