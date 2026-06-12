@@ -469,8 +469,8 @@ def build_command(
     if (o.get("ccd_trim") or "").replace(" ", "") not in ("", "10,10"):
         args += ["--ccd_trim", o["ccd_trim"].replace(" ", "")]
 
-    if not o.get("make_gif", True):
-        args.append("--no_gif")
+    if o.get("make_gif", False):
+        args.append("--gif")
     if not o.get("plot_gaia_sources", True):
         args.append("--no_plot_gaia_sources")
     if o.get("use_barycorrpy"):
