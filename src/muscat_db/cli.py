@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import re
+import signal
+import time
 from datetime import date
 
 import click
@@ -243,6 +245,87 @@ def build_db(
     console.print(f"[green]Database built: {count} frames indexed in {db}[/]")
 
 
+def _pids_listening_on(port: int) -> list[int]:
+    """PIDs of processes holding a LISTEN socket on ``port`` (Linux /proc).
+
+    Reads the listening-socket inodes for the port from ``/proc/net/tcp{,6}``,
+    then maps them to owning PIDs via each process's ``/proc/<pid>/fd`` links.
+    Dependency-free; returns an empty list if nothing is listening.
+    """
+    listen_state = "0A"  # TCP_LISTEN in /proc/net/tcp
+    inodes: set[str] = set()
+    for proto in ("tcp", "tcp6"):
+        try:
+            with open(f"/proc/net/{proto}") as fh:
+                next(fh, None)  # skip header
+                for line in fh:
+                    parts = line.split()
+                    if len(parts) < 10 or parts[3] != listen_state:
+                        continue
+                    local_port = int(parts[1].rsplit(":", 1)[1], 16)
+                    if local_port == port:
+                        inodes.add(parts[9])
+        except OSError:
+            continue
+    if not inodes:
+        return []
+
+    pids: list[int] = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        fd_dir = f"/proc/{entry}/fd"
+        try:
+            for fd in os.listdir(fd_dir):
+                try:
+                    target = os.readlink(f"{fd_dir}/{fd}")
+                except OSError:
+                    continue
+                if target.startswith("socket:[") and target[8:-1] in inodes:
+                    pids.append(int(entry))
+                    break
+        except OSError:
+            continue  # process vanished or not ours to inspect
+    return pids
+
+
+def _stop_running_servers(port: int, *, timeout: float = 5.0) -> list[int]:
+    """Terminate any servers listening on ``port``. Returns the PIDs signalled.
+
+    Sends SIGTERM first (catches uvicorn's reloader parent and worker, both of
+    which hold the socket), waits up to ``timeout`` for a clean exit, then
+    SIGKILLs any straggler still bound to the port.
+    """
+    me = os.getpid()
+    pids = [p for p in _pids_listening_on(port) if p != me]
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not [p for p in _pids_listening_on(port) if p != me]:
+            return pids
+        time.sleep(0.2)
+
+    for pid in _pids_listening_on(port):
+        if pid == me:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    return pids
+
+
+def _run_server(db: str, host: str, port: int, reload: bool) -> None:
+    os.environ["MUSCAT_DB_PATH"] = db
+    import uvicorn
+    uvicorn.run("muscat_db.web:app", host=host, port=port, reload=reload)
+
+
 @app.command(cls=_Cmd)
 def serve(
     db: str = typer.Option("muscat.db", "--db", help="SQLite database path"),
@@ -251,9 +334,24 @@ def serve(
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes"),
 ):
     """Start the web frontend."""
-    os.environ["MUSCAT_DB_PATH"] = db
-    import uvicorn
-    uvicorn.run("muscat_db.web:app", host=host, port=port, reload=reload)
+    _run_server(db, host, port, reload)
+
+
+@app.command(cls=_Cmd)
+def restart(
+    db: str = typer.Option("muscat.db", "--db", help="SQLite database path"),
+    host: str = typer.Option("0.0.0.0", "--host", help="Bind address"),
+    port: int = typer.Option(8000, "--port", "-p", help="Port number"),
+    reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes"),
+):
+    """Stop any server already running on the port, then start a fresh one."""
+    stopped = _stop_running_servers(port)
+    if stopped:
+        console.print(f"[yellow]Stopped running server (pid {', '.join(map(str, stopped))}) on port {port}[/]")
+    else:
+        console.print(f"[dim]No server running on port {port}[/]")
+    console.print(f"[green]Starting server on {host}:{port}[/]")
+    _run_server(db, host, port, reload)
 
 
 if __name__ == "__main__":
