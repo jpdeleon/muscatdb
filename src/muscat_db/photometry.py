@@ -200,7 +200,7 @@ def discovered_targets(inst: str, date: str) -> list[str]:
     if not rdir.is_dir():
         return []
     pat = re.compile(
-        rf"^(?P<t>.+?)_{re.escape(inst)}_(?:[A-Za-z0-9]+_)?{re.escape(date)}(?:[._]|$)"
+        rf"^(?P<t>.+?)_{re.escape(inst)}_(?:[A-Za-z0-9_]+_)?{re.escape(date)}(?:[._]|$)"
     )
     found: set[str] = set()
     for p in rdir.iterdir():
@@ -233,7 +233,7 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
     multi = _stem(target, inst, date)
     band_re = re.compile(
         rf"^{re.escape(multi.rsplit('_', 1)[0])}_"
-        rf"(?P<band>[A-Za-z0-9]+)_{re.escape(date)}(?P<rest>.*)$"
+        rf"(?P<band>[A-Za-z0-9_]+)_{re.escape(date)}(?P<rest>.*)$"
     )
     logs: list[Path] = []
 

@@ -260,16 +260,16 @@
     <p class="warn">⚠ Raw data directory not found ({{ sel_inst }}/{{ sel_date }}) — a run will fail until the frames are available.</p>
     {% endif %}
 
-    <details class="adv">
+    <details class="adv" id="opt-panel">
       <summary>Pipeline options (all run_photometry arguments)</summary>
       <div class="opt-grid">
         <div class="opt opt-span2">
           <label>Bands</label>
-          {% set band_list = ['gp', 'rp', 'ip', 'zs', 'g_narrow', 'r_narrow', 'i_narrow', 'z_narrow', 'Na_D'] %}
+          {% set band_list = ['gp', 'rp', 'ip', 'zs', 'Na_D', 'g_narrow', 'i_narrow', 'z_narrow'] %}
           {% set band_label = {'gp': 'gp', 'rp': 'rp', 'ip': 'ip', 'zs': 'zs',
-                               'g_narrow': 'g_narrow', 'r_narrow': 'r_narrow',
-                               'i_narrow': 'i_narrow', 'z_narrow': 'z_narrow',
-                               'Na_D': 'NaD'} %}
+                               'Na_D': 'Na_D',
+                               'g_narrow': 'g_narrow',
+                               'i_narrow': 'i_narrow', 'z_narrow': 'z_narrow'} %}
           <div class="band-checks">
             {% for b in band_list %}
             <label><input type="checkbox" name="band" value="{{ b }}" {% if b in run_defaults.bands %}checked{% endif %}> {{ band_label.get(b, b) }}</label>
@@ -383,6 +383,7 @@
 
   var SEL_KEY = 'phot:last';
   var OPT_KEY = 'phot:options';
+  var PANEL_KEY = 'phot:panel';
   var JOB_KEY = 'phot:job';
 
   // ----- restore the last selection on a bare /photometry visit -----
@@ -582,6 +583,39 @@
       overwrite: chk('opt-overwrite')
     };
   }
+  function saveOptions() {
+    try { localStorage.setItem(OPT_KEY, JSON.stringify(collectOptions())); } catch (e) {}
+  }
+  function restoreOptions() {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved) return;
+    document.querySelectorAll('input[name="band"]').forEach(function (c) {
+      c.checked = saved.bands && saved.bands.indexOf(c.value) !== -1;
+    });
+    ['ref_band','refid','aper_unit','aper_radii','annulus','glob',
+     'gif_stride','test_run_frames','min_star_separation','max_num_stars',
+     'n_stars_align','cutout_size','ccd_trim','bin_size_minutes'].forEach(function (id) {
+      var el = document.getElementById('opt-'+id);
+      if (el && saved[id] !== undefined) el.value = saved[id];
+    });
+    ['make_gif','plot_gaia_sources','use_barycorrpy','overwrite'].forEach(function (id) {
+      var el = document.getElementById('opt-'+id);
+      if (el && saved[id] !== undefined) el.checked = saved[id];
+    });
+  }
+  restoreOptions();
+  (function () {
+    var panel = document.getElementById('opt-panel');
+    if (!panel) return;
+    var savedOpen;
+    try { savedOpen = JSON.parse(localStorage.getItem(PANEL_KEY) || 'null'); } catch (e) { savedOpen = null; }
+    if (savedOpen === true) panel.open = true;
+    else if (savedOpen === false) panel.open = false;
+    panel.addEventListener('toggle', function () {
+      try { localStorage.setItem(PANEL_KEY, JSON.stringify(panel.open)); } catch (e) {}
+    });
+  })();
 
   var cmdEl     = document.getElementById('full-cmd');
   var errEl     = document.getElementById('opt-error');
@@ -597,6 +631,7 @@
     var t; return function () { clearTimeout(t); t = setTimeout(fn, ms); };
   }
   function refreshCmd() {
+    saveOptions();
     if (!cmdEl) return;
     fetch('/photometry/command', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
