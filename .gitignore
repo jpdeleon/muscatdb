@@ -32,4 +32,14 @@ htmlcov/
 *.db-wal
 *.db-shm
 *.sqlite
-*.sqlite3
+
+# Local logs
+*.log
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# Local IDE/agent environments
+.claude/
+temp.txt
