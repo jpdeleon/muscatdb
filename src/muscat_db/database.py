@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import os
+import re
 import sqlite3
 
 from muscat_db.instruments import INSTRUMENTS, OBSLOG_BASE
@@ -324,6 +325,19 @@ def get_objects(db_path: str, instrument: str, obsdate: str) -> list[str]:
     return result
 
 
+_YYMMDD = re.compile(r"\d{6}")
+
+
+def _is_obsdate(token: str) -> bool:
+    """True only for canonical 6-digit YYMMDD obsdates.
+
+    Excludes legacy/junk date tokens such as ``240129.org``, ``240722_1``,
+    ``250512_bkup`` or free-text labels like ``Hyades`` that appear in the raw
+    OBJECT-derived obsdate list. Matches the filter used by ``get_dates``.
+    """
+    return bool(_YYMMDD.fullmatch(token.strip()))
+
+
 def get_targets(db_path: str) -> list[dict]:
     """Return the per-target summary materialized at build_db time."""
     conn = sqlite3.connect(db_path)
@@ -338,12 +352,14 @@ def get_targets(db_path: str) -> list[dict]:
     )
     result = []
     for r in cur.fetchall():
-        dates = sorted(set((r[4] or "").split(","))) if r[4] else []
+        # Keep only canonical YYMMDD obsdates; drop junk like '240129.org'.
+        dates = sorted(d for d in set((r[4] or "").split(",")) if _is_obsdate(d)) if r[4] else []
         filters = sorted(f for f in set((r[5] or "").split(",")) if f) if r[5] else []
         total_s = r[6] or 0.0
+        date_to_inst = {d: i for d, i in _parse_inst_dates(r[13]).items() if _is_obsdate(d)}
         result.append({
             "object": r[0],
-            "n_dates": r[1],
+            "n_dates": len(dates),
             "n_frames": r[2],
             "instruments": sorted(set((r[3] or "").split(","))) if r[3] else [],
             "dates": dates,
@@ -355,7 +371,7 @@ def get_targets(db_path: str) -> list[dict]:
             "airmass_max": r[10],
             "is_identified": bool(r[11]),
             "note": r[12] or "",
-            "date_to_inst": _parse_inst_dates(r[13]),
+            "date_to_inst": date_to_inst,
             "filter_chips": _normalize_filters(filters),
         })
     conn.close()
