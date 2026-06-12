@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import sqlite3
 
 from fastapi import Body, FastAPI, HTTPException
@@ -35,6 +36,16 @@ jinja = Environment(
     loader=FileSystemLoader(str(TEMPLATE_DIR)),
     autoescape=True,
 )
+
+
+def _wiki_url(inst: str, target: str) -> str | None:
+    if inst != "muscat2" or not target:
+        return None
+    m = re.match(r"^TOI-?(\d+)(\.\d+)?$", target, re.IGNORECASE)
+    if m:
+        num, suf = m.groups()
+        return f"https://research.iac.es/proyecto/muscat/stars/view/TOI{int(num):05d}{suf or ''}"
+    return f"https://research.iac.es/proyecto/muscat/stars/view/{target}"
 
 
 @app.on_event("startup")
@@ -136,6 +147,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
         command=command, raw_missing=raw_missing,
         default_bands=phot.DEFAULT_BANDS,
         run_defaults=phot.RUN_DEFAULTS,
+        wiki_url=_wiki_url(inst, target),
     )
 
 

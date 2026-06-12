@@ -55,8 +55,6 @@ RUN_DEFAULTS: dict = {
     "aper_radii": "",          # "MIN,MAX,DR"; "" -> Gaia heuristic
     "annulus": "",             # "RIN,ROUT"; required with aper_radii
     "aper_unit": "pix",        # pix | fwhm (only applies with aper_radii)
-    "glob": "*.fits",
-    "gif_stride": 100,
     "make_gif": True,
     "plot_gaia_sources": True,
     "use_barycorrpy": False,
@@ -67,6 +65,8 @@ RUN_DEFAULTS: dict = {
     "cutout_size": 35,
     "ccd_trim": "10,10",       # "Y,X"
     "bin_size_minutes": 10.0,
+    "target_id": "",           # "" -> auto
+    "comparison_ids": "",      # "" -> auto, or "1,2,3"
     "overwrite": True,
 }
 
@@ -360,7 +360,7 @@ def normalize_run_options(raw: dict | None) -> dict:
     if "bands" in raw:  # present-but-empty must surface as an error, not default
         o["bands"] = [str(b).strip() for b in (bands or []) if str(b).strip()]
 
-    for key in ("ref_band", "aper_radii", "annulus", "aper_unit", "glob", "ccd_trim"):
+    for key in ("ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids"):
         if raw.get(key) is not None:
             o[key] = str(raw[key]).strip()
 
@@ -369,7 +369,7 @@ def normalize_run_options(raw: dict | None) -> dict:
             val = str(raw.get(key, "")).strip()
             o[key] = "" if val == "" else (_to_int(val) if _to_int(val) is not None else "")
 
-    for key in ("gif_stride", "test_run_frames", "max_num_stars", "cutout_size"):
+    for key in ("test_run_frames", "max_num_stars", "cutout_size"):
         if str(raw.get(key, "")).strip() != "":
             iv = _to_int(raw[key])
             if iv is not None:
@@ -447,12 +447,15 @@ def build_command(
     if ar and o.get("aper_unit", "pix") != "pix":
         args += ["--aper_unit", o["aper_unit"]]
 
-    if o.get("glob", "*.fits") not in ("", "*.fits"):
-        args += ["--glob", o["glob"]]
+    if o.get("target_id") not in (None, ""):
+        args += ["--tID", o["target_id"]]
+    if o.get("comparison_ids") not in (None, ""):
+        cids = [c.strip() for c in o["comparison_ids"].split(",") if c.strip()]
+        if cids:
+            args += ["--cID", *cids]
 
     # Numeric overrides: only emit when the user changed them from the default.
     for flag, key in (
-        ("--gif_stride", "gif_stride"),
         ("--test_run_frames", "test_run_frames"),
         ("--min_star_separation", "min_star_separation"),
         ("--max_num_stars", "max_num_stars"),
@@ -471,8 +474,8 @@ def build_command(
 
     if o.get("make_gif", False):
         args.append("--gif")
-    if not o.get("plot_gaia_sources", True):
-        args.append("--no_plot_gaia_sources")
+    if o.get("plot_gaia_sources", True):
+        args.append("--plot_gaia_sources")
     if o.get("use_barycorrpy"):
         args.append("--use_barycorrpy")
 

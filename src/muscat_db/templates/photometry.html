@@ -167,13 +167,33 @@
   </div>
 {% else %}
   <div class="phot-section" style="margin: 1rem 0 0;">
-    <h2><a href="/{{ sel_inst }}/{{ sel_date }}" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">Show Obslog</a></h2>
+    <h2 style="display: flex; gap: 1.5rem; align-items: center; flex-wrap: wrap;">
+      <a href="/{{ sel_inst }}/{{ sel_date }}" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">Show Obslog</a>
+      {% if wiki_url %}<a href="{{ wiki_url }}" target="_blank" rel="noopener" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">MuSCAT2 wiki ↗</a>{% endif %}
+    </h2>
   </div>
 
   {% if outputs and outputs.has_any %}
     {% if outputs.summary %}
     <div class="phot-section">
-      <h2>Light curves &amp; Covariates <span style="font-size:0.75rem;color:var(--text-dim);font-weight:400;">— drag ⠿ to rearrange</span></h2>
+      <h2 style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+        <span>Light curves &amp; Covariates <span style="font-size:0.75rem;color:var(--text-dim);font-weight:400;">— drag ⠿ to rearrange</span></span>
+        {% set ns = namespace(has_csv=false) %}
+        {% for band, prods in outputs.bands.items() %}
+          {% if prods.get('csv') %}{% set ns.has_csv = true %}{% endif %}
+        {% endfor %}
+        {% if ns.has_csv %}
+        <span class="dl-row" style="font-size: 0.85rem; font-weight: 400;">
+          Download csv:
+          {% for band, prods in outputs.bands.items() %}
+            {% if prods.get('csv') %}
+          <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods['csv'] }}" download class="csv-link">⬇ {{ band }}</a>
+            {% endif %}
+          {% endfor %}
+          <a href="#" id="dl-all-csv" style="color: var(--accent2); font-weight: 600;">⬇ all</a>
+        </span>
+        {% endif %}
+      </h2>
       <div class="fig-grid col sortable" data-sort-key="summary">
         {% for key in ['lightcurves', 'covariates', 'stacks'] %}
           {% if outputs.summary.get(key) %}
@@ -229,11 +249,6 @@
           </table>
         </div>
         {% endif %}
-        {% if prods.get('csv') %}
-        <div class="dl-row">
-          <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods['csv'] }}" download>⬇ {{ band }} light curve (CSV)</a>
-        </div>
-        {% endif %}
       </div>
       {% endfor %}
     </div>
@@ -277,6 +292,16 @@
           </div>
         </div>
         <div class="opt">
+          <label for="opt-target_id">Target ID</label>
+          <input type="text" id="opt-target_id" placeholder="auto" value="{{ run_defaults.target_id }}">
+          <span class="hint">--tID; empty → auto</span>
+        </div>
+        <div class="opt">
+          <label for="opt-comparison_ids">Comparison IDs</label>
+          <input type="text" id="opt-comparison_ids" placeholder="auto" value="{{ run_defaults.comparison_ids }}">
+          <span class="hint">--cID; comma-separated, empty → auto</span>
+        </div>
+        <div class="opt">
           <label for="opt-ref_band">Reference band</label>
           <select id="opt-ref_band">
             <option value="">per-band self-reference</option>
@@ -305,10 +330,6 @@
           <span class="hint">required with aperture radii</span>
         </div>
         <div class="opt">
-          <label for="opt-glob">FITS glob</label>
-          <input type="text" id="opt-glob" value="{{ run_defaults.glob }}">
-        </div>
-        <div class="opt">
           <label for="opt-max_num_stars">Max # stars (PSF)</label>
           <input type="number" id="opt-max_num_stars" value="{{ run_defaults.max_num_stars }}" min="1">
         </div>
@@ -332,18 +353,14 @@
           <label for="opt-bin_size_minutes">Bin size (min)</label>
           <input type="number" id="opt-bin_size_minutes" value="{{ run_defaults.bin_size_minutes }}" step="0.5" min="0">
         </div>
-        <div class="opt">
-          <label for="opt-gif_stride">GIF stride</label>
-          <input type="number" id="opt-gif_stride" value="{{ run_defaults.gif_stride }}" min="1">
-        </div>
-        <div class="opt">
-          <label for="opt-test_run_frames">Test-run frames</label>
-          <input type="number" id="opt-test_run_frames" value="{{ run_defaults.test_run_frames }}" min="1">
-        </div>
         <div class="opt check"><input type="checkbox" id="opt-make_gif" checked><label for="opt-make_gif">Make GIF</label></div>
         <div class="opt check"><input type="checkbox" id="opt-plot_gaia_sources" checked><label for="opt-plot_gaia_sources">Plot Gaia sources</label></div>
         <div class="opt check"><input type="checkbox" id="opt-use_barycorrpy"><label for="opt-use_barycorrpy">Use barycorrpy (BJD-TDB)</label></div>
         <div class="opt check"><input type="checkbox" id="opt-overwrite" checked><label for="opt-overwrite">Overwrite existing products</label></div>
+        <div class="opt">
+          <label for="opt-test_run_frames">Test-run frames</label>
+          <input type="number" id="opt-test_run_frames" value="{{ run_defaults.test_run_frames }}" min="1">
+        </div>
       </div>
     </details>
 
@@ -568,8 +585,8 @@
       aper_unit: val('opt-aper_unit'),
       aper_radii: val('opt-aper_radii'),
       annulus: val('opt-annulus'),
-      glob: val('opt-glob'),
-      gif_stride: val('opt-gif_stride'),
+      target_id: val('opt-target_id'),
+      comparison_ids: val('opt-comparison_ids'),
       make_gif: chk('opt-make_gif'),
       plot_gaia_sources: chk('opt-plot_gaia_sources'),
       use_barycorrpy: chk('opt-use_barycorrpy'),
@@ -593,8 +610,8 @@
     document.querySelectorAll('input[name="band"]').forEach(function (c) {
       c.checked = saved.bands && saved.bands.indexOf(c.value) !== -1;
     });
-    ['ref_band','refid','aper_unit','aper_radii','annulus','glob',
-     'gif_stride','test_run_frames','min_star_separation','max_num_stars',
+    ['ref_band','refid','aper_unit','aper_radii','annulus',
+     'target_id','comparison_ids','test_run_frames','min_star_separation','max_num_stars',
      'n_stars_align','cutout_size','ccd_trim','bin_size_minutes'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
@@ -722,6 +739,15 @@
       if (!polling) { polling = setInterval(poll, 2000); poll(); }
     }).catch(function () { cancelBtn.disabled = false; });
   });
+
+  // ----- download all CSV links -----
+  var dlAll = document.getElementById('dl-all-csv');
+  if (dlAll) {
+    dlAll.addEventListener('click', function (e) {
+      e.preventDefault();
+      document.querySelectorAll('a.csv-link').forEach(function (a) { a.click(); });
+    });
+  }
 
   // initial command reflects default options
   refreshCmd();
