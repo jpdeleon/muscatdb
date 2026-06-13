@@ -359,9 +359,26 @@
   var date   = {{ sel_date|tojson }};
   var target = {{ sel_target|tojson }};
 
+  var SEL_KEY = 'fit:last';
   var OPT_KEY = 'fit:options:' + inst + ':' + date + ':' + target;
   var PANEL_KEY = 'fit:panel';
   var JOB_KEY = 'fit:job';
+
+  // ----- restore the last selection on a bare /transit-fit visit -----
+  (function () {
+    if (inst || date || target || window.location.search) return;
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(SEL_KEY) || 'null'); } catch (e) { saved = null; }
+    if (saved && saved.inst) {
+      var qs = ['inst', 'date', 'target'].filter(function (k) { return saved[k]; })
+        .map(function (k) { return k + '=' + encodeURIComponent(saved[k]); }).join('&');
+      window.location.replace('/transit-fit?' + qs);
+    }
+  })();
+  // ...and remember the current selection for next time.
+  if (inst) {
+    try { localStorage.setItem(SEL_KEY, JSON.stringify({ inst: inst, date: date, target: target })); } catch (e) {}
+  }
 
   // ----- cascading selectors -----
   var selInst   = document.getElementById('sel-inst');
