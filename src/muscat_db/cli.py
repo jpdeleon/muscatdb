@@ -320,10 +320,13 @@ def _stop_running_servers(port: int, *, timeout: float = 5.0) -> list[int]:
     return pids
 
 
-def _run_server(db: str, host: str, port: int, reload: bool) -> None:
+def _run_server(db: str, host: str, port: int, reload: bool, workers: int = 1) -> None:
     os.environ["MUSCAT_DB_PATH"] = db
     import uvicorn
-    uvicorn.run("muscat_db.web:app", host=host, port=port, reload=reload)
+    if reload:
+        uvicorn.run("muscat_db.web:app", host=host, port=port, reload=True)
+    else:
+        uvicorn.run("muscat_db.web:app", host=host, port=port, workers=workers)
 
 
 @app.command(cls=_Cmd)
@@ -332,9 +335,10 @@ def serve(
     host: str = typer.Option("0.0.0.0", "--host", help="Bind address"),
     port: int = typer.Option(8000, "--port", "-p", help="Port number"),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes"),
+    workers: int = typer.Option(1, "--workers", "-w", help="Number of worker processes"),
 ):
     """Start the web frontend."""
-    _run_server(db, host, port, reload)
+    _run_server(db, host, port, reload, workers)
 
 
 @app.command(cls=_Cmd)
@@ -343,6 +347,7 @@ def restart(
     host: str = typer.Option("0.0.0.0", "--host", help="Bind address"),
     port: int = typer.Option(8000, "--port", "-p", help="Port number"),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes"),
+    workers: int = typer.Option(1, "--workers", "-w", help="Number of worker processes"),
 ):
     """Stop any server already running on the port, then start a fresh one."""
     stopped = _stop_running_servers(port)
@@ -351,7 +356,7 @@ def restart(
     else:
         console.print(f"[dim]No server running on port {port}[/]")
     console.print(f"[green]Starting server on {host}:{port}[/]")
-    _run_server(db, host, port, reload)
+    _run_server(db, host, port, reload, workers)
 
 
 if __name__ == "__main__":

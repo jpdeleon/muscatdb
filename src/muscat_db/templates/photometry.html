@@ -124,7 +124,7 @@
   .band-checks label { display: flex; align-items: center; gap: 0.3rem; color: var(--text); font-size: 0.85rem; }
   .opt-span2 { grid-column: span 2; }
   .run-actions { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
-  .run-cmd { display: flex; gap: 0.5rem; align-items: stretch; margin-top: 1rem; max-width: 820px; }
+  .run-cmd { display: flex; gap: 0.5rem; align-items: stretch; margin-top: 1rem; width: 100%; }
   .run-cmd code {
     flex: 1; text-align: left; background: var(--surface2);
     border: 1px solid var(--border); border-radius: 6px;
@@ -396,17 +396,13 @@
           <input type="number" id="opt-bin_size_minutes" value="{{ run_defaults.bin_size_minutes }}" step="0.5" min="0">
         </div>
         <div class="opt check"><input type="checkbox" id="opt-make_gif" checked><label for="opt-make_gif">Make GIF <span class="help-tooltip" title="Generate an animated GIF showing target/alignment field over time (corresponds to --gif).">?</span></label></div>
-        <div class="opt check"><input type="checkbox" id="opt-plot_gaia_sources" checked><label for="opt-plot_gaia_sources">Plot Gaia sources <span class="help-tooltip" title="Overlay Gaia DR3 catalog sources on check plots (corresponds to --plot_gaia_sources).">?</span></label></div>
-        <div class="opt check"><input type="checkbox" id="opt-use_barycorrpy"><label for="opt-use_barycorrpy">Use barycorrpy (BJD-TDB) <span class="help-tooltip" title="Use barycorrpy to perform high-precision BJD time conversion (corresponds to --use_barycorrpy).">?</span></label></div>
-        <div class="opt check"><input type="checkbox" id="opt-overwrite" checked><label for="opt-overwrite">Overwrite existing products <span class="help-tooltip" title="Overwrite existing reduction products for this target (corresponds to --overwrite).">?</span></label></div>
         <div class="opt">
           <label for="opt-test_run_frames"># of test-run frames <span class="help-tooltip" title="Number of frames to process during a test-run reduction (corresponds to --test_run_frames).">?</span></label>
           <input type="number" id="opt-test_run_frames" value="{{ run_defaults.test_run_frames }}" min="1">
         </div>
-        <div class="opt">
-          <label for="opt-gif_stride">GIF stride <span class="help-tooltip" title="Frame step/stride when generating the animated GIF (corresponds to --gif_stride).">?</span></label>
-          <input type="number" id="opt-gif_stride" value="{{ run_defaults.gif_stride }}" min="1">
-        </div>
+        <div class="opt check"><input type="checkbox" id="opt-use_barycorrpy"><label for="opt-use_barycorrpy">Use barycorrpy (BJD-TDB) <span class="help-tooltip" title="Use barycorrpy to perform high-precision BJD time conversion (corresponds to --use_barycorrpy).">?</span></label></div>
+        <div class="opt check"><input type="checkbox" id="opt-overwrite" checked><label for="opt-overwrite">Overwrite existing products <span class="help-tooltip" title="Overwrite existing reduction products for this target (corresponds to --overwrite).">?</span></label></div>
+        <div class="opt check"><input type="checkbox" id="opt-plot_gaia_sources" checked><label for="opt-plot_gaia_sources">Plot Gaia sources <span class="help-tooltip" title="Overlay Gaia DR3 catalog sources on check plots (corresponds to --plot_gaia_sources).">?</span></label></div>
       </div>
     </details>
 
@@ -445,7 +441,7 @@
   var rawMissing = {{ raw_missing|tojson }};
 
   var SEL_KEY = 'phot:last';
-  var OPT_KEY = 'phot:options';
+  var OPT_KEY = 'phot:options:' + inst + ':' + date + ':' + target;
   var PANEL_KEY = 'phot:panel';
   var JOB_KEY = 'phot:job';
 
@@ -646,7 +642,6 @@
       cutout_size: val('opt-cutout_size'),
       ccd_trim: val('opt-ccd_trim'),
       bin_size_minutes: val('opt-bin_size_minutes'),
-      gif_stride: val('opt-gif_stride'),
       overwrite: chk('opt-overwrite')
     };
   }
@@ -662,7 +657,7 @@
     });
     ['ref_band','refid','aper_unit','aper_radii','annulus',
      'target_id','comparison_ids','test_run_frames','min_star_separation','max_num_stars',
-     'n_stars_align','cutout_size','ccd_trim','bin_size_minutes','gif_stride'].forEach(function (id) {
+     'n_stars_align','cutout_size','ccd_trim','bin_size_minutes'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
     });
@@ -682,7 +677,7 @@
       });
       ['ref_band','refid','aper_unit','aper_radii','annulus',
        'target_id','comparison_ids','test_run_frames','min_star_separation','max_num_stars',
-       'n_stars_align','cutout_size','ccd_trim','bin_size_minutes','gif_stride'].forEach(function (id) {
+       'n_stars_align','cutout_size','ccd_trim','bin_size_minutes'].forEach(function (id) {
         var el = document.getElementById('opt-'+id);
         if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';
       });
@@ -713,6 +708,18 @@
   var cancelBtn = document.getElementById('cancel-btn');
   var logEl     = document.getElementById('run-log');
   var runBtns   = [testBtn, fullBtn].filter(Boolean);
+
+  // ----- restore the log if it was previously saved -----
+  (function restoreLog() {
+    if (!logEl) return;
+    var savedLog;
+    try { savedLog = localStorage.getItem('phot:log:' + inst + ':' + date + ':' + target); } catch (e) { savedLog = null; }
+    if (savedLog) {
+      logEl.style.display = 'block';
+      logEl.textContent = savedLog;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+  })();
   var hasOptError = false;
   var polling = null;
 
@@ -761,10 +768,15 @@
   function poll() {
     var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
     fetch('/photometry/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
-      if (s.log) { logEl.textContent = s.log; logEl.scrollTop = logEl.scrollHeight; }
+      if (s.log) {
+        logEl.textContent = s.log;
+        logEl.scrollTop = logEl.scrollHeight;
+        try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, s.log); } catch (e) {}
+      }
       if (s.state === 'done') {
         stopPolling(); clearJob();
         logEl.textContent += '\n\n✓ done (' + s.elapsed + 's) — reloading…';
+        try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
         if (typeof window.showLoading === 'function') {
           window.showLoading('Reloading…');
         }
@@ -772,9 +784,11 @@
       } else if (s.state === 'error') {
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent += '\n\n✗ pipeline exited with code ' + s.returncode;
+        try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
       } else if (s.state === 'cancelled') {
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent += '\n\n■ cancelled';
+        try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
       }
     }).catch(function () {});
   }
@@ -783,6 +797,7 @@
     setRunning(true);
     logEl.style.display = 'block';
     logEl.textContent = 'Launching ' + (testRun ? 'test' : 'full') + ' reduction…';
+    try { localStorage.removeItem('phot:log:' + inst + ':' + date + ':' + target); } catch (e) {}
     fetch('/photometry/run', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inst: inst, date: date, target: target, test_run: testRun, options: collectOptions() })
@@ -806,6 +821,7 @@
   if (cancelBtn) cancelBtn.addEventListener('click', function () {
     cancelBtn.disabled = true;
     logEl.textContent += '\n\n■ cancelling…';
+    try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
     fetch('/photometry/cancel', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inst: inst, date: date, target: target })

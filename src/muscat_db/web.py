@@ -57,6 +57,7 @@ def _ensure_db():
     """Create the database and schema if they don't exist."""
     db = _db_path()
     conn = sqlite3.connect(db)
+    conn.execute("PRAGMA journal_mode=WAL;")
     conn.executescript(SCHEMA)
     conn.close()
     print(f"[startup] database ready at {db}")
@@ -216,7 +217,7 @@ def photometry_file(inst: str, date: str, name: str):
     path = phot.safe_artifact_path(inst, date, name)
     if path is None:
         raise HTTPException(404, "artifact not found")
-    return FileResponse(str(path))
+    return FileResponse(str(path), headers={"Cache-Control": "public, max-age=3600"})
 
 
 @app.post("/photometry/run")

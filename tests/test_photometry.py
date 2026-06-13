@@ -401,6 +401,7 @@ class TestRoutes:
         name = f"{TARGET}_{INST}_{DATE}_stacks.png"
         r = client.get(f"/photometry/file/{INST}/{DATE}/{name}")
         assert r.status_code == 200
+        assert r.headers.get("cache-control") == "public, max-age=3600"
 
     def test_file_route_serves_master_calibration(self, client, tmp_path, monkeypatch):
         raw_base = tmp_path / "data"
@@ -497,11 +498,40 @@ class TestRoutes:
         assert "Transit Fit" in r.text
         assert "Coming Soon" in r.text
 
-    def test_jobs_page(self, client):
+    def test_jobs_page(self, client, monkeypatch):
+        mock_jobs = [
+            {
+                "key": "muscat2/220226/TOI-5684.01",
+                "inst": "muscat2",
+                "date": "220226",
+                "target": "TOI-5684.01",
+                "state": "running",
+                "returncode": None,
+                "elapsed": 10,
+                "started_at": 1645833600.0,
+            },
+            {
+                "key": "muscat3/220226/TOI-5684.02",
+                "inst": "muscat3",
+                "date": "220226",
+                "target": "TOI-5684.02",
+                "state": "done",
+                "returncode": 0,
+                "elapsed": 120,
+                "started_at": 1645833500.0,
+            }
+        ]
+        monkeypatch.setattr("muscat_db.photometry.get_all_jobs", lambda: mock_jobs)
+
         r = client.get("/jobs")
         assert r.status_code == 200
         assert "Jobs" in r.text
         assert "Background Job Queue" in r.text
+        assert "View reduction" not in r.text
+        assert "cancelJob(this)" in r.text
+        assert 'data-target="TOI-5684.01"' in r.text
+        assert "TOI-5684.02" in r.text
+
 
 
 # ── real example output (optional) ───────────────────────────────────────────

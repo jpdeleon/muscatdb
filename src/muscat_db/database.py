@@ -79,6 +79,7 @@ def build_db(db_path: str, progress=None) -> int:
     reported: CSV ingestion, summary aggregation, and targets aggregation.
     """
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL;")
     conn.executescript(SCHEMA)
     conn.executescript("DELETE FROM frames; DELETE FROM summaries; DELETE FROM targets;")
 
