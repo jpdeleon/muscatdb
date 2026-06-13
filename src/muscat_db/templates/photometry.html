@@ -121,7 +121,12 @@
 {% else %}
   <div class="phot-section" style="margin: 1rem 0 0;">
     <h2 style="display: flex; gap: 1.5rem; align-items: center; flex-wrap: wrap;">
-      <a href="/{{ sel_inst }}/{{ sel_date }}" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">Show Obslog</a>
+      <span>
+        <a href="/{{ sel_inst }}/{{ sel_date }}" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">Show Obslog</a>
+        {% if obs_type %}
+          <span style="font-size: 0.85rem; color: var(--text-dim); font-weight: normal; margin-left: 0.35rem;">{{ obs_type }}</span>
+        {% endif %}
+      </span>
       {% if wiki_url %}<a href="{{ wiki_url }}" target="_blank" rel="noopener" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">MuSCAT2 wiki ↗</a>{% endif %}
     </h2>
   </div>

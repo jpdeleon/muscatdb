@@ -487,6 +487,39 @@ class TestRoutes:
         assert "drag-handle" in html
         assert 'fig-grid col sortable" data-sort-key="band"' in html
 
+    def test_photometry_page_shows_broadband(self, client):
+        db_path = os.environ["MUSCAT_DB_PATH"]
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO frames (instrument, obsdate, ccd, filename, object, filter) VALUES (?, ?, ?, ?, ?, ?)",
+            (INST, DATE, 0, "file1.fits", TARGET, "gp")
+        )
+        conn.commit()
+        conn.close()
+
+        r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
+        assert r.status_code == 200
+        assert "(broadband)" in r.text
+        assert "(narrowband)" not in r.text
+
+    def test_photometry_page_shows_narrowband(self, client):
+        db_path = os.environ["MUSCAT_DB_PATH"]
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.execute("DELETE FROM frames")
+        conn.execute(
+            "INSERT INTO frames (instrument, obsdate, ccd, filename, object, filter) VALUES (?, ?, ?, ?, ?, ?)",
+            (INST, DATE, 0, "file1.fits", TARGET, "g_narrow")
+        )
+        conn.commit()
+        conn.close()
+
+        r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
+        assert r.status_code == 200
+        assert "(narrowband)" in r.text
+        assert "(broadband)" not in r.text
+
     def test_logs_page(self, client):
         r = client.get("/logs")
         assert r.status_code == 200

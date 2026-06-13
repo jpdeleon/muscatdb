@@ -184,10 +184,26 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
         obj_set = set(_get_objects(db, inst, date))
         obj_set.update(phot.discovered_targets(inst, date))
         targets = sorted(obj_set)
+    obs_type = ""
     if inst and date and target:
         outputs = phot.list_outputs(inst, date, target)
         command = phot.command_str(inst, date, target, test_run=False)
         raw_missing = not phot.raw_data_dir(inst, date).is_dir()
+
+        try:
+            conn = sqlite3.connect(db)
+            cur = conn.execute(
+                "SELECT DISTINCT filter FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND filter IS NOT NULL AND filter != ''",
+                (inst, date, target),
+            )
+            filters = [row[0] for row in cur.fetchall()]
+            conn.close()
+            if filters:
+                has_narrow = any("narrow" in f.lower() or f.lower() == "na_d" for f in filters)
+                obs_type = "(narrowband)" if has_narrow else "(broadband)"
+        except Exception:
+            pass
+
         # fall through; previews computed below when outputs exist
         if outputs["has_any"]:
             rdir = phot.results_dir(inst, date)
@@ -206,6 +222,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
         default_bands=phot.DEFAULT_BANDS,
         run_defaults=phot.RUN_DEFAULTS,
         wiki_url=_wiki_url(inst, target),
+        obs_type=obs_type,
     )
 
 
