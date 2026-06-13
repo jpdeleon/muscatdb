@@ -416,13 +416,18 @@ def get_targets(db_path: str) -> list[dict]:
         date_to_inst = {d: i for d, i in _parse_inst_dates(r[13]).items() if _is_obsdate(d)}
         
         phot_status = "none"
+        fit_status = "none"
+        from muscat_db import transit_fit as fit_mod
         for d, inst in date_to_inst.items():
             status = phot.get_photometry_status(inst, d, r[0])
             if status == "full":
                 phot_status = "full"
-                break
-            elif status == "test":
+            elif status == "test" and phot_status != "full":
                 phot_status = "test"
+                
+            fit_out = fit_mod.get_fit_outputs(inst, d, r[0])
+            if fit_out.get("has_any"):
+                fit_status = "full"
 
         result.append({
             "object": r[0],
@@ -441,6 +446,7 @@ def get_targets(db_path: str) -> list[dict]:
             "date_to_inst": date_to_inst,
             "filter_chips": _normalize_filters(filters),
             "phot": phot_status,
+            "fit": fit_status,
         })
     conn.close()
     return result

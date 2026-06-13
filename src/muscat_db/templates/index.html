@@ -29,6 +29,7 @@
       <th data-sort-attr="instruments">Instruments</th>
       <th data-sort-attr="dates">Dates</th>
       <th data-sort-attr="phot">Phot</th>
+      <th data-sort-attr="fit">Fit</th>
       <th data-sort-attr="note">Notes</th>
     </tr>
     <tr class="filter-row">
@@ -40,7 +41,8 @@
       <th><input type="text" data-col="frames"      placeholder="<100  >500"></th>
       <th><input type="text" data-col="instrument"  placeholder="muscat2"></th>
       <th><input type="text" data-col="date"        placeholder="YYMMDD"></th>
-      <th><input type="text" data-col="phot"        placeholder="check/X"></th>
+      <th><input type="text" data-col="phot"        placeholder="Y/N"></th>
+      <th><input type="text" data-col="fit"         placeholder="Y/N"></th>
       <th><input type="text" data-col="note"        placeholder="contains…"></th>
     </tr>
   </thead>
@@ -55,7 +57,8 @@
         data-airmass-max="{{ t.airmass_max if t.airmass_max is not none else '' }}"
         data-instruments="{{ t.instruments|join(',') }}"
         data-dates="{% for d in t.dates %}{% set inst = t.date_to_inst.get(d, t.instruments[0] if t.instruments else '') %}{{ d }}{% if inst == 'muscat' %}(M1){% elif inst == 'muscat2' %}(M2){% elif inst == 'muscat3' %}(M3){% elif inst == 'muscat4' %}(M4){% elif inst == 'sinistro' %}(S){% endif %}{% if not loop.last %},{% endif %}{% endfor %}"
-        data-phot="{{ 'check' if t.phot == 'full' else 'X' }}"
+        data-phot="{{ 'Y' if t.phot == 'full' else 'N' }}"
+        data-fit="{{ 'Y' if t.fit == 'full' else 'N' }}"
         data-note="{{ t.note|default('', true) }}">
       <td><strong>{{ t.object }}</strong></td>
       <td class="mono">{{ t.ra }}</td>
@@ -86,9 +89,16 @@
       </td>
       <td style="text-align:center;">
         {% if t.phot == 'full' %}
-          <span style="color: var(--green); font-weight: bold;" title="Full photometry exists">✓</span>
+          <span style="color: var(--green); font-weight: bold;" title="Full photometry exists">Y</span>
         {% else %}
-          <span style="color: var(--red);" title="No photometry or test-run only">✗</span>
+          <span style="color: var(--red);" title="No photometry or test-run only">N</span>
+        {% endif %}
+      </td>
+      <td style="text-align:center;">
+        {% if t.fit == 'full' %}
+          <span style="color: var(--green); font-weight: bold;" title="Transit fit exists">Y</span>
+        {% else %}
+          <span style="color: var(--red);" title="No transit fit">N</span>
         {% endif %}
       </td>
       <td class="note-cell" data-object="{{ t.object }}" style="white-space:normal;">
@@ -118,6 +128,10 @@
   </div>
 </details>
 {% endif %}
+
+<div style="text-align:center; margin:2em 0;">
+  <a href="#" style="display:inline-block; padding:0.5em 2em; background:#0056b3; color:#fff; text-decoration:none; border-radius:4px;">Back to Top</a>
+</div>
 
 <script>
   (function () {
@@ -239,6 +253,7 @@
       instrument: { val: r => r.dataset.instruments, build: makeToken   },
       date:       { val: r => r.dataset.dates,       build: makeText    },
       phot:       { val: r => r.dataset.phot,        build: makeText    },
+      fit:        { val: r => r.dataset.fit,         build: makeText    },
       note:       { val: r => r.dataset.note,        build: makeText    },
     };
 
