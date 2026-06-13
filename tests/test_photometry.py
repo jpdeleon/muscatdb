@@ -502,7 +502,8 @@ class TestRoutes:
     def test_jobs_page(self, client, monkeypatch):
         mock_jobs = [
             {
-                "key": "muscat2/220226/TOI-5684.01",
+                "key": "photometry:muscat2/220226/TOI-5684.01",
+                "type": "photometry",
                 "inst": "muscat2",
                 "date": "220226",
                 "target": "TOI-5684.01",
@@ -510,9 +511,11 @@ class TestRoutes:
                 "returncode": None,
                 "elapsed": 10,
                 "started_at": 1645833600.0,
+                "error_desc": None
             },
             {
-                "key": "muscat3/220226/TOI-5684.02",
+                "key": "photometry:muscat3/220226/TOI-5684.02",
+                "type": "photometry",
                 "inst": "muscat3",
                 "date": "220226",
                 "target": "TOI-5684.02",
@@ -522,12 +525,15 @@ class TestRoutes:
                 "started_at": 1645833500.0,
             }
         ]
-        monkeypatch.setattr("muscat_db.photometry.get_all_jobs", lambda: mock_jobs)
-
+        monkeypatch.setattr("muscat_db.web.get_persisted_jobs", lambda: mock_jobs)
+        monkeypatch.setattr("muscat_db.photometry.sync_jobs", lambda: None)
+        monkeypatch.setattr("muscat_db.transit_fit.sync_jobs", lambda: None)
+    
         r = client.get("/jobs")
         assert r.status_code == 200
         assert "Jobs" in r.text
-        assert "Background Job Queue" in r.text
+        assert "Photometry Jobs" in r.text
+        assert "Transit Fit Jobs" in r.text
         assert "View reduction" not in r.text
         assert "cancelJob(this)" in r.text
         assert 'data-target="TOI-5684.01"' in r.text

@@ -69,6 +69,19 @@ CREATE TABLE IF NOT EXISTS target_notes (
     note       TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS jobs (
+    key          TEXT PRIMARY KEY,
+    type         TEXT NOT NULL,
+    instrument   TEXT NOT NULL,
+    obsdate      TEXT NOT NULL,
+    target       TEXT NOT NULL,
+    state        TEXT NOT NULL,
+    returncode   INTEGER,
+    elapsed      INTEGER NOT NULL,
+    started_at   REAL NOT NULL,
+    error_desc   TEXT
+);
 """
 
 
@@ -524,3 +537,54 @@ def get_frames(db_path: str, instrument: str, obsdate: str, ccd: int) -> list[di
     result = [dict(zip(columns, r)) for r in cur.fetchall()]
     conn.close()
     return result
+
+
+def db_path() -> str:
+    import pathlib
+    return str(pathlib.Path(os.environ.get("MUSCAT_DB_PATH", "muscat.db")).resolve())
+
+
+def save_job(
+    type_: str,
+    inst: str,
+    date: str,
+    target: str,
+    state: str,
+    returncode: int | None,
+    elapsed: int,
+    started_at: float,
+    error_desc: str = ""
+) -> None:
+    path = db_path()
+    conn = sqlite3.connect(path, timeout=30)
+    conn.executescript(SCHEMA)
+    key = f"{type_}:{inst}/{date}/{target.replace(' ', '')}"
+    conn.execute(
+        """INSERT INTO jobs(key, type, instrument, obsdate, target, state, returncode, elapsed, started_at, error_desc)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET
+             state = excluded.state,
+             returncode = excluded.returncode,
+             elapsed = excluded.elapsed,
+             error_desc = excluded.error_desc""",
+        (key, type_, inst, date, target, state, returncode, elapsed, started_at, error_desc)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_persisted_jobs() -> list[dict]:
+    path = db_path()
+    conn = sqlite3.connect(path)
+    conn.executescript(SCHEMA)
+    cur = conn.execute("SELECT * FROM jobs ORDER BY started_at DESC")
+    columns = [d[0] for d in cur.description]
+    result = []
+    for r in cur.fetchall():
+        d = dict(zip(columns, r))
+        d["inst"] = d["instrument"]
+        d["date"] = d["obsdate"]
+        result.append(d)
+    conn.close()
+    return result
+

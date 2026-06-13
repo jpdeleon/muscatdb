@@ -292,6 +292,18 @@ def start_fit(
             key=key, inst=inst, date=date, target=target,
             cmd=cmd, proc=proc, logf=logf, log_path=log_path,
         )
+        # Record new job in the database
+        from muscat_db.database import save_job
+        save_job(
+            type_="transit_fit",
+            inst=inst,
+            date=date,
+            target=target,
+            state="running",
+            returncode=None,
+            elapsed=0,
+            started_at=_FIT_JOBS[key].started_at
+        )
 
     return {"ok": True, "key": key}
 
@@ -358,6 +370,19 @@ def cancel_fit(inst: str, date: str, target: str) -> dict:
             return {"ok": True, "already_finished": True}
         job.cancelled = True
         proc = job.proc
+        # Immediately record cancellation in the database
+        from muscat_db.database import save_job
+        save_job(
+            type_="transit_fit",
+            inst=inst,
+            date=date,
+            target=target,
+            state="cancelled",
+            returncode=-1,
+            elapsed=round(time.time() - job.started_at),
+            started_at=job.started_at,
+            error_desc="Cancelled by user"
+        )
 
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -449,3 +474,72 @@ def get_fit_outputs(inst: str, date: str, target: str) -> dict:
             pass
 
     return outputs
+
+
+def sync_jobs() -> None:
+    from muscat_db.database import save_job, get_persisted_jobs
+    with _FIT_LOCK:
+        db_jobs = get_persisted_jobs()
+        running_keys = {j["key"] for j in db_jobs if j["state"] == "running" and j["type"] == "transit_fit"}
+        
+        for key, job in _FIT_JOBS.items():
+            db_key = f"transit_fit:{job.inst}/{job.date}/{job.target.replace(' ', '')}"
+            rc = job.proc.poll()
+            if rc is None:
+                state = "cancelling" if job.cancelled else "running"
+            else:
+                if job.cancelled:
+                    state = "cancelled"
+                else:
+                    state = "done" if rc == 0 else "error"
+                if job.state in ("running",):
+                    job.state = state
+                    job.returncode = rc
+                    try:
+                        job.logf.close()
+                    except OSError:
+                        pass
+            
+            elapsed = time.time() - job.started_at
+            error_desc = ""
+            if state == "error":
+                from muscat_db.photometry import _get_error_desc
+                error_desc = _get_error_desc(job.log_path)
+            elif state == "cancelled":
+                error_desc = "Cancelled by user"
+            
+            save_job(
+                type_="transit_fit",
+                inst=job.inst,
+                date=job.date,
+                target=job.target,
+                state=state,
+                returncode=rc,
+                elapsed=round(elapsed),
+                started_at=job.started_at,
+                error_desc=error_desc
+            )
+            running_keys.discard(db_key)
+            
+        for db_key in running_keys:
+            _, rest = db_key.split(":", 1)
+            inst, date, target = rest.split("/", 2)
+            started_at = time.time()
+            elapsed = 0
+            for j in db_jobs:
+                if j["key"] == db_key:
+                    started_at = j["started_at"]
+                    elapsed = j["elapsed"]
+                    break
+            save_job(
+                type_="transit_fit",
+                inst=inst,
+                date=date,
+                target=target,
+                state="error",
+                returncode=-1,
+                elapsed=elapsed,
+                started_at=started_at,
+                error_desc="Process lost (server restart)"
+            )
+

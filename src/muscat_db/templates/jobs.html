@@ -37,38 +37,27 @@
 <h1>Jobs</h1>
 
 <div style="margin: 1.5rem 0;">
-  <h2>Background Job Queue</h2>
-  {% if jobs %}
+  <h2>Photometry Jobs</h2>
+  {% if phot_jobs %}
   <table>
     <thead>
       <tr>
         <th>Target</th>
-        <th>Type</th>
         <th>Instrument</th>
         <th>Date</th>
         <th>Elapsed</th>
         <th>Status</th>
+        <th>Details / Failure Reason</th>
         <th>Actions</th>
       </tr>
     </thead>
     <tbody>
-      {% for j in jobs %}
+      {% for j in phot_jobs %}
         <tr>
           <td>
             <strong>
-              {% if j.type == 'transit_fit' %}
-                <a href="/transit-fit?inst={{ j.inst }}&amp;date={{ j.date }}&amp;target={{ j.target | urlencode }}">{{ j.target }}</a>
-              {% else %}
-                <a href="/photometry?inst={{ j.inst }}&amp;date={{ j.date }}&amp;target={{ j.target | urlencode }}">{{ j.target }}</a>
-              {% endif %}
+              <a href="/photometry?inst={{ j.inst }}&amp;date={{ j.date }}&amp;target={{ j.target | urlencode }}">{{ j.target }}</a>
             </strong>
-          </td>
-          <td>
-            {% if j.type == 'transit_fit' %}
-              <span class="badge" style="background: #4f46e5; color: #e0e7ff;">Transit Fit</span>
-            {% else %}
-              <span class="badge badge-filter-other">Photometry</span>
-            {% endif %}
           </td>
           <td><span class="badge badge-blue">{{ j.inst }}</span></td>
           <td class="mono">{{ j.date }}</td>
@@ -87,12 +76,19 @@
             {% endif %}
           </td>
           <td>
+            {% if j.state == 'error' and j.error_desc %}
+              <span style="color: var(--red); font-size: 0.8rem; font-family: monospace;">{{ j.error_desc }}</span>
+            {% else %}
+              <span style="color: var(--text-dim); font-size: 0.8rem;">—</span>
+            {% endif %}
+          </td>
+          <td>
             {% if j.state == 'running' %}
               <button class="btn btn-danger"
                       data-inst="{{ j.inst }}"
                       data-date="{{ j.date }}"
                       data-target="{{ j.target }}"
-                      data-type="{{ j.type }}"
+                      data-type="photometry"
                       onclick="cancelJob(this)">
                 Cancel
               </button>
@@ -111,9 +107,85 @@
     </tbody>
   </table>
   {% else %}
-  <div style="background: var(--surface); border: 1px dashed var(--border); border-radius: 10px; padding: 2.5rem; text-align: center; margin-top: 1.5rem;">
-    <div style="font-size: 2.5rem; margin-bottom: 1rem;">💼</div>
-    <p style="color: var(--text-dim);">No photometry or transit fitting jobs have been launched in this session.</p>
+  <div style="background: var(--surface); border: 1px dashed var(--border); border-radius: 10px; padding: 2rem; text-align: center; margin-top: 1rem; margin-bottom: 2rem;">
+    <p style="color: var(--text-dim);">No photometry jobs have been launched.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div style="margin: 2.5rem 0 1.5rem;">
+  <h2>Transit Fit Jobs</h2>
+  {% if fit_jobs %}
+  <table>
+    <thead>
+      <tr>
+        <th>Target</th>
+        <th>Instrument</th>
+        <th>Date</th>
+        <th>Elapsed</th>
+        <th>Status</th>
+        <th>Details / Failure Reason</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for j in fit_jobs %}
+        <tr>
+          <td>
+            <strong>
+              <a href="/transit-fit?inst={{ j.inst }}&amp;date={{ j.date }}&amp;target={{ j.target | urlencode }}">{{ j.target }}</a>
+            </strong>
+          </td>
+          <td><span class="badge badge-blue">{{ j.inst }}</span></td>
+          <td class="mono">{{ j.date }}</td>
+          <td class="mono">{{ j.elapsed }}s</td>
+          <td>
+            {% if j.state == 'done' %}
+              <span class="badge badge-green">Done</span>
+            {% elif j.state == 'error' %}
+              <span class="badge" style="background: var(--red); color: white;">Failed</span>
+            {% elif j.state == 'cancelled' %}
+              <span class="badge" style="background: var(--text-dim); color: white;">Cancelled</span>
+            {% elif j.state == 'running' %}
+              <span class="badge badge-amber" style="animation: pulse 1.5s infinite;">Running</span>
+            {% else %}
+              <span class="badge badge-filter-other">{{ j.state }}</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if j.state == 'error' and j.error_desc %}
+              <span style="color: var(--red); font-size: 0.8rem; font-family: monospace;">{{ j.error_desc }}</span>
+            {% else %}
+              <span style="color: var(--text-dim); font-size: 0.8rem;">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if j.state == 'running' %}
+              <button class="btn btn-danger"
+                      data-inst="{{ j.inst }}"
+                      data-date="{{ j.date }}"
+                      data-target="{{ j.target }}"
+                      data-type="transit_fit"
+                      onclick="cancelJob(this)">
+                Cancel
+              </button>
+            {% elif j.state == 'cancelling' %}
+              <button class="btn" disabled>
+                Cancelling...
+              </button>
+            {% else %}
+              <button class="btn" disabled>
+                Cancel
+              </button>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div style="background: var(--surface); border: 1px dashed var(--border); border-radius: 10px; padding: 2rem; text-align: center; margin-top: 1rem;">
+    <p style="color: var(--text-dim);">No transit fitting jobs have been launched.</p>
   </div>
   {% endif %}
 </div>

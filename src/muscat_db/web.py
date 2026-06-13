@@ -26,6 +26,7 @@ from muscat_db.database import (
     get_summaries as _get_summaries,
     get_targets as _get_targets,
     set_note as _set_note,
+    get_persisted_jobs,
 )
 from muscat_db.instruments import INSTRUMENTS
 
@@ -293,14 +294,12 @@ def transit_fit_file(inst: str, date: str, target: str, name: str):
 
 @app.get("/jobs", response_class=HTMLResponse)
 def jobs_page():
-    all_phot = phot.get_all_jobs()
-    for j in all_phot:
-        j["type"] = "photometry"
-    all_fit = fit.get_all_jobs()
-    for j in all_fit:
-        j["type"] = "transit_fit"
-    jobs = sorted(all_phot + all_fit, key=lambda j: j["started_at"], reverse=True)
-    return _render("jobs.html", jobs=jobs)
+    phot.sync_jobs()
+    fit.sync_jobs()
+    all_jobs = get_persisted_jobs()
+    phot_jobs = [j for j in all_jobs if j["type"] == "photometry"]
+    fit_jobs = [j for j in all_jobs if j["type"] == "transit_fit"]
+    return _render("jobs.html", phot_jobs=phot_jobs, fit_jobs=fit_jobs)
 
 
 @app.get("/photometry/file/{inst}/{date}/{name}")
