@@ -271,28 +271,30 @@
           <span>Stellar Parameters</span>
           <span id="stellar-ref-container" style="font-size: 0.75rem; font-weight: normal; color: var(--text-dim); text-transform: none;"></span>
         </div>
-        <div class="opt">
-          <label for="opt-teff">Teff (K) <span class="help-tooltip" title="Stellar effective temperature.">?</span></label>
-          <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <input type="number" id="opt-teff" value="{{ target_params.teff }}" placeholder="val" style="flex: 3; width: 100%; min-width: 0;">
-            <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
-            <input type="number" id="opt-teff_unc" value="{{ target_params.teff_unc }}" placeholder="unc" style="flex: 2; width: 100%; min-width: 0;">
+        <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem;">
+          <div class="opt">
+            <label for="opt-teff">Teff (K) <span class="help-tooltip" title="Stellar effective temperature.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="number" id="opt-teff" value="{{ target_params.teff }}" placeholder="val" style="flex: 3; width: 100%; min-width: 0;">
+              <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
+              <input type="number" id="opt-teff_unc" value="{{ target_params.teff_unc }}" placeholder="unc" style="flex: 2; width: 100%; min-width: 0;">
+            </div>
           </div>
-        </div>
-        <div class="opt">
-          <label for="opt-logg">log g <span class="help-tooltip" title="Stellar surface gravity.">?</span></label>
-          <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <input type="number" id="opt-logg" value="{{ target_params.logg }}" placeholder="val" step="0.01" style="flex: 3; width: 100%; min-width: 0;">
-            <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
-            <input type="number" id="opt-logg_unc" value="{{ target_params.logg_unc }}" placeholder="unc" step="0.01" style="flex: 2; width: 100%; min-width: 0;">
+          <div class="opt">
+            <label for="opt-logg">log g <span class="help-tooltip" title="Stellar surface gravity.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="number" id="opt-logg" value="{{ target_params.logg }}" placeholder="val" step="0.01" style="flex: 3; width: 100%; min-width: 0;">
+              <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
+              <input type="number" id="opt-logg_unc" value="{{ target_params.logg_unc }}" placeholder="unc" step="0.01" style="flex: 2; width: 100%; min-width: 0;">
+            </div>
           </div>
-        </div>
-        <div class="opt">
-          <label for="opt-feh">[Fe/H] <span class="help-tooltip" title="Stellar metallicity.">?</span></label>
-          <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <input type="number" id="opt-feh" value="{{ target_params.feh }}" placeholder="val" step="0.01" style="flex: 3; width: 100%; min-width: 0;">
-            <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
-            <input type="number" id="opt-feh_unc" value="{{ target_params.feh_unc }}" placeholder="unc" step="0.01" style="flex: 2; width: 100%; min-width: 0;">
+          <div class="opt">
+            <label for="opt-feh">[Fe/H] <span class="help-tooltip" title="Stellar metallicity.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="number" id="opt-feh" value="{{ target_params.feh }}" placeholder="val" step="0.01" style="flex: 3; width: 100%; min-width: 0;">
+              <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
+              <input type="number" id="opt-feh_unc" value="{{ target_params.feh_unc }}" placeholder="unc" step="0.01" style="flex: 2; width: 100%; min-width: 0;">
+            </div>
           </div>
         </div>
 
