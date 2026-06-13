@@ -285,6 +285,65 @@ def validate_fit_options(options: dict | None) -> str | None:
     return None
 
 
+class _SysDumper(yaml.SafeDumper):
+    """Dump sys.yaml with leaf ``[value, unc]`` pairs in flow style (mappings
+    stay block) and floats free of representation noise."""
+
+
+def _represent_clean_float(dumper: yaml.Dumper, value: float):
+    """Render a float cleanly: strip representation noise (0.0005600000000000001
+    -> ``0.00056``), emit whole numbers as ints (``5475``), and keep the result
+    parseable as a YAML float (no ``!!float`` tags)."""
+    if value != value or value in (float("inf"), float("-inf")):
+        return dumper.represent_scalar("tag:yaml.org,2002:float", repr(value))
+    # Whole numbers (except 0.0) render as plain ints, e.g. teff [5475, 127].
+    if value != 0 and value == int(value) and abs(value) < 1e15:
+        return dumper.represent_int(int(value))
+
+    # Shortest decimal that round-trips within float-precision tolerance.
+    text = repr(value)
+    for precision in range(4, 17):
+        candidate = f"{value:.{precision}g}"
+        if abs(float(candidate) - value) <= abs(value or 1) * 1e-12:
+            text = candidate
+            break
+    # PyYAML tags a float "!!float" unless its text reads as a float: the
+    # mantissa needs a decimal point even in exponent form (3e-05 -> 3.0e-05).
+    if "e" in text or "E" in text:
+        mantissa, _, exponent = text.replace("E", "e").partition("e")
+        if "." not in mantissa:
+            mantissa += ".0"
+        text = f"{mantissa}e{exponent}"
+    elif "." not in text:
+        text += ".0"
+    return dumper.represent_scalar("tag:yaml.org,2002:float", text)
+
+
+_SysDumper.add_representer(float, _represent_clean_float)
+
+
+def _normalize_band(raw: str) -> str:
+    """Map a raw filter token from a light-curve filename to a band name that
+    timer/limbdark understands, preserving narrow-band identity.
+
+    Broadband Sloan filters  -> 'g' / 'r' / 'i' / 'z'
+    Narrow-band Sloan filters -> 'g_narrow' / 'r_narrow' / 'i_narrow' / 'z_narrow'
+    Sodium D narrow-band      -> 'Na_D'
+
+    The previous substring matching (``'r' in 'i_narrow'``) collapsed every
+    narrow band onto a broadband char, so timer saw only the unique broadbands
+    and dropped the narrow bands from chromatic plots.
+    """
+    low = raw.strip().lower()
+    # Sodium D: real tokens start with "na" (Na_D, NaD, Na). Narrow Sloan tokens
+    # start with their filter letter (e.g. "i_narrow"), so this is unambiguous.
+    if low.startswith("na"):
+        return "Na_D"
+    is_narrow = "narrow" in low or low.endswith("_nb")
+    base = low[0] if low[:1] in "griz" else "g"
+    return f"{base}_narrow" if is_narrow else base
+
+
 def _write_fit_inputs(
     rdir: pathlib.Path,
     inst: str,
@@ -303,18 +362,47 @@ def _write_fit_inputs(
 
     # fit.yaml
     trend_val = 1 if options.get("trend", "true") == "true" else 0
+
+    # Option parsers: the form sends every value as a string (or omits it).
+    def _bool_opt(key: str, default: bool = False) -> bool:
+        v = options.get(key)
+        return default if v is None else v == "true"
+
+    def _int_opt(key: str, default: int) -> int:
+        try: return int(float(options.get(key) or default))
+        except (TypeError, ValueError): return default
+
+    def _float_opt(key: str, default: float) -> float:
+        try: return float(options.get(key) or default)
+        except (TypeError, ValueError): return default
+
+    def _trim_opt(key: str):
+        v = options.get(key)
+        if v is None or str(v).strip() == "": return None
+        try: return int(float(v))
+        except (TypeError, ValueError): return None
+
+    # Per-dataset detrending options (applied uniformly to every light curve).
+    detrend = {
+        "spline": _bool_opt("spline"),
+        "spline_knots": _int_opt("spline_knots", 5),
+        "add_bias": _bool_opt("add_bias"),
+        "quadratic": _bool_opt("quadratic"),
+        "clip": _bool_opt("clip"),
+        "clip_nsig": _float_opt("clip_nsig", 7),
+        "chunk_offset": _bool_opt("chunk_offset"),
+        "chunk_thresh": _float_opt("chunk_thresh", 0),
+        "trim_beg": _trim_opt("trim_beg"),
+        "trim_end": _trim_opt("trim_end"),
+    }
+
     fit_data: dict = {"data": {}}
     for c in csvs:
         fname = c.name
         parts = fname.split(f"_{inst}_")
         band = parts[1].split(f"_{date}")[0] if len(parts) > 1 else "gp"
 
-        mapped_band = band.lower()
-        if 'g' in mapped_band: mapped_band = 'g'
-        elif 'r' in mapped_band or 'na' in mapped_band: mapped_band = 'r'
-        elif 'i' in mapped_band: mapped_band = 'i'
-        elif 'z' in mapped_band: mapped_band = 'z'
-        else: mapped_band = 'g'
+        mapped_band = _normalize_band(band)
 
         fit_data["data"][band] = {
             "file": fname,
@@ -322,6 +410,7 @@ def _write_fit_inputs(
             "trend": trend_val,
             "binsize": 0.00139,
             "format": "afphot",
+            **detrend,
         }
 
     planets_str = (options.get("planets") or "b").strip()
@@ -336,6 +425,20 @@ def _write_fit_inputs(
     except ValueError: fit_data["tc_pred_unc"] = 0.04
 
     fit_data["chromatic"] = options.get("chromatic") != "false"
+    # "Overwrite" maps to timer's ``clobber``: when true, timer ignores any saved
+    # *.pkl results and re-runs the fit from scratch. Default (unchecked) is false.
+    fit_data["clobber"] = options.get("overwrite") == "true"
+
+    # Sampler options (timer defaults: tune/draws 2000, chains/cores 2).
+    fit_data["tune"] = _int_opt("tune", 2000)
+    fit_data["draws"] = _int_opt("draws", 2000)
+    fit_data["chains"] = _int_opt("chains", 2)
+    fit_data["cores"] = _int_opt("cores", 2)
+
+    # Model options (timer defaults: include_mean and use_custom_optimizer on).
+    fit_data["include_mean"] = _bool_opt("include_mean", default=True)
+    fit_data["use_custom_optimizer"] = _bool_opt("use_custom_optimizer", default=True)
+
     fit_data["fixed"] = options.get("fixed") or ["period", "u_star"]
 
     with open(rdir / "fit.yaml", "w") as f:
@@ -363,7 +466,10 @@ def _write_fit_inputs(
         }
 
     with open(rdir / "sys.yaml", "w") as f:
-        yaml.safe_dump(sys_data, f, default_flow_style=False)
+        yaml.dump(
+            sys_data, f, Dumper=_SysDumper,
+            default_flow_style=None, sort_keys=False,
+        )
 
 
 # Path to the standalone helper run inside the `timer` conda env.
@@ -648,7 +754,8 @@ def get_fit_outputs(inst: str, date: str, target: str) -> dict:
         "summary": None,
         "has_log": False,
         "has_fit_yaml": False,
-        "has_sys_yaml": False
+        "has_sys_yaml": False,
+        "extra_files": []
     }
 
     if (rdir / "timer-fit.log").is_file():
@@ -663,11 +770,22 @@ def get_fit_outputs(inst: str, date: str, target: str) -> dict:
     if not out_dir.is_dir():
         return outputs
 
-    # Check for fit.png and data.png
-    for p_name in ("fit.png", "data.png"):
-        if (out_dir / p_name).is_file():
-            outputs["plots"].append(p_name)
+    # Show every PNG plot produced by the run, sorted by name.
+    for p in sorted(out_dir.glob("*.png")):
+        if p.is_file():
+            outputs["plots"].append(p.name)
             outputs["has_any"] = True
+
+    # Collect any other output files for download (exclude plots already shown
+    # and files that get their own dedicated link below).
+    _linked = {"summary.csv"}
+    for p in sorted(out_dir.iterdir()):
+        if not p.is_file():
+            continue
+        if p.suffix.lower() == ".png" or p.name in _linked:
+            continue
+        outputs["extra_files"].append(p.name)
+        outputs["has_any"] = True
 
     # Parse summary.csv
     summary_path = out_dir / "summary.csv"

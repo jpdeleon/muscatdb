@@ -218,6 +218,7 @@
       {% if outputs.has_fit_yaml %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/fit.yaml" target="_blank">⚙ fit.yaml</a>{% endif %}
       {% if outputs.has_sys_yaml %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/sys.yaml" target="_blank">🪐 sys.yaml</a>{% endif %}
       {% if outputs.summary %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/summary.csv" download>⬇ download summary (.csv)</a>{% endif %}
+      {% for f in outputs.extra_files %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/{{ f }}" download>⬇ {{ f }}</a>{% endfor %}
     </div>
   </div>
   {% endif %}
@@ -253,14 +254,18 @@
             <input type="number" id="opt-tc_pred_unc" value="0.04" step="0.001" placeholder="unc" style="flex: 2; width: 100%; min-width: 0;">
           </div>
         </div>
-        <div style="display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: flex-end; padding-bottom: 0.45rem;">
-          <div class="opt check" style="margin-top: 0;">
+        <div style="display: flex; gap: 1.25rem; flex-wrap: nowrap; align-items: flex-end; padding-bottom: 0.45rem;">
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
             <input type="checkbox" id="opt-chromatic" checked>
             <label for="opt-chromatic">Chromatic fit <span class="help-tooltip" title="Flag indicating if parameters (like Rp/R*) are chromatic (band-dependent).">?</span></label>
           </div>
-          <div class="opt check" style="margin-top: 0;">
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
             <input type="checkbox" id="opt-trend" checked>
             <label for="opt-trend">Trend <span class="help-tooltip" title="Include linear trend parameter in the fit. Sets 1 if checked, 0 if unchecked.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-overwrite">
+            <label for="opt-overwrite">Overwrite <span class="help-tooltip" title="Re-run the fit from scratch, ignoring any saved results (sets clobber: true in fit.yaml). Unchecked reuses saved outputs.">?</span></label>
           </div>
         </div>
 
@@ -292,6 +297,82 @@
               <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
               <input type="number" id="opt-feh_unc" value="{{ target_params.feh_unc }}" placeholder="unc" step="0.01" style="flex: 2; width: 100%; min-width: 0;">
             </div>
+          </div>
+        </div>
+
+        <div class="opt-section-title">Sampler Options <span class="help-tooltip" title="NUTS sampler settings passed to PyMC. Larger values give more reliable posteriors but slower runs.">?</span></div>
+        <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem;">
+          <div class="opt">
+            <label for="opt-tune">tune <span class="help-tooltip" title="Tuning (warm-up) steps per chain, discarded after step-size adaptation. Default 2000.">?</span></label>
+            <input type="number" id="opt-tune" value="2000" min="1" step="100" style="width: 100%;">
+          </div>
+          <div class="opt">
+            <label for="opt-draws">draws <span class="help-tooltip" title="Posterior samples drawn per chain after tuning. Default 2000.">?</span></label>
+            <input type="number" id="opt-draws" value="2000" min="1" step="100" style="width: 100%;">
+          </div>
+          <div class="opt">
+            <label for="opt-chains">chains <span class="help-tooltip" title="Independent MCMC chains, used for the r_hat convergence diagnostic. Default 2.">?</span></label>
+            <input type="number" id="opt-chains" value="2" min="1" step="1" style="width: 100%;">
+          </div>
+          <div class="opt">
+            <label for="opt-cores">cores <span class="help-tooltip" title="CPU cores for parallel sampling (ideally >= chains). Default 2.">?</span></label>
+            <input type="number" id="opt-cores" value="2" min="1" step="1" style="width: 100%;">
+          </div>
+        </div>
+        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: flex-end; padding-bottom: 0.45rem;">
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-include_mean" checked>
+            <label for="opt-include_mean">Include mean <span class="help-tooltip" title="Fit the baseline (mean) flux level. Default on. Turn off when using Add bias to avoid a degenerate baseline.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-use_custom_optimizer" checked>
+            <label for="opt-use_custom_optimizer">Custom optimizer <span class="help-tooltip" title="Use timer's custom MAP optimizer instead of PyMC's default for the initial solution. Default on.">?</span></label>
+          </div>
+        </div>
+
+        <div class="opt-section-title">Detrending Options <span class="help-tooltip" title="Systematics/detrending settings applied to every light curve (written per-dataset in fit.yaml).">?</span></div>
+        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: flex-end; padding-bottom: 0.45rem;">
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-spline">
+            <label for="opt-spline">Spline <span class="help-tooltip" title="Add a B-spline basis to model smooth time-correlated systematics. Default off.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-add_bias">
+            <label for="opt-add_bias">Add bias <span class="help-tooltip" title="Add a constant (column of ones) to the design matrix. Default off. Do not combine with Include mean.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-quadratic">
+            <label for="opt-quadratic">Quadratic <span class="help-tooltip" title="Add a 2nd-order (quadratic) term to the trend basis. Default off.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-clip">
+            <label for="opt-clip">Clip outliers <span class="help-tooltip" title="Sigma-clip residual outliers before the final fit. Default off.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-chunk_offset">
+            <label for="opt-chunk_offset">Chunk offset <span class="help-tooltip" title="Fit a separate flux offset per time chunk (split at gaps larger than Chunk thresh). Default off.">?</span></label>
+          </div>
+        </div>
+        <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(5, 1fr); gap: 1rem;">
+          <div class="opt">
+            <label for="opt-spline_knots">Spline knots <span class="help-tooltip" title="Number of knots in the spline basis (used only when Spline is on). Default 5.">?</span></label>
+            <input type="number" id="opt-spline_knots" value="5" min="1" step="1" style="width: 100%;">
+          </div>
+          <div class="opt">
+            <label for="opt-clip_nsig">Clip &sigma; <span class="help-tooltip" title="Sigma threshold for outlier clipping (used only when Clip outliers is on). Default 7.">?</span></label>
+            <input type="number" id="opt-clip_nsig" value="7" min="1" step="0.5" style="width: 100%;">
+          </div>
+          <div class="opt">
+            <label for="opt-chunk_thresh">Chunk thresh <span class="help-tooltip" title="Time gap (days) that separates data into chunks for Chunk offset. Default 0.">?</span></label>
+            <input type="number" id="opt-chunk_thresh" value="0" min="0" step="0.01" style="width: 100%;">
+          </div>
+          <div class="opt">
+            <label for="opt-trim_beg">Trim begin <span class="help-tooltip" title="Number of data points to trim from the start of each light curve. Empty = none.">?</span></label>
+            <input type="number" id="opt-trim_beg" placeholder="none" min="0" step="1" style="width: 100%;">
+          </div>
+          <div class="opt">
+            <label for="opt-trim_end">Trim end <span class="help-tooltip" title="Number of data points to trim from the end of each light curve. Empty = none.">?</span></label>
+            <input type="number" id="opt-trim_end" placeholder="none" min="0" step="1" style="width: 100%;">
           </div>
         </div>
 
@@ -441,6 +522,23 @@
       tc_pred_unc: val('opt-tc_pred_unc'),
       chromatic: chk('opt-chromatic') ? 'true' : 'false',
       trend: chk('opt-trend') ? 'true' : 'false',
+      overwrite: chk('opt-overwrite') ? 'true' : 'false',
+      tune: val('opt-tune'),
+      draws: val('opt-draws'),
+      chains: val('opt-chains'),
+      cores: val('opt-cores'),
+      include_mean: chk('opt-include_mean') ? 'true' : 'false',
+      use_custom_optimizer: chk('opt-use_custom_optimizer') ? 'true' : 'false',
+      spline: chk('opt-spline') ? 'true' : 'false',
+      spline_knots: val('opt-spline_knots'),
+      add_bias: chk('opt-add_bias') ? 'true' : 'false',
+      quadratic: chk('opt-quadratic') ? 'true' : 'false',
+      clip: chk('opt-clip') ? 'true' : 'false',
+      clip_nsig: val('opt-clip_nsig'),
+      chunk_offset: chk('opt-chunk_offset') ? 'true' : 'false',
+      chunk_thresh: val('opt-chunk_thresh'),
+      trim_beg: val('opt-trim_beg'),
+      trim_end: val('opt-trim_end'),
       teff: val('opt-teff'),
       teff_unc: val('opt-teff_unc'),
       logg: val('opt-logg'),
@@ -576,6 +674,7 @@
 
     var bodyHtml = 
       '<div class="opt-grid">' +
+        '<div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem;">' +
         '<div class="opt">' +
           '<label>Period (days)</label>' +
           '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
@@ -592,13 +691,14 @@
             '<input type="number" class="planet-t0-unc" value="' + val_t0_unc + '" placeholder="unc" step="0.00001" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
           '</div>' +
         '</div>' +
-        '<div class="opt" style="grid-column: 1 / -1;">' +
+        '<div class="opt">' +
           '<label>Duration (days)</label>' +
           '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
             '<input type="number" class="planet-dur" value="' + val_dur + '" placeholder="val" step="0.00001" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
             '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' +
             '<input type="number" class="planet-dur-unc" value="' + val_dur_unc + '" placeholder="unc" step="0.00001" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
           '</div>' +
+        '</div>' +
         '</div>' +
         '<div class="opt">' +
           '<label>Impact parameter b</label>' +
@@ -739,9 +839,15 @@
       return;
     }
 
-    ['tc_pred','tc_pred_unc','teff','teff_unc','logg','logg_unc','feh','feh_unc'].forEach(function (id) {
+    ['tc_pred','tc_pred_unc','teff','teff_unc','logg','logg_unc','feh','feh_unc',
+     'tune','draws','chains','cores','spline_knots','clip_nsig','chunk_thresh','trim_beg','trim_end'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
+    });
+
+    ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset'].forEach(function (id) {
+      var el = document.getElementById('opt-'+id);
+      if (el && saved[id] !== undefined) el.checked = saved[id] === 'true';
     });
 
     var stellarRefEl = document.getElementById('stellar-ref-container');
@@ -752,6 +858,9 @@
 
     var trEl = document.getElementById('opt-trend');
     if (trEl && saved.trend !== undefined) trEl.checked = saved.trend === 'true';
+
+    var owEl = document.getElementById('opt-overwrite');
+    if (owEl && saved.overwrite !== undefined) owEl.checked = saved.overwrite === 'true';
 
     document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
       c.checked = saved.fixed && saved.fixed.indexOf(c.value) !== -1;
@@ -824,6 +933,17 @@
       var trEl = document.getElementById('opt-trend');
       if (trEl) trEl.checked = false;
 
+      var owEl = document.getElementById('opt-overwrite');
+      if (owEl) owEl.checked = false;
+
+      var numDefaults = {'opt-tune':'2000','opt-draws':'2000','opt-chains':'2','opt-cores':'2',
+                         'opt-spline_knots':'5','opt-clip_nsig':'7','opt-chunk_thresh':'0','opt-trim_beg':'','opt-trim_end':''};
+      Object.keys(numDefaults).forEach(function (id) { var el = document.getElementById(id); if (el) el.value = numDefaults[id]; });
+
+      var checkDefaults = {'opt-include_mean':true,'opt-use_custom_optimizer':true,'opt-spline':false,
+                           'opt-add_bias':false,'opt-quadratic':false,'opt-clip':false,'opt-chunk_offset':false};
+      Object.keys(checkDefaults).forEach(function (id) { var el = document.getElementById(id); if (el) el.checked = checkDefaults[id]; });
+
       document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
         c.checked = false;
       });
@@ -857,9 +977,15 @@
       var backup;
       try { backup = JSON.parse(localStorage.getItem(BACKUP_KEY) || 'null'); } catch (e) { backup = null; }
       if (backup) {
-        ['tc_pred','tc_pred_unc','teff','teff_unc','logg','logg_unc','feh','feh_unc'].forEach(function (id) {
+        ['tc_pred','tc_pred_unc','teff','teff_unc','logg','logg_unc','feh','feh_unc',
+         'tune','draws','chains','cores','spline_knots','clip_nsig','chunk_thresh','trim_beg','trim_end'].forEach(function (id) {
           var el = document.getElementById('opt-'+id);
           if (el && backup[id] !== undefined) el.value = backup[id];
+        });
+
+        ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset'].forEach(function (id) {
+          var el = document.getElementById('opt-'+id);
+          if (el && backup[id] !== undefined) el.checked = backup[id] === 'true';
         });
 
         var stellarRefEl = document.getElementById('stellar-ref-container');
@@ -870,6 +996,9 @@
 
         var trEl = document.getElementById('opt-trend');
         if (trEl && backup.trend !== undefined) trEl.checked = backup.trend === 'true';
+
+        var owEl = document.getElementById('opt-overwrite');
+        if (owEl && backup.overwrite !== undefined) owEl.checked = backup.overwrite === 'true';
 
         document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
           c.checked = backup.fixed && backup.fixed.indexOf(c.value) !== -1;

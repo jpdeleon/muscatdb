@@ -416,12 +416,12 @@ def transit_fit_file(inst: str, date: str, target: str, name: str):
     rdir = fit.fit_output_dir(inst, date, target)
     out_dir = rdir / "out"
 
-    if name in ("fit.png", "data.png", "summary.csv", "timer-fit.log", "fit.yaml", "sys.yaml"):
-        path = out_dir / name
-        if not path.is_file():
-            path = rdir / name
-    else:
-        raise HTTPException(403, "forbidden file access")
+    # ``name`` is already sanitized above (no "/" or ".."), so it can only
+    # resolve to a direct child of out_dir or rdir. Serve any output file
+    # found there (PNG plots, summary.csv, *.yaml, logs, etc.).
+    path = out_dir / name
+    if not path.is_file():
+        path = rdir / name
 
     if not path.is_file():
         raise HTTPException(404, "file not found")
