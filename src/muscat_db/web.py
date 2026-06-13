@@ -276,7 +276,8 @@ def transit_fit_query_archive(target: str):
         "pl_tranmid", "pl_tranmiderr1", "pl_tranmiderr2",
         "pl_trandur", "pl_trandurerr1", "pl_trandurerr2",
         "pl_ratror", "pl_ratrorerr1", "pl_ratrorerr2",
-        "pl_imppar", "pl_impparerr1", "pl_impparerr2"
+        "pl_imppar", "pl_impparerr1", "pl_impparerr2",
+        "st_teff_reflink", "pl_orbper_reflink"
     ]
     col_str = ", ".join(cols)
 
@@ -335,7 +336,9 @@ def transit_fit_query_archive(target: str):
         "ror": row.get("pl_ratror"),
         "ror_unc": get_unc(row.get("pl_ratrorerr1"), row.get("pl_ratrorerr2")),
         "b": row.get("pl_imppar"),
-        "b_unc": get_unc(row.get("pl_impparerr1"), row.get("pl_impparerr2"))
+        "b_unc": get_unc(row.get("pl_impparerr1"), row.get("pl_impparerr2")),
+        "st_ref": row.get("st_teff_reflink") or "",
+        "pl_ref": row.get("pl_orbper_reflink") or ""
     }
 
     for k, v in params.items():

@@ -77,6 +77,15 @@
     gap: 0.25rem;
     margin-left: 1.15rem;
   }
+
+  #stellar-ref-container a, .planet-ref-container a {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 500;
+  }
+  #stellar-ref-container a:hover, .planet-ref-container a:hover {
+    text-decoration: underline;
+  }
 </style>
 
 <h1>Transit Fit</h1>
@@ -256,7 +265,10 @@
           <label for="opt-trend">Trend <span class="help-tooltip" title="Include linear trend parameter in the fit. Sets 1 if checked, 0 if unchecked.">?</span></label>
         </div>
 
-        <div class="opt-section-title">Stellar Parameters</div>
+        <div class="opt-section-title" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+          <span>Stellar Parameters</span>
+          <span id="stellar-ref-container" style="font-size: 0.75rem; font-weight: normal; color: var(--text-dim); text-transform: none;"></span>
+        </div>
         <div class="opt">
           <label for="opt-teff">Teff (K) <span class="help-tooltip" title="Stellar effective temperature.">?</span></label>
           <input type="number" id="opt-teff" value="{{ target_params.teff }}">
@@ -285,7 +297,7 @@
       </div>
 
       <div class="opt-section-title" style="margin-top: 1.5rem; margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem;">
-        <span style="font-weight: 600; color: var(--accent2);">Planetary Priors</span>
+        <span style="font-weight: 600; color: var(--accent2);">Planet Parameters</span>
         <button class="btn sm primary" type="button" id="add-planet-btn" style="font-size: 0.8rem; padding: 0.25rem 0.5rem; line-height: 1;">➕ Add Planet</button>
       </div>
 
@@ -407,6 +419,7 @@
       planetLetters.push(letter);
 
       planetData['query_target_' + letter] = card.querySelector('.planet-query-target').value;
+      planetData['pl_ref_' + letter] = card.querySelector('.planet-ref-container').innerHTML;
       planetData['period_' + letter] = card.querySelector('.planet-period').value;
       planetData['period_unc_' + letter] = card.querySelector('.planet-period-unc').value;
       planetData['t0_' + letter] = card.querySelector('.planet-t0').value;
@@ -433,7 +446,8 @@
       logg_unc: val('opt-logg_unc'),
       feh: val('opt-feh'),
       feh_unc: val('opt-feh_unc'),
-      fixed: fixed
+      fixed: fixed,
+      stellar_ref: document.getElementById('stellar-ref-container') ? document.getElementById('stellar-ref-container').innerHTML : ''
     };
 
     if (planetLetters.length > 0) {
@@ -448,6 +462,7 @@
       opts['ror_unc'] = planetData['ror_unc_' + p0] || '';
       opts['b'] = planetData['b_' + p0] || '';
       opts['b_unc'] = planetData['b_unc_' + p0] || '';
+      opts['pl_ref'] = planetData['pl_ref_' + p0] || '';
     } else {
       opts['period'] = '';
       opts['period_unc'] = '';
@@ -459,6 +474,7 @@
       opts['ror_unc'] = '';
       opts['b'] = '';
       opts['b_unc'] = '';
+      opts['pl_ref'] = '';
     }
 
     for (var k in planetData) {
@@ -531,9 +547,10 @@
 
     var headerHtml = 
       '<div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem;">' +
-        '<div style="display: flex; align-items: center; gap: 0.5rem;">' +
+        '<div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">' +
           '<span style="font-weight: 600; color: var(--accent2);">Planet:</span>' +
           '<input type="text" class="planet-letter-input" value="' + letter + '" maxlength="1" style="width: 2.5rem; text-align: center; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 0.2rem; font-size: 0.85rem; font-weight: bold; text-transform: lowercase;">' +
+          '<span class="planet-ref-container" style="font-size: 0.75rem; color: var(--text-dim); margin-left: 0.5rem;">' + (values && values.pl_ref ? values.pl_ref : '') + '</span>' +
         '</div>' +
         '<div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">' +
           '<input type="text" class="planet-query-target" value="' + defaultQuery + '" placeholder="e.g. WASP-104 ' + letter + '" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 0.2rem 0.5rem; font-size: 0.8rem; width: 180px;">' +
@@ -649,6 +666,11 @@
           card.querySelector('.planet-b').value = params.b !== undefined ? params.b : '';
           card.querySelector('.planet-b-unc').value = params.b_unc !== undefined ? params.b_unc : '';
 
+          var plRefContainer = card.querySelector('.planet-ref-container');
+          if (plRefContainer) {
+            plRefContainer.innerHTML = params.pl_ref ? 'Source: ' + params.pl_ref : '';
+          }
+
           if (data.pl_name && data.pl_name.length > 2 && data.pl_name.indexOf(' ') !== -1) {
             var parts = data.pl_name.split(' ');
             var potentialLetter = parts[parts.length - 1].toLowerCase();
@@ -710,7 +732,8 @@
         ror: (DEFAULTS && DEFAULTS.ror) !== undefined ? DEFAULTS.ror : '',
         ror_unc: (DEFAULTS && DEFAULTS.ror_unc) !== undefined ? DEFAULTS.ror_unc : '',
         b: (DEFAULTS && DEFAULTS.b) !== undefined ? DEFAULTS.b : '',
-        b_unc: (DEFAULTS && DEFAULTS.b_unc) !== undefined ? DEFAULTS.b_unc : ''
+        b_unc: (DEFAULTS && DEFAULTS.b_unc) !== undefined ? DEFAULTS.b_unc : '',
+        pl_ref: ''
       }, true);
       return;
     }
@@ -719,6 +742,9 @@
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
     });
+
+    var stellarRefEl = document.getElementById('stellar-ref-container');
+    if (stellarRefEl && saved.stellar_ref !== undefined) stellarRefEl.innerHTML = saved.stellar_ref;
 
     var cEl = document.getElementById('opt-chromatic');
     if (cEl && saved.chromatic !== undefined) cEl.checked = saved.chromatic === 'true';
@@ -751,7 +777,8 @@
         ror: saved['ror_' + letter] !== undefined ? saved['ror_' + letter] : '',
         ror_unc: saved['ror_unc_' + letter] !== undefined ? saved['ror_unc_' + letter] : '',
         b: saved['b_' + letter] !== undefined ? saved['b_' + letter] : '',
-        b_unc: saved['b_unc_' + letter] !== undefined ? saved['b_unc_' + letter] : ''
+        b_unc: saved['b_unc_' + letter] !== undefined ? saved['b_unc_' + letter] : '',
+        pl_ref: saved['pl_ref_' + letter] !== undefined ? saved['pl_ref_' + letter] : ''
       };
 
       if (letter === planetLetters[0]) {
@@ -765,6 +792,7 @@
         if (vals.ror_unc === '' && saved.ror_unc !== undefined) vals.ror_unc = saved.ror_unc;
         if (vals.b === '' && saved.b !== undefined) vals.b = saved.b;
         if (vals.b_unc === '' && saved.b_unc !== undefined) vals.b_unc = saved.b_unc;
+        if (vals.pl_ref === '' && saved.pl_ref !== undefined) vals.pl_ref = saved.pl_ref;
       }
 
       addPlanetCard(letter, vals, true);
@@ -785,6 +813,10 @@
         var el = document.getElementById('opt-'+id);
         if (el) el.value = '';
       });
+
+      var stellarRefEl = document.getElementById('stellar-ref-container');
+      if (stellarRefEl) stellarRefEl.innerHTML = '';
+
       var cEl = document.getElementById('opt-chromatic');
       if (cEl) cEl.checked = false;
 
@@ -828,6 +860,10 @@
           var el = document.getElementById('opt-'+id);
           if (el && backup[id] !== undefined) el.value = backup[id];
         });
+
+        var stellarRefEl = document.getElementById('stellar-ref-container');
+        if (stellarRefEl) stellarRefEl.innerHTML = backup.stellar_ref || '';
+
         var cEl = document.getElementById('opt-chromatic');
         if (cEl && backup.chromatic !== undefined) cEl.checked = backup.chromatic === 'true';
 
@@ -861,7 +897,8 @@
             ror: backup['ror_' + letter] !== undefined ? backup['ror_' + letter] : '',
             ror_unc: backup['ror_unc_' + letter] !== undefined ? backup['ror_unc_' + letter] : '',
             b: backup['b_' + letter] !== undefined ? backup['b_' + letter] : '',
-            b_unc: backup['b_unc_' + letter] !== undefined ? backup['b_unc_' + letter] : ''
+            b_unc: backup['b_unc_' + letter] !== undefined ? backup['b_unc_' + letter] : '',
+            pl_ref: backup['pl_ref_' + letter] !== undefined ? backup['pl_ref_' + letter] : ''
           };
 
           if (letter === planetLetters[0]) {
@@ -875,6 +912,7 @@
             if (vals.ror_unc === '' && backup.ror_unc !== undefined) vals.ror_unc = backup.ror_unc;
             if (vals.b === '' && backup.b !== undefined) vals.b = backup.b;
             if (vals.b_unc === '' && backup.b_unc !== undefined) vals.b_unc = backup.b_unc;
+            if (vals.pl_ref === '' && backup.pl_ref !== undefined) vals.pl_ref = backup.pl_ref;
           }
 
           addPlanetCard(letter, vals, true);
@@ -1086,6 +1124,12 @@
             if (el && params[id] !== undefined) el.value = params[id];
           });
 
+          // Stellar parameters reference
+          var stellarRefEl = document.getElementById('stellar-ref-container');
+          if (stellarRefEl) {
+            stellarRefEl.innerHTML = params.st_ref ? 'Source: ' + params.st_ref : '';
+          }
+
           // Sync first planet card's priors
           var container = document.getElementById('planet-cards-container');
           if (container && container.children.length > 0) {
@@ -1110,6 +1154,11 @@
             firstCard.querySelector('.planet-ror-unc').value = params.ror_unc !== undefined ? params.ror_unc : '';
             firstCard.querySelector('.planet-b').value = params.b !== undefined ? params.b : '';
             firstCard.querySelector('.planet-b-unc').value = params.b_unc !== undefined ? params.b_unc : '';
+
+            var plRefContainer = firstCard.querySelector('.planet-ref-container');
+            if (plRefContainer) {
+              plRefContainer.innerHTML = params.pl_ref ? 'Source: ' + params.pl_ref : '';
+            }
 
             var firstQueryTarget = firstCard.querySelector('.planet-query-target');
             if (firstQueryTarget) {
