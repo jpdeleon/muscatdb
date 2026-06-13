@@ -276,7 +276,7 @@ def transit_fit_file(inst: str, date: str, target: str, name: str):
     if ".." in name or "/" in name:
         raise HTTPException(400, "invalid filename")
 
-    rdir = phot.output_base() / inst / date / f"transit_fit_{target.replace(' ', '')}"
+    rdir = fit.fit_output_dir(inst, date, target)
     out_dir = rdir / "out"
 
     if name in ("fit.png", "data.png", "summary.csv", "timer-fit.log"):

@@ -21,6 +21,13 @@ from muscat_db.photometry import output_base, valid_date, _conda_env_python, _ta
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent.resolve()
 
+
+def fit_output_dir(inst: str, date: str, target: str) -> pathlib.Path:
+    """Return the output directory for a transit fitting run."""
+    base = pathlib.Path(os.environ.get("MUSCAT_TIMER_DIR", "/ut2/jerome/ql/timer"))
+    return base / inst / date / target.replace(" ", "")
+
+
 @dataclass
 class TransitFitJob:
     key: str
@@ -183,7 +190,7 @@ def start_fit(
         return {"ok": False, "error": "No photometry CSV lightcurves found for this target."}
 
     # Working directory
-    rdir = output_base() / inst / date / f"transit_fit_{target.replace(' ', '')}"
+    rdir = fit_output_dir(inst, date, target)
     rdir.mkdir(parents=True, exist_ok=True)
 
     # Clean old run files
@@ -315,7 +322,7 @@ def job_status(inst: str, date: str, target: str) -> dict:
         job = _FIT_JOBS.get(key)
         if job is None:
             # Check if output exists on disk
-            rdir = output_base() / inst / date / f"transit_fit_{target.replace(' ', '')}"
+            rdir = fit_output_dir(inst, date, target)
             log_path = rdir / "timer-fit.log"
             if log_path.is_file():
                 # Read completed job log
@@ -430,7 +437,7 @@ def get_all_jobs() -> list[dict]:
 
 def get_fit_outputs(inst: str, date: str, target: str) -> dict:
     """Check and retrieve output files, plots, and summary values from completed run."""
-    rdir = output_base() / inst / date / f"transit_fit_{target.replace(' ', '')}"
+    rdir = fit_output_dir(inst, date, target)
     out_dir = rdir / "out"
 
     outputs = {
