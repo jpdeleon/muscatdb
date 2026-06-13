@@ -254,7 +254,7 @@ def _safe_float(v: str) -> float | None:
 
 def get_instruments(db_path: str) -> list[dict]:
     conn = sqlite3.connect(db_path)
-    cur = conn.execute("SELECT DISTINCT instrument FROM frames ORDER BY instrument")
+    cur = conn.execute("SELECT DISTINCT instrument FROM summaries ORDER BY instrument")
     result = [{"name": r[0]} for r in cur.fetchall()]
     conn.close()
     return result

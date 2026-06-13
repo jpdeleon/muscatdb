@@ -338,12 +338,33 @@ def safe_artifact_path(inst: str, date: str, name: str) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+_status_cache: dict[tuple[str, str, str, float], str] = {}
+
+
 def get_photometry_status(inst: str, date: str, target: str) -> str:
     """Determine the status of photometry for a target: none, test, or full."""
     rdir = results_dir(inst, date)
-    if not rdir.is_dir():
+    try:
+        st = rdir.stat()
+        mtime = st.st_mtime
+        is_dir = True
+    except OSError:
+        mtime = 0.0
+        is_dir = False
+
+    if not is_dir:
         return "none"
 
+    cache_key = (inst, date, target, mtime)
+    if cache_key in _status_cache:
+        return _status_cache[cache_key]
+
+    status = _calculate_photometry_status(inst, date, target, rdir)
+    _status_cache[cache_key] = status
+    return status
+
+
+def _calculate_photometry_status(inst: str, date: str, target: str, rdir: Path) -> str:
     out = list_outputs(inst, date, target)
     if not out.get("has_any"):
         return "none"
