@@ -646,11 +646,19 @@ def get_fit_outputs(inst: str, date: str, target: str) -> dict:
         "has_any": False,
         "plots": [],
         "summary": None,
-        "has_log": False
+        "has_log": False,
+        "has_fit_yaml": False,
+        "has_sys_yaml": False
     }
 
     if (rdir / "timer-fit.log").is_file():
         outputs["has_log"] = True
+
+    if (rdir / "fit.yaml").is_file():
+        outputs["has_fit_yaml"] = True
+
+    if (rdir / "sys.yaml").is_file():
+        outputs["has_sys_yaml"] = True
 
     if not out_dir.is_dir():
         return outputs

@@ -206,6 +206,8 @@
 
     <div class="dl-row">
       {% if outputs.has_log %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/timer-fit.log" target="_blank">📄 fit run log</a>{% endif %}
+      {% if outputs.has_fit_yaml %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/fit.yaml" target="_blank">⚙ fit.yaml</a>{% endif %}
+      {% if outputs.has_sys_yaml %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/sys.yaml" target="_blank">🪐 sys.yaml</a>{% endif %}
       {% if outputs.summary %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/summary.csv" download>⬇ download summary (.csv)</a>{% endif %}
     </div>
   </div>

@@ -396,7 +396,7 @@ def transit_fit_file(inst: str, date: str, target: str, name: str):
     rdir = fit.fit_output_dir(inst, date, target)
     out_dir = rdir / "out"
 
-    if name in ("fit.png", "data.png", "summary.csv", "timer-fit.log"):
+    if name in ("fit.png", "data.png", "summary.csv", "timer-fit.log", "fit.yaml", "sys.yaml"):
         path = out_dir / name
         if not path.is_file():
             path = rdir / name
