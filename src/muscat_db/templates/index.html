@@ -54,7 +54,7 @@
         data-airmass-min="{{ t.airmass_min if t.airmass_min is not none else '' }}"
         data-airmass-max="{{ t.airmass_max if t.airmass_max is not none else '' }}"
         data-instruments="{{ t.instruments|join(',') }}"
-        data-dates="{{ t.dates|join(',') }}"
+        data-dates="{% for d in t.dates %}{% set inst = t.date_to_inst.get(d, t.instruments[0] if t.instruments else '') %}{{ d }}{% if inst == 'muscat' %}(M1){% elif inst == 'muscat2' %}(M2){% elif inst == 'muscat3' %}(M3){% elif inst == 'muscat4' %}(M4){% elif inst == 'sinistro' %}(S){% endif %}{% if not loop.last %},{% endif %}{% endfor %}"
         data-phot="{{ 'check' if t.phot == 'full' else 'X' }}"
         data-note="{{ t.note|default('', true) }}">
       <td><strong>{{ t.object }}</strong></td>
@@ -81,7 +81,7 @@
       <td class="mono" style="white-space:normal;">
         {% for d in t.dates %}
           {% set inst = t.date_to_inst.get(d, t.instruments[0] if t.instruments else '') %}
-          <a href="/{{ inst }}/{{ d }}">{{ d }}</a><a href="/photometry?inst={{ inst }}&date={{ d }}&target={{ t.object | urlencode }}" title="photometry" style="text-decoration:none;font-size:0.8em;margin-left:1px;">🔭</a>{% if not loop.last %}, {% endif %}
+          <a href="/{{ inst }}/{{ d }}">{{ d }}{% if inst == 'muscat' %}(M1){% elif inst == 'muscat2' %}(M2){% elif inst == 'muscat3' %}(M3){% elif inst == 'muscat4' %}(M4){% elif inst == 'sinistro' %}(S){% endif %}</a><a href="/photometry?inst={{ inst }}&date={{ d }}&target={{ t.object | urlencode }}" title="photometry" style="text-decoration:none;font-size:0.8em;margin-left:1px;">🔭</a>{% if not loop.last %}, {% endif %}
         {% endfor %}
       </td>
       <td style="text-align:center;">
