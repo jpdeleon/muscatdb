@@ -89,6 +89,14 @@
   .help-tooltip:hover { background: var(--accent); color: #fff; }
 </style>
 
+<h1>
+  Transit Fitting
+  {% if sel_target %}
+    : {{ sel_target }}
+    <a href="https://exoplanetarchive.ipac.caltech.edu/overview/{{ sel_target }}" target="_blank" style="font-size: 0.85rem; font-weight: normal; margin-left: 1rem; color: var(--accent); text-decoration: none;">View NASA Exoplanet Archive ↗</a>
+  {% endif %}
+</h1>
+
 <div class="selector-group">
   <label for="sel-inst">
     Instrument
