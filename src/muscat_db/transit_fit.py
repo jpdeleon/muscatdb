@@ -4,12 +4,15 @@ run the transit-fit pipeline, poll logs, and return outputs/plots.
 from __future__ import annotations
 
 import csv
+import math
 import os
 import pathlib
+import re
 import shlex
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -17,7 +20,7 @@ from typing import IO
 import yaml
 
 from muscat_db.instruments import INSTRUMENTS
-from muscat_db.photometry import output_base, valid_date, _conda_env_python, _tail
+from muscat_db.photometry import output_base, valid_date, _conda_env_python, _tail, _to_float
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent.resolve()
 
@@ -171,6 +174,229 @@ def get_target_parameters(target_name: str) -> dict:
     return params
 
 
+# Parameters the user may hold fixed during the fit (the "Fixed Parameters"
+# checkboxes in the fitting configuration form).
+_FIXABLE_PARAMS = {"period", "u_star", "b", "ror", "ecc", "omega"}
+# A single planet designation token, e.g. "b" or "c".
+_PLANET_TOKEN_RE = re.compile(r"^[A-Za-z]$")
+
+# Numeric fields in "Fitting Configurations & Parameters": (key, label, rule).
+#   "pos"    -> must be a finite number > 0
+#   "nonneg" -> must be a finite number >= 0
+#   "num"    -> any finite number
+# An empty value is allowed for every field; it keeps the pipeline default.
+_FIT_NUMERIC_FIELDS: list[tuple[str, str, str]] = [
+    ("tc_pred_unc", "tc_pred uncertainty",  "pos"),
+    ("teff",        "Teff (K)",             "pos"),
+    ("teff_unc",    "Teff uncertainty",     "pos"),
+    ("logg",        "log g",                "num"),
+    ("logg_unc",    "log g uncertainty",    "pos"),
+    ("feh",         "[Fe/H]",               "num"),
+    ("feh_unc",     "[Fe/H] uncertainty",   "pos"),
+    ("period",      "Period (days)",        "pos"),
+    ("period_unc",  "Period uncertainty",   "pos"),
+    ("t0",          "Epoch t0 (BJD)",       "pos"),
+    ("t0_unc",      "t0 uncertainty",       "pos"),
+    ("dur",         "Duration (days)",      "pos"),
+    ("dur_unc",     "Duration uncertainty", "pos"),
+    ("ror",         "Rp/R*",                "pos"),
+    ("ror_unc",     "Rp/R* uncertainty",    "pos"),
+    ("b",           "Impact parameter b",   "nonneg"),
+    ("b_unc",       "b uncertainty",        "pos"),
+]
+
+
+def validate_fit_options(options: dict | None) -> str | None:
+    """Return a user-facing error string for invalid fitting options, else ``None``.
+
+    Validates every field in the "Fitting Configurations & Parameters" form so
+    bad input is rejected with a clear message instead of crashing the pipeline
+    or writing a malformed sys.yaml. An empty field keeps the pipeline default.
+    """
+    o = options or {}
+
+    # Planets: comma-separated single letters (defaults to "b" when blank).
+    tokens = [p.strip() for p in (o.get("planets") or "b").split(",") if p.strip()]
+    if not tokens:
+        return "planets is required (e.g. b or b,c)"
+    if any(not _PLANET_TOKEN_RE.match(t) for t in tokens):
+        return "planets must be single letters separated by commas (e.g. b or b,c)"
+
+    # tc_pred is optional; validate only when provided.
+    if str(o.get("tc_pred", "")).strip() and _to_float(o.get("tc_pred")) is None:
+        return "tc_pred must be a number (BJD), or empty for auto"
+
+    for key, label, rule in _FIT_NUMERIC_FIELDS:
+        if str(o.get(key, "")).strip() == "":
+            continue  # blank -> pipeline default
+        val = _to_float(o.get(key))
+        if val is None or not math.isfinite(val):
+            return f"{label} must be a number"
+        if rule == "pos" and val <= 0:
+            return f"{label} must be greater than 0"
+        if rule == "nonneg" and val < 0:
+            return f"{label} must be 0 or greater"
+
+    # Rp/R* is a radius ratio; reject obviously unphysical values.
+    ror = _to_float(o.get("ror"))
+    if ror is not None and ror >= 1:
+        return "Rp/R* must be less than 1"
+
+    # Fixed parameters must be drawn from the known set.
+    fixed = o.get("fixed")
+    if fixed is not None:
+        if not isinstance(fixed, (list, tuple)):
+            return "fixed parameters must be a list"
+        unknown = [str(f) for f in fixed if str(f) not in _FIXABLE_PARAMS]
+        if unknown:
+            allowed = ", ".join(sorted(_FIXABLE_PARAMS))
+            return f"unknown fixed parameter(s): {', '.join(unknown)} (allowed: {allowed})"
+
+    return None
+
+
+def _write_fit_inputs(
+    rdir: pathlib.Path,
+    inst: str,
+    date: str,
+    csvs: list[pathlib.Path],
+    options: dict,
+) -> None:
+    """Copy light-curve CSVs into ``rdir`` and write fit.yaml / sys.yaml.
+
+    Shared by :func:`start_fit` (real run directory) and :func:`compute_logp`
+    (throwaway temp directory) so both build identical timer inputs from the
+    form options.
+    """
+    for c in csvs:
+        shutil.copy2(c, rdir / c.name)
+
+    # fit.yaml
+    fit_data: dict = {"data": {}}
+    for c in csvs:
+        fname = c.name
+        parts = fname.split(f"_{inst}_")
+        band = parts[1].split(f"_{date}")[0] if len(parts) > 1 else "gp"
+
+        mapped_band = band.lower()
+        if 'g' in mapped_band: mapped_band = 'g'
+        elif 'r' in mapped_band or 'na' in mapped_band: mapped_band = 'r'
+        elif 'i' in mapped_band: mapped_band = 'i'
+        elif 'z' in mapped_band: mapped_band = 'z'
+        else: mapped_band = 'g'
+
+        fit_data["data"][band] = {
+            "file": fname,
+            "band": mapped_band,
+            "trend": 1,
+            "binsize": 0.00139,
+            "format": "afphot",
+        }
+
+    planets_str = (options.get("planets") or "b").strip()
+    fit_data["planets"] = planets_str
+
+    tc_pred = (options.get("tc_pred") or "").strip()
+    if tc_pred:
+        try: fit_data["tc_pred"] = float(tc_pred)
+        except ValueError: pass
+
+    try: fit_data["tc_pred_unc"] = float(options.get("tc_pred_unc") or 0.04)
+    except ValueError: fit_data["tc_pred_unc"] = 0.04
+
+    fit_data["chromatic"] = options.get("chromatic") != "false"
+    fit_data["fixed"] = options.get("fixed") or ["period", "u_star"]
+
+    with open(rdir / "fit.yaml", "w") as f:
+        yaml.safe_dump(fit_data, f, default_flow_style=False)
+
+    # sys.yaml
+    sys_data: dict = {
+        "star": {
+            "teff": [float(options.get("teff") or 5778.0), float(options.get("teff_unc") or 100.0)],
+            "logg": [float(options.get("logg") or 4.4), float(options.get("logg_unc") or 0.1)],
+            "feh": [float(options.get("feh") or 0.0), float(options.get("feh_unc") or 0.1)],
+        },
+        "planets": {},
+    }
+    for p in [p.strip() for p in planets_str.split(",") if p.strip()]:
+        sys_data["planets"][p] = {
+            "period": [float(options.get("period") or 1.0), float(options.get("period_unc") or 0.001)],
+            "t0": [float(options.get("t0") or 2450000.0), float(options.get("t0_unc") or 0.01)],
+            "dur": [float(options.get("dur") or 0.1), float(options.get("dur_unc") or 0.01)],
+            "ror": [float(options.get("ror") or 0.05), float(options.get("ror_unc") or 0.005)],
+            "b": [float(options.get("b") or 0.0), float(options.get("b_unc") or 0.1)],
+        }
+
+    with open(rdir / "sys.yaml", "w") as f:
+        yaml.safe_dump(sys_data, f, default_flow_style=False)
+
+
+# Path to the standalone helper run inside the `timer` conda env.
+_LOGP_HELPER = pathlib.Path(__file__).parent / "_logp_helper.py"
+# Building + compiling the PyMC model can take ~1 minute; allow generous margin.
+_LOGP_TIMEOUT = 300
+
+
+def compute_logp(inst: str, date: str, target: str, options: dict) -> dict:
+    """Compute the transit model's log-probability for the given form options.
+
+    Builds the timer model from the entered parameters and evaluates
+    ``model.logp()`` at the prior point, in a throwaway directory so existing
+    run products are untouched. Returns ``{"ok": True, "logp": <str>,
+    "text": "logP= <value>"}`` or ``{"ok": False, "error": ...}``.
+    """
+    if inst not in INSTRUMENTS:
+        return {"ok": False, "error": f"unknown instrument {inst!r}"}
+    if not valid_date(date):
+        return {"ok": False, "error": "date must be 6-digit yymmdd"}
+    if not (target or "").strip():
+        return {"ok": False, "error": "target is required"}
+
+    err = validate_fit_options(options)
+    if err:
+        return {"ok": False, "error": err}
+
+    csvs = get_csv_lightcurves(inst, date, target)
+    if not csvs:
+        return {"ok": False, "error": "No photometry CSV lightcurves found for this target."}
+
+    timer_py = _conda_env_python("timer")
+    if not timer_py:
+        return {"ok": False, "error": "timer conda environment not found"}
+    if not _LOGP_HELPER.is_file():
+        return {"ok": False, "error": "logP helper script is missing"}
+
+    tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="muscat_logp_"))
+    try:
+        _write_fit_inputs(tmpdir, inst, date, csvs, options)
+        try:
+            proc = subprocess.run(
+                [timer_py, str(_LOGP_HELPER), str(tmpdir)],
+                capture_output=True, text=True, timeout=_LOGP_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": f"logP computation timed out after {_LOGP_TIMEOUT}s"}
+
+        # The helper prints a single "logP= ..." (or "logP error: ...") line
+        # amid timer's own stdout noise; pick it out.
+        line = next(
+            (ln.strip() for ln in (proc.stdout or "").splitlines()
+             if ln.strip().startswith("logP")),
+            None,
+        )
+        if line is None:
+            combined = ((proc.stdout or "") + (proc.stderr or "")).strip()
+            return {"ok": False, "error": "logP computation produced no result", "detail": combined[-800:]}
+        if line.startswith("logP error:"):
+            return {"ok": False, "error": line[len("logP error:"):].strip() or "logP computation failed"}
+
+        value = line.split("=", 1)[1].strip() if "=" in line else line
+        return {"ok": True, "logp": value, "text": line}
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def start_fit(
     inst: str,
     date: str,
@@ -185,6 +411,12 @@ def start_fit(
         return {"ok": False, "error": "date must be 6-digit yymmdd"}
     if not (target or "").strip():
         return {"ok": False, "error": "target is required"}
+
+    # Validate the fitting configuration before touching the filesystem so bad
+    # input fails fast without deleting prior run products.
+    err = validate_fit_options(options)
+    if err:
+        return {"ok": False, "error": err}
 
     csvs = get_csv_lightcurves(inst, date, target)
     if not csvs:
@@ -203,75 +435,8 @@ def start_fit(
             try: shutil.rmtree(p)
             except OSError: pass
 
-    # Copy CSV files to working directory
-    for c in csvs:
-        shutil.copy2(c, rdir / c.name)
-
-    # Build fit.yaml
-    fit_data: dict = {"data": {}}
-    for c in csvs:
-        fname = c.name
-        parts = fname.split(f"_{inst}_")
-        if len(parts) > 1:
-            rest = parts[1]
-            band = rest.split(f"_{date}")[0]
-        else:
-            band = "gp"
-
-        mapped_band = band.lower()
-        if 'g' in mapped_band: mapped_band = 'g'
-        elif 'r' in mapped_band or 'na' in mapped_band: mapped_band = 'r'
-        elif 'i' in mapped_band: mapped_band = 'i'
-        elif 'z' in mapped_band: mapped_band = 'z'
-        else: mapped_band = 'g'
-
-        fit_data["data"][band] = {
-            "file": fname,
-            "band": mapped_band,
-            "trend": 1,
-            "binsize": 0.00139,
-            "format": "afphot"
-        }
-
-    planets_str = (options.get("planets") or "b").strip()
-    fit_data["planets"] = planets_str
-    
-    tc_pred = (options.get("tc_pred") or "").strip()
-    if tc_pred:
-        try: fit_data["tc_pred"] = float(tc_pred)
-        except ValueError: pass
-
-    try: fit_data["tc_pred_unc"] = float(options.get("tc_pred_unc") or 0.04)
-    except ValueError: fit_data["tc_pred_unc"] = 0.04
-
-    fit_data["chromatic"] = options.get("chromatic") != "false"
-    fit_data["fixed"] = options.get("fixed") or ["period", "u_star"]
-
-    with open(rdir / "fit.yaml", "w") as f:
-        yaml.safe_dump(fit_data, f, default_flow_style=False)
-
-    # Build sys.yaml
-    sys_data: dict = {
-        "star": {
-            "teff": [float(options.get("teff") or 5778.0), float(options.get("teff_unc") or 100.0)],
-            "logg": [float(options.get("logg") or 4.4), float(options.get("logg_unc") or 0.1)],
-            "feh": [float(options.get("feh") or 0.0), float(options.get("feh_unc") or 0.1)]
-        },
-        "planets": {}
-    }
-
-    planets_list = [p.strip() for p in planets_str.split(",") if p.strip()]
-    for p in planets_list:
-        sys_data["planets"][p] = {
-            "period": [float(options.get("period") or 1.0), float(options.get("period_unc") or 0.001)],
-            "t0": [float(options.get("t0") or 2450000.0), float(options.get("t0_unc") or 0.01)],
-            "dur": [float(options.get("dur") or 0.1), float(options.get("dur_unc") or 0.01)],
-            "ror": [float(options.get("ror") or 0.05), float(options.get("ror_unc") or 0.005)],
-            "b": [float(options.get("b") or 0.0), float(options.get("b_unc") or 0.1)]
-        }
-
-    with open(rdir / "sys.yaml", "w") as f:
-        yaml.safe_dump(sys_data, f, default_flow_style=False)
+    # Copy CSVs and write fit.yaml / sys.yaml from the form options.
+    _write_fit_inputs(rdir, inst, date, csvs, options)
 
     # Launch process
     key = fit_job_key(inst, date, target)

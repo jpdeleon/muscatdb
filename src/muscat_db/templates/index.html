@@ -17,6 +17,7 @@
 </div>
 
 {% macro target_table(rows, table_id) %}
+<div class="csv-wrap">
 <table id="{{ table_id }}">
   <thead>
     <tr>
@@ -76,7 +77,7 @@
         {% else %}—{% endif %}
       </td>
       <td>{{ t.n_frames }}</td>
-      <td>
+      <td style="white-space:normal;">
         {% for inst in t.instruments %}
           <a href="/{{ inst }}"><span class="badge badge-blue">{{ inst }}</span></a>
         {% endfor %}
@@ -109,6 +110,7 @@
   {% endfor %}
   </tbody>
 </table>
+</div>
 {% endmacro %}
 
 {% if identified %}

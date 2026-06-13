@@ -11,6 +11,7 @@ import io
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 
 from muscat_db import photometry as phot
@@ -32,11 +33,15 @@ from muscat_db.instruments import INSTRUMENTS
 
 HERE = pathlib.Path(__file__).parent
 TEMPLATE_DIR = HERE / "templates"
+STATIC_DIR = HERE / "static"
 
 app = FastAPI(title="MuSCAT Observation Log")
 # The targets page is ~2.8 MB of highly repetitive HTML; gzip shrinks it ~16x,
 # which is the dominant cost when serving over an SSH port-forward tunnel.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+# Mount static assets (shared stylesheet, etc.) before the dynamic routes so a
+# request like /static/styles.css is not captured by the /{inst}/{date} route.
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 jinja = Environment(
     loader=FileSystemLoader(str(TEMPLATE_DIR)),
@@ -226,7 +231,19 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = ""):
         obj_set.update(phot.discovered_targets(inst, date))
         targets = sorted(obj_set)
     if inst and date and target:
-        csvs = [c.name for c in fit.get_csv_lightcurves(inst, date, target)]
+        import datetime
+        csvs = []
+        for c in fit.get_csv_lightcurves(inst, date, target):
+            try:
+                mtime = c.stat().st_mtime
+                dt = datetime.datetime.fromtimestamp(mtime)
+                created_at = dt.strftime('%Y-%m-%d %H:%M:%S')
+            except Exception:
+                created_at = "Unknown"
+            csvs.append({
+                "name": c.name,
+                "created_at": created_at
+            })
         outputs = fit.get_fit_outputs(inst, date, target)
         target_params = fit.get_target_parameters(target)
 
@@ -239,6 +256,93 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = ""):
         target_params=target_params,
         wiki_url=_wiki_url(inst, target),
     )
+
+
+@app.get("/transit-fit/query-archive")
+def transit_fit_query_archive(target: str):
+    if not (target or "").strip():
+        return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
+
+    import urllib.request
+    import urllib.parse
+    import json
+
+    target = target.strip()
+    cols = [
+        "pl_name", "st_teff", "st_tefferr1", "st_tefferr2",
+        "st_logg", "st_loggerr1", "st_loggerr2",
+        "st_met", "st_meterr1", "st_meterr2",
+        "pl_orbper", "pl_orbpererr1", "pl_orbpererr2",
+        "pl_tranmid", "pl_tranmiderr1", "pl_tranmiderr2",
+        "pl_trandur", "pl_trandurerr1", "pl_trandurerr2",
+        "pl_ratror", "pl_ratrorerr1", "pl_ratrorerr2",
+        "pl_imppar", "pl_impparerr1", "pl_impparerr2"
+    ]
+    col_str = ", ".join(cols)
+
+    # Sequence of queries to try
+    queries = [
+        f"SELECT {col_str} FROM pscomppars WHERE pl_name = '{target}'",
+        f"SELECT {col_str} FROM pscomppars WHERE hostname = '{target}'",
+        f"SELECT {col_str} FROM pscomppars WHERE pl_name LIKE '%{target}%'",
+        f"SELECT {col_str} FROM pscomppars WHERE hostname LIKE '%{target}%'"
+    ]
+
+    data = []
+    for q in queries:
+        url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as response:
+                res = json.loads(response.read().decode())
+                if res:
+                    data = res
+                    break
+        except Exception:
+            continue
+
+    if not data:
+        return JSONResponse({"ok": False, "error": f"No parameters found for target '{target}' in Exoplanet Archive."})
+
+    row = data[0]
+
+    def get_unc(err1, err2):
+        if err1 is None and err2 is None:
+            return None
+        val1 = abs(err1) if err1 is not None else 0.0
+        val2 = abs(err2) if err2 is not None else 0.0
+        return max(val1, val2)
+
+    pl_name = row.get("pl_name", "")
+    planets = "b"
+    if pl_name and len(pl_name) > 2 and pl_name[-2] == " ":
+        planets = pl_name[-1]
+
+    params = {
+        "planets": planets,
+        "teff": row.get("st_teff"),
+        "teff_unc": get_unc(row.get("st_tefferr1"), row.get("st_tefferr2")),
+        "logg": row.get("st_logg"),
+        "logg_unc": get_unc(row.get("st_loggerr1"), row.get("st_loggerr2")),
+        "feh": row.get("st_met"),
+        "feh_unc": get_unc(row.get("st_meterr1"), row.get("st_meterr2")),
+        "period": row.get("pl_orbper"),
+        "period_unc": get_unc(row.get("pl_orbpererr1"), row.get("pl_orbpererr2")),
+        "t0": row.get("pl_tranmid"),
+        "t0_unc": get_unc(row.get("pl_tranmiderr1"), row.get("pl_tranmiderr2")),
+        "dur": (row.get("pl_trandur") / 24.0) if row.get("pl_trandur") is not None else None,
+        "dur_unc": (get_unc(row.get("pl_trandurerr1"), row.get("pl_trandurerr2")) / 24.0) if row.get("pl_trandurerr1") is not None or row.get("pl_trandurerr2") is not None else None,
+        "ror": row.get("pl_ratror"),
+        "ror_unc": get_unc(row.get("pl_ratrorerr1"), row.get("pl_ratrorerr2")),
+        "b": row.get("pl_imppar"),
+        "b_unc": get_unc(row.get("pl_impparerr1"), row.get("pl_impparerr2"))
+    }
+
+    for k, v in params.items():
+        if v is None:
+            params[k] = ""
+
+    return JSONResponse({"ok": True, "params": params, "pl_name": pl_name})
 
 
 @app.get("/transit-fit/status")
@@ -254,6 +358,18 @@ def transit_fit_run(payload: dict = Body(...)):
     options = payload.get("options") or {}
     test_run = bool(payload.get("test_run", False))
     result = fit.start_fit(inst, date, target, options, test_run=test_run)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=400)
+    return JSONResponse(result)
+
+
+@app.post("/transit-fit/logp")
+def transit_fit_logp(payload: dict = Body(...)):
+    inst = (payload.get("inst") or "").strip()
+    date = (payload.get("date") or "").strip()
+    target = (payload.get("target") or "").strip()
+    options = payload.get("options") or {}
+    result = fit.compute_logp(inst, date, target, options)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
     return JSONResponse(result)

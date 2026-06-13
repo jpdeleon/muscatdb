@@ -1,39 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Jobs — MuSCAT-db{% endblock %}
 {% block content %}
-<style>
-  .btn {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 0.15rem 0.5rem;
-    font-size: 0.75rem;
-    color: var(--text);
-    cursor: pointer;
-    text-decoration: none;
-    display: inline-block;
-    font-family: inherit;
-    transition: border-color 0.15s, color 0.15s;
-  }
-  .btn:hover { border-color: var(--accent); color: var(--accent); }
-  .btn-danger {
-    border-color: var(--red);
-    color: var(--red);
-    background: transparent;
-  }
-  .btn-danger:hover {
-    border-color: var(--red);
-    background: var(--red);
-    color: #fff;
-  }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-    border-color: var(--border);
-    color: var(--text-dim);
-  }
-</style>
-
 <h1>Jobs</h1>
 
 <div style="margin: 1.5rem 0;">
@@ -84,7 +51,7 @@
           </td>
           <td>
             {% if j.state == 'running' %}
-              <button class="btn btn-danger"
+              <button class="btn sm danger"
                       data-inst="{{ j.inst }}"
                       data-date="{{ j.date }}"
                       data-target="{{ j.target }}"
@@ -93,11 +60,11 @@
                 Cancel
               </button>
             {% elif j.state == 'cancelling' %}
-              <button class="btn" disabled>
+              <button class="btn sm" disabled>
                 Cancelling...
               </button>
             {% else %}
-              <button class="btn" disabled>
+              <button class="btn sm" disabled>
                 Cancel
               </button>
             {% endif %}
@@ -161,7 +128,7 @@
           </td>
           <td>
             {% if j.state == 'running' %}
-              <button class="btn btn-danger"
+              <button class="btn sm danger"
                       data-inst="{{ j.inst }}"
                       data-date="{{ j.date }}"
                       data-target="{{ j.target }}"
@@ -170,11 +137,11 @@
                 Cancel
               </button>
             {% elif j.state == 'cancelling' %}
-              <button class="btn" disabled>
+              <button class="btn sm" disabled>
                 Cancelling...
               </button>
             {% else %}
-              <button class="btn" disabled>
+              <button class="btn sm" disabled>
                 Cancel
               </button>
             {% endif %}

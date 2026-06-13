@@ -2,6 +2,9 @@
 {% block title %}Transit Fit — MuSCAT-db{% endblock %}
 {% block content %}
 <style>
+  /* Page-specific styles only. Shared components (buttons, .opt* form fields,
+     details.adv, .run-panel, .phot-section, .help-tooltip, #run-log, .dl-row)
+     live in /static/styles.css. */
   .selector-group {
     display: flex; gap: 1rem; align-items: center; margin-bottom: 2rem; flex-wrap: wrap;
     background: var(--surface); border: 1px solid var(--border); padding: 1rem; border-radius: 8px;
@@ -12,9 +15,6 @@
     border-radius: 6px; padding: 0.45rem 0.75rem; min-width: 160px; font-size: 0.9rem;
   }
   .selector-group select:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  .phot-section { margin: 2rem 0 1rem; }
-  .phot-section h2 { color: var(--text); margin-bottom: 0.75rem; }
 
   .fig-grid {
     display: grid; gap: 1.5rem; grid-template-columns: repeat(auto-fill, minmax(480px, 1fr));
@@ -30,63 +30,53 @@
   .fig img { width: 100%; height: auto; border-radius: 6px; display: block; background: #000; }
   .fig .cap { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-dim); }
 
-  .btn {
-    background: var(--surface2); color: var(--text);
-    border: 1px solid var(--border); border-radius: 6px;
-    padding: 0.5rem 1rem; font-size: 0.85rem; cursor: pointer; font-family: inherit;
-    transition: border-color 0.15s, color 0.15s;
-  }
-  .btn:hover { border-color: var(--accent); color: var(--accent); }
-  .btn.primary { border-color: var(--accent2); color: var(--accent2); }
-  .btn:disabled { opacity: 0.5; cursor: default; }
-
-  .opt-grid {
-    display: grid; gap: 0.75rem 1.25rem;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    padding: 0.5rem 0 0.75rem;
-  }
-  .opt { display: flex; flex-direction: column; gap: 0.25rem; }
-  .opt > label { font-size: 0.78rem; color: var(--text-dim); }
-  .opt input[type="text"], .opt input[type="number"], .opt select {
-    background: var(--input-bg); color: var(--text);
-    border: 1px solid var(--border); border-radius: 6px;
-    padding: 0.35rem 0.5rem; font-size: 0.85rem; font-family: inherit;
-  }
-  .opt input:focus, .opt select:focus { outline: none; border-color: var(--accent); }
-  .opt.check { flex-direction: row; align-items: center; gap: 0.45rem; margin-top: auto; }
-  .opt.check label { color: var(--text); font-size: 0.85rem; }
+  /* Bottom-align checkboxes within the options grid (page-specific override). */
+  .opt.check { margin-top: auto; }
 
   .opt-section-title {
     grid-column: 1 / -1; font-size: 0.85rem; font-weight: 600; color: var(--accent2);
     margin-top: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem;
   }
 
-  .run-panel { border-top: 1px solid var(--border); padding-top: 1.25rem; margin-top: 2rem; }
-  .run-actions { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
-
-  #run-log {
-    display: none; margin-top: 1rem; text-align: left;
-    background: #0b0d13; color: #cdd3e0; border: 1px solid var(--border);
-    border-radius: 8px; padding: 0.75rem; max-height: 22rem; overflow: auto;
-    font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
-    white-space: pre-wrap; word-break: break-word;
+  .lightcurve-grid {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-top: 0.5rem;
   }
-
-  details.adv {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-    padding: 0.75rem 1rem; margin-top: 1.5rem;
+  .lightcurve-card {
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.6rem 0.85rem;
+    min-width: 220px;
+    transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
   }
-  details.adv > summary { cursor: pointer; font-size: 0.9rem; color: var(--text-dim); padding: 0.35rem 0; user-select: none; }
-  details.adv[open] > summary { color: var(--text); margin-bottom: 0.5rem; }
-
-  .dl-row { margin-top: 0.75rem; display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.85rem; }
-  .help-tooltip {
-    display: inline-flex; align-items: center; justify-content: center;
-    width: 13px; height: 13px; font-size: 0.65rem; font-weight: bold;
-    border-radius: 50%; background: var(--border); color: var(--text-dim);
-    cursor: help; margin-left: 4px; vertical-align: middle; border: 1px solid var(--border);
+  .lightcurve-card:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
   }
-  .help-tooltip:hover { background: var(--accent); color: #fff; }
+  .lightcurve-card .lc-name {
+    font-family: monospace;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 0.25rem;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .lightcurve-card .lc-date {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-left: 1.15rem;
+  }
 </style>
 
 <h1>Transit Fit</h1>
@@ -160,9 +150,12 @@
     <p style="font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.75rem;">
       The following lightcurve files will be loaded for fitting:
     </p>
-    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+    <div class="lightcurve-grid">
       {% for csv in csvs %}
-        <span class="badge badge-filter-other" style="font-family: monospace; font-size: 0.8rem; padding: 0.25rem 0.5rem;">📄 {{ csv }}</span>
+        <div class="lightcurve-card">
+          <span class="lc-name">📄 {{ csv.name }}</span>
+          <span class="lc-date">Created: {{ csv.created_at }}</span>
+        </div>
       {% endfor %}
     </div>
   </div>
@@ -188,7 +181,7 @@
     {% if outputs.summary %}
     <div class="phot-section">
       <h3>Fitted Parameters Summary</h3>
-      <div class="csv-wrap" style="overflow-x: auto; margin-top: 0.5rem;">
+      <div class="csv-wrap">
         <table>
           <thead>
             <tr>
@@ -224,8 +217,19 @@
     
     <details class="adv" id="opt-panel">
       <summary>Fitting Configurations &amp; Parameters</summary>
-      <div style="display: flex; justify-content: flex-end; margin-top: 0.25rem; margin-bottom: 0.5rem;">
-        <button class="btn" type="button" id="defaults-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2;">Use defaults</button>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; gap: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.75rem;">
+        <div style="display: flex; align-items: center; gap: 0.5rem; flex-grow: 1; min-width: 280px;">
+          <label for="archive-target-input" style="font-size: 0.85rem; font-weight: 500; color: var(--text); display: flex; align-items: center; gap: 0.35rem; white-space: nowrap;">
+            🔍 Query Target:
+          </label>
+          <input type="text" id="archive-target-input" value="{{ sel_target }}" placeholder="e.g. WASP-104 b" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.6rem; font-size: 0.85rem; flex-grow: 1;">
+          <button class="btn" type="button" id="archive-query-btn" style="font-size: 0.8rem; padding: 0.35rem 0.75rem; display: flex; align-items: center; gap: 0.35rem;">Query Archive</button>
+        </div>
+        <div style="display: flex; gap: 0.5rem;">
+          <button class="btn" type="button" id="save-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2;">Save values</button>
+          <button class="btn" type="button" id="restore-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2;">Restore values</button>
+          <button class="btn" type="button" id="clear-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2;">Clear values</button>
+        </div>
       </div>
       <div class="opt-grid">
         <div class="opt-section-title">Fitting Pipeline Options</div>
@@ -260,7 +264,7 @@
           <input type="number" id="opt-logg" value="{{ target_params.logg }}" step="0.01">
         </div>
         <div class="opt">
-          <label for="opt-logg_unc">log g uncertainty</label>
+          <label for="opt-logg_unc">log g uncertainty <span class="help-tooltip" title="Uncertainty of stellar surface gravity (log g); sets the width of its Gaussian prior.">?</span></label>
           <input type="number" id="opt-logg_unc" value="{{ target_params.logg_unc }}" step="0.01">
         </div>
         <div class="opt">
@@ -268,7 +272,7 @@
           <input type="number" id="opt-feh" value="{{ target_params.feh }}" step="0.01">
         </div>
         <div class="opt">
-          <label for="opt-feh_unc">[Fe/H] uncertainty</label>
+          <label for="opt-feh_unc">[Fe/H] uncertainty <span class="help-tooltip" title="Uncertainty of stellar metallicity ([Fe/H]); sets the width of its Gaussian prior.">?</span></label>
           <input type="number" id="opt-feh_unc" value="{{ target_params.feh_unc }}" step="0.01">
         </div>
 
@@ -278,7 +282,7 @@
           <input type="number" id="opt-period" value="{{ target_params.period }}" step="0.000001">
         </div>
         <div class="opt">
-          <label for="opt-period_unc">Period uncertainty</label>
+          <label for="opt-period_unc">Period uncertainty <span class="help-tooltip" title="Uncertainty of the orbital period prior (days); sets the width of its Gaussian prior.">?</span></label>
           <input type="number" id="opt-period_unc" value="{{ target_params.period_unc }}" step="0.000001">
         </div>
         <div class="opt">
@@ -286,7 +290,7 @@
           <input type="number" id="opt-t0" value="{{ target_params.t0 }}" step="0.00001">
         </div>
         <div class="opt">
-          <label for="opt-t0_unc">t0 uncertainty</label>
+          <label for="opt-t0_unc">t0 uncertainty <span class="help-tooltip" title="Uncertainty of the transit epoch (t0) prior (days); sets the width of its Gaussian prior.">?</span></label>
           <input type="number" id="opt-t0_unc" value="{{ target_params.t0_unc }}" step="0.00001">
         </div>
         <div class="opt">
@@ -294,7 +298,7 @@
           <input type="number" id="opt-dur" value="{{ target_params.dur }}" step="0.0001">
         </div>
         <div class="opt">
-          <label for="opt-dur_unc">Duration uncertainty</label>
+          <label for="opt-dur_unc">Duration uncertainty <span class="help-tooltip" title="Uncertainty of the transit duration prior (days); sets the width of its Gaussian prior.">?</span></label>
           <input type="number" id="opt-dur_unc" value="{{ target_params.dur_unc }}" step="0.0001">
         </div>
         <div class="opt">
@@ -302,7 +306,7 @@
           <input type="number" id="opt-ror" value="{{ target_params.ror }}" step="0.0001">
         </div>
         <div class="opt">
-          <label for="opt-ror_unc">Rp / R* uncertainty</label>
+          <label for="opt-ror_unc">Rp / R* uncertainty <span class="help-tooltip" title="Uncertainty of the Rp/R* prior; sets the width of its Gaussian prior.">?</span></label>
           <input type="number" id="opt-ror_unc" value="{{ target_params.ror_unc }}" step="0.0001">
         </div>
         <div class="opt">
@@ -310,11 +314,11 @@
           <input type="number" id="opt-b" value="{{ target_params.b }}" step="0.01">
         </div>
         <div class="opt">
-          <label for="opt-b_unc">b uncertainty</label>
+          <label for="opt-b_unc">b uncertainty <span class="help-tooltip" title="Uncertainty of the impact parameter b prior; sets the width of its Gaussian prior.">?</span></label>
           <input type="number" id="opt-b_unc" value="{{ target_params.b_unc }}" step="0.01">
         </div>
 
-        <div class="opt-section-title">Fixed Parameters</div>
+        <div class="opt-section-title">Fixed Parameters <span class="help-tooltip" title="Parameters checked here are held fixed at their prior values during the fit; unchecked parameters are left free to vary.">?</span></div>
         <div class="opt check" style="grid-column: span 2;">
           <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
             <label><input type="checkbox" name="fixed-params" value="period" checked> period</label>
@@ -331,6 +335,10 @@
     <div id="opt-error" style="color: var(--red); font-size: 0.85rem; margin-top: 0.5rem;"></div>
     
     <div class="run-actions">
+      <button class="btn" type="button" id="calc-logp-btn">
+        ∑ Calculate logP
+      </button>
+      <span id="logp-result" style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: var(--accent2);"></span>
       <button class="btn" type="button" id="run-test-btn" style="border-color: var(--accent); color: var(--accent);">
         ▶ Run Test Fitting
       </button>
@@ -463,26 +471,67 @@
   restoreOptions();
 
   var DEFAULTS = {{ target_params | tojson }};
-  var defaultsBtn = document.getElementById('defaults-btn');
-  if (defaultsBtn) {
-    defaultsBtn.addEventListener('click', function () {
-      ['planets','teff','teff_unc','logg','logg_unc','feh','feh_unc',
+  var BACKUP_KEY = 'muscat_fit_options_backup';
+
+  var clearBtn = document.getElementById('clear-btn');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', function () {
+      // Auto-save values to backup before clearing
+      try {
+        localStorage.setItem(BACKUP_KEY, JSON.stringify(collectOptions()));
+      } catch (e) {}
+
+      ['planets','tc_pred','tc_pred_unc','teff','teff_unc','logg','logg_unc','feh','feh_unc',
        'period','period_unc','t0','t0_unc','dur','dur_unc','ror','ror_unc','b','b_unc'].forEach(function (id) {
         var el = document.getElementById('opt-'+id);
-        if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';
+        if (el) el.value = '';
       });
       var cEl = document.getElementById('opt-chromatic');
-      if (cEl) cEl.checked = true;
-      var tcEl = document.getElementById('opt-tc_pred');
-      if (tcEl) tcEl.value = '';
-      var tcuEl = document.getElementById('opt-tc_pred_unc');
-      if (tcuEl) tcuEl.value = '0.04';
+      if (cEl) cEl.checked = false;
 
       document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
-        c.checked = c.value === 'period' || c.value === 'u_star';
+        c.checked = false;
       });
 
       saveOptions();
+    });
+  }
+
+  var saveBtn = document.getElementById('save-btn');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', function () {
+      var currentOpts = collectOptions();
+      try {
+        localStorage.setItem(BACKUP_KEY, JSON.stringify(currentOpts));
+        alert('Current values saved.');
+      } catch (e) {
+        alert('Failed to save values.');
+      }
+    });
+  }
+
+  var restoreBtn = document.getElementById('restore-btn');
+  if (restoreBtn) {
+    restoreBtn.addEventListener('click', function () {
+      var backup;
+      try { backup = JSON.parse(localStorage.getItem(BACKUP_KEY) || 'null'); } catch (e) { backup = null; }
+      if (backup) {
+        ['planets','tc_pred','tc_pred_unc','teff','teff_unc','logg','logg_unc','feh','feh_unc',
+         'period','period_unc','t0','t0_unc','dur','dur_unc','ror','ror_unc','b','b_unc'].forEach(function (id) {
+          var el = document.getElementById('opt-'+id);
+          if (el && backup[id] !== undefined) el.value = backup[id];
+        });
+        var cEl = document.getElementById('opt-chromatic');
+        if (cEl && backup.chromatic !== undefined) cEl.checked = backup.chromatic === 'true';
+
+        document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
+          c.checked = backup.fixed && backup.fixed.indexOf(c.value) !== -1;
+        });
+        saveOptions();
+        alert('Values restored.');
+      } else {
+        alert('No saved backup found to restore.');
+      }
     });
   }
 
@@ -582,6 +631,36 @@
 
   if (runBtn) runBtn.addEventListener('click', function () { launch(false); });
   if (runTestBtn) runTestBtn.addEventListener('click', function () { launch(true); });
+
+  // Calculate logP: build the model from the current parameters and evaluate
+  // model.logp() at the priors, without launching a full fit.
+  var calcLogpBtn = document.getElementById('calc-logp-btn');
+  var logpResult  = document.getElementById('logp-result');
+  if (calcLogpBtn) calcLogpBtn.addEventListener('click', function () {
+    if (errEl) errEl.textContent = '';
+    calcLogpBtn.disabled = true;
+    var prevText = calcLogpBtn.textContent;
+    calcLogpBtn.textContent = '∑ Calculating…';
+    if (logpResult) { logpResult.style.color = 'var(--text-dim)'; logpResult.textContent = 'computing… (can take ~1 min)'; }
+    fetch('/transit-fit/logp', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target, options: collectOptions() })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      calcLogpBtn.disabled = false;
+      calcLogpBtn.textContent = prevText;
+      if (!res.ok) {
+        if (logpResult) { logpResult.textContent = ''; }
+        if (errEl) errEl.textContent = res.error || 'logP computation failed';
+        return;
+      }
+      if (logpResult) { logpResult.style.color = 'var(--accent2)'; logpResult.textContent = res.text || ('logP= ' + res.logp); }
+    }).catch(function (err) {
+      calcLogpBtn.disabled = false;
+      calcLogpBtn.textContent = prevText;
+      if (logpResult) { logpResult.textContent = ''; }
+      if (errEl) errEl.textContent = 'Error: ' + err.message;
+    });
+  });
   if (cancelBtn) cancelBtn.addEventListener('click', function () {
     cancelBtn.disabled = true;
     logEl.textContent += '\n\n■ cancelling…';
@@ -606,6 +685,67 @@
       poll();
     }
   })();
+
+  // NASA Exoplanet Archive Query Handler
+  var queryBtn = document.getElementById('archive-query-btn');
+  if (queryBtn) {
+    queryBtn.addEventListener('click', function () {
+      var targetInput = document.getElementById('archive-target-input');
+      if (!targetInput) return;
+      var targetVal = targetInput.value.trim();
+      if (!targetVal) {
+        alert('Please enter a target name.');
+        return;
+      }
+
+      queryBtn.disabled = true;
+      var originalText = queryBtn.innerText;
+      queryBtn.innerText = 'Querying...';
+
+      fetch('/transit-fit/query-archive?target=' + encodeURIComponent(targetVal))
+        .then(function (res) {
+          if (!res.ok) {
+            return res.json().then(function (err) { throw new Error(err.error || 'Failed to query archive'); });
+          }
+          return res.json();
+        })
+        .then(function (data) {
+          if (!data.ok) {
+            throw new Error(data.error || 'No parameters found.');
+          }
+          var params = data.params;
+          
+          // Populate the fields
+          ['planets','teff','teff_unc','logg','logg_unc','feh','feh_unc',
+           'period','period_unc','t0','t0_unc','dur','dur_unc','ror','ror_unc','b','b_unc'].forEach(function (id) {
+            var el = document.getElementById('opt-'+id);
+            if (el && params[id] !== undefined) el.value = params[id];
+          });
+          
+          var cEl = document.getElementById('opt-chromatic');
+          if (cEl) cEl.checked = true;
+
+          var tcEl = document.getElementById('opt-tc_pred');
+          if (tcEl) tcEl.value = '';
+          var tcuEl = document.getElementById('opt-tc_pred_unc');
+          if (tcuEl) tcuEl.value = '0.04';
+
+          document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
+            c.checked = c.value === 'period' || c.value === 'u_star';
+          });
+
+          saveOptions();
+          alert('Successfully loaded parameters for ' + data.pl_name + ' from NASA Exoplanet Archive!');
+        })
+        .catch(function (err) {
+          alert('Error: ' + err.message);
+        })
+        .finally(function () {
+          queryBtn.disabled = false;
+          queryBtn.innerText = originalText;
+        });
+    });
+  }
 })();
 </script>
 <div style="text-align:center; margin:2em 0; display: flex; justify-content: center; gap: 1rem; align-items: center;">

@@ -83,6 +83,7 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
 # Summary (multi-band) plot suffixes -> short key used by the template.
 _SUMMARY_SUFFIX = {
     "_lightcurves.png": "lightcurves",
+    "_raw_flux.png": "raw_flux",
     "_covariates.png": "covariates",
     "_systematics.png": "covariates",   # backward compat with old pipeline
     "_stacks.png": "stacks",

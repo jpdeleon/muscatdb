@@ -28,7 +28,7 @@ def _make_outputs(base: Path) -> Path:
     rdir.mkdir(parents=True)
     stem = f"{TARGET}_{INST}_{DATE}"
     # multi-band summary plots + archive + log
-    for suf in ("_lightcurves.png", "_systematics.png", "_stacks.png"):
+    for suf in ("_lightcurves.png", "_systematics.png", "_stacks.png", "_raw_flux.png"):
         (rdir / (stem + suf)).write_bytes(b"\x89PNG\r\n")
     (rdir / (stem + ".npz")).write_bytes(b"npz")
     (rdir / "2026-06-11T22:35:53.901155.log").write_text("log\n")
@@ -87,8 +87,9 @@ class TestListOutputs:
     def test_classifies_all_products(self, prose_dir):
         out = phot.list_outputs(INST, DATE, TARGET)
         assert out["has_any"]
-        assert set(out["summary"]) == {"lightcurves", "covariates", "stacks"}
+        assert set(out["summary"]) == {"lightcurves", "raw_flux", "covariates", "stacks"}
         assert out["summary"]["lightcurves"] == f"{TARGET}_{INST}_{DATE}_lightcurves.png"
+        assert out["summary"]["raw_flux"] == f"{TARGET}_{INST}_{DATE}_raw_flux.png"
         assert out["npz"] == f"{TARGET}_{INST}_{DATE}.npz"
         assert out["log"].endswith(".log")
 
@@ -476,11 +477,12 @@ class TestRoutes:
         html = r.text
         # single-column sortable summary container
         assert 'fig-grid col sortable" data-sort-key="summary"' in html
-        # default order: light curve, then covariates, then stacks
+        # default order: light curve, then raw flux, then covariates, then stacks
         i_lc = html.index('data-fig-id="lightcurves"')
+        i_rf = html.index('data-fig-id="raw_flux"')
         i_sy = html.index('data-fig-id="covariates"')
         i_st = html.index('data-fig-id="stacks"')
-        assert i_lc < i_sy < i_st
+        assert i_lc < i_rf < i_sy < i_st
         # drag affordance + per-band grids are sortable too
         assert "drag-handle" in html
         assert 'fig-grid col sortable" data-sort-key="band"' in html
@@ -498,6 +500,35 @@ class TestRoutes:
         assert "Transit Fit" in r.text
         assert "Instrument" in r.text
         assert "Transit Fitting Pipeline" in r.text
+
+    def test_transit_fit_page_with_lightcurves(self, client, tmp_path, mocker):
+        dummy_csv = tmp_path / "dummy_muscat3_250717.csv"
+        dummy_csv.write_text("dummy data")
+        
+        mocker.patch("muscat_db.transit_fit.get_csv_lightcurves", return_value=[dummy_csv])
+        mocker.patch("muscat_db.transit_fit.get_fit_outputs", return_value=None)
+        mocker.patch("muscat_db.transit_fit.get_target_parameters", return_value={})
+        mocker.patch("muscat_db.web._get_dates", return_value=[])
+        mocker.patch("muscat_db.web._get_objects", return_value=[])
+        mocker.patch("muscat_db.photometry.discovered_targets", return_value=[])
+        
+        r = client.get("/transit-fit?inst=muscat3&date=250717&target=dummy")
+        assert r.status_code == 200
+        assert "dummy_muscat3_250717.csv" in r.text
+        assert "Created:" in r.text
+
+    def test_transit_fit_query_archive_success(self, client, mocker):
+        mock_response = mocker.MagicMock()
+        mock_response.__enter__.return_value = mock_response
+        mock_response.read.return_value = b'[{"pl_name": "WASP-104 b", "st_teff": 5475.0, "st_tefferr1": 127.0, "st_tefferr2": -127.0}]'
+        mocker.patch("urllib.request.urlopen", return_value=mock_response)
+        
+        r = client.get("/transit-fit/query-archive?target=WASP-104")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert data["pl_name"] == "WASP-104 b"
+        assert data["params"]["teff"] == 5475.0
 
     def test_jobs_page(self, client, monkeypatch):
         mock_jobs = [
@@ -550,6 +581,6 @@ class TestRealExample:
         os.environ.pop("MUSCAT_PROSE_DIR", None)
         out = phot.list_outputs(INST, DATE, TARGET)
         assert out["has_any"]
-        assert set(out["summary"]) == {"lightcurves", "covariates", "stacks"}
+        assert {"lightcurves", "covariates", "stacks"}.issubset(set(out["summary"]))
         assert list(out["bands"]) == BANDS
         assert out["npz"] == f"{TARGET}_{INST}_{DATE}.npz"
