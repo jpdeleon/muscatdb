@@ -294,9 +294,8 @@
           </select>
         </div>
         <div class="opt">
-          <label for="opt-aper_radii">Aperture radii (MIN,MAX,DR) <span class="help-tooltip" title="Radius grid search parameters as MIN,MAX,DR (corresponds to --aper_radii). Required if annulus is set. Empty means use Gaia heuristic.">?</span></label>
-          <input type="text" id="opt-aper_radii" placeholder="Gaia heuristic">
-          <span class="hint">blank → auto from Gaia</span>
+          <label for="opt-max_num_stars">Max # stars (PSF) <span class="help-tooltip" title="Max number of stars to detect for PSF modeling or alignment (corresponds to --max_num_stars).">?</span></label>
+          <input type="number" id="opt-max_num_stars" value="{{ run_defaults.max_num_stars }}" min="1">
         </div>
         <div class="opt">
           <label for="opt-annulus">Sky annulus (RIN,ROUT) <span class="help-tooltip" title="Inner and outer radii of background sky subtraction annulus (corresponds to --annulus). Required if aperture radii is set.">?</span></label>
@@ -304,8 +303,9 @@
           <span class="hint">required with aperture radii</span>
         </div>
         <div class="opt">
-          <label for="opt-max_num_stars">Max # stars (PSF) <span class="help-tooltip" title="Max number of stars to detect for PSF modeling or alignment (corresponds to --max_num_stars).">?</span></label>
-          <input type="number" id="opt-max_num_stars" value="{{ run_defaults.max_num_stars }}" min="1">
+          <label for="opt-aper_radii">Aperture radii (MIN,MAX,DR) <span class="help-tooltip" title="Radius grid search parameters as MIN,MAX,DR (corresponds to --aper_radii). Required if annulus is set. Empty means use Gaia heuristic.">?</span></label>
+          <input type="text" id="opt-aper_radii" placeholder="Gaia heuristic">
+          <span class="hint">blank → auto from Gaia</span>
         </div>
         <div class="opt">
           <label for="opt-n_stars_align"># stars for alignment <span class="help-tooltip" title="Number of stars to use for alignment (corresponds to --n_stars_align). Empty means same as Max # stars.">?</span></label>

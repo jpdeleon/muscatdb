@@ -571,6 +571,114 @@ class TestRoutes:
         assert "TOI-5684.02" in r.text
 
 
+class TestTransitFitOptions:
+    def test_validate_fit_options_success(self):
+        from muscat_db.transit_fit import validate_fit_options
+        
+        # Valid single planet
+        opts_single = {
+            "planets": "b",
+            "teff": "5000",
+            "period": "1.23",
+            "period_unc": "0.01",
+        }
+        assert validate_fit_options(opts_single) is None
+        
+        # Valid multiple planets
+        opts_multi = {
+            "planets": "b,c",
+            "teff": "5000",
+            "period_b": "1.23",
+            "period_unc_b": "0.01",
+            "period_c": "4.56",
+            "period_unc_c": "0.02",
+        }
+        assert validate_fit_options(opts_multi) is None
+
+    def test_validate_fit_options_failure(self):
+        from muscat_db.transit_fit import validate_fit_options
+
+        # Invalid planet format
+        assert "planets must be single letters" in validate_fit_options({"planets": "b,c2"})
+        
+        # Invalid stellar parameter (negative Teff)
+        assert "Teff (K) must be greater than 0" in validate_fit_options({
+            "planets": "b",
+            "teff": "-100",
+        })
+
+        # Invalid stellar parameter (non-numeric logg)
+        assert "log g must be a number" in validate_fit_options({
+            "planets": "b",
+            "logg": "abc",
+        })
+
+        # Invalid planetary parameter (negative period on first planet)
+        assert "Period (days) (planet b) must be greater than 0" in validate_fit_options({
+            "planets": "b,c",
+            "period_b": "-1.23",
+        })
+
+        # Invalid planetary parameter (non-numeric period on second planet)
+        assert "Period (days) (planet c) must be a number" in validate_fit_options({
+            "planets": "b,c",
+            "period_c": "xyz",
+        })
+
+        # Invalid Rp/R* (>= 1)
+        assert "Rp/R* (planet c) must be less than 1" in validate_fit_options({
+            "planets": "b,c",
+            "ror_c": "1.2",
+        })
+
+    def test_write_fit_inputs(self, tmp_path):
+        from muscat_db.transit_fit import _write_fit_inputs
+        import yaml
+        
+        csv_file = tmp_path / "target_muscat3_260613_gp.csv"
+        csv_file.write_text("time,flux,error")
+        
+        options = {
+            "planets": "b,c",
+            "teff": "5500",
+            "teff_unc": "120",
+            "period_b": "2.5",
+            "period_unc_b": "0.02",
+            "period_c": "5.0",
+            "period_unc_c": "0.05",
+            "t0_b": "2450000.1",
+            "t0_unc_b": "0.001",
+            "t0_c": "2450000.2",
+            "t0_unc_c": "0.002",
+        }
+        
+        rdir = tmp_path / "run_dir"
+        rdir.mkdir()
+        
+        _write_fit_inputs(rdir, "muscat3", "260613", [csv_file], options)
+        
+        # Verify files created
+        assert (rdir / "fit.yaml").is_file()
+        assert (rdir / "sys.yaml").is_file()
+        assert (rdir / csv_file.name).is_file()
+        
+        # Load fit.yaml and verify
+        with open(rdir / "fit.yaml") as f:
+            fit_data = yaml.safe_load(f)
+        assert fit_data["planets"] == "b,c"
+        
+        # Load sys.yaml and verify
+        with open(rdir / "sys.yaml") as f:
+            sys_data = yaml.safe_load(f)
+            
+        assert sys_data["star"]["teff"] == [5500.0, 120.0]
+        assert "b" in sys_data["planets"]
+        assert "c" in sys_data["planets"]
+        assert sys_data["planets"]["b"]["period"] == [2.5, 0.02]
+        assert sys_data["planets"]["c"]["period"] == [5.0, 0.05]
+        assert sys_data["planets"]["b"]["t0"] == [2450000.1, 0.001]
+        assert sys_data["planets"]["c"]["t0"] == [2450000.2, 0.002]
+
 
 # ── real example output (optional) ───────────────────────────────────────────
 

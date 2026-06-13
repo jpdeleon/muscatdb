@@ -226,7 +226,12 @@ def validate_fit_options(options: dict | None) -> str | None:
     if str(o.get("tc_pred", "")).strip() and _to_float(o.get("tc_pred")) is None:
         return "tc_pred must be a number (BJD), or empty for auto"
 
+    planet_keys = {"period", "period_unc", "t0", "t0_unc", "dur", "dur_unc", "ror", "ror_unc", "b", "b_unc"}
+
+    # Validate stellar parameters (non-planet-specific)
     for key, label, rule in _FIT_NUMERIC_FIELDS:
+        if key in planet_keys:
+            continue
         if str(o.get(key, "")).strip() == "":
             continue  # blank -> pipeline default
         val = _to_float(o.get(key))
@@ -237,10 +242,35 @@ def validate_fit_options(options: dict | None) -> str | None:
         if rule == "nonneg" and val < 0:
             return f"{label} must be 0 or greater"
 
+    # Validate planetary parameters for each planet
+    for p in tokens:
+        for key, label, rule in _FIT_NUMERIC_FIELDS:
+            if key not in planet_keys:
+                continue
+            pval = o.get(f"{key}_{p}")
+            if pval is None and p == tokens[0]:
+                pval = o.get(key)
+
+            if pval is None or str(pval).strip() == "":
+                continue
+
+            val = _to_float(pval)
+            if val is None or not math.isfinite(val):
+                return f"{label} (planet {p}) must be a number"
+            if rule == "pos" and val <= 0:
+                return f"{label} (planet {p}) must be greater than 0"
+            if rule == "nonneg" and val < 0:
+                return f"{label} (planet {p}) must be 0 or greater"
+
     # Rp/R* is a radius ratio; reject obviously unphysical values.
-    ror = _to_float(o.get("ror"))
-    if ror is not None and ror >= 1:
-        return "Rp/R* must be less than 1"
+    for p in tokens:
+        ror_val = o.get(f"ror_{p}")
+        if ror_val is None and p == tokens[0]:
+            ror_val = o.get("ror")
+        if ror_val is not None:
+            ror = _to_float(ror_val)
+            if ror is not None and ror >= 1:
+                return f"Rp/R* (planet {p}) must be less than 1"
 
     # Fixed parameters must be drawn from the known set.
     fixed = o.get("fixed")
@@ -272,6 +302,7 @@ def _write_fit_inputs(
         shutil.copy2(c, rdir / c.name)
 
     # fit.yaml
+    trend_val = 1 if options.get("trend", "true") == "true" else 0
     fit_data: dict = {"data": {}}
     for c in csvs:
         fname = c.name
@@ -288,7 +319,7 @@ def _write_fit_inputs(
         fit_data["data"][band] = {
             "file": fname,
             "band": mapped_band,
-            "trend": 1,
+            "trend": trend_val,
             "binsize": 0.00139,
             "format": "afphot",
         }
@@ -320,12 +351,15 @@ def _write_fit_inputs(
         "planets": {},
     }
     for p in [p.strip() for p in planets_str.split(",") if p.strip()]:
+        def get_val(key, default):
+            return options.get(f"{key}_{p}") or options.get(key) or default
+
         sys_data["planets"][p] = {
-            "period": [float(options.get("period") or 1.0), float(options.get("period_unc") or 0.001)],
-            "t0": [float(options.get("t0") or 2450000.0), float(options.get("t0_unc") or 0.01)],
-            "dur": [float(options.get("dur") or 0.1), float(options.get("dur_unc") or 0.01)],
-            "ror": [float(options.get("ror") or 0.05), float(options.get("ror_unc") or 0.005)],
-            "b": [float(options.get("b") or 0.0), float(options.get("b_unc") or 0.1)],
+            "period": [float(get_val("period", 1.0)), float(get_val("period_unc", 0.001))],
+            "t0": [float(get_val("t0", 2450000.0)), float(get_val("t0_unc", 0.01))],
+            "dur": [float(get_val("dur", 0.1)), float(get_val("dur_unc", 0.01))],
+            "ror": [float(get_val("ror", 0.05)), float(get_val("ror_unc", 0.005))],
+            "b": [float(get_val("b", 0.0)), float(get_val("b_unc", 0.1))],
         }
 
     with open(rdir / "sys.yaml", "w") as f:
