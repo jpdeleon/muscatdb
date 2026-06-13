@@ -290,7 +290,7 @@ def transit_fit_file(inst: str, date: str, target: str, name: str):
     if not path.is_file():
         raise HTTPException(404, "file not found")
 
-    return FileResponse(str(path))
+    return FileResponse(str(path), headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
 
 
 @app.get("/jobs", response_class=HTMLResponse)
@@ -308,7 +308,7 @@ def photometry_file(inst: str, date: str, name: str):
     path = phot.safe_artifact_path(inst, date, name)
     if path is None:
         raise HTTPException(404, "artifact not found")
-    return FileResponse(str(path), headers={"Cache-Control": "public, max-age=3600"})
+    return FileResponse(str(path), headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
 
 
 @app.post("/photometry/run")

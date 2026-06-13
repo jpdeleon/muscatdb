@@ -401,7 +401,7 @@ class TestRoutes:
         name = f"{TARGET}_{INST}_{DATE}_stacks.png"
         r = client.get(f"/photometry/file/{INST}/{DATE}/{name}")
         assert r.status_code == 200
-        assert r.headers.get("cache-control") == "public, max-age=3600"
+        assert r.headers.get("cache-control") == "no-store, no-cache, must-revalidate, max-age=0"
 
     def test_file_route_serves_master_calibration(self, client, tmp_path, monkeypatch):
         raw_base = tmp_path / "data"
