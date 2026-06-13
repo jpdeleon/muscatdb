@@ -496,7 +496,8 @@ class TestRoutes:
         r = client.get("/transit-fit")
         assert r.status_code == 200
         assert "Transit Fit" in r.text
-        assert "Coming Soon" in r.text
+        assert "Instrument" in r.text
+        assert "Transit Fitting Pipeline" in r.text
 
     def test_jobs_page(self, client, monkeypatch):
         mock_jobs = [

@@ -1,13 +1,582 @@
 {% extends "base.html" %}
 {% block title %}Transit Fit — MuSCAT-db{% endblock %}
 {% block content %}
-<h1>Transit Fit</h1>
-<div style="background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 2rem; text-align: center; margin-top: 2rem;">
-  <div style="font-size: 3rem; margin-bottom: 1.5rem;">📈</div>
-  <h2 style="color: var(--text);">Transit Fitting Pipeline</h2>
-  <p style="color: var(--text-dim); max-width: 600px; margin: 0 auto 1.5rem; line-height: 1.6;">
-    This page will host the transit fitting code in the future. Once integrated, you will be able to perform light curve fitting, retrieve planetary parameters, and model transit events directly from the web interface.
-  </p>
-  <span class="badge badge-blue" style="padding: 0.5rem 1rem; font-size: 0.85rem;">Coming Soon</span>
+<style>
+  .selector-group {
+    display: flex; gap: 1rem; align-items: center; margin-bottom: 2rem; flex-wrap: wrap;
+    background: var(--surface); border: 1px solid var(--border); padding: 1rem; border-radius: 8px;
+  }
+  .selector-group label { font-size: 0.85rem; color: var(--text-dim); display: flex; flex-direction: column; gap: 0.35rem; }
+  .selector-group select {
+    background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 0.45rem 0.75rem; min-width: 160px; font-size: 0.9rem;
+  }
+  .selector-group select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .phot-section { margin: 2rem 0 1rem; }
+  .phot-section h2 { color: var(--text); margin-bottom: 0.75rem; }
+
+  .fig-grid {
+    display: grid; gap: 1.5rem; grid-template-columns: repeat(auto-fill, minmax(480px, 1fr));
+    margin-top: 1rem;
+  }
+  @media (max-width: 600px) {
+    .fig-grid { grid-template-columns: 1fr; }
+  }
+  .fig {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem;
+  }
+  .fig img { width: 100%; height: auto; border-radius: 6px; display: block; background: #000; }
+  .fig .cap { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-dim); }
+
+  .btn {
+    background: var(--surface2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.5rem 1rem; font-size: 0.85rem; cursor: pointer; font-family: inherit;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { border-color: var(--accent2); color: var(--accent2); }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+
+  .opt-grid {
+    display: grid; gap: 0.75rem 1.25rem;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    padding: 0.5rem 0 0.75rem;
+  }
+  .opt { display: flex; flex-direction: column; gap: 0.25rem; }
+  .opt > label { font-size: 0.78rem; color: var(--text-dim); }
+  .opt input[type="text"], .opt input[type="number"], .opt select {
+    background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.35rem 0.5rem; font-size: 0.85rem; font-family: inherit;
+  }
+  .opt input:focus, .opt select:focus { outline: none; border-color: var(--accent); }
+  .opt.check { flex-direction: row; align-items: center; gap: 0.45rem; margin-top: auto; }
+  .opt.check label { color: var(--text); font-size: 0.85rem; }
+
+  .opt-section-title {
+    grid-column: 1 / -1; font-size: 0.85rem; font-weight: 600; color: var(--accent2);
+    margin-top: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem;
+  }
+
+  .run-panel { border-top: 1px solid var(--border); padding-top: 1.25rem; margin-top: 2rem; }
+  .run-actions { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
+
+  #run-log {
+    display: none; margin-top: 1rem; text-align: left;
+    background: #0b0d13; color: #cdd3e0; border: 1px solid var(--border);
+    border-radius: 8px; padding: 0.75rem; max-height: 22rem; overflow: auto;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
+    white-space: pre-wrap; word-break: break-word;
+  }
+
+  details.adv {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.75rem 1rem; margin-top: 1.5rem;
+  }
+  details.adv > summary { cursor: pointer; font-size: 0.9rem; color: var(--text-dim); padding: 0.35rem 0; user-select: none; }
+  details.adv[open] > summary { color: var(--text); margin-bottom: 0.5rem; }
+
+  .dl-row { margin-top: 0.75rem; display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.85rem; }
+  .help-tooltip {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 13px; height: 13px; font-size: 0.65rem; font-weight: bold;
+    border-radius: 50%; background: var(--border); color: var(--text-dim);
+    cursor: help; margin-left: 4px; vertical-align: middle; border: 1px solid var(--border);
+  }
+  .help-tooltip:hover { background: var(--accent); color: #fff; }
+</style>
+
+<div class="selector-group">
+  <label for="sel-inst">
+    Instrument
+    <select id="sel-inst" name="inst">
+      <option value="">-- select --</option>
+      {% for name in instruments %}
+      <option value="{{ name }}" {% if name == sel_inst %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label for="sel-date">
+    Date
+    <select id="sel-date" name="date" {% if not sel_inst %}disabled{% endif %}>
+      {% if not sel_inst %}
+      <option value="">-- select instrument first --</option>
+      {% else %}
+      <option value="">-- select date --</option>
+      {% for d in dates %}
+      <option value="{{ d }}" {% if d == sel_date %}selected{% endif %}>{{ d }}</option>
+      {% endfor %}
+      {% endif %}
+    </select>
+  </label>
+
+  <label for="sel-target">
+    Target
+    <select id="sel-target" name="target" {% if not sel_date %}disabled{% endif %}>
+      {% if not sel_date %}
+      <option value="">-- select date first --</option>
+      {% else %}
+      <option value="">-- select target --</option>
+      {% for t in targets %}
+      <option value="{{ t }}" {% if t == sel_target %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
+      {% endif %}
+    </select>
+  </label>
 </div>
+
+{% if not (sel_inst and sel_date and sel_target) %}
+  <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 3rem; text-align: center; margin-top: 2rem;">
+    <div style="font-size: 3.5rem; margin-bottom: 1rem;">📈</div>
+    <h2 style="color: var(--text);">Transit Fitting Pipeline</h2>
+    <p style="color: var(--text-dim); max-width: 500px; margin: 0 auto; line-height: 1.6; font-size: 0.9rem;">
+      Select an instrument, date, and target above to configure parameters and run the transit fitting analysis using the conda-based <strong>timer</strong> tool.
+    </p>
+  </div>
+{% elif not csvs %}
+  <div style="background: var(--surface); border: 1px dashed var(--border); border-radius: 10px; padding: 3rem; text-align: center; margin-top: 2rem;">
+    <div style="font-size: 3rem; color: var(--red); margin-bottom: 1rem;">⚠</div>
+    <h2 style="color: var(--text);">No Photometry CSVs Found</h2>
+    <p style="color: var(--text-dim); max-width: 500px; margin: 0 auto 1.5rem; line-height: 1.6; font-size: 0.9rem;">
+      No lightcurve CSV files were found for <strong>{{ sel_target }}</strong> on date <strong>{{ sel_date }}</strong>.
+      You must run the photometry pipeline first before attempting a transit fit.
+    </p>
+    <a href="/photometry?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary">Go to Photometry Page</a>
+  </div>
+{% else %}
+  <!-- Discovered light curves section -->
+  <div class="phot-section">
+    <h2>Discovered Lightcurves</h2>
+    <p style="font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.75rem;">
+      The following lightcurve files will be loaded for fitting:
+    </p>
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+      {% for csv in csvs %}
+        <span class="badge badge-filter-other" style="font-family: monospace; font-size: 0.8rem; padding: 0.25rem 0.5rem;">📄 {{ csv }}</span>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Transit Fit Results Section -->
+  {% if outputs and outputs.has_any %}
+  <div class="phot-section">
+    <h2>Transit Fit Results</h2>
+    
+    <div class="fig-grid">
+      {% for p in outputs.plots %}
+      <figure class="fig">
+        <figcaption class="cap">
+          <span>{{ p }}</span>
+        </figcaption>
+        <a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/{{ p }}" target="_blank">
+          <img draggable="false" loading="lazy" src="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/{{ p }}" alt="{{ p }}">
+        </a>
+      </figure>
+      {% endfor %}
+    </div>
+
+    {% if outputs.summary %}
+    <div class="phot-section">
+      <h3>Fitted Parameters Summary</h3>
+      <div class="csv-wrap" style="overflow-x: auto; margin-top: 0.5rem;">
+        <table>
+          <thead>
+            <tr>
+              {% for h in outputs.summary.headers %}
+              <th>{{ h }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in outputs.summary.rows %}
+            <tr>
+              {% for h in outputs.summary.headers %}
+              <td class="mono">{{ row[h] }}</td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="dl-row">
+      {% if outputs.has_log %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/timer-fit.log" target="_blank">📄 fit run log</a>{% endif %}
+      {% if outputs.summary %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/summary.csv" download>⬇ download summary (.csv)</a>{% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Configure Panel -->
+  <div class="phot-section run-panel">
+    <h2>Configure &amp; Run Transit Fitting</h2>
+    
+    <details class="adv" id="opt-panel">
+      <summary>Fitting Configurations &amp; Parameters</summary>
+      <div style="display: flex; justify-content: flex-end; margin-top: 0.25rem; margin-bottom: 0.5rem;">
+        <button class="btn" type="button" id="defaults-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2;">Use defaults</button>
+      </div>
+      <div class="opt-grid">
+        <div class="opt-section-title">Fitting Pipeline Options</div>
+        <div class="opt">
+          <label for="opt-planets">Planets <span class="help-tooltip" title="Planets to fit (comma-separated list of letters, e.g. b or b,c).">?</span></label>
+          <input type="text" id="opt-planets" value="{{ target_params.planets }}">
+        </div>
+        <div class="opt">
+          <label for="opt-tc_pred">tc_pred <span class="help-tooltip" title="Predicted transit center epoch (BJD). Empty if using t0 as reference.">?</span></label>
+          <input type="number" id="opt-tc_pred" placeholder="auto" step="0.00001">
+        </div>
+        <div class="opt">
+          <label for="opt-tc_pred_unc">tc_pred_unc <span class="help-tooltip" title="Uncertainty of predicted transit center.">?</span></label>
+          <input type="number" id="opt-tc_pred_unc" value="0.04" step="0.001">
+        </div>
+        <div class="opt check">
+          <input type="checkbox" id="opt-chromatic" checked>
+          <label for="opt-chromatic">Chromatic fit <span class="help-tooltip" title="Flag indicating if parameters (like Rp/R*) are chromatic (band-dependent).">?</span></label>
+        </div>
+
+        <div class="opt-section-title">Stellar Parameters</div>
+        <div class="opt">
+          <label for="opt-teff">Teff (K) <span class="help-tooltip" title="Stellar effective temperature.">?</span></label>
+          <input type="number" id="opt-teff" value="{{ target_params.teff }}">
+        </div>
+        <div class="opt">
+          <label for="opt-teff_unc">Teff uncertainty <span class="help-tooltip" title="Uncertainty of effective temperature.">?</span></label>
+          <input type="number" id="opt-teff_unc" value="{{ target_params.teff_unc }}">
+        </div>
+        <div class="opt">
+          <label for="opt-logg">log g <span class="help-tooltip" title="Stellar surface gravity.">?</span></label>
+          <input type="number" id="opt-logg" value="{{ target_params.logg }}" step="0.01">
+        </div>
+        <div class="opt">
+          <label for="opt-logg_unc">log g uncertainty</label>
+          <input type="number" id="opt-logg_unc" value="{{ target_params.logg_unc }}" step="0.01">
+        </div>
+        <div class="opt">
+          <label for="opt-feh">[Fe/H] <span class="help-tooltip" title="Stellar metallicity.">?</span></label>
+          <input type="number" id="opt-feh" value="{{ target_params.feh }}" step="0.01">
+        </div>
+        <div class="opt">
+          <label for="opt-feh_unc">[Fe/H] uncertainty</label>
+          <input type="number" id="opt-feh_unc" value="{{ target_params.feh_unc }}" step="0.01">
+        </div>
+
+        <div class="opt-section-title">Planetary Priors</div>
+        <div class="opt">
+          <label for="opt-period">Period (days) <span class="help-tooltip" title="Prior value for the orbital period.">?</span></label>
+          <input type="number" id="opt-period" value="{{ target_params.period }}" step="0.000001">
+        </div>
+        <div class="opt">
+          <label for="opt-period_unc">Period uncertainty</label>
+          <input type="number" id="opt-period_unc" value="{{ target_params.period_unc }}" step="0.000001">
+        </div>
+        <div class="opt">
+          <label for="opt-t0">Epoch t0 (BJD) <span class="help-tooltip" title="Transit epoch center prior.">?</span></label>
+          <input type="number" id="opt-t0" value="{{ target_params.t0 }}" step="0.00001">
+        </div>
+        <div class="opt">
+          <label for="opt-t0_unc">t0 uncertainty</label>
+          <input type="number" id="opt-t0_unc" value="{{ target_params.t0_unc }}" step="0.00001">
+        </div>
+        <div class="opt">
+          <label for="opt-dur">Duration (days) <span class="help-tooltip" title="Prior value for the transit duration.">?</span></label>
+          <input type="number" id="opt-dur" value="{{ target_params.dur }}" step="0.0001">
+        </div>
+        <div class="opt">
+          <label for="opt-dur_unc">Duration uncertainty</label>
+          <input type="number" id="opt-dur_unc" value="{{ target_params.dur_unc }}" step="0.0001">
+        </div>
+        <div class="opt">
+          <label for="opt-ror">Rp / R* <span class="help-tooltip" title="Prior value for the ratio of planetary to stellar radius.">?</span></label>
+          <input type="number" id="opt-ror" value="{{ target_params.ror }}" step="0.0001">
+        </div>
+        <div class="opt">
+          <label for="opt-ror_unc">Rp / R* uncertainty</label>
+          <input type="number" id="opt-ror_unc" value="{{ target_params.ror_unc }}" step="0.0001">
+        </div>
+        <div class="opt">
+          <label for="opt-b">Impact parameter b <span class="help-tooltip" title="Prior value for impact parameter b.">?</span></label>
+          <input type="number" id="opt-b" value="{{ target_params.b }}" step="0.01">
+        </div>
+        <div class="opt">
+          <label for="opt-b_unc">b uncertainty</label>
+          <input type="number" id="opt-b_unc" value="{{ target_params.b_unc }}" step="0.01">
+        </div>
+
+        <div class="opt-section-title">Fixed Parameters</div>
+        <div class="opt check" style="grid-column: span 2;">
+          <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+            <label><input type="checkbox" name="fixed-params" value="period" checked> period</label>
+            <label><input type="checkbox" name="fixed-params" value="u_star" checked> u_star</label>
+            <label><input type="checkbox" name="fixed-params" value="b"> b</label>
+            <label><input type="checkbox" name="fixed-params" value="ror"> Rp/R*</label>
+            <label><input type="checkbox" name="fixed-params" value="ecc"> eccentricity</label>
+            <label><input type="checkbox" name="fixed-params" value="omega"> omega</label>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <div id="opt-error" style="color: var(--red); font-size: 0.85rem; margin-top: 0.5rem;"></div>
+    
+    <div class="run-actions">
+      <button class="btn primary" type="button" id="run-fit-btn">
+        ▶ Run Transit Fitting
+      </button>
+      <button class="btn" type="button" id="cancel-btn" style="display:none;border-color:var(--red);color:var(--red);">
+        ■ Cancel
+      </button>
+      <span class="hint" style="color: var(--text-dim); font-size: 0.8rem;">
+        Runs the fitting script over the copied CSV curves. Fits standard MCMC chains.
+      </span>
+    </div>
+
+    <pre id="run-log"></pre>
+  </div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var inst   = {{ sel_inst|tojson }};
+  var date   = {{ sel_date|tojson }};
+  var target = {{ sel_target|tojson }};
+
+  var OPT_KEY = 'fit:options:' + inst + ':' + date + ':' + target;
+  var PANEL_KEY = 'fit:panel';
+  var JOB_KEY = 'fit:job';
+
+  // ----- cascading selectors -----
+  var selInst   = document.getElementById('sel-inst');
+  var selDate   = document.getElementById('sel-date');
+  var selTarget = document.getElementById('sel-target');
+
+  function go(params) {
+    if (typeof window.showLoading === 'function') {
+      window.showLoading('Loading…');
+    }
+    var qs = Object.keys(params).filter(function (k) { return params[k]; })
+      .map(function (k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
+    window.location = '/transit-fit' + (qs ? '?' + qs : '');
+  }
+
+  if (selInst)   selInst.addEventListener('change', function () { go({ inst: this.value }); });
+  if (selDate)   selDate.addEventListener('change', function () { go({ inst: selInst.value, date: this.value }); });
+  if (selTarget) selTarget.addEventListener('change', function () { go({ inst: selInst.value, date: selDate.value, target: this.value }); });
+
+  // If page is not fully selected, return
+  if (!inst || !date || !target) return;
+
+  var runBtn    = document.getElementById('run-fit-btn');
+  var cancelBtn = document.getElementById('cancel-btn');
+  var logEl     = document.getElementById('run-log');
+  var errEl     = document.getElementById('opt-error');
+  var polling   = null;
+
+  function val(id) { var e = document.getElementById(id); return e ? e.value : ''; }
+  function chk(id) { var e = document.getElementById(id); return e ? e.checked : false; }
+
+  function collectOptions() {
+    var fixed = [];
+    document.querySelectorAll('input[name="fixed-params"]:checked').forEach(function (c) { fixed.push(c.value); });
+    return {
+      planets: val('opt-planets'),
+      tc_pred: val('opt-tc_pred'),
+      tc_pred_unc: val('opt-tc_pred_unc'),
+      chromatic: chk('opt-chromatic') ? 'true' : 'false',
+      teff: val('opt-teff'),
+      teff_unc: val('opt-teff_unc'),
+      logg: val('opt-logg'),
+      logg_unc: val('opt-logg_unc'),
+      feh: val('opt-feh'),
+      feh_unc: val('opt-feh_unc'),
+      period: val('opt-period'),
+      period_unc: val('opt-period_unc'),
+      t0: val('opt-t0'),
+      t0_unc: val('opt-t0_unc'),
+      dur: val('opt-dur'),
+      dur_unc: val('opt-dur_unc'),
+      ror: val('opt-ror'),
+      ror_unc: val('opt-ror_unc'),
+      b: val('opt-b'),
+      b_unc: val('opt-b_unc'),
+      fixed: fixed
+    };
+  }
+
+  function saveOptions() {
+    try { localStorage.setItem(OPT_KEY, JSON.stringify(collectOptions())); } catch (e) {}
+  }
+
+  function restoreOptions() {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved) return;
+
+    ['planets','tc_pred','tc_pred_unc','teff','teff_unc','logg','logg_unc','feh','feh_unc',
+     'period','period_unc','t0','t0_unc','dur','dur_unc','ror','ror_unc','b','b_unc'].forEach(function (id) {
+      var el = document.getElementById('opt-'+id);
+      if (el && saved[id] !== undefined) el.value = saved[id];
+    });
+
+    var cEl = document.getElementById('opt-chromatic');
+    if (cEl && saved.chromatic !== undefined) cEl.checked = saved.chromatic === 'true';
+
+    document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
+      c.checked = saved.fixed && saved.fixed.indexOf(c.value) !== -1;
+    });
+  }
+
+  restoreOptions();
+
+  var DEFAULTS = {{ target_params | tojson }};
+  var defaultsBtn = document.getElementById('defaults-btn');
+  if (defaultsBtn) {
+    defaultsBtn.addEventListener('click', function () {
+      ['planets','teff','teff_unc','logg','logg_unc','feh','feh_unc',
+       'period','period_unc','t0','t0_unc','dur','dur_unc','ror','ror_unc','b','b_unc'].forEach(function (id) {
+        var el = document.getElementById('opt-'+id);
+        if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';
+      });
+      var cEl = document.getElementById('opt-chromatic');
+      if (cEl) cEl.checked = true;
+      var tcEl = document.getElementById('opt-tc_pred');
+      if (tcEl) tcEl.value = '';
+      var tcuEl = document.getElementById('opt-tc_pred_unc');
+      if (tcuEl) tcuEl.value = '0.04';
+
+      document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
+        c.checked = c.value === 'period' || c.value === 'u_star';
+      });
+
+      saveOptions();
+    });
+  }
+
+  // Panel toggles persistence
+  (function () {
+    var panel = document.getElementById('opt-panel');
+    if (!panel) return;
+    var savedOpen;
+    try { savedOpen = JSON.parse(localStorage.getItem(PANEL_KEY) || 'null'); } catch (e) { savedOpen = null; }
+    if (savedOpen === true) panel.open = true;
+    else if (savedOpen === false) panel.open = false;
+    panel.addEventListener('toggle', function () {
+      try { localStorage.setItem(PANEL_KEY, JSON.stringify(panel.open)); } catch (e) {}
+    });
+  })();
+
+  // Listen to inputs
+  var panel = document.getElementById('opt-panel');
+  if (panel) {
+    panel.addEventListener('change', saveOptions);
+    panel.addEventListener('input', saveOptions);
+  }
+
+  // ----- restore the log if it was previously saved -----
+  (function restoreLog() {
+    if (!logEl) return;
+    var savedLog;
+    try { savedLog = localStorage.getItem('fit:log:' + inst + ':' + date + ':' + target); } catch (e) { savedLog = null; }
+    if (savedLog) {
+      logEl.style.display = 'block';
+      logEl.textContent = savedLog;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+  })();
+
+  function setRunning(on) {
+    if (runBtn) runBtn.disabled = on;
+    if (cancelBtn) cancelBtn.style.display = on ? '' : 'none';
+  }
+  function stopPolling() { if (polling) { clearInterval(polling); polling = null; } }
+  function saveJob() { try { localStorage.setItem(JOB_KEY, JSON.stringify({ inst: inst, date: date, target: target })); } catch (e) {} }
+  function clearJob() { try { localStorage.removeItem(JOB_KEY); } catch (e) {} }
+
+  function poll() {
+    var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
+    fetch('/transit-fit/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
+      if (s.log) {
+        logEl.textContent = s.log;
+        logEl.scrollTop = logEl.scrollHeight;
+        try { localStorage.setItem('fit:log:' + inst + ':' + date + ':' + target, s.log); } catch (e) {}
+      }
+      if (s.state === 'done') {
+        stopPolling(); clearJob();
+        logEl.textContent += '\n\n✓ done — reloading…';
+        try { localStorage.setItem('fit:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+        if (typeof window.showLoading === 'function') {
+          window.showLoading('Reloading…');
+        }
+        setTimeout(function () { window.location.reload(); }, 1200);
+      } else if (s.state === 'error') {
+        stopPolling(); setRunning(false); clearJob();
+        logEl.textContent += '\n\n✗ fit run exited with code ' + s.returncode;
+        try { localStorage.setItem('fit:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+      } else if (s.state === 'cancelled') {
+        stopPolling(); setRunning(false); clearJob();
+        logEl.textContent += '\n\n■ cancelled';
+        try { localStorage.setItem('fit:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+      }
+    }).catch(function () {});
+  }
+
+  function launch() {
+    setRunning(true);
+    if (errEl) errEl.textContent = '';
+    logEl.style.display = 'block';
+    logEl.textContent = 'Launching transit fitting run…';
+    try { localStorage.removeItem('fit:log:' + inst + ':' + date + ':' + target); } catch (e) {}
+
+    fetch('/transit-fit/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target, options: collectOptions() })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (!res.ok) {
+        setRunning(false);
+        logEl.textContent = 'Error: ' + (res.error || 'failed to start');
+        return;
+      }
+      saveJob();
+      if (!polling) polling = setInterval(poll, 2000);
+      poll();
+    }).catch(function (err) {
+      setRunning(false);
+      logEl.textContent = 'Error: ' + err.message;
+    });
+  }
+
+  if (runBtn) runBtn.addEventListener('click', launch);
+  if (cancelBtn) cancelBtn.addEventListener('click', function () {
+    cancelBtn.disabled = true;
+    logEl.textContent += '\n\n■ cancelling…';
+    try { localStorage.setItem('fit:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+    fetch('/transit-fit/cancel', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target })
+    }).then(function (r) { return r.json(); }).then(function () {
+      cancelBtn.disabled = false;
+      if (!polling) { polling = setInterval(poll, 2000); poll(); }
+    }).catch(function () { cancelBtn.disabled = false; });
+  });
+
+  // Check saved job on page load
+  (function checkSavedJob() {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(JOB_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved || !saved.inst) return;
+    if (saved.inst === inst && saved.date === date && saved.target === target) {
+      if (logEl) logEl.style.display = 'block';
+      if (!polling) polling = setInterval(poll, 2000);
+      poll();
+    }
+  })();
+})();
+</script>
 {% endblock %}

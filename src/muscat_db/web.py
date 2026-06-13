@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from jinja2 import Environment, FileSystemLoader
 
 from muscat_db import photometry as phot
+from muscat_db import transit_fit as fit
 from muscat_db.database import (
     SCHEMA,
     delete_note as _delete_note,
@@ -203,13 +204,103 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
 
 
 @app.get("/transit-fit", response_class=HTMLResponse)
-def transit_fit_page():
-    return _render("transit_fit.html")
+def transit_fit_page(inst: str = "", date: str = "", target: str = ""):
+    db = _db_path()
+    inst = inst if inst in INSTRUMENTS else ""
+    date = date if phot.valid_date(date) else ""
+    target = (target or "").strip()
+
+    dates: list[str] = []
+    targets: list[str] = []
+    outputs = None
+    csvs = []
+    target_params = {}
+
+    if inst:
+        date_set = {d["obsdate"] for d in _get_dates(db, inst)}
+        date_set.update(phot.output_dates(inst))
+        dates = sorted(date_set, reverse=True)
+    if inst and date:
+        obj_set = set(_get_objects(db, inst, date))
+        obj_set.update(phot.discovered_targets(inst, date))
+        targets = sorted(obj_set)
+    if inst and date and target:
+        csvs = [c.name for c in fit.get_csv_lightcurves(inst, date, target)]
+        outputs = fit.get_fit_outputs(inst, date, target)
+        target_params = fit.get_target_parameters(target)
+
+    return _render(
+        "transit_fit.html",
+        instruments=list(INSTRUMENTS),
+        sel_inst=inst, sel_date=date, sel_target=target,
+        dates=dates, targets=targets,
+        csvs=csvs, outputs=outputs,
+        target_params=target_params,
+        wiki_url=_wiki_url(inst, target),
+    )
+
+
+@app.get("/transit-fit/status")
+def transit_fit_status(inst: str, date: str, target: str):
+    return JSONResponse(fit.job_status(inst, date, target))
+
+
+@app.post("/transit-fit/run")
+def transit_fit_run(payload: dict = Body(...)):
+    inst = (payload.get("inst") or "").strip()
+    date = (payload.get("date") or "").strip()
+    target = (payload.get("target") or "").strip()
+    options = payload.get("options") or {}
+    result = fit.start_fit(inst, date, target, options)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=400)
+    return JSONResponse(result)
+
+
+@app.post("/transit-fit/cancel")
+def transit_fit_cancel(payload: dict = Body(...)):
+    inst = (payload.get("inst") or "").strip()
+    date = (payload.get("date") or "").strip()
+    target = (payload.get("target") or "").strip()
+    result = fit.cancel_fit(inst, date, target)
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=400)
+    return JSONResponse(result)
+
+
+@app.get("/transit-fit/file/{inst}/{date}/{target}/{name}")
+def transit_fit_file(inst: str, date: str, target: str, name: str):
+    if inst not in INSTRUMENTS or not phot.valid_date(date):
+        raise HTTPException(404, "invalid parameters")
+    if ".." in name or "/" in name:
+        raise HTTPException(400, "invalid filename")
+
+    rdir = phot.output_base() / inst / date / f"transit_fit_{target.replace(' ', '')}"
+    out_dir = rdir / "out"
+
+    if name in ("fit.png", "data.png", "summary.csv", "timer-fit.log"):
+        path = out_dir / name
+        if not path.is_file():
+            path = rdir / name
+    else:
+        raise HTTPException(403, "forbidden file access")
+
+    if not path.is_file():
+        raise HTTPException(404, "file not found")
+
+    return FileResponse(str(path))
 
 
 @app.get("/jobs", response_class=HTMLResponse)
 def jobs_page():
-    return _render("jobs.html", jobs=phot.get_all_jobs())
+    all_phot = phot.get_all_jobs()
+    for j in all_phot:
+        j["type"] = "photometry"
+    all_fit = fit.get_all_jobs()
+    for j in all_fit:
+        j["type"] = "transit_fit"
+    jobs = sorted(all_phot + all_fit, key=lambda j: j["started_at"], reverse=True)
+    return _render("jobs.html", jobs=jobs)
 
 
 @app.get("/photometry/file/{inst}/{date}/{name}")

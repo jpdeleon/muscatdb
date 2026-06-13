@@ -4,19 +4,6 @@ MuSCAT observation log pipeline — scan FITS files, build a fast SQLite databas
 
 Converted from the original Perl scripts (`mkobslog*.pl`, `auto_mkobslog.pl`, `show_obslog_summary.pl`) into a single Python project with a modern backend + frontend.
 
-## TODO
-1. In GUI photometry page, add question mark icon to show useful help or tips when mouse hover.
-2. For muscat and muscat2 inst, show also the master_*.png in GUI photometry page.
-3. Add progress bar in calibrate_muscat*.py
-4. In GUI photometry page, add a "use defaults" button pipeline options section.
-5. In muscat-db table in the home page, add new table column called Phot placed after Dates column which should indicate a check or X mark if full photometry outputs exists or no output exists (or only ran using test-run).
-6. The muscat-db and Logs page are identical. Separate them into two different page. The muscat-db table should only be in the MuSCAT-db homepage. 
-Move the link for the five Instruments i.e. muscat, muscat2, muscat4, muscat4, and sinistro to the Logs Page.
-7. In Logs page, add a summary of data for each instruments below the Instruments section.
-8. Add a new boilerplate page called "Transit Fit" for that will host transit fitting code in the future. Add a link in the navbar after "Photometry".
-9. Add a new page called Jobs. Add a table that tallies the job queue with deep links and their status e.g. Done, Failed, Pending, etc. Add a link in the navbar after "Transit Fit".
-10. Fix the status bar in Photometry page. It sometimes show up and sometimes disappears when navigating to different pages.
-
 ## Requirements
 
 - Python ≥ 3.12

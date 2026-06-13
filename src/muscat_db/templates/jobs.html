@@ -43,6 +43,7 @@
     <thead>
       <tr>
         <th>Target</th>
+        <th>Type</th>
         <th>Instrument</th>
         <th>Date</th>
         <th>Elapsed</th>
@@ -53,7 +54,22 @@
     <tbody>
       {% for j in jobs %}
         <tr>
-          <td><strong><a href="/photometry?inst={{ j.inst }}&amp;date={{ j.date }}&amp;target={{ j.target | urlencode }}">{{ j.target }}</a></strong></td>
+          <td>
+            <strong>
+              {% if j.type == 'transit_fit' %}
+                <a href="/transit-fit?inst={{ j.inst }}&amp;date={{ j.date }}&amp;target={{ j.target | urlencode }}">{{ j.target }}</a>
+              {% else %}
+                <a href="/photometry?inst={{ j.inst }}&amp;date={{ j.date }}&amp;target={{ j.target | urlencode }}">{{ j.target }}</a>
+              {% endif %}
+            </strong>
+          </td>
+          <td>
+            {% if j.type == 'transit_fit' %}
+              <span class="badge" style="background: #4f46e5; color: #e0e7ff;">Transit Fit</span>
+            {% else %}
+              <span class="badge badge-filter-other">Photometry</span>
+            {% endif %}
+          </td>
           <td><span class="badge badge-blue">{{ j.inst }}</span></td>
           <td class="mono">{{ j.date }}</td>
           <td class="mono">{{ j.elapsed }}s</td>
@@ -76,6 +92,7 @@
                       data-inst="{{ j.inst }}"
                       data-date="{{ j.date }}"
                       data-target="{{ j.target }}"
+                      data-type="{{ j.type }}"
                       onclick="cancelJob(this)">
                 Cancel
               </button>
@@ -96,7 +113,7 @@
   {% else %}
   <div style="background: var(--surface); border: 1px dashed var(--border); border-radius: 10px; padding: 2.5rem; text-align: center; margin-top: 1.5rem;">
     <div style="font-size: 2.5rem; margin-bottom: 1rem;">💼</div>
-    <p style="color: var(--text-dim);">No photometry jobs have been launched in this session.</p>
+    <p style="color: var(--text-dim);">No photometry or transit fitting jobs have been launched in this session.</p>
   </div>
   {% endif %}
 </div>
@@ -108,11 +125,13 @@ function cancelJob(btn) {
   const inst = btn.getAttribute('data-inst');
   const date = btn.getAttribute('data-date');
   const target = btn.getAttribute('data-target');
+  const type = btn.getAttribute('data-type');
+  const url = type === 'transit_fit' ? '/transit-fit/cancel' : '/photometry/cancel';
 
   btn.disabled = true;
   btn.innerText = 'Cancelling...';
 
-  fetch('/photometry/cancel', {
+  fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
