@@ -191,6 +191,7 @@
     <h2 style="display: flex; gap: 1.5rem; align-items: center; flex-wrap: wrap;">
       <a href="/{{ sel_inst }}/{{ sel_date }}" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">Show Obslog</a>
       {% if wiki_url %}<a href="{{ wiki_url }}" target="_blank" rel="noopener" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">MuSCAT2 wiki ↗</a>{% endif %}
+      <a href="/transit-fit?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; font-size: 0.85rem; padding: 0.35rem 0.75rem; margin-left: auto;">To Transit Fit</a>
     </h2>
   </div>
 
