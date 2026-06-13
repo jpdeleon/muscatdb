@@ -50,6 +50,11 @@ def prose_dir(tmp_path, monkeypatch):
     base = tmp_path / "prose"
     base.mkdir()
     monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+
+    raw_base = tmp_path / "data"
+    raw_base.mkdir()
+    monkeypatch.setenv("MUSCAT_DATA_DIR", str(raw_base))
+
     _make_outputs(base)
     return base
 
@@ -87,13 +92,17 @@ class TestListOutputs:
         assert out["npz"] == f"{TARGET}_{INST}_{DATE}.npz"
         assert out["log"].endswith(".log")
 
-    def test_discovers_masters_for_muscat(self, prose_dir):
-        mdir = prose_dir / "muscat" / DATE
+    def test_discovers_masters_for_muscat(self, prose_dir, tmp_path):
+        raw_base = tmp_path / "data"
+        mdir = raw_base / f"{DATE}_calibrated"
         mdir.mkdir(parents=True, exist_ok=True)
         (mdir / "master_flat_gp.png").write_bytes(b"\x89PNG\r\n")
         (mdir / "master_bias.png").write_bytes(b"\x89PNG\r\n")
+
+        rdir = prose_dir / "muscat" / DATE
+        rdir.mkdir(parents=True, exist_ok=True)
         stem = f"{TARGET}_muscat_{DATE}"
-        (mdir / (stem + "_lightcurves.png")).write_bytes(b"\x89PNG\r\n")
+        (rdir / (stem + "_lightcurves.png")).write_bytes(b"\x89PNG\r\n")
 
         out = phot.list_outputs("muscat", DATE, TARGET)
         assert out["has_any"]
@@ -391,6 +400,16 @@ class TestRoutes:
     def test_file_route_serves_png(self, client):
         name = f"{TARGET}_{INST}_{DATE}_stacks.png"
         r = client.get(f"/photometry/file/{INST}/{DATE}/{name}")
+        assert r.status_code == 200
+
+    def test_file_route_serves_master_calibration(self, client, tmp_path, monkeypatch):
+        raw_base = tmp_path / "data"
+        monkeypatch.setenv("MUSCAT_DATA_DIR", str(raw_base))
+        mdir = raw_base / f"{DATE}_calibrated"
+        mdir.mkdir(parents=True, exist_ok=True)
+        (mdir / "master_bias.png").write_bytes(b"\x89PNG\r\n")
+
+        r = client.get(f"/photometry/file/muscat/{DATE}/master_bias.png")
         assert r.status_code == 200
 
     def test_file_route_rejects_bad_ext(self, client):

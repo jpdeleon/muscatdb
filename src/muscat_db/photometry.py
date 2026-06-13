@@ -170,8 +170,10 @@ def results_dir(inst: str, date: str) -> Path:
 
 
 def raw_data_dir(inst: str, date: str) -> Path:
-    cfg = INSTRUMENTS.get(inst)
-    base = cfg.data_dir if cfg is not None else f"/data/{inst}"
+    base = os.environ.get("MUSCAT_DATA_DIR")
+    if not base:
+        cfg = INSTRUMENTS.get(inst)
+        base = cfg.data_dir if cfg is not None else f"/data/{inst}"
     return Path(base) / date
 
 
@@ -269,7 +271,8 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
 
     if inst in ("muscat", "muscat2"):
         try:
-            for p in sorted(rdir.glob("master_*.png")):
+            cal_dir = Path(str(raw_data_dir(inst, date)) + "_calibrated")
+            for p in sorted(cal_dir.glob("master_*.png")):
                 if p.is_file():
                     out["masters"].append(p.name)
         except OSError:
@@ -314,6 +317,18 @@ def safe_artifact_path(inst: str, date: str, name: str) -> Path | None:
         return None
     if Path(name).suffix.lower() not in ALLOWED_EXTS:
         return None
+
+    # For muscat/muscat2 master images, they live in <raw_data_dir>_calibrated
+    if inst in ("muscat", "muscat2") and name.startswith("master_") and name.endswith(".png"):
+        raw_dir = raw_data_dir(inst, date)
+        cal_dir = Path(str(raw_dir) + "_calibrated").resolve()
+        candidate = (cal_dir / name).resolve()
+        try:
+            candidate.relative_to(cal_dir)
+        except ValueError:
+            return None
+        return candidate if candidate.is_file() else None
+
     base = output_base().resolve()
     candidate = (base / inst / date / name).resolve()
     try:
