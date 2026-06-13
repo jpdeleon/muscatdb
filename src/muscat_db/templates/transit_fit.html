@@ -253,12 +253,12 @@
             <input type="number" id="opt-tc_pred_unc" value="0.04" step="0.001" placeholder="unc" style="flex: 2; width: 100%; min-width: 0;">
           </div>
         </div>
-        <div style="grid-column: 1 / -1; display: flex; gap: 1.5rem; flex-wrap: wrap; margin-top: 0.25rem;">
-          <div class="opt check">
+        <div style="display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: flex-end; padding-bottom: 0.45rem;">
+          <div class="opt check" style="margin-top: 0;">
             <input type="checkbox" id="opt-chromatic" checked>
             <label for="opt-chromatic">Chromatic fit <span class="help-tooltip" title="Flag indicating if parameters (like Rp/R*) are chromatic (band-dependent).">?</span></label>
           </div>
-          <div class="opt check">
+          <div class="opt check" style="margin-top: 0;">
             <input type="checkbox" id="opt-trend" checked>
             <label for="opt-trend">Trend <span class="help-tooltip" title="Include linear trend parameter in the fit. Sets 1 if checked, 0 if unchecked.">?</span></label>
           </div>
