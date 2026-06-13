@@ -176,6 +176,7 @@ def start_fit(
     date: str,
     target: str,
     options: dict,
+    test_run: bool = False,
 ) -> dict:
     """Prepare inputs and launch a transit fit using the timer-fit script."""
     if inst not in INSTRUMENTS:
@@ -275,6 +276,8 @@ def start_fit(
     # Launch process
     key = fit_job_key(inst, date, target)
     cmd = [*_timer_prefix(), "-v", str(rdir)]
+    if test_run:
+        cmd.append("--test_run")
     log_path = rdir / "timer-fit.log"
     logf = open(log_path, "w")
     logf.write(f"$ {shlex.join(cmd)}\n\n")

@@ -333,14 +333,17 @@
     <div id="opt-error" style="color: var(--red); font-size: 0.85rem; margin-top: 0.5rem;"></div>
     
     <div class="run-actions">
+      <button class="btn" type="button" id="run-test-btn" style="border-color: var(--accent); color: var(--accent);">
+        ▶ Run Test Fitting
+      </button>
       <button class="btn primary" type="button" id="run-fit-btn">
-        ▶ Run Transit Fitting
+        ▶ Run Full Fitting
       </button>
       <button class="btn" type="button" id="cancel-btn" style="display:none;border-color:var(--red);color:var(--red);">
         ■ Cancel
       </button>
       <span class="hint" style="color: var(--text-dim); font-size: 0.8rem;">
-        Runs the fitting script over the copied CSV curves. Fits standard MCMC chains.
+        Runs the fitting script over the copied CSV curves. Test runs a quick fit; Full runs standard MCMC chains.
       </span>
     </div>
 
@@ -382,6 +385,7 @@
   if (!inst || !date || !target) return;
 
   var runBtn    = document.getElementById('run-fit-btn');
+  var runTestBtn = document.getElementById('run-test-btn');
   var cancelBtn = document.getElementById('cancel-btn');
   var logEl     = document.getElementById('run-log');
   var errEl     = document.getElementById('opt-error');
@@ -501,6 +505,7 @@
 
   function setRunning(on) {
     if (runBtn) runBtn.disabled = on;
+    if (runTestBtn) runTestBtn.disabled = on;
     if (cancelBtn) cancelBtn.style.display = on ? '' : 'none';
   }
   function stopPolling() { if (polling) { clearInterval(polling); polling = null; } }
@@ -535,7 +540,7 @@
     }).catch(function () {});
   }
 
-  function launch() {
+  function launch(testRun) {
     setRunning(true);
     if (errEl) errEl.textContent = '';
     logEl.style.display = 'block';
@@ -544,7 +549,7 @@
 
     fetch('/transit-fit/run', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ inst: inst, date: date, target: target, options: collectOptions() })
+      body: JSON.stringify({ inst: inst, date: date, target: target, test_run: !!testRun, options: collectOptions() })
     }).then(function (r) { return r.json(); }).then(function (res) {
       if (!res.ok) {
         setRunning(false);
@@ -560,7 +565,8 @@
     });
   }
 
-  if (runBtn) runBtn.addEventListener('click', launch);
+  if (runBtn) runBtn.addEventListener('click', function () { launch(false); });
+  if (runTestBtn) runTestBtn.addEventListener('click', function () { launch(true); });
   if (cancelBtn) cancelBtn.addEventListener('click', function () {
     cancelBtn.disabled = true;
     logEl.textContent += '\n\n■ cancelling…';

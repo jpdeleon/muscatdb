@@ -252,7 +252,8 @@ def transit_fit_run(payload: dict = Body(...)):
     date = (payload.get("date") or "").strip()
     target = (payload.get("target") or "").strip()
     options = payload.get("options") or {}
-    result = fit.start_fit(inst, date, target, options)
+    test_run = bool(payload.get("test_run", False))
+    result = fit.start_fit(inst, date, target, options, test_run=test_run)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
     return JSONResponse(result)
