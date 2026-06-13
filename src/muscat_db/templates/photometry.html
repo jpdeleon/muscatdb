@@ -191,7 +191,6 @@
     <h2 style="display: flex; gap: 1.5rem; align-items: center; flex-wrap: wrap;">
       <a href="/{{ sel_inst }}/{{ sel_date }}" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">Show Obslog</a>
       {% if wiki_url %}<a href="{{ wiki_url }}" target="_blank" rel="noopener" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">MuSCAT2 wiki ↗</a>{% endif %}
-      <a href="/transit-fit?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; font-size: 0.85rem; padding: 0.35rem 0.75rem; margin-left: auto;">To Transit Fit</a>
     </h2>
   </div>
 
@@ -845,7 +844,10 @@
   refreshCmd();
 })();
 </script>
-<div style="text-align:center; margin:2em 0;">
+<div style="text-align:center; margin:2em 0; display: flex; justify-content: center; gap: 1rem; align-items: center;">
   <a href="#" style="display:inline-block; padding:0.5em 2em; background:#0056b3; color:#fff; text-decoration:none; border-radius:4px;">Back to Top</a>
+  {% if sel_inst and sel_date and sel_target %}
+    <a href="/transit-fit?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Transit Fit</a>
+  {% endif %}
 </div>
 {% endblock %}
