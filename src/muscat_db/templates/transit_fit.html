@@ -89,13 +89,7 @@
   .help-tooltip:hover { background: var(--accent); color: #fff; }
 </style>
 
-<h1>
-  Transit Fitting
-  {% if sel_target %}
-    : {{ sel_target }}
-    <a href="https://exoplanetarchive.ipac.caltech.edu/overview/{{ sel_target }}" target="_blank" style="font-size: 0.85rem; font-weight: normal; margin-left: 1rem; color: var(--accent); text-decoration: none;">View NASA Exoplanet Archive ↗</a>
-  {% endif %}
-</h1>
+<h1>Transit Fit</h1>
 
 <div class="selector-group">
   <label for="sel-inst">
@@ -156,6 +150,10 @@
     <a href="/photometry?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary">Go to Photometry Page</a>
   </div>
 {% else %}
+  <div style="margin-bottom: 1.5rem;">
+    <a href="https://exoplanetarchive.ipac.caltech.edu/overview/{{ sel_target }}" target="_blank" style="font-size: 0.9rem; color: var(--accent); text-decoration: none; font-weight: 500;">View NASA Exoplanet Archive ↗</a>
+  </div>
+
   <!-- Discovered light curves section -->
   <div class="phot-section">
     <h2>Discovered Lightcurves</h2>
