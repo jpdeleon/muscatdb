@@ -132,6 +132,11 @@ async def logs_page():
     )
 
 
+@app.get("/workflow", response_class=HTMLResponse)
+async def workflow_page():
+    return _render("workflow.html")
+
+
 @app.get("/api/targets/export.csv")
 def export_targets_csv():
     db = _db_path()

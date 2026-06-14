@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+{% block title %}Workflow Diagram — MuSCAT-db{% endblock %}
+{% block content %}
+<style>
+  /* Customize Mermaid nodes using CSS variables for theme compatibility */
+  .mermaid .node.default rect,
+  .mermaid .node.default circle,
+  .mermaid .node.default polygon {
+    fill: var(--surface) !important;
+    stroke: var(--border) !important;
+  }
+  .mermaid .node.default .label,
+  .mermaid .node.default text {
+    color: var(--text) !important;
+    fill: var(--text) !important;
+  }
+  .mermaid .node.db rect,
+  .mermaid .node.db circle,
+  .mermaid .node.db polygon {
+    fill: var(--surface2) !important;
+    stroke: var(--accent) !important;
+    stroke-width: 2px !important;
+  }
+  .mermaid .node.db .label,
+  .mermaid .node.db text {
+    color: var(--text) !important;
+    fill: var(--text) !important;
+  }
+  .mermaid .node.pipeline rect,
+  .mermaid .node.pipeline circle,
+  .mermaid .node.pipeline polygon {
+    fill: var(--surface2) !important;
+    stroke: var(--accent2) !important;
+    stroke-width: 2px !important;
+  }
+  .mermaid .node.pipeline .label,
+  .mermaid .node.pipeline text {
+    color: var(--text) !important;
+    fill: var(--text) !important;
+  }
+  
+  /* Style connection lines and edge labels */
+  .mermaid .edgePath .path {
+    stroke: var(--text-dim) !important;
+    stroke-width: 1.5px !important;
+  }
+  .mermaid .marker {
+    fill: var(--text-dim) !important;
+    stroke: var(--text-dim) !important;
+  }
+  .mermaid .edgeLabel {
+    background-color: var(--bg) !important;
+    color: var(--text-dim) !important;
+  }
+  .mermaid .edgeLabel rect {
+    fill: var(--bg) !important;
+  }
+</style>
+
+<div class="workflow-container">
+  <div class="workflow-card">
+    <h1 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+      MuSCAT-db Pipeline Workflow
+    </h1>
+    <p style="color: var(--text-dim); margin-bottom: 1.5rem; font-size: 0.95rem;">
+      An overview of the MuSCAT observation log data ingestion and the photometry and transit fitting analysis pipelines.
+    </p>
+
+    <div class="workflow-diagram-wrap">
+      <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% Data Ingestion Stage
+    A["Raw FITS Files\n(/data/MuSCAT* and Sinistro)"]:::default -->|1. scan| B["Observation CSV Logs\n(/ut3/muscat/obslog/)"]:::default
+    B -->|2. build-db| C["SQLite Database\n(muscat.db)"]:::db
+
+    %% Web UI
+    C -->|Reads DB| D["Web GUI Dashboard"]:::default
+    D -->|3. Explore Targets and Logs| D
+    
+    %% Photometry Stage
+    D -->|4. Configure and Launch| E["Photometry Job Queue"]:::pipeline
+    E -->|Runs calibrated prose| F["Photometry Reduction"]:::default
+    F -->|Outputs CSVs and check plots| G["Photometry CSVs\n(results/photometry/)"]:::default
+    
+    %% Transit Fit Stage
+    G -->|Inputs lightcurves| H["Transit Fit Job Queue"]:::db
+    D -->|5. Configure and Launch| H
+    H -->|Runs timer-fit sampler| I["Transit Fitting"]:::default
+    I -->|Outputs corner and fit plots| J["Transit Fit Results\n(results/transit_fit/)"]:::default
+
+    %% Jobs monitoring
+    F -->|Track execution| K["Jobs Page"]:::default
+    I -->|Track execution| K
+
+    %% Results loop
+    G -->|Display preview and plots| D
+    J -->|Display parameters and plots| D
+      </pre>
+    </div>
+  </div>
+
+  <div class="workflow-card">
+    <h2 style="margin-bottom: 1rem; color: var(--text);">Pipeline Execution Details</h2>
+    <div class="workflow-grid">
+      
+      <!-- Stage 1 -->
+      <div class="workflow-stage">
+        <div class="workflow-header">
+          <span class="workflow-badge">1</span>
+          <span class="workflow-title">FITS Header Scanning</span>
+        </div>
+        <div class="workflow-desc">
+          Extracts metadata from raw scientific FITS files. It excludes calibration frames (dark/flat/bias) and writes clean logs.
+        </div>
+        <div class="workflow-cmd">muscat-db scan &lt;inst&gt; &lt;yymmdd&gt;</div>
+      </div>
+
+      <!-- Stage 2 -->
+      <div class="workflow-stage">
+        <div class="workflow-header">
+          <span class="workflow-badge">2</span>
+          <span class="workflow-title">Database Assembly</span>
+        </div>
+        <div class="workflow-desc">
+          Ingests the scanned CSV files, building indices and tables in a unified, optimized SQLite database.
+        </div>
+        <div class="workflow-cmd">muscat-db build-db</div>
+      </div>
+
+      <!-- Stage 3 -->
+      <div class="workflow-stage">
+        <div class="workflow-header">
+          <span class="workflow-badge">3</span>
+          <span class="workflow-title">Interactive Browsing</span>
+        </div>
+        <div class="workflow-desc">
+          Allows real-time target searches (with regex support), logs inspection, and observation schedules directly from the Web GUI.
+        </div>
+        <div class="workflow-cmd">muscat-db serve</div>
+      </div>
+
+      <!-- Stage 4 -->
+      <div class="workflow-stage stage-phot">
+        <div class="workflow-header">
+          <span class="workflow-badge">4</span>
+          <span class="workflow-title">Photometry Reduction</span>
+        </div>
+        <div class="workflow-desc">
+          Launches a calibrated background reduction using the <code>prose</code> pipeline to align frames, build PSF models, and extract raw lightcurves.
+        </div>
+      </div>
+
+      <!-- Stage 5 -->
+      <div class="workflow-stage stage-phot">
+        <div class="workflow-header">
+          <span class="workflow-badge">5</span>
+          <span class="workflow-title">Transit Fitting</span>
+        </div>
+        <div class="workflow-desc">
+          Runs a <code>PyMC</code> MCMC sampler to model the transit curve, compute planetary/stellar parameters, and output high-quality fit plots.
+        </div>
+      </div>
+
+      <!-- Stage 6 -->
+      <div class="workflow-stage">
+        <div class="workflow-header">
+          <span class="workflow-badge">6</span>
+          <span class="workflow-title">Job Monitoring</span>
+        </div>
+        <div class="workflow-desc">
+          Tracks active, pending, or completed photometry and transit fitting background processes. Shows logs and error tracebacks.
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  
+  // Theme check
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: isDark ? 'dark' : 'default',
+    securityLevel: 'loose',
+    themeVariables: {
+      primaryColor: isDark ? '#1a1d27' : '#ffffff',
+      primaryTextColor: isDark ? '#e1e4ed' : '#1a1d27',
+      primaryBorderColor: isDark ? '#2e3348' : '#d8dce6',
+      lineColor: isDark ? '#8b90a5' : '#5b6178',
+      secondaryColor: isDark ? '#242838' : '#eef0f6',
+      tertiaryColor: isDark ? '#0f1117' : '#f7f8fb'
+    }
+  });
+
+  // Watch for theme toggle and reload to re-render mermaid with correct colors
+  const observer = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+      if (mutation.type === 'attributes' && mutation.attributeName === 'data-theme') {
+        window.location.reload();
+      }
+    });
+  });
+  observer.observe(document.documentElement, { attributes: true });
+</script>
+{% endblock %}

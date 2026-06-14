@@ -608,6 +608,12 @@ class TestRoutes:
         assert 'data-target="TOI-5684.01"' in r.text
         assert "TOI-5684.02" in r.text
 
+    def test_workflow_route(self, client):
+        r = client.get("/workflow")
+        assert r.status_code == 200
+        assert "MuSCAT-db Pipeline Workflow" in r.text
+        assert "mermaid" in r.text
+
 
 class TestTransitFitOptions:
     def test_validate_fit_options_success(self):
