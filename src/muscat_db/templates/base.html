@@ -185,14 +185,15 @@
         handle.title = 'Drag to resize column';
         th.appendChild(handle);
         handle.addEventListener('mousedown', function (e) {
-          startResize(e, table, th, i, tableId);
+          startResize(e, table, th, th.cellIndex, tableId);
         });
         handle.addEventListener('dblclick', function () {
           // Double-click resets this column to auto-fit content.
           th.style.width = '';
-          localStorage.removeItem('colw:' + tableId + ':' + i);
+          const currentIdx = th.cellIndex;
+          localStorage.removeItem('colw:' + tableId + ':' + currentIdx);
           th.style.width = th.getBoundingClientRect().width + 'px';
-          localStorage.setItem('colw:' + tableId + ':' + i,
+          localStorage.setItem('colw:' + tableId + ':' + currentIdx,
                                parseFloat(th.style.width));
         });
       });
@@ -313,17 +314,18 @@
 
           // Decide sort kind: explicit hint or auto-detect from cell text.
           let kind = th.dataset.sortType;
+          const currentIdx = th.cellIndex;
           if (!kind) {
             const samples = Array.from(tbody.rows).slice(0, 25)
-              .map(r => r.cells[colIdx] ? r.cells[colIdx].textContent.trim() : '');
+              .map(r => r.cells[currentIdx] ? r.cells[currentIdx].textContent.trim() : '');
             kind = detectKind(samples);
           }
           const sortAttr = th.dataset.sortAttr;  // camelCase data-* key
 
           const dirSign = next === 'asc' ? 1 : -1;
           const sorted = Array.from(tbody.rows).slice().sort((a, b) => {
-            const ka = rowKey(a, colIdx, sortAttr, kind);
-            const kb = rowKey(b, colIdx, sortAttr, kind);
+            const ka = rowKey(a, currentIdx, sortAttr, kind);
+            const kb = rowKey(b, currentIdx, sortAttr, kind);
             if (ka == null && kb == null) return 0;
             if (ka == null) return 1;   // nulls always last
             if (kb == null) return -1;
@@ -344,6 +346,89 @@
       document.addEventListener('DOMContentLoaded', initAllSortable);
     } else {
       initAllSortable();
+    }
+
+    // ----- draggable columns ----------------------------------------------
+    function initDraggableColumns(table) {
+      if (table.dataset.draggableInit === '1') return;
+      table.dataset.draggableInit = '1';
+      const headerRow = table.tHead && table.tHead.rows[0];
+      if (!headerRow) return;
+      const ths = Array.from(headerRow.cells);
+      
+      ths.forEach(function (th) {
+        th.setAttribute('draggable', 'true');
+        
+        th.addEventListener('dragstart', function (e) {
+          if (e.target.closest('.col-resizer')) {
+            e.preventDefault();
+            return;
+          }
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', th.cellIndex);
+          th.classList.add('dragging');
+        });
+        
+        th.addEventListener('dragend', function () {
+          ths.forEach(function (t) {
+            t.classList.remove('dragging', 'drag-over-left', 'drag-over-right');
+          });
+        });
+        
+        th.addEventListener('dragover', function (e) {
+          e.preventDefault();
+          const rect = th.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          
+          ths.forEach(function (t) {
+            t.classList.remove('drag-over-left', 'drag-over-right');
+          });
+          
+          if (relX < rect.width / 2) {
+            th.classList.add('drag-over-left');
+          } else {
+            th.classList.add('drag-over-right');
+          }
+        });
+        
+        th.addEventListener('dragleave', function () {
+          th.classList.remove('drag-over-left', 'drag-over-right');
+        });
+        
+        th.addEventListener('drop', function (e) {
+          e.preventDefault();
+          th.classList.remove('drag-over-left', 'drag-over-right');
+          
+          const sourceIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
+          const targetIdx = th.cellIndex;
+          if (isNaN(sourceIdx) || sourceIdx === targetIdx) return;
+          
+          const rect = th.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          const insertBefore = relX < rect.width / 2;
+          
+          Array.from(table.rows).forEach(function (row) {
+            const cell = row.cells[sourceIdx];
+            const targetCell = row.cells[targetIdx];
+            if (!cell || !targetCell) return;
+            
+            if (insertBefore) {
+              row.insertBefore(cell, targetCell);
+            } else {
+              row.insertBefore(cell, targetCell.nextSibling);
+            }
+          });
+        });
+      });
+    }
+
+    function initAllDraggable() {
+      document.querySelectorAll('table').forEach(initDraggableColumns);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAllDraggable);
+    } else {
+      initAllDraggable();
     }
 
     // ----- inline notes editor (delegated) --------------------------------

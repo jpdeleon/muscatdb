@@ -541,4 +541,24 @@ details.adv[open] > summary { color: var(--text); margin-bottom: 0.5rem; }
   display: inline-block;
 }
 
+/* Drag and drop columns styling */
+th[draggable="true"] {
+  cursor: grab;
+  user-select: none;
+}
+th[draggable="true"]:active {
+  cursor: grabbing;
+}
+th.dragging {
+  opacity: 0.5;
+  background: var(--surface2) !important;
+}
+th.drag-over-left {
+  border-left: 3px solid var(--accent) !important;
+}
+th.drag-over-right {
+  border-right: 3px solid var(--accent) !important;
+}
+
+
 

@@ -23,26 +23,26 @@
   <thead>
     <tr>
       <th data-sort-attr="name">Target</th>
+      <th data-sort-attr="dates">Dates</th>
       <th data-sort-attr="ra"          data-sort-type="ra">RA</th>
       <th data-sort-attr="dec"         data-sort-type="dec">Dec</th>
       <th data-sort-attr="filters">Filters</th>
       <th data-sort-attr="airmassMax"  data-sort-type="number">Airmass</th>
       <th data-sort-attr="frames"      data-sort-type="number"># Frames</th>
       <th data-sort-attr="instruments">Instruments</th>
-      <th data-sort-attr="dates">Dates</th>
       <th data-sort-attr="phot">Phot</th>
       <th data-sort-attr="fit">Fit</th>
       <th data-sort-attr="note">Notes</th>
     </tr>
     <tr class="filter-row">
       <th><input type="text" data-col="name"        placeholder="contains…"></th>
+      <th><input type="text" data-col="date"        placeholder="YYMMDD"></th>
       <th><input type="text" data-col="ra"          placeholder="hr: >10  5-15"></th>
       <th><input type="text" data-col="dec"         placeholder="deg: >0  -30:30"></th>
       <th><input type="text" data-col="filter"      placeholder="g, r, i, z"></th>
       <th><input type="text" data-col="airmass"     placeholder="<1.5  1.1-2"></th>
       <th><input type="text" data-col="frames"      placeholder="<100  >500"></th>
       <th><input type="text" data-col="instrument"  placeholder="muscat2"></th>
-      <th><input type="text" data-col="date"        placeholder="YYMMDD"></th>
       <th><input type="text" data-col="phot"        placeholder="Y/N"></th>
       <th><input type="text" data-col="fit"         placeholder="Y/N"></th>
       <th><input type="text" data-col="note"        placeholder="contains…"></th>
@@ -63,6 +63,14 @@
         data-fit="{{ 'Y' if t.fit == 'full' else 'N' }}"
         data-note="{{ t.note|default('', true) }}">
       <td><strong>{{ t.object }}</strong></td>
+      <td class="mono" style="white-space:nowrap; vertical-align:top;">
+        {% for d in t.dates %}
+          {% set inst = t.date_to_inst.get(d, t.instruments[0] if t.instruments else '') %}
+          <div style="margin-bottom:2px;">
+            <a href="/{{ inst }}/{{ d }}">{{ d }}{% if inst == 'muscat' %}(M1){% elif inst == 'muscat2' %}(M2){% elif inst == 'muscat3' %}(M3){% elif inst == 'muscat4' %}(M4){% elif inst == 'sinistro' %}(S){% endif %}</a><a href="/photometry?inst={{ inst }}&date={{ d }}&target={{ t.object | urlencode }}" title="photometry" style="text-decoration:none;font-size:0.8em;margin-left:1px;">🔭</a><a href="/transit-fit?inst={{ inst }}&date={{ d }}&target={{ t.object | urlencode }}" title="transit fit" style="text-decoration:none;font-size:0.8em;margin-left:2px;">📈</a>
+          </div>
+        {% endfor %}
+      </td>
       <td class="mono">{{ t.ra }}</td>
       <td class="mono">{{ t.declination }}</td>
       <td>
@@ -81,14 +89,6 @@
       <td style="white-space:normal;">
         {% for inst in t.instruments %}
           <a href="/{{ inst }}"><span class="badge badge-blue">{{ inst }}</span></a>
-        {% endfor %}
-      </td>
-      <td class="mono" style="white-space:nowrap; vertical-align:top;">
-        {% for d in t.dates %}
-          {% set inst = t.date_to_inst.get(d, t.instruments[0] if t.instruments else '') %}
-          <div style="margin-bottom:2px;">
-            <a href="/{{ inst }}/{{ d }}">{{ d }}{% if inst == 'muscat' %}(M1){% elif inst == 'muscat2' %}(M2){% elif inst == 'muscat3' %}(M3){% elif inst == 'muscat4' %}(M4){% elif inst == 'sinistro' %}(S){% endif %}</a><a href="/photometry?inst={{ inst }}&date={{ d }}&target={{ t.object | urlencode }}" title="photometry" style="text-decoration:none;font-size:0.8em;margin-left:1px;">🔭</a><a href="/transit-fit?inst={{ inst }}&date={{ d }}&target={{ t.object | urlencode }}" title="transit fit" style="text-decoration:none;font-size:0.8em;margin-left:2px;">📈</a>
-          </div>
         {% endfor %}
       </td>
       <td style="text-align:center;">
