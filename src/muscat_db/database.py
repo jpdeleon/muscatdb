@@ -238,7 +238,7 @@ def build_db(db_path: str, progress=None) -> int:
         # Restore preserved jobs so build-db doesn't wipe job history.
         for job in preserved_jobs:
             conn.execute(
-                "INSERT OR REPLACE INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?)", job
+                "INSERT OR REPLACE INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?)", job
             )
 
         conn.commit()

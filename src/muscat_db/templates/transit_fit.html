@@ -274,6 +274,10 @@
             🔍 Query Target:
           </label>
           <input type="text" id="archive-target-input" value="{{ sel_target }}" placeholder="e.g. WASP-104 b" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.6rem; font-size: 0.85rem; flex-grow: 1;">
+          <select id="archive-source-select" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.3rem 0.4rem; font-size: 0.8rem;">
+            <option value="nasa">NASA Archive</option>
+            <option value="toi">TOI Catalog</option>
+          </select>
           <button class="btn" type="button" id="archive-query-btn" style="font-size: 0.8rem; padding: 0.35rem 0.75rem; display: flex; align-items: center; gap: 0.35rem;">Query Archive</button>
         </div>
         <div style="display: flex; gap: 0.5rem;">
@@ -512,6 +516,7 @@
 
   var SEL_KEY = 'fit:last';
   var OPT_KEY = 'fit:options:' + inst + ':' + date + ':' + target;
+  var CSV_KEY = 'fit:csvs:' + inst + ':' + date + ':' + target;
   var PANEL_KEY = 'fit:panel';
   var JOB_KEY = 'fit:job';
 
@@ -576,13 +581,14 @@
       planetLetters.push(letter);
 
       planetData['query_target_' + letter] = card.querySelector('.planet-query-target').value;
+      planetData['query_source_' + letter] = card.querySelector('.planet-source-select').value;
       planetData['pl_ref_' + letter] = card.querySelector('.planet-ref-container').innerHTML;
       planetData['period_' + letter] = card.querySelector('.planet-period').value;
       planetData['period_unc_' + letter] = card.querySelector('.planet-period-unc').value;
       planetData['t0_' + letter] = card.querySelector('.planet-t0').value;
       planetData['t0_unc_' + letter] = card.querySelector('.planet-t0-unc').value;
-      planetData['dur_' + letter] = card.querySelector('.planet-dur').value;
-      planetData['dur_unc_' + letter] = card.querySelector('.planet-dur-unc').value;
+      planetData['dur_' + letter] = card.querySelector('.planet-dur').value / 24;
+      planetData['dur_unc_' + letter] = card.querySelector('.planet-dur-unc').value / 24;
       planetData['tc_pred_' + letter] = card.querySelector('.planet-tc_pred').value;
       planetData['tc_pred_unc_' + letter] = card.querySelector('.planet-tc_pred-unc').value;
       planetData['ror_' + letter] = card.querySelector('.planet-ror').value;
@@ -630,7 +636,8 @@
       feh: val('opt-feh'),
       feh_unc: val('opt-feh_unc'),
       fixed: fixed,
-      stellar_ref: document.getElementById('stellar-ref-container') ? document.getElementById('stellar-ref-container').innerHTML : ''
+      stellar_ref: document.getElementById('stellar-ref-container') ? document.getElementById('stellar-ref-container').innerHTML : '',
+      archive_source: document.getElementById('archive-source-select') ? document.getElementById('archive-source-select').value : 'nasa'
     };
 
     if (planetLetters.length > 0) {
@@ -726,6 +733,7 @@
     card.style.position = 'relative';
 
     var defaultQuery = values && values.query_target ? values.query_target : getDefaultQueryTarget(letter);
+    var savedSource = (values && values.source) ? values.source : 'nasa';
     var isFirst = container.children.length === 0;
 
     var headerHtml = 
@@ -737,6 +745,10 @@
         '</div>' +
         '<div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">' +
           '<input type="text" class="planet-query-target" value="' + defaultQuery + '" placeholder="e.g. WASP-104 ' + letter + '" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 0.2rem 0.5rem; font-size: 0.8rem; width: 180px;">' +
+          '<select class="planet-source-select" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 0.2rem 0.25rem; font-size: 0.75rem;">' +
+            '<option value="nasa"' + (savedSource === 'nasa' ? ' selected' : '') + '>NASA</option>' +
+            '<option value="toi"' + (savedSource === 'toi' ? ' selected' : '') + '>TOI</option>' +
+          '</select>' +
           '<button class="btn sm planet-query-btn" type="button" style="font-size: 0.75rem; padding: 0.2rem 0.5rem;">Query Archive</button>';
 
     if (!isFirst) {
@@ -749,8 +761,8 @@
     var val_period_unc = values && values.period_unc !== undefined ? values.period_unc : '';
     var val_t0 = values && values.t0 !== undefined ? values.t0 : '';
     var val_t0_unc = values && values.t0_unc !== undefined ? values.t0_unc : '';
-    var val_dur = values && values.dur !== undefined ? values.dur : '';
-    var val_dur_unc = values && values.dur_unc !== undefined ? values.dur_unc : '';
+    var val_dur = values && values.dur !== undefined ? values.dur * 24 : '';
+    var val_dur_unc = values && values.dur_unc !== undefined ? values.dur_unc * 24 : '';
     var val_ror = values && values.ror !== undefined ? values.ror : '';
     var val_ror_unc = values && values.ror_unc !== undefined ? values.ror_unc : '';
     var val_b = values && values.b !== undefined ? values.b : '';
@@ -778,11 +790,11 @@
           '</div>' +
         '</div>' +
         '<div class="opt">' +
-          '<label>Duration (days)</label>' +
+          '<label>Duration (hrs)</label>' +
           '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
-            '<input type="number" class="planet-dur" value="' + val_dur + '" placeholder="val" step="0.00001" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+            '<input type="number" class="planet-dur" value="' + val_dur + '" placeholder="val" step="0.01" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
             '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' +
-            '<input type="number" class="planet-dur-unc" value="' + val_dur_unc + '" placeholder="unc" step="0.00001" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+            '<input type="number" class="planet-dur-unc" value="' + val_dur_unc + '" placeholder="unc" step="0.01" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
           '</div>' +
         '</div>' +
         '</div>' +
@@ -837,7 +849,11 @@
       var originalText = queryBtn.innerText;
       queryBtn.innerText = 'Querying...';
 
-      fetch('/transit-fit/query-archive?target=' + encodeURIComponent(targetVal))
+      var sourceSelect = card.querySelector('.planet-source-select');
+      var source = sourceSelect ? sourceSelect.value : 'nasa';
+      var sourceLabel = source === 'toi' ? 'TOI Catalog' : 'NASA Exoplanet Archive';
+
+      fetch('/transit-fit/query-archive?target=' + encodeURIComponent(targetVal) + '&source=' + encodeURIComponent(source))
         .then(function(res) {
           if (!res.ok) {
             return res.json().then(function(err) { throw new Error(err.error || 'Failed to query archive'); });
@@ -877,7 +893,7 @@
           }
 
           saveOptions();
-          alert('Successfully loaded parameters for ' + data.pl_name + ' from NASA Exoplanet Archive!');
+          alert('Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '!');
         })
         .catch(function(err) {
           alert('Error: ' + err.message);
@@ -946,6 +962,9 @@
       if (el && saved[id] !== undefined) el.checked = saved[id] === 'true';
     });
 
+    var archiveSourceEl = document.getElementById('archive-source-select');
+    if (archiveSourceEl && saved.archive_source !== undefined) archiveSourceEl.value = saved.archive_source;
+
     var stellarRefEl = document.getElementById('stellar-ref-container');
     if (stellarRefEl && saved.stellar_ref !== undefined) stellarRefEl.innerHTML = saved.stellar_ref;
 
@@ -973,6 +992,7 @@
 
     planetLetters.forEach(function (letter) {
       var vals = {
+        source: saved['query_source_' + letter] || 'nasa',
         query_target: saved['query_target_' + letter] || getDefaultQueryTarget(letter),
         period: saved['period_' + letter] !== undefined ? saved['period_' + letter] : '',
         period_unc: saved['period_unc_' + letter] !== undefined ? saved['period_unc_' + letter] : '',
@@ -1059,9 +1079,9 @@
       }
 
       saveOptions();
+      updateChromaticForBands();
     });
   }
-
   var saveBtn = document.getElementById('save-btn');
   if (saveBtn) {
     saveBtn.addEventListener('click', function () {
@@ -1158,6 +1178,7 @@
         });
 
         saveOptions();
+        updateChromaticForBands();
         alert('Values restored.');
       } else {
         alert('No saved backup found to restore.');
@@ -1226,6 +1247,9 @@
 
   // ---- CSV selection ----
   var csvCards = document.querySelectorAll('.csv-card');
+  function saveCsvSelection() {
+    try { localStorage.setItem(CSV_KEY, JSON.stringify(getSelectedCsvs())); } catch (e) {}
+  }
   function updateCsvCount() {
     var el = document.getElementById('csv-count');
     if (!el) return;
@@ -1242,6 +1266,21 @@
     });
     return names;
   }
+  function restoreCsvSelection() {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(CSV_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved || !Array.isArray(saved)) return;
+    var selected = new Set(saved);
+    csvCards.forEach(function (card) {
+      var name = card.getAttribute('data-csv-name');
+      var cb = card.querySelector('.csv-checkbox');
+      if (!cb) return;
+      var isSelected = selected.has(name);
+      cb.checked = isSelected;
+      card.classList.toggle('selected', isSelected);
+      card.classList.toggle('deselected', !isSelected);
+    });
+  }
   csvCards.forEach(function (card) {
     card.addEventListener('click', function (e) {
       if (e.target.type === 'checkbox') return;
@@ -1250,6 +1289,8 @@
       card.classList.toggle('selected', cb.checked);
       card.classList.toggle('deselected', !cb.checked);
       updateCsvCount();
+      saveCsvSelection();
+      updateChromaticForBands();
     });
     var cb = card.querySelector('.csv-checkbox');
     if (cb) {
@@ -1257,10 +1298,41 @@
         card.classList.toggle('selected', cb.checked);
         card.classList.toggle('deselected', !cb.checked);
         updateCsvCount();
+        saveCsvSelection();
+        updateChromaticForBands();
       });
       card.classList.add(cb.checked ? 'selected' : 'deselected');
     }
   });
+  restoreCsvSelection();
+
+  function extractBand(csvName) {
+    var parts = csvName.split('_' + inst + '_');
+    if (parts.length > 1) {
+      var band = parts[1].split('_' + date)[0];
+      return band || 'gp';
+    }
+    return 'gp';
+  }
+  function updateChromaticForBands() {
+    var bands = {};
+    csvCards.forEach(function (card) {
+      var cb = card.querySelector('.csv-checkbox');
+      if (cb && cb.checked) {
+        bands[extractBand(card.getAttribute('data-csv-name'))] = true;
+      }
+    });
+    var nBands = Object.keys(bands).length;
+    var cEl = document.getElementById('opt-chromatic');
+    if (!cEl) return;
+    if (nBands < 2) {
+      cEl.checked = false;
+      cEl.disabled = true;
+    } else {
+      cEl.disabled = false;
+    }
+  }
+
   var selectAllBtn = document.getElementById('select-all-csvs');
   var deselectAllBtn = document.getElementById('deselect-all-csvs');
   if (selectAllBtn) selectAllBtn.addEventListener('click', function () {
@@ -1271,6 +1343,8 @@
       card.classList.remove('deselected');
     });
     updateCsvCount();
+    saveCsvSelection();
+    updateChromaticForBands();
   });
   if (deselectAllBtn) deselectAllBtn.addEventListener('click', function () {
     csvCards.forEach(function (card) {
@@ -1280,8 +1354,11 @@
       card.classList.add('deselected');
     });
     updateCsvCount();
+    saveCsvSelection();
+    updateChromaticForBands();
   });
   updateCsvCount();
+  updateChromaticForBands();
 
   function setRunning(on) {
     if (runBtn) runBtn.disabled = on;
@@ -1418,7 +1495,11 @@
       var originalText = queryBtn.innerText;
       queryBtn.innerText = 'Querying...';
 
-      fetch('/transit-fit/query-archive?target=' + encodeURIComponent(targetVal))
+      var sourceSelect = document.getElementById('archive-source-select');
+      var source = sourceSelect ? sourceSelect.value : 'nasa';
+      var sourceLabel = source === 'toi' ? 'TOI Catalog' : 'NASA Exoplanet Archive';
+
+      fetch('/transit-fit/query-archive?target=' + encodeURIComponent(targetVal) + '&source=' + encodeURIComponent(source))
         .then(function (res) {
           if (!res.ok) {
             return res.json().then(function (err) { throw new Error(err.error || 'Failed to query archive'); });
@@ -1481,6 +1562,7 @@
 
           var cEl = document.getElementById('opt-chromatic');
           if (cEl) cEl.checked = true;
+          updateChromaticForBands();
 
           var trEl = document.getElementById('opt-trend');
           if (trEl) trEl.checked = true;
@@ -1499,7 +1581,7 @@
 
           syncPlanetsInput();
           saveOptions();
-          alert('Successfully loaded parameters for ' + data.pl_name + ' from NASA Exoplanet Archive!');
+          alert('Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '!');
         })
         .catch(function (err) {
           alert('Error: ' + err.message);

@@ -619,6 +619,7 @@ class Job:
     state: str = "running"  # running | done | error | cancelled
     returncode: int | None = None
     cancelled: bool = False
+    elapsed: int | None = None
 
 
 _JOBS: dict[str, Job] = {}
@@ -729,12 +730,13 @@ def job_status(inst: str, date: str, target: str) -> dict:
             if job.state in ("running",):
                 job.state = state
                 job.returncode = rc
+                job.elapsed = round(time.time() - job.started_at)
                 try:
                     job.logf.close()
                 except OSError:
                     pass
         log_path = job.log_path
-        elapsed = time.time() - job.started_at
+        elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
     return {
         "state": state,
         "returncode": rc,
@@ -759,12 +761,13 @@ def get_all_jobs() -> list[dict]:
                 if job.state in ("running",):
                     job.state = state
                     job.returncode = rc
+                    job.elapsed = round(time.time() - job.started_at)
                     try:
                         job.logf.close()
                     except OSError:
                         pass
             
-            elapsed = time.time() - job.started_at
+            elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
             res.append({
                 "key": job.key,
                 "inst": job.inst,
@@ -873,12 +876,13 @@ def sync_jobs() -> None:
                 if job.state in ("running",):
                     job.state = state
                     job.returncode = rc
+                    job.elapsed = round(time.time() - job.started_at)
                     try:
                         job.logf.close()
                     except OSError:
                         pass
             
-            elapsed = time.time() - job.started_at
+            elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
             error_desc = ""
             if state == "error":
                 error_desc = _get_error_desc(job.log_path)

@@ -281,7 +281,7 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = ""):
 
 
 @app.get("/transit-fit/query-archive")
-def transit_fit_query_archive(target: str):
+def transit_fit_query_archive(target: str, source: str = "nasa"):
     if not (target or "").strip():
         return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
 
@@ -290,44 +290,6 @@ def transit_fit_query_archive(target: str):
     import json
 
     target = target.strip()
-    cols = [
-        "pl_name", "st_teff", "st_tefferr1", "st_tefferr2",
-        "st_logg", "st_loggerr1", "st_loggerr2",
-        "st_met", "st_meterr1", "st_meterr2",
-        "pl_orbper", "pl_orbpererr1", "pl_orbpererr2",
-        "pl_tranmid", "pl_tranmiderr1", "pl_tranmiderr2",
-        "pl_trandur", "pl_trandurerr1", "pl_trandurerr2",
-        "pl_ratror", "pl_ratrorerr1", "pl_ratrorerr2",
-        "pl_imppar", "pl_impparerr1", "pl_impparerr2",
-        "st_teff_reflink", "pl_orbper_reflink"
-    ]
-    col_str = ", ".join(cols)
-
-    # Sequence of queries to try
-    queries = [
-        f"SELECT {col_str} FROM pscomppars WHERE pl_name = '{target}'",
-        f"SELECT {col_str} FROM pscomppars WHERE hostname = '{target}'",
-        f"SELECT {col_str} FROM pscomppars WHERE pl_name LIKE '%{target}%'",
-        f"SELECT {col_str} FROM pscomppars WHERE hostname LIKE '%{target}%'"
-    ]
-
-    data = []
-    for q in queries:
-        url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        try:
-            with urllib.request.urlopen(req, timeout=5) as response:
-                res = json.loads(response.read().decode())
-                if res:
-                    data = res
-                    break
-        except Exception:
-            continue
-
-    if not data:
-        return JSONResponse({"ok": False, "error": f"No parameters found for target '{target}' in Exoplanet Archive."})
-
-    row = data[0]
 
     def get_unc(err1, err2):
         if err1 is None and err2 is None:
@@ -336,38 +298,143 @@ def transit_fit_query_archive(target: str):
         val2 = abs(err2) if err2 is not None else 0.0
         return max(val1, val2)
 
-    pl_name = row.get("pl_name", "")
-    planets = "b"
-    if pl_name and len(pl_name) > 2 and pl_name[-2] == " ":
-        planets = pl_name[-1]
+    if source == "toi":
+        cols = [
+            "toi", "toidisplay",
+            "st_teff", "st_tefferr1", "st_tefferr2",
+            "st_logg", "st_loggerr1", "st_loggerr2",
+            "pl_orbper", "pl_orbpererr1", "pl_orbpererr2",
+            "pl_tranmid", "pl_tranmiderr1", "pl_tranmiderr2",
+            "pl_trandurh", "pl_trandurherr1", "pl_trandurherr2",
+        ]
+        col_str = ", ".join(cols)
 
-    params = {
-        "planets": planets,
-        "teff": row.get("st_teff"),
-        "teff_unc": get_unc(row.get("st_tefferr1"), row.get("st_tefferr2")),
-        "logg": row.get("st_logg"),
-        "logg_unc": get_unc(row.get("st_loggerr1"), row.get("st_loggerr2")),
-        "feh": row.get("st_met"),
-        "feh_unc": get_unc(row.get("st_meterr1"), row.get("st_meterr2")),
-        "period": row.get("pl_orbper"),
-        "period_unc": get_unc(row.get("pl_orbpererr1"), row.get("pl_orbpererr2")),
-        "t0": row.get("pl_tranmid"),
-        "t0_unc": get_unc(row.get("pl_tranmiderr1"), row.get("pl_tranmiderr2")),
-        "dur": (row.get("pl_trandur") / 24.0) if row.get("pl_trandur") is not None else None,
-        "dur_unc": (get_unc(row.get("pl_trandurerr1"), row.get("pl_trandurerr2")) / 24.0) if row.get("pl_trandurerr1") is not None or row.get("pl_trandurerr2") is not None else None,
-        "ror": row.get("pl_ratror"),
-        "ror_unc": get_unc(row.get("pl_ratrorerr1"), row.get("pl_ratrorerr2")),
-        "b": row.get("pl_imppar"),
-        "b_unc": get_unc(row.get("pl_impparerr1"), row.get("pl_impparerr2")),
-        "st_ref": row.get("st_teff_reflink") or "",
-        "pl_ref": row.get("pl_orbper_reflink") or ""
-    }
+        clean_target = target.replace("TOI", "").replace("toi", "").replace("-", "").replace(" ", "").strip()
+        queries = [
+            f"SELECT {col_str} FROM toi WHERE toi = '{clean_target}'",
+            f"SELECT {col_str} FROM toi WHERE toidisplay LIKE '%{target}%'",
+            f"SELECT {col_str} FROM toi WHERE toi LIKE '%{clean_target}%'",
+        ]
 
-    for k, v in params.items():
-        if v is None:
-            params[k] = ""
+        data = []
+        for q in queries:
+            url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            try:
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    res = json.loads(response.read().decode())
+                    if res:
+                        data = res
+                        break
+            except Exception:
+                continue
 
-    return JSONResponse({"ok": True, "params": params, "pl_name": pl_name})
+        if not data:
+            return JSONResponse({"ok": False, "error": f"No parameters found for target '{target}' in TOI Catalog."})
+
+        row = data[0]
+        toi_display = row.get("toidisplay", "")
+        pl_name = toi_display or target
+
+        params = {
+            "planets": "b",
+            "teff": row.get("st_teff"),
+            "teff_unc": get_unc(row.get("st_tefferr1"), row.get("st_tefferr2")),
+            "logg": row.get("st_logg"),
+            "logg_unc": get_unc(row.get("st_loggerr1"), row.get("st_loggerr2")),
+            "feh": "",
+            "feh_unc": "",
+            "period": row.get("pl_orbper"),
+            "period_unc": get_unc(row.get("pl_orbpererr1"), row.get("pl_orbpererr2")),
+            "t0": row.get("pl_tranmid"),
+            "t0_unc": get_unc(row.get("pl_tranmiderr1"), row.get("pl_tranmiderr2")),
+            "dur": row.get("pl_trandurh") if row.get("pl_trandurh") is not None else None,
+            "dur_unc": get_unc(row.get("pl_trandurherr1"), row.get("pl_trandurherr2")),
+            "ror": "",
+            "ror_unc": "",
+            "b": "",
+            "b_unc": "",
+            "st_ref": "TOI Catalog",
+            "pl_ref": "TOI Catalog"
+        }
+
+        for k, v in params.items():
+            if v is None:
+                params[k] = ""
+
+        return JSONResponse({"ok": True, "params": params, "pl_name": pl_name})
+
+    else:
+        cols = [
+            "pl_name", "st_teff", "st_tefferr1", "st_tefferr2",
+            "st_logg", "st_loggerr1", "st_loggerr2",
+            "st_met", "st_meterr1", "st_meterr2",
+            "pl_orbper", "pl_orbpererr1", "pl_orbpererr2",
+            "pl_tranmid", "pl_tranmiderr1", "pl_tranmiderr2",
+            "pl_trandur", "pl_trandurerr1", "pl_trandurerr2",
+            "pl_ratror", "pl_ratrorerr1", "pl_ratrorerr2",
+            "pl_imppar", "pl_impparerr1", "pl_impparerr2",
+            "st_teff_reflink", "pl_orbper_reflink"
+        ]
+        col_str = ", ".join(cols)
+
+        queries = [
+            f"SELECT {col_str} FROM pscomppars WHERE pl_name = '{target}'",
+            f"SELECT {col_str} FROM pscomppars WHERE hostname = '{target}'",
+            f"SELECT {col_str} FROM pscomppars WHERE pl_name LIKE '%{target}%'",
+            f"SELECT {col_str} FROM pscomppars WHERE hostname LIKE '%{target}%'"
+        ]
+
+        data = []
+        for q in queries:
+            url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            try:
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    res = json.loads(response.read().decode())
+                    if res:
+                        data = res
+                        break
+            except Exception:
+                continue
+
+        if not data:
+            return JSONResponse({"ok": False, "error": f"No parameters found for target '{target}' in Exoplanet Archive."})
+
+        row = data[0]
+
+        pl_name = row.get("pl_name", "")
+        planets = "b"
+        if pl_name and len(pl_name) > 2 and pl_name[-2] == " ":
+            planets = pl_name[-1]
+
+        params = {
+            "planets": planets,
+            "teff": row.get("st_teff"),
+            "teff_unc": get_unc(row.get("st_tefferr1"), row.get("st_tefferr2")),
+            "logg": row.get("st_logg"),
+            "logg_unc": get_unc(row.get("st_loggerr1"), row.get("st_loggerr2")),
+            "feh": row.get("st_met"),
+            "feh_unc": get_unc(row.get("st_meterr1"), row.get("st_meterr2")),
+            "period": row.get("pl_orbper"),
+            "period_unc": get_unc(row.get("pl_orbpererr1"), row.get("pl_orbpererr2")),
+            "t0": row.get("pl_tranmid"),
+            "t0_unc": get_unc(row.get("pl_tranmiderr1"), row.get("pl_tranmiderr2")),
+            "dur": (row.get("pl_trandur") / 24.0) if row.get("pl_trandur") is not None else None,
+            "dur_unc": (get_unc(row.get("pl_trandurerr1"), row.get("pl_trandurerr2")) / 24.0) if row.get("pl_trandurerr1") is not None or row.get("pl_trandurerr2") is not None else None,
+            "ror": row.get("pl_ratror"),
+            "ror_unc": get_unc(row.get("pl_ratrorerr1"), row.get("pl_ratrorerr2")),
+            "b": row.get("pl_imppar"),
+            "b_unc": get_unc(row.get("pl_impparerr1"), row.get("pl_impparerr2")),
+            "st_ref": row.get("st_teff_reflink") or "",
+            "pl_ref": row.get("pl_orbper_reflink") or ""
+        }
+
+        for k, v in params.items():
+            if v is None:
+                params[k] = ""
+
+        return JSONResponse({"ok": True, "params": params, "pl_name": pl_name})
 
 
 @app.get("/transit-fit/status")
