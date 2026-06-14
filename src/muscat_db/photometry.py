@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import IO
 
 from muscat_db.instruments import INSTRUMENTS
+from muscat_db.cache import register_cache
 
 # --------------------------- configuration ---------------------------
 # All paths are env-overridable so the page works in dev and on the server.
@@ -67,6 +68,7 @@ RUN_DEFAULTS: dict = {
     "bin_size_minutes": 10.0,
     "target_id": "",           # "" -> auto
     "comparison_ids": "",      # "" -> auto, or "1,2,3"
+    "target_coord": "",        # "" -> resolve via MAST; "RA Dec" -> bypass name resolution
     "gif_stride": 100,
     "overwrite": True,
 }
@@ -339,30 +341,31 @@ def safe_artifact_path(inst: str, date: str, name: str) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
-_status_cache: dict[tuple[str, str, str, float], str] = {}
+_phot_status_cache = register_cache(ttl=300.0)
 
 
 def get_photometry_status(inst: str, date: str, target: str) -> str:
-    """Determine the status of photometry for a target: none, test, or full."""
+    """Determine the status of photometry for a target: none, test, or full.
+
+    Uses the results-directory mtime as the cache key so the result is
+    automatically invalidated whenever files are created or removed there,
+    while still benefiting from the global ``clear_all_caches()`` call that
+    fires after every ``build-db`` run.
+    """
     rdir = results_dir(inst, date)
     try:
-        st = rdir.stat()
-        mtime = st.st_mtime
-        is_dir = True
+        mtime = rdir.stat().st_mtime
     except OSError:
-        mtime = 0.0
-        is_dir = False
-
-    if not is_dir:
         return "none"
 
-    cache_key = (inst, date, target, mtime)
-    if cache_key in _status_cache:
-        return _status_cache[cache_key]
+    return _get_status_mtime(inst, date, target, mtime)
 
-    status = _calculate_photometry_status(inst, date, target, rdir)
-    _status_cache[cache_key] = status
-    return status
+
+@_phot_status_cache
+def _get_status_mtime(inst: str, date: str, target: str, mtime: float) -> str:
+    """Inner cached worker keyed on (inst, date, target, mtime)."""
+    rdir = results_dir(inst, date)
+    return _calculate_photometry_status(inst, date, target, rdir)
 
 
 def _calculate_photometry_status(inst: str, date: str, target: str, rdir: Path) -> str:
@@ -463,7 +466,7 @@ def normalize_run_options(raw: dict | None) -> dict:
     if "bands" in raw:  # present-but-empty must surface as an error, not default
         o["bands"] = [str(b).strip() for b in (bands or []) if str(b).strip()]
 
-    for key in ("ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids"):
+    for key in ("ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "target_coord"):
         if raw.get(key) is not None:
             o[key] = str(raw[key]).strip()
 
@@ -550,6 +553,10 @@ def build_command(
     if ar and o.get("aper_unit", "pix") != "pix":
         args += ["--aper_unit", o["aper_unit"]]
 
+    if o.get("target_coord") not in (None, ""):
+        parts = o["target_coord"].split(None, 1)
+        if len(parts) == 2:
+            args += ["--target_coord", *parts]
     if o.get("target_id") not in (None, ""):
         args += ["--tID", o["target_id"]]
     if o.get("comparison_ids") not in (None, ""):

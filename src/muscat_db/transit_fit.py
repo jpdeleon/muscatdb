@@ -21,6 +21,7 @@ import yaml
 
 from muscat_db.instruments import INSTRUMENTS
 from muscat_db.photometry import output_base, valid_date, _conda_env_python, _tail, _to_float
+from muscat_db.cache import register_cache
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent.resolve()
 
@@ -811,6 +812,10 @@ def get_all_jobs() -> list[dict]:
         return sorted(res, key=lambda j: j["started_at"], reverse=True)
 
 
+_fit_outputs_cache = register_cache(ttl=300.0)
+
+
+@_fit_outputs_cache
 def get_fit_outputs(inst: str, date: str, target: str) -> dict:
     """Check and retrieve output files, plots, and summary values from completed run."""
     rdir = fit_output_dir(inst, date, target)

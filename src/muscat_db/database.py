@@ -7,6 +7,8 @@ import datetime
 import sqlite3
 
 from muscat_db.instruments import INSTRUMENTS, OBSLOG_BASE
+from muscat_db.cache import clear_all_caches
+
 
 
 SCHEMA = """
@@ -44,7 +46,12 @@ CREATE TABLE IF NOT EXISTS summaries (
     frame_end   TEXT,
     ut_start    TEXT,
     ut_end      TEXT,
-    nframes     INTEGER
+    nframes     INTEGER,
+    filter      TEXT,
+    ra          TEXT,
+    declination TEXT,
+    airmass_min REAL,
+    airmass_max REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_summaries_inst_date ON summaries(instrument, obsdate);
@@ -189,8 +196,6 @@ def build_db(db_path: str, progress=None) -> int:
                 count += len(rows_to_insert)
             if progress is not None:
                 progress.update(ingest_task, advance=1, filename=os.path.basename(csv_path))
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_frames_inst_date ON frames(instrument, obsdate);")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_frames_object ON frames(object);")
         conn.commit()
 
         # Phase 3: build summaries.
@@ -202,7 +207,9 @@ def build_db(db_path: str, progress=None) -> int:
         rows = conn.execute(
             """SELECT instrument, obsdate, ccd, object, exptime, read_mode,
                       MIN(filename), MAX(filename),
-                      MIN(ut_start), MAX(ut_start), COUNT(*)
+                      MIN(ut_start), MAX(ut_start), COUNT(*),
+                      MAX(filter), MAX(ra), MAX(declination),
+                      MIN(NULLIF(airmass, 0)), MAX(NULLIF(airmass, 0))
                FROM frames
                GROUP BY instrument, obsdate, ccd, object, exptime, read_mode"""
         ).fetchall()
@@ -212,13 +219,13 @@ def build_db(db_path: str, progress=None) -> int:
             conn.executemany(
                 """INSERT INTO summaries
                    (instrument, obsdate, ccd, object, exptime, read_mode,
-                    frame_start, frame_end, ut_start, ut_end, nframes)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    frame_start, frame_end, ut_start, ut_end, nframes,
+                    filter, ra, declination, airmass_min, airmass_max)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 rows,
             )
         if progress is not None:
             progress.update(summary_task, completed=len(rows))
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_summaries_inst_date ON summaries(instrument, obsdate);")
         conn.commit()
 
         # Phase 4: build targets (single aggregation query).
@@ -230,6 +237,12 @@ def build_db(db_path: str, progress=None) -> int:
         _populate_targets(conn)
         if progress is not None:
             progress.update(targets_task, advance=1)
+
+        # Create indexes at the very end to speed up insertions
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_frames_inst_date ON frames(instrument, obsdate);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_frames_object ON frames(object);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_summaries_inst_date ON summaries(instrument, obsdate);")
+
         conn.execute(
             "INSERT OR REPLACE INTO db_meta (key, value) VALUES ('last_build_at', ?)",
             (datetime.datetime.now().isoformat(),)
@@ -251,6 +264,7 @@ def build_db(db_path: str, progress=None) -> int:
         raise
 
     os.replace(tmp_path, db_path)
+    clear_all_caches()
     return count
 
 
@@ -266,19 +280,19 @@ def _populate_targets(conn: sqlite3.Connection) -> None:
         """SELECT
               object,
               COUNT(DISTINCT obsdate)            AS n_dates,
-              COUNT(*)                           AS n_frames,
+              SUM(nframes)                       AS n_frames,
               GROUP_CONCAT(DISTINCT instrument)  AS instruments,
               GROUP_CONCAT(DISTINCT obsdate)     AS dates,
               GROUP_CONCAT(DISTINCT instrument || ':' || obsdate) AS inst_dates,
               GROUP_CONCAT(DISTINCT filter)      AS filters,
-              SUM(COALESCE(exptime, 0))          AS total_exptime,
+              SUM(COALESCE(exptime * nframes, 0)) AS total_exptime,
               MAX(ra)                            AS ra,
               MAX(declination)                   AS declination,
-              MIN(NULLIF(airmass, 0))            AS airmass_min,
-              MAX(NULLIF(airmass, 0))            AS airmass_max,
+              MIN(NULLIF(airmass_min, 0))        AS airmass_min,
+              MAX(NULLIF(airmass_max, 0))        AS airmass_max,
               CASE WHEN object GLOB '*[A-Za-z]*' THEN 1 ELSE 0 END
                                                  AS is_identified
-           FROM frames
+           FROM summaries
            WHERE object IS NOT NULL
              AND TRIM(object) <> ''
              AND LOWER(TRIM(object)) NOT IN ({exact})
@@ -331,45 +345,37 @@ def get_instruments(db_path: str) -> list[dict]:
 
 
 def get_instruments_summary(db_path: str) -> list[dict]:
-    """Return count of dates, frames, and targets for all instruments."""
+    """Return count of dates, frames, and targets for all instruments.
+
+    Uses a single GROUP BY query instead of one query per instrument.
+    """
     conn = sqlite3.connect(db_path)
-    cur = conn.execute("SELECT DISTINCT instrument FROM summaries ORDER BY instrument")
-    instruments = [r[0] for r in cur.fetchall()]
-    
-    result = []
-    for inst in instruments:
-        cur_stats = conn.execute(
-            """SELECT COUNT(DISTINCT obsdate), SUM(nframes)
-               FROM summaries
-               WHERE instrument = ?""",
-            (inst,)
-        )
-        n_dates, n_frames = cur_stats.fetchone()
-        
-        cur_targets = conn.execute(
-            """SELECT COUNT(DISTINCT object) FROM summaries
-               WHERE instrument = ?
-                 AND object IS NOT NULL AND TRIM(object) <> ''
-                 AND LOWER(TRIM(object)) NOT IN ({exact})
+    exact_clause = ", ".join(f"'{s}'" for s in _TARGET_EXCLUDE_EXACT)
+    # One pass: aggregate stats and a science-target flag together.
+    rows = conn.execute(
+        f"""SELECT
+              instrument,
+              COUNT(DISTINCT obsdate)                      AS n_dates,
+              SUM(nframes)                                 AS n_frames,
+              COUNT(DISTINCT CASE
+                WHEN object IS NOT NULL
+                 AND TRIM(object) <> ''
+                 AND LOWER(TRIM(object)) NOT IN ({exact_clause})
                  AND LOWER(TRIM(object)) NOT LIKE '%flat%'
                  AND LOWER(TRIM(object)) NOT LIKE 'dark%'
                  AND LOWER(TRIM(object)) NOT LIKE 'bias%'
                  AND LOWER(TRIM(object)) NOT LIKE '%test%'
-                 AND TRIM(object) NOT GLOB '*:*:*'""".format(
-                exact=", ".join(f"'{s}'" for s in _TARGET_EXCLUDE_EXACT)
-            ),
-            (inst,)
-        )
-        n_targets = cur_targets.fetchone()[0] or 0
-        
-        result.append({
-            "name": inst,
-            "n_dates": n_dates or 0,
-            "n_frames": n_frames or 0,
-            "n_targets": n_targets
-        })
+                 AND TRIM(object) NOT GLOB '*:*:*'
+                THEN object END)                          AS n_targets
+           FROM summaries
+           GROUP BY instrument
+           ORDER BY instrument"""
+    ).fetchall()
     conn.close()
-    return result
+    return [
+        {"name": r[0], "n_dates": r[1] or 0, "n_frames": r[2] or 0, "n_targets": r[3] or 0}
+        for r in rows
+    ]
 
 
 def get_dates(db_path: str, instrument: str) -> list[dict]:
@@ -577,6 +583,7 @@ def set_note(db_path: str, obj: str, note: str) -> None:
         )
     conn.commit()
     conn.close()
+    clear_all_caches()
 
 
 def delete_note(db_path: str, obj: str) -> None:
@@ -585,6 +592,7 @@ def delete_note(db_path: str, obj: str) -> None:
     conn.execute("DELETE FROM target_notes WHERE object = ?", (obj,))
     conn.commit()
     conn.close()
+    clear_all_caches()
 
 
 def get_frames(db_path: str, instrument: str, obsdate: str, ccd: int) -> list[dict]:
@@ -640,6 +648,7 @@ def save_job(
     )
     conn.commit()
     conn.close()
+    clear_all_caches()
 
 
 def get_persisted_jobs() -> list[dict]:

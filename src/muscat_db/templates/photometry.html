@@ -212,24 +212,6 @@
     </div>
     {% endif %}
 
-    {% if outputs.masters %}
-    <div class="phot-section">
-      <h2>Master Calibration Images</h2>
-      <div class="fig-grid" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
-        {% for filename in outputs.masters %}
-        <figure class="fig">
-          <figcaption class="cap">
-            <span>{{ filename }}</span>
-          </figcaption>
-          <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ filename }}" target="_blank">
-            <img draggable="false" loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ filename }}" alt="{{ filename }}">
-          </a>
-        </figure>
-        {% endfor %}
-      </div>
-    </div>
-    {% endif %}
-
     <div class="phot-section">
       <div class="dl-row">
         {% if outputs.npz %}<a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.npz }}" download>⬇ data archive (.npz)</a>{% endif %}
@@ -242,6 +224,24 @@
       <h2 style="color: var(--text);">No reduction found</h2>
       <p style="color: var(--text-dim);">No prose outputs yet for this target — configure options below and run.</p>
     </div>
+  {% endif %}
+
+  {% if outputs.masters %}
+  <div class="phot-section">
+    <h2>Master Calibration Images</h2>
+    <div class="fig-grid" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
+      {% for filename in outputs.masters %}
+      <figure class="fig">
+        <figcaption class="cap">
+          <span>{{ filename }}</span>
+        </figcaption>
+        <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ filename }}" target="_blank">
+          <img draggable="false" loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ filename }}" alt="{{ filename }}">
+        </a>
+      </figure>
+      {% endfor %}
+    </div>
+  </div>
   {% endif %}
 
   {# ---- unified run / re-run panel with full option set ---- #}
@@ -281,6 +281,11 @@
           <label for="opt-comparison_ids">Comparison IDs <span class="help-tooltip" title="Indexes of reference/comparison stars (corresponds to --cID). Comma-separated (e.g. 1,2,3). Empty means auto-detect.">?</span></label>
           <input type="text" id="opt-comparison_ids" placeholder="auto" value="{{ run_defaults.comparison_ids }}">
           <span class="hint">--cID; comma-separated, empty → auto</span>
+        </div>
+        <div class="opt">
+          <label for="opt-target_coord">Target coordinates <span class="help-tooltip" title="Override target coordinates 'RA Dec' (e.g. '12:34:56.7 -45:32:10.0' or '187.5 -45.5'). When set, bypasses MAST name resolution (useful if astroquery fails).">?</span></label>
+          <input type="text" id="opt-target_coord" placeholder="MAST resolution" value="{{ run_defaults.target_coord }}">
+          <span class="hint">--target_coord; empty → resolve name via MAST</span>
         </div>
         <div class="opt">
           <label for="opt-ref_band">Reference band <span class="help-tooltip" title="Band used as alignment reference across other bands (corresponds to --ref_band). Empty means per-band self-reference.">?</span></label>
@@ -571,6 +576,7 @@
       annulus: val('opt-annulus'),
       target_id: val('opt-target_id'),
       comparison_ids: val('opt-comparison_ids'),
+      target_coord: val('opt-target_coord'),
       make_gif: chk('opt-make_gif'),
       plot_gaia_sources: chk('opt-plot_gaia_sources'),
       use_barycorrpy: chk('opt-use_barycorrpy'),
@@ -595,7 +601,7 @@
       c.checked = saved.bands && saved.bands.indexOf(c.value) !== -1;
     });
     ['ref_band','refid','aper_unit','aper_radii','annulus',
-     'target_id','comparison_ids','test_run_frames','min_star_separation','max_num_stars',
+     'target_id','comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
      'n_stars_align','cutout_size','ccd_trim','bin_size_minutes'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
@@ -615,7 +621,7 @@
         c.checked = DEFAULTS.bands && DEFAULTS.bands.indexOf(c.value) !== -1;
       });
       ['ref_band','refid','aper_unit','aper_radii','annulus',
-       'target_id','comparison_ids','test_run_frames','min_star_separation','max_num_stars',
+       'target_id','comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
        'n_stars_align','cutout_size','ccd_trim','bin_size_minutes'].forEach(function (id) {
         var el = document.getElementById('opt-'+id);
         if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';

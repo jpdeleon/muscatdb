@@ -4,7 +4,8 @@
 <h1>Jobs</h1>
 
 <div style="margin: 1.5rem 0;">
-  <h2>Photometry Jobs</h2>
+  <details style="margin-bottom: 1rem;" {{ 'open' if phot_jobs }}>
+  <summary style="cursor: pointer; font-size: 1.2rem; font-weight: 600; margin-bottom: 0.5rem;">Photometry Jobs</summary>
   {% if phot_jobs %}
   <table>
     <thead>
@@ -79,10 +80,10 @@
     <p style="color: var(--text-dim);">No photometry jobs have been launched.</p>
   </div>
   {% endif %}
-</div>
+  </details>
 
-<div style="margin: 2.5rem 0 1.5rem;">
-  <h2>Transit Fit Jobs</h2>
+  <details style="margin-bottom: 1rem;" {{ 'open' if fit_jobs }}>
+  <summary style="cursor: pointer; font-size: 1.2rem; font-weight: 600; margin-bottom: 0.5rem;">Transit Fit Jobs</summary>
   {% if fit_jobs %}
   <table>
     <thead>
@@ -157,6 +158,7 @@
     <p style="color: var(--text-dim);">No transit fitting jobs have been launched.</p>
   </div>
   {% endif %}
+  </details>
 </div>
 {% endblock %}
 
