@@ -264,12 +264,14 @@
                                'Na_D': 'Na_D',
                                'g_narrow': 'g_narrow',
                                'i_narrow': 'i_narrow', 'z_narrow': 'z_narrow'} %}
+          {% set narrow_bands = ['Na_D', 'g_narrow', 'i_narrow', 'z_narrow'] %}
           <div class="band-checks">
             {% for b in band_list %}
-            <label><input type="checkbox" name="band" value="{{ b }}" {% if b in run_defaults.bands %}checked{% endif %}> {{ band_label.get(b, b) }}</label>
+            <label><input type="checkbox" name="band" value="{{ b }}" {% if b in run_defaults.bands or (is_narrowband and b in narrow_bands) %}checked{% endif %}> {{ band_label.get(b, b) }}</label>
             {% endfor %}
           </div>
         </div>
+
         <div class="opt">
           <label for="opt-target_id">Target ID <span class="help-tooltip" title="Target index in Gaia catalog (corresponds to --tID). Empty means auto-detect target at center.">?</span></label>
           <input type="text" id="opt-target_id" placeholder="auto" value="{{ run_defaults.target_id }}">

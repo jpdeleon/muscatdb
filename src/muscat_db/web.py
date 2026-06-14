@@ -14,6 +14,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
+from contextlib import asynccontextmanager
 
 from muscat_db import photometry as phot
 from muscat_db import transit_fit as fit
@@ -37,7 +38,19 @@ HERE = pathlib.Path(__file__).parent
 TEMPLATE_DIR = HERE / "templates"
 STATIC_DIR = HERE / "static"
 
-app = FastAPI(title="MuSCAT Observation Log")
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Create the database and schema on startup if they don't exist."""
+    db = _db_path()
+    conn = sqlite3.connect(db, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.executescript(SCHEMA)
+    conn.close()
+    print(f"[startup] database ready at {db}")
+    yield
+
+
+app = FastAPI(title="MuSCAT Observation Log", lifespan=_lifespan)
 # The targets page is ~2.8 MB of highly repetitive HTML; gzip shrinks it ~16x,
 # which is the dominant cost when serving over an SSH port-forward tunnel.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -59,17 +72,6 @@ def _wiki_url(inst: str, target: str) -> str | None:
         num, suf = m.groups()
         return f"https://research.iac.es/proyecto/muscat/stars/view/TOI{int(num):05d}{suf or ''}"
     return f"https://research.iac.es/proyecto/muscat/stars/view/{target}"
-
-
-@app.on_event("startup")
-def _ensure_db():
-    """Create the database and schema if they don't exist."""
-    db = _db_path()
-    conn = sqlite3.connect(db, timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.executescript(SCHEMA)
-    conn.close()
-    print(f"[startup] database ready at {db}")
 
 
 def _db_path() -> str:
@@ -195,6 +197,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
         obj_set.update(phot.discovered_targets(inst, date))
         targets = sorted(obj_set)
     obs_type = ""
+    is_narrowband = False
     if inst and date and target:
         outputs = phot.list_outputs(inst, date, target)
         command = phot.command_str(inst, date, target, test_run=False)
@@ -209,8 +212,8 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
             filters = [row[0] for row in cur.fetchall()]
             conn.close()
             if filters:
-                has_narrow = any("narrow" in f.lower() or f.lower() == "na_d" for f in filters)
-                obs_type = "(narrowband)" if has_narrow else "(broadband)"
+                is_narrowband = any("narrow" in f.lower() or f.lower() == "na_d" for f in filters)
+                obs_type = "(narrowband)" if is_narrowband else "(broadband)"
         except Exception:
             pass
 
@@ -233,6 +236,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
         run_defaults=phot.RUN_DEFAULTS,
         wiki_url=_wiki_url(inst, target),
         obs_type=obs_type,
+        is_narrowband=is_narrowband,
     )
 
 
