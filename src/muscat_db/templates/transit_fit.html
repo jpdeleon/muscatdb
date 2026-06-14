@@ -38,6 +38,22 @@
     margin-top: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem;
   }
 
+  /* Collapsible option groups (Sampler / Detrending / GP), collapsed by default. */
+  .opt-collapse { grid-column: 1 / -1; margin-top: 1rem; }
+  .opt-collapse > summary {
+    font-size: 0.85rem; font-weight: 600; color: var(--accent2);
+    border-bottom: 1px solid var(--border); padding-bottom: 0.25rem;
+    cursor: pointer; user-select: none; list-style: none;
+    display: flex; align-items: center; gap: 0.4rem;
+  }
+  .opt-collapse > summary::-webkit-details-marker { display: none; }
+  .opt-collapse > summary::before {
+    content: '\25B8'; color: var(--text-dim); font-size: 0.8rem;
+    transition: transform 0.15s ease;
+  }
+  .opt-collapse[open] > summary::before { transform: rotate(90deg); }
+  .opt-collapse > *:not(summary) { margin-top: 0.7rem; }
+
   .lightcurve-grid {
     display: flex;
     gap: 0.75rem;
@@ -76,6 +92,23 @@
     align-items: center;
     gap: 0.25rem;
     margin-left: 1.15rem;
+  }
+  .csv-card {
+    cursor: pointer;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem 0.5rem;
+  }
+  .csv-card .lc-name { margin-bottom: 0; }
+  .csv-card .lc-date { margin-left: 0; }
+  .csv-card.selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  .csv-card.deselected {
+    opacity: 0.55;
+    border-color: var(--border);
   }
 
   #stellar-ref-container a, .planet-ref-container a {
@@ -157,11 +190,17 @@
   <div class="phot-section">
     <h2>Discovered Lightcurves</h2>
     <p style="font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.75rem;">
-      The following lightcurve files will be loaded for fitting:
+      Select the lightcurve files to include in the fit:
     </p>
+    <div style="margin-bottom: 0.5rem; display: flex; gap: 0.5rem;">
+      <button class="btn sm" type="button" id="select-all-csvs">Select All</button>
+      <button class="btn sm" type="button" id="deselect-all-csvs">Deselect All</button>
+      <span id="csv-count" style="font-size: 0.85rem; color: var(--text-dim); align-self: center; margin-left: 0.5rem;"></span>
+    </div>
     <div class="lightcurve-grid">
       {% for csv in csvs %}
-        <div class="lightcurve-card">
+        <div class="lightcurve-card csv-card" data-csv-name="{{ csv.name }}" role="button" tabindex="0">
+          <input type="checkbox" class="csv-checkbox" checked style="margin-right: 0.5rem;">
           <span class="lc-name">📄 {{ csv.name }}</span>
           <span class="lc-date">Created: {{ csv.created_at }}</span>
         </div>
@@ -246,22 +285,18 @@
       <div class="opt-grid">
         <div class="opt-section-title">Fitting Pipeline Options</div>
 
-        <div class="opt">
-          <label for="opt-tc_pred">tc_pred <span class="help-tooltip" title="Predicted transit center epoch (BJD). Empty if using t0 as reference.">?</span></label>
-          <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <input type="number" id="opt-tc_pred" placeholder="auto" step="0.00001" style="flex: 3; width: 100%; min-width: 0;">
-            <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
-            <input type="number" id="opt-tc_pred_unc" value="0.04" step="0.001" placeholder="unc" style="flex: 2; width: 100%; min-width: 0;">
-          </div>
-        </div>
-        <div style="display: flex; gap: 1.25rem; flex-wrap: nowrap; align-items: flex-end; padding-bottom: 0.45rem;">
+        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: nowrap; align-items: flex-end; padding-bottom: 0.45rem;">
           <div class="opt check" style="margin-top: 0; white-space: nowrap;">
             <input type="checkbox" id="opt-chromatic" checked>
             <label for="opt-chromatic">Chromatic fit <span class="help-tooltip" title="Flag indicating if parameters (like Rp/R*) are chromatic (band-dependent).">?</span></label>
           </div>
           <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-trend" checked>
-            <label for="opt-trend">Trend <span class="help-tooltip" title="Include linear trend parameter in the fit. Sets 1 if checked, 0 if unchecked.">?</span></label>
+            <input type="checkbox" id="opt-include_mean" checked>
+            <label for="opt-include_mean">Include mean <span class="help-tooltip" title="Fit the baseline (mean) flux level. Default on. Turn off when using Add bias to avoid a degenerate baseline.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-use_custom_optimizer" checked>
+            <label for="opt-use_custom_optimizer">Custom optimizer <span class="help-tooltip" title="Use timer's custom MAP optimizer instead of PyMC's default for the initial solution. Default on.">?</span></label>
           </div>
           <div class="opt check" style="margin-top: 0; white-space: nowrap;">
             <input type="checkbox" id="opt-overwrite">
@@ -300,7 +335,17 @@
           </div>
         </div>
 
-        <div class="opt-section-title">Sampler Options <span class="help-tooltip" title="NUTS sampler settings passed to PyMC. Larger values give more reliable posteriors but slower runs.">?</span></div>
+        <div class="opt-section-title" style="margin-top: 1.5rem; margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem;">
+          <span style="font-weight: 600; color: var(--accent2);">Planet Parameters</span>
+          <button class="btn sm primary" type="button" id="add-planet-btn" style="font-size: 0.8rem; padding: 0.25rem 0.5rem; line-height: 1;">➕ Add Planet</button>
+        </div>
+
+        <div id="planet-cards-container" style="grid-column: 1 / -1;">
+          <!-- Dynamically rendered planet cards go here -->
+        </div>
+
+        <details class="opt-collapse">
+        <summary>Sampler Options <span class="help-tooltip" title="NUTS sampler settings passed to PyMC. Larger values give more reliable posteriors but slower runs.">?</span></summary>
         <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem;">
           <div class="opt">
             <label for="opt-tune">tune <span class="help-tooltip" title="Tuning (warm-up) steps per chain, discarded after step-size adaptation. Default 2000.">?</span></label>
@@ -319,19 +364,14 @@
             <input type="number" id="opt-cores" value="2" min="1" step="1" style="width: 100%;">
           </div>
         </div>
+        </details>
+        <details class="opt-collapse">
+        <summary>Detrending Options <span class="help-tooltip" title="Systematics/detrending settings applied to every light curve (written per-dataset in fit.yaml).">?</span></summary>
         <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: flex-end; padding-bottom: 0.45rem;">
           <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-include_mean" checked>
-            <label for="opt-include_mean">Include mean <span class="help-tooltip" title="Fit the baseline (mean) flux level. Default on. Turn off when using Add bias to avoid a degenerate baseline.">?</span></label>
+            <input type="checkbox" id="opt-trend" checked>
+            <label for="opt-trend">Trend <span class="help-tooltip" title="Include a linear trend (airmass/time) term in the detrending basis. Sets trend: 1 if checked, 0 if unchecked.">?</span></label>
           </div>
-          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-use_custom_optimizer" checked>
-            <label for="opt-use_custom_optimizer">Custom optimizer <span class="help-tooltip" title="Use timer's custom MAP optimizer instead of PyMC's default for the initial solution. Default on.">?</span></label>
-          </div>
-        </div>
-
-        <div class="opt-section-title">Detrending Options <span class="help-tooltip" title="Systematics/detrending settings applied to every light curve (written per-dataset in fit.yaml).">?</span></div>
-        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: flex-end; padding-bottom: 0.45rem;">
           <div class="opt check" style="margin-top: 0; white-space: nowrap;">
             <input type="checkbox" id="opt-spline">
             <label for="opt-spline">Spline <span class="help-tooltip" title="Add a B-spline basis to model smooth time-correlated systematics. Default off.">?</span></label>
@@ -375,16 +415,51 @@
             <input type="number" id="opt-trim_end" placeholder="none" min="0" step="1" style="width: 100%;">
           </div>
         </div>
+        </details>
+        <details class="opt-collapse">
+        <summary>Gaussian Process (GP) <span class="help-tooltip" title="Model time-correlated (red) noise with a per-light-curve celerite2 Matern-3/2 kernel. Hyperparameters are in log10 space: amplitude sigma = 10^log_amp (flux units), timescale rho = 10^log_scale (days). The gp block is only written to fit.yaml when Use GP is on.">?</span></summary>
+        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: flex-end; padding-bottom: 0.45rem;">
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-use_gp">
+            <label for="opt-use_gp">Use GP <span class="help-tooltip" title="Enable the Gaussian-process noise model. Requires celerite2 in the timer env. Default off.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-gp_per_dataset_log_amp">
+            <label for="opt-gp_per_dataset_log_amp">Per-dataset amp <span class="help-tooltip" title="Fit an independent log_amp for each light curve instead of one value shared across all datasets.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-gp_per_dataset_log_scale">
+            <label for="opt-gp_per_dataset_log_scale">Per-dataset scale <span class="help-tooltip" title="Fit an independent log_scale for each light curve instead of one value shared across all datasets.">?</span></label>
+          </div>
+        </div>
+        <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.25rem;">
+          <div class="opt">
+            <label for="opt-gp_log_amp">log_amp prior <span class="help-tooltip" title="Prior on log10 of the GP amplitude sigma (flux units): value, uncertainty, and distribution. Default -3 +/- 2, gaussian.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="number" id="opt-gp_log_amp" value="-3" step="0.1" placeholder="val" style="flex: 3; width: 100%; min-width: 0;">
+              <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
+              <input type="number" id="opt-gp_log_amp_unc" value="2" step="0.1" placeholder="unc" style="flex: 2; width: 100%; min-width: 0;">
+              <select id="opt-gp_log_amp_prior" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">
+                <option value="gaussian">gaussian</option>
+                <option value="uniform">uniform</option>
+              </select>
+            </div>
+          </div>
+          <div class="opt">
+            <label for="opt-gp_log_scale">log_scale prior <span class="help-tooltip" title="Prior on log10 of the GP timescale rho (days): value, uncertainty, and distribution. Default -1 +/- 2, gaussian.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="number" id="opt-gp_log_scale" value="-1" step="0.1" placeholder="val" style="flex: 3; width: 100%; min-width: 0;">
+              <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
+              <input type="number" id="opt-gp_log_scale_unc" value="2" step="0.1" placeholder="unc" style="flex: 2; width: 100%; min-width: 0;">
+              <select id="opt-gp_log_scale_prior" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">
+                <option value="gaussian">gaussian</option>
+                <option value="uniform">uniform</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        </details>
 
-      </div>
-
-      <div class="opt-section-title" style="margin-top: 1.5rem; margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem;">
-        <span style="font-weight: 600; color: var(--accent2);">Planet Parameters</span>
-        <button class="btn sm primary" type="button" id="add-planet-btn" style="font-size: 0.8rem; padding: 0.25rem 0.5rem; line-height: 1;">➕ Add Planet</button>
-      </div>
-
-      <div id="planet-cards-container">
-        <!-- Dynamically rendered planet cards go here -->
       </div>
 
       <div class="opt-grid" style="margin-top: 1.5rem;">
@@ -508,6 +583,8 @@
       planetData['t0_unc_' + letter] = card.querySelector('.planet-t0-unc').value;
       planetData['dur_' + letter] = card.querySelector('.planet-dur').value;
       planetData['dur_unc_' + letter] = card.querySelector('.planet-dur-unc').value;
+      planetData['tc_pred_' + letter] = card.querySelector('.planet-tc_pred').value;
+      planetData['tc_pred_unc_' + letter] = card.querySelector('.planet-tc_pred-unc').value;
       planetData['ror_' + letter] = card.querySelector('.planet-ror').value;
       planetData['ror_unc_' + letter] = card.querySelector('.planet-ror-unc').value;
       planetData['b_' + letter] = card.querySelector('.planet-b').value;
@@ -518,8 +595,6 @@
 
     var opts = {
       planets: planetsListStr,
-      tc_pred: val('opt-tc_pred'),
-      tc_pred_unc: val('opt-tc_pred_unc'),
       chromatic: chk('opt-chromatic') ? 'true' : 'false',
       trend: chk('opt-trend') ? 'true' : 'false',
       overwrite: chk('opt-overwrite') ? 'true' : 'false',
@@ -539,6 +614,15 @@
       chunk_thresh: val('opt-chunk_thresh'),
       trim_beg: val('opt-trim_beg'),
       trim_end: val('opt-trim_end'),
+      use_gp: chk('opt-use_gp') ? 'true' : 'false',
+      gp_log_amp: val('opt-gp_log_amp'),
+      gp_log_amp_unc: val('opt-gp_log_amp_unc'),
+      gp_log_amp_prior: val('opt-gp_log_amp_prior'),
+      gp_log_scale: val('opt-gp_log_scale'),
+      gp_log_scale_unc: val('opt-gp_log_scale_unc'),
+      gp_log_scale_prior: val('opt-gp_log_scale_prior'),
+      gp_per_dataset_log_amp: chk('opt-gp_per_dataset_log_amp') ? 'true' : 'false',
+      gp_per_dataset_log_scale: chk('opt-gp_per_dataset_log_scale') ? 'true' : 'false',
       teff: val('opt-teff'),
       teff_unc: val('opt-teff_unc'),
       logg: val('opt-logg'),
@@ -671,6 +755,8 @@
     var val_ror_unc = values && values.ror_unc !== undefined ? values.ror_unc : '';
     var val_b = values && values.b !== undefined ? values.b : '';
     var val_b_unc = values && values.b_unc !== undefined ? values.b_unc : '';
+    var val_tc_pred = values && values.tc_pred !== undefined ? values.tc_pred : '';
+    var val_tc_pred_unc = values && values.tc_pred_unc !== undefined ? values.tc_pred_unc : '';
 
     var bodyHtml = 
       '<div class="opt-grid">' +
@@ -714,6 +800,14 @@
             '<input type="number" class="planet-ror" value="' + val_ror + '" placeholder="val" step="0.0001" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
             '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' +
             '<input type="number" class="planet-ror-unc" value="' + val_ror_unc + '" placeholder="unc" step="0.0001" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+          '</div>' +
+        '</div>' +
+        '<div class="opt">' +
+          '<label>tc_pred (BJD) <span class="help-tooltip" title="Predicted transit center epoch (BJD) for this planet on this night. Seeds the t0 prior. Leave empty to use this planet\'s t0 / the data midpoint.">?</span></label>' +
+          '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
+            '<input type="number" class="planet-tc_pred" value="' + val_tc_pred + '" placeholder="auto" step="0.00001" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+            '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' +
+            '<input type="number" class="planet-tc_pred-unc" value="' + val_tc_pred_unc + '" placeholder="unc" step="0.001" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
           '</div>' +
         '</div>' +
       '</div>';
@@ -839,13 +933,15 @@
       return;
     }
 
-    ['tc_pred','tc_pred_unc','teff','teff_unc','logg','logg_unc','feh','feh_unc',
-     'tune','draws','chains','cores','spline_knots','clip_nsig','chunk_thresh','trim_beg','trim_end'].forEach(function (id) {
+    ['teff','teff_unc','logg','logg_unc','feh','feh_unc',
+     'tune','draws','chains','cores','spline_knots','clip_nsig','chunk_thresh','trim_beg','trim_end',
+     'gp_log_amp','gp_log_amp_unc','gp_log_amp_prior','gp_log_scale','gp_log_scale_unc','gp_log_scale_prior'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
     });
 
-    ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset'].forEach(function (id) {
+    ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset',
+     'use_gp','gp_per_dataset_log_amp','gp_per_dataset_log_scale'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.checked = saved[id] === 'true';
     });
@@ -888,10 +984,14 @@
         ror_unc: saved['ror_unc_' + letter] !== undefined ? saved['ror_unc_' + letter] : '',
         b: saved['b_' + letter] !== undefined ? saved['b_' + letter] : '',
         b_unc: saved['b_unc_' + letter] !== undefined ? saved['b_unc_' + letter] : '',
+        tc_pred: saved['tc_pred_' + letter] !== undefined ? saved['tc_pred_' + letter] : '',
+        tc_pred_unc: saved['tc_pred_unc_' + letter] !== undefined ? saved['tc_pred_unc_' + letter] : '',
         pl_ref: saved['pl_ref_' + letter] !== undefined ? saved['pl_ref_' + letter] : ''
       };
 
       if (letter === planetLetters[0]) {
+        if (vals.tc_pred === '' && saved.tc_pred !== undefined) vals.tc_pred = saved.tc_pred;
+        if (saved.tc_pred_unc !== undefined && saved['tc_pred_unc_' + letter] === undefined) vals.tc_pred_unc = saved.tc_pred_unc;
         if (vals.period === '' && saved.period !== undefined) vals.period = saved.period;
         if (vals.period_unc === '' && saved.period_unc !== undefined) vals.period_unc = saved.period_unc;
         if (vals.t0 === '' && saved.t0 !== undefined) vals.t0 = saved.t0;
@@ -919,7 +1019,7 @@
         localStorage.setItem(BACKUP_KEY, JSON.stringify(collectOptions()));
       } catch (e) {}
 
-      ['tc_pred','tc_pred_unc','teff','teff_unc','logg','logg_unc','feh','feh_unc'].forEach(function (id) {
+      ['teff','teff_unc','logg','logg_unc','feh','feh_unc'].forEach(function (id) {
         var el = document.getElementById('opt-'+id);
         if (el) el.value = '';
       });
@@ -937,12 +1037,16 @@
       if (owEl) owEl.checked = false;
 
       var numDefaults = {'opt-tune':'2000','opt-draws':'2000','opt-chains':'2','opt-cores':'2',
-                         'opt-spline_knots':'5','opt-clip_nsig':'7','opt-chunk_thresh':'0','opt-trim_beg':'','opt-trim_end':''};
+                         'opt-spline_knots':'5','opt-clip_nsig':'7','opt-chunk_thresh':'0','opt-trim_beg':'','opt-trim_end':'',
+                         'opt-gp_log_amp':'-3','opt-gp_log_amp_unc':'2','opt-gp_log_amp_prior':'gaussian',
+                         'opt-gp_log_scale':'-1','opt-gp_log_scale_unc':'2','opt-gp_log_scale_prior':'gaussian'};
       Object.keys(numDefaults).forEach(function (id) { var el = document.getElementById(id); if (el) el.value = numDefaults[id]; });
 
       var checkDefaults = {'opt-include_mean':true,'opt-use_custom_optimizer':true,'opt-spline':false,
-                           'opt-add_bias':false,'opt-quadratic':false,'opt-clip':false,'opt-chunk_offset':false};
+                           'opt-add_bias':false,'opt-quadratic':false,'opt-clip':false,'opt-chunk_offset':false,
+                           'opt-use_gp':false,'opt-gp_per_dataset_log_amp':false,'opt-gp_per_dataset_log_scale':false};
       Object.keys(checkDefaults).forEach(function (id) { var el = document.getElementById(id); if (el) el.checked = checkDefaults[id]; });
+      updateGpEnabled();
 
       document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
         c.checked = false;
@@ -977,16 +1081,19 @@
       var backup;
       try { backup = JSON.parse(localStorage.getItem(BACKUP_KEY) || 'null'); } catch (e) { backup = null; }
       if (backup) {
-        ['tc_pred','tc_pred_unc','teff','teff_unc','logg','logg_unc','feh','feh_unc',
-         'tune','draws','chains','cores','spline_knots','clip_nsig','chunk_thresh','trim_beg','trim_end'].forEach(function (id) {
+        ['teff','teff_unc','logg','logg_unc','feh','feh_unc',
+         'tune','draws','chains','cores','spline_knots','clip_nsig','chunk_thresh','trim_beg','trim_end',
+         'gp_log_amp','gp_log_amp_unc','gp_log_amp_prior','gp_log_scale','gp_log_scale_unc','gp_log_scale_prior'].forEach(function (id) {
           var el = document.getElementById('opt-'+id);
           if (el && backup[id] !== undefined) el.value = backup[id];
         });
 
-        ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset'].forEach(function (id) {
+        ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset',
+         'use_gp','gp_per_dataset_log_amp','gp_per_dataset_log_scale'].forEach(function (id) {
           var el = document.getElementById('opt-'+id);
           if (el && backup[id] !== undefined) el.checked = backup[id] === 'true';
         });
+        updateGpEnabled();
 
         var stellarRefEl = document.getElementById('stellar-ref-container');
         if (stellarRefEl) stellarRefEl.innerHTML = backup.stellar_ref || '';
@@ -1028,6 +1135,8 @@
             ror_unc: backup['ror_unc_' + letter] !== undefined ? backup['ror_unc_' + letter] : '',
             b: backup['b_' + letter] !== undefined ? backup['b_' + letter] : '',
             b_unc: backup['b_unc_' + letter] !== undefined ? backup['b_unc_' + letter] : '',
+            tc_pred: backup['tc_pred_' + letter] !== undefined ? backup['tc_pred_' + letter] : '',
+            tc_pred_unc: backup['tc_pred_unc_' + letter] !== undefined ? backup['tc_pred_unc_' + letter] : '',
             pl_ref: backup['pl_ref_' + letter] !== undefined ? backup['pl_ref_' + letter] : ''
           };
 
@@ -1066,7 +1175,19 @@
     });
   }
 
+  // Grey out the GP prior inputs unless "Use GP" is checked.
+  function updateGpEnabled() {
+    var on = chk('opt-use_gp');
+    ['opt-gp_log_amp','opt-gp_log_amp_unc','opt-gp_log_amp_prior',
+     'opt-gp_log_scale','opt-gp_log_scale_unc','opt-gp_log_scale_prior',
+     'opt-gp_per_dataset_log_amp','opt-gp_per_dataset_log_scale'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) { el.disabled = !on; el.style.opacity = on ? '1' : '0.5'; }
+    });
+  }
+
   restoreOptions();
+  updateGpEnabled();
 
   // Panel toggles persistence
   (function () {
@@ -1086,6 +1207,9 @@
   if (panel) {
     panel.addEventListener('change', saveOptions);
     panel.addEventListener('input', saveOptions);
+    panel.addEventListener('change', function (e) {
+      if (e.target && e.target.id === 'opt-use_gp') updateGpEnabled();
+    });
   }
 
   // ----- restore the log if it was previously saved -----
@@ -1099,6 +1223,65 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
   })();
+
+  // ---- CSV selection ----
+  var csvCards = document.querySelectorAll('.csv-card');
+  function updateCsvCount() {
+    var el = document.getElementById('csv-count');
+    if (!el) return;
+    var checked = document.querySelectorAll('.csv-checkbox:checked').length;
+    el.textContent = checked + ' / ' + csvCards.length + ' selected';
+  }
+  function getSelectedCsvs() {
+    var names = [];
+    csvCards.forEach(function (card) {
+      var cb = card.querySelector('.csv-checkbox');
+      if (cb && cb.checked) {
+        names.push(card.getAttribute('data-csv-name'));
+      }
+    });
+    return names;
+  }
+  csvCards.forEach(function (card) {
+    card.addEventListener('click', function (e) {
+      if (e.target.type === 'checkbox') return;
+      var cb = card.querySelector('.csv-checkbox');
+      if (cb) cb.checked = !cb.checked;
+      card.classList.toggle('selected', cb.checked);
+      card.classList.toggle('deselected', !cb.checked);
+      updateCsvCount();
+    });
+    var cb = card.querySelector('.csv-checkbox');
+    if (cb) {
+      cb.addEventListener('change', function () {
+        card.classList.toggle('selected', cb.checked);
+        card.classList.toggle('deselected', !cb.checked);
+        updateCsvCount();
+      });
+      card.classList.add(cb.checked ? 'selected' : 'deselected');
+    }
+  });
+  var selectAllBtn = document.getElementById('select-all-csvs');
+  var deselectAllBtn = document.getElementById('deselect-all-csvs');
+  if (selectAllBtn) selectAllBtn.addEventListener('click', function () {
+    csvCards.forEach(function (card) {
+      var cb = card.querySelector('.csv-checkbox');
+      if (cb) cb.checked = true;
+      card.classList.add('selected');
+      card.classList.remove('deselected');
+    });
+    updateCsvCount();
+  });
+  if (deselectAllBtn) deselectAllBtn.addEventListener('click', function () {
+    csvCards.forEach(function (card) {
+      var cb = card.querySelector('.csv-checkbox');
+      if (cb) cb.checked = false;
+      card.classList.remove('selected');
+      card.classList.add('deselected');
+    });
+    updateCsvCount();
+  });
+  updateCsvCount();
 
   function setRunning(on) {
     if (runBtn) runBtn.disabled = on;
@@ -1146,7 +1329,7 @@
 
     fetch('/transit-fit/run', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ inst: inst, date: date, target: target, test_run: !!testRun, options: collectOptions() })
+      body: JSON.stringify({ inst: inst, date: date, target: target, test_run: !!testRun, options: collectOptions(), selected_csvs: getSelectedCsvs() })
     }).then(function (r) { return r.json(); }).then(function (res) {
       if (!res.ok) {
         setRunning(false);
@@ -1177,7 +1360,7 @@
     if (logpResult) { logpResult.style.color = 'var(--text-dim)'; logpResult.textContent = 'computing… (can take ~1 min)'; }
     fetch('/transit-fit/logp', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ inst: inst, date: date, target: target, options: collectOptions() })
+      body: JSON.stringify({ inst: inst, date: date, target: target, options: collectOptions(), selected_csvs: getSelectedCsvs() })
     }).then(function (r) { return r.json(); }).then(function (res) {
       calcLogpBtn.disabled = false;
       calcLogpBtn.textContent = prevText;
@@ -1302,10 +1485,13 @@
           var trEl = document.getElementById('opt-trend');
           if (trEl) trEl.checked = true;
 
-          var tcEl = document.getElementById('opt-tc_pred');
-          if (tcEl) tcEl.value = '';
-          var tcuEl = document.getElementById('opt-tc_pred_unc');
-          if (tcuEl) tcuEl.value = '0.04';
+          var fcard = document.querySelector('.planet-card');
+          if (fcard) {
+            var tcEl = fcard.querySelector('.planet-tc_pred');
+            if (tcEl) tcEl.value = '';
+            var tcuEl = fcard.querySelector('.planet-tc_pred-unc');
+            if (tcuEl) tcuEl.value = '';
+          }
 
           document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
             c.checked = c.value === 'period' || c.value === 'u_star';

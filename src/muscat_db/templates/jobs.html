@@ -43,20 +43,21 @@
             {% endif %}
           </td>
           <td>
+            {% if j.run_type %}
+              <span class="badge {% if j.run_type == 'test' %}badge-amber{% else %}badge-blue{% endif %}" style="font-size: 0.75rem;">{{ j.run_type }}</span>
+            {% endif %}
             {% if j.state == 'error' and j.error_desc %}
-              <span style="color: var(--red); font-size: 0.8rem; font-family: monospace;">{{ j.error_desc }}</span>
-            {% else %}
-              <span style="color: var(--text-dim); font-size: 0.8rem;">—</span>
+              <span style="color: var(--red); font-size: 0.8rem; font-family: monospace; margin-left: 0.3rem;">{{ j.error_desc }}</span>
             {% endif %}
           </td>
           <td>
             {% if j.state == 'running' %}
               <button class="btn sm danger"
-                      data-inst="{{ j.inst }}"
-                      data-date="{{ j.date }}"
-                      data-target="{{ j.target }}"
-                      data-type="photometry"
-                      onclick="cancelJob(this)">
+                     data-inst="{{ j.inst }}"
+                     data-date="{{ j.date }}"
+                     data-target="{{ j.target }}"
+                     data-type="photometry"
+                     onclick="cancelJob(this)">
                 Cancel
               </button>
             {% elif j.state == 'cancelling' %}
@@ -120,10 +121,11 @@
             {% endif %}
           </td>
           <td>
+            {% if j.run_type %}
+              <span class="badge {% if j.run_type == 'test' %}badge-amber{% else %}badge-blue{% endif %}" style="font-size: 0.75rem;">{{ j.run_type }}</span>
+            {% endif %}
             {% if j.state == 'error' and j.error_desc %}
-              <span style="color: var(--red); font-size: 0.8rem; font-family: monospace;">{{ j.error_desc }}</span>
-            {% else %}
-              <span style="color: var(--text-dim); font-size: 0.8rem;">—</span>
+              <span style="color: var(--red); font-size: 0.8rem; font-family: monospace; margin-left: 0.3rem;">{{ j.error_desc }}</span>
             {% endif %}
           </td>
           <td>

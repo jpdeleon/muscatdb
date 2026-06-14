@@ -470,7 +470,8 @@ class TestDatabase:
             )
 
     def test_build_db(self):
-        from muscat_db.database import build_db
+        from muscat_db.database import build_db, get_last_build_date
+        import datetime
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
@@ -485,6 +486,10 @@ class TestDatabase:
             cur = conn.execute("SELECT COUNT(*) FROM summaries")
             assert cur.fetchone()[0] == 7
             conn.close()
+
+            # Test get_last_build_date reads from metadata
+            last_build = get_last_build_date(db_path)
+            assert last_build == datetime.date.today().strftime("%Y-%m-%d")
         finally:
             os.unlink(db_path)
 

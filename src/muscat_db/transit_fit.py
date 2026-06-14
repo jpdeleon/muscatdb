@@ -415,14 +415,41 @@ def _write_fit_inputs(
 
     planets_str = (options.get("planets") or "b").strip()
     fit_data["planets"] = planets_str
+    planet_list = [p.strip() for p in planets_str.split(",") if p.strip()] or ["b"]
 
-    tc_pred = (options.get("tc_pred") or "").strip()
-    if tc_pred:
-        try: fit_data["tc_pred"] = float(tc_pred)
-        except ValueError: pass
+    # Per-planet predicted transit centers. timer fits a per-planet t0
+    # (shape = nplanets) seeded by tc_pred: a scalar broadcasts to all planets,
+    # a list gives each planet its own center. Write a scalar for single-planet
+    # fits (back-compatible) and a list when there are multiple planets.
+    def _planet_float(prefix: str, p: str):
+        raw = options.get(f"{prefix}_{p}")
+        try: return float(str(raw).strip())
+        except (TypeError, ValueError): return None
 
-    try: fit_data["tc_pred_unc"] = float(options.get("tc_pred_unc") or 0.04)
-    except ValueError: fit_data["tc_pred_unc"] = 0.04
+    DEFAULT_TC_UNC = 0.04
+    tc_vals = [_planet_float("tc_pred", p) for p in planet_list]
+    unc_vals = [_planet_float("tc_pred_unc", p) for p in planet_list]
+
+    if any(v is not None for v in tc_vals):
+        # Align the list 1:1 with planets: fill any planet missing a tc_pred with
+        # its own t0, then the mean of the provided centers.
+        provided = [v for v in tc_vals if v is not None]
+        fallback = sum(provided) / len(provided)
+        filled = [
+            v if v is not None else (_planet_float("t0", p) if _planet_float("t0", p) is not None else fallback)
+            for p, v in zip(planet_list, tc_vals)
+        ]
+        uncs = [u if u is not None else DEFAULT_TC_UNC for u in unc_vals]
+        if len(planet_list) == 1:
+            fit_data["tc_pred"] = filled[0]
+            fit_data["tc_pred_unc"] = uncs[0]
+        else:
+            fit_data["tc_pred"] = filled
+            fit_data["tc_pred_unc"] = uncs
+    else:
+        # No predicted centers given; keep a single t0-prior width.
+        provided_unc = [u for u in unc_vals if u is not None]
+        fit_data["tc_pred_unc"] = provided_unc[0] if provided_unc else DEFAULT_TC_UNC
 
     fit_data["chromatic"] = options.get("chromatic") != "false"
     # "Overwrite" maps to timer's ``clobber``: when true, timer ignores any saved
@@ -438,6 +465,28 @@ def _write_fit_inputs(
     # Model options (timer defaults: include_mean and use_custom_optimizer on).
     fit_data["include_mean"] = _bool_opt("include_mean", default=True)
     fit_data["use_custom_optimizer"] = _bool_opt("use_custom_optimizer", default=True)
+
+    # Gaussian-process noise model. Only emit the ``gp`` block when enabled:
+    # timer reads gp['log_amp'] etc. directly, so use_gp=true with no block
+    # would KeyError. Hyperparameters are log10-space (Matern-3/2 kernel).
+    fit_data["use_gp"] = _bool_opt("use_gp", default=False)
+    if fit_data["use_gp"]:
+        gp_block: dict = {
+            "log_amp": _float_opt("gp_log_amp", -3.0),
+            "log_amp_unc": _float_opt("gp_log_amp_unc", 2.0),
+            "log_amp_prior": options.get("gp_log_amp_prior") or "gaussian",
+            "log_scale": _float_opt("gp_log_scale", -1.0),
+            "log_scale_unc": _float_opt("gp_log_scale_unc", 2.0),
+            "log_scale_prior": options.get("gp_log_scale_prior") or "gaussian",
+        }
+        per_dataset = [
+            p for p, key in (("log_amp", "gp_per_dataset_log_amp"),
+                             ("log_scale", "gp_per_dataset_log_scale"))
+            if _bool_opt(key)
+        ]
+        if per_dataset:
+            gp_block["per_dataset"] = per_dataset
+        fit_data["gp"] = gp_block
 
     fit_data["fixed"] = options.get("fixed") or ["period", "u_star"]
 
@@ -478,7 +527,7 @@ _LOGP_HELPER = pathlib.Path(__file__).parent / "_logp_helper.py"
 _LOGP_TIMEOUT = 300
 
 
-def compute_logp(inst: str, date: str, target: str, options: dict) -> dict:
+def compute_logp(inst: str, date: str, target: str, options: dict, selected_csvs: list[str] | None = None) -> dict:
     """Compute the transit model's log-probability for the given form options.
 
     Builds the timer model from the entered parameters and evaluates
@@ -500,6 +549,11 @@ def compute_logp(inst: str, date: str, target: str, options: dict) -> dict:
     csvs = get_csv_lightcurves(inst, date, target)
     if not csvs:
         return {"ok": False, "error": "No photometry CSV lightcurves found for this target."}
+    if selected_csvs is not None:
+        selected = set(selected_csvs)
+        csvs = [c for c in csvs if c.name in selected]
+        if not csvs:
+            return {"ok": False, "error": "No lightcurves selected for logP computation."}
 
     timer_py = _conda_env_python("timer")
     if not timer_py:
@@ -543,8 +597,13 @@ def start_fit(
     target: str,
     options: dict,
     test_run: bool = False,
+    selected_csvs: list[str] | None = None,
 ) -> dict:
-    """Prepare inputs and launch a transit fit using the timer-fit script."""
+    """Prepare inputs and launch a transit fit using the timer-fit script.
+
+    If *selected_csvs* is given, only CSVs whose filename appears in the list
+    are included (useful when the user unchecks some lightcurves in the UI).
+    """
     if inst not in INSTRUMENTS:
         return {"ok": False, "error": f"unknown instrument {inst!r}"}
     if not valid_date(date):
@@ -561,6 +620,11 @@ def start_fit(
     csvs = get_csv_lightcurves(inst, date, target)
     if not csvs:
         return {"ok": False, "error": "No photometry CSV lightcurves found for this target."}
+    if selected_csvs is not None:
+        selected = set(selected_csvs)
+        csvs = [c for c in csvs if c.name in selected]
+        if not csvs:
+            return {"ok": False, "error": "No lightcurves selected for fitting."}
 
     # Working directory
     rdir = fit_output_dir(inst, date, target)
@@ -617,7 +681,8 @@ def start_fit(
             state="running",
             returncode=None,
             elapsed=0,
-            started_at=_FIT_JOBS[key].started_at
+            started_at=_FIT_JOBS[key].started_at,
+            run_type="test" if test_run else "full"
         )
 
     return {"ok": True, "key": key}
@@ -809,6 +874,57 @@ def get_fit_outputs(inst: str, date: str, target: str) -> dict:
             pass
 
     return outputs
+
+
+def _discover_orphan_fits(existing: set[str]) -> list[dict]:
+    """Scan disk for completed fits not yet in the jobs table.
+
+    Walks ``$MUSCAT_TIMER_DIR/<inst>/<date>/<target>/out/*.png``
+    and returns synthetic job dicts (state="done") for any fit whose
+    key (``transit_fit:{inst}/{date}/{target}``) is not in *existing*.
+    """
+    base = pathlib.Path(os.environ.get("MUSCAT_TIMER_DIR", "/ut2/jerome/ql/timer"))
+    orphans: list[dict] = []
+    if not base.is_dir():
+        return orphans
+    for inst_dir in sorted(base.iterdir()):
+        if not inst_dir.is_dir():
+            continue
+        for date_dir in sorted(inst_dir.iterdir()):
+            if not date_dir.is_dir():
+                continue
+            for target_dir in sorted(date_dir.iterdir()):
+                if not target_dir.is_dir():
+                    continue
+                target = target_dir.name
+                inst = inst_dir.name
+                date = date_dir.name
+                key = f"transit_fit:{inst}/{date}/{target}"
+                if key in existing:
+                    continue
+                out_dir = target_dir / "out"
+                if not out_dir.is_dir():
+                    continue
+                pngs = sorted(out_dir.glob("*.png"))
+                if not pngs:
+                    continue
+                started_at = out_dir.stat().st_mtime
+                orphans.append({
+                    "key": key,
+                    "type": "transit_fit",
+                    "instrument": inst,
+                    "obsdate": date,
+                    "target": target,
+                    "state": "done",
+                    "returncode": 0,
+                    "elapsed": 0,
+                    "started_at": started_at,
+                    "error_desc": None,
+                    "run_type": "",
+                    "inst": inst,
+                    "date": date,
+                })
+    return orphans
 
 
 def sync_jobs() -> None:

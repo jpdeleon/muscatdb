@@ -234,6 +234,7 @@ def build_db(
 ):
     """Build SQLite database from all CSV observation logs."""
     from muscat_db.database import build_db as _build_db
+    console.print("[cyan]Scanning observation logs...[/]")
     with Progress(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),

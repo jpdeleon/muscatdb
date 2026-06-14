@@ -1,12 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Targets — MuSCAT-db{% endblock %}
 {% block content %}
-<h1>MuSCAT-db</h1>
+<h1>MuSCAT + LCO database (Last updated on {{ last_updated }})</h1>
 
 {% set identified   = targets | selectattr('is_identified') | list %}
 {% set unidentified = targets | rejectattr('is_identified') | list %}
 
 <h2 style="margin-top:1.5rem;">Targets ({{ identified|length }})</h2>
+
 
 <div class="search-bar">
   <input id="target-search" type="text" placeholder="Search targets by name…" autocomplete="off">
@@ -82,10 +83,12 @@
           <a href="/{{ inst }}"><span class="badge badge-blue">{{ inst }}</span></a>
         {% endfor %}
       </td>
-      <td class="mono" style="white-space:normal;">
+      <td class="mono" style="white-space:nowrap; vertical-align:top;">
         {% for d in t.dates %}
           {% set inst = t.date_to_inst.get(d, t.instruments[0] if t.instruments else '') %}
-          <a href="/{{ inst }}/{{ d }}">{{ d }}{% if inst == 'muscat' %}(M1){% elif inst == 'muscat2' %}(M2){% elif inst == 'muscat3' %}(M3){% elif inst == 'muscat4' %}(M4){% elif inst == 'sinistro' %}(S){% endif %}</a><a href="/photometry?inst={{ inst }}&date={{ d }}&target={{ t.object | urlencode }}" title="photometry" style="text-decoration:none;font-size:0.8em;margin-left:1px;">🔭</a><a href="/transit-fit?inst={{ inst }}&date={{ d }}&target={{ t.object | urlencode }}" title="transit fit" style="text-decoration:none;font-size:0.8em;margin-left:2px;">📈</a>{% if not loop.last %}, {% endif %}
+          <div style="margin-bottom:2px;">
+            <a href="/{{ inst }}/{{ d }}">{{ d }}{% if inst == 'muscat' %}(M1){% elif inst == 'muscat2' %}(M2){% elif inst == 'muscat3' %}(M3){% elif inst == 'muscat4' %}(M4){% elif inst == 'sinistro' %}(S){% endif %}</a><a href="/photometry?inst={{ inst }}&date={{ d }}&target={{ t.object | urlencode }}" title="photometry" style="text-decoration:none;font-size:0.8em;margin-left:1px;">🔭</a><a href="/transit-fit?inst={{ inst }}&date={{ d }}&target={{ t.object | urlencode }}" title="transit fit" style="text-decoration:none;font-size:0.8em;margin-left:2px;">📈</a>
+          </div>
         {% endfor %}
       </td>
       <td style="text-align:center;">

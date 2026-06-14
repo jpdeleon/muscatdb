@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import os
 import re
+import datetime
 import sqlite3
 
 from muscat_db.instruments import INSTRUMENTS, OBSLOG_BASE
@@ -80,7 +81,13 @@ CREATE TABLE IF NOT EXISTS jobs (
     returncode   INTEGER,
     elapsed      INTEGER NOT NULL,
     started_at   REAL NOT NULL,
-    error_desc   TEXT
+    error_desc   TEXT,
+    run_type     TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS db_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 """
 
@@ -90,11 +97,23 @@ def build_db(db_path: str, progress=None) -> int:
 
     If ``progress`` is a ``rich.progress.Progress`` instance, three tasks are
     reported: CSV ingestion, summary aggregation, and targets aggregation.
+
+    Builds to a temporary file first, then atomically replaces the target
+    so a concurrently-running web server is never blocked by ``DROP TABLE``.
     """
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.executescript(SCHEMA)
-    conn.executescript("DELETE FROM frames; DELETE FROM summaries; DELETE FROM targets;")
+    tmp_path = db_path + ".tmp"
+
+    # Preserve jobs from existing database so they survive the rebuild.
+    preserved_jobs: list[tuple] = []
+    if os.path.exists(db_path):
+        try:
+            old_conn = sqlite3.connect(db_path)
+            old_conn.row_factory = sqlite3.Row
+            rows = old_conn.execute("SELECT * FROM jobs").fetchall()
+            preserved_jobs = [tuple(r) for r in rows]
+            old_conn.close()
+        except sqlite3.OperationalError:
+            pass
 
     # Phase 1: discover all CSVs (cheap walk so we can size the progress bar).
     csv_jobs: list[tuple[str, str, str, int]] = []  # (inst, obsdate, csv_path, ccd)
@@ -115,28 +134,36 @@ def build_db(db_path: str, progress=None) -> int:
                     continue
                 csv_jobs.append((inst_name, entry, f"{obsdir}/{fname}", ccd))
 
-    # Phase 2: ingest frames.
-    ingest_task = None
-    if progress is not None:
-        ingest_task = progress.add_task(
-            "[cyan]Ingesting CSVs[/]", total=len(csv_jobs), filename="",
-        )
+    try:
+        conn = sqlite3.connect(tmp_path)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=OFF;")
+        conn.execute("PRAGMA cache_size=100000;")
+        conn.executescript("DROP TABLE IF EXISTS frames; DROP TABLE IF EXISTS summaries; DROP TABLE IF EXISTS targets;")
+        conn.executescript(SCHEMA)
+        conn.execute("DROP INDEX IF EXISTS idx_frames_inst_date;")
+        conn.execute("DROP INDEX IF EXISTS idx_frames_object;")
+        conn.execute("DROP INDEX IF EXISTS idx_summaries_inst_date;")
 
-    count = 0
-    for inst_name, obsdate, csv_path, ccd in csv_jobs:
-        inst_cfg = INSTRUMENTS[inst_name]
-        airmass_key = inst_cfg.airmass_key
-        focus_key = inst_cfg.focus_label
-        pa_key = "PA (deg)" if inst_cfg.has_pa else None
-        with open(csv_path) as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                conn.execute(
-                    """INSERT INTO frames
-                       (instrument, obsdate, ccd, filename, object, jd_start, ut_start,
-                        exptime, read_mode, filter, ra, declination, airmass, focus, pa)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
+        # Phase 2: ingest frames.
+        ingest_task = None
+        if progress is not None:
+            ingest_task = progress.add_task(
+                "[cyan]Ingesting CSVs[/]", total=len(csv_jobs), filename="",
+            )
+
+        count = 0
+        for inst_name, obsdate, csv_path, ccd in csv_jobs:
+            inst_cfg = INSTRUMENTS[inst_name]
+            airmass_key = inst_cfg.airmass_key
+            focus_key = inst_cfg.focus_label
+            pa_key = "PA (deg)" if inst_cfg.has_pa else None
+
+            rows_to_insert = []
+            with open(csv_path) as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    rows_to_insert.append((
                         inst_name, obsdate, ccd,
                         row.get("FRAME", ""),
                         row.get("OBJECT", ""),
@@ -150,51 +177,80 @@ def build_db(db_path: str, progress=None) -> int:
                         _safe_float(row.get(airmass_key, "0")),
                         _safe_float(row.get(focus_key, "0")),
                         _safe_float(row.get(pa_key, "0")) if pa_key else None,
-                    ),
+                    ))
+            if rows_to_insert:
+                conn.executemany(
+                    """INSERT INTO frames
+                       (instrument, obsdate, ccd, filename, object, jd_start, ut_start,
+                        exptime, read_mode, filter, ra, declination, airmass, focus, pa)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    rows_to_insert,
                 )
-                count += 1
-        if progress is not None:
-            progress.update(ingest_task, advance=1, filename=os.path.basename(csv_path))
-    conn.commit()
+                count += len(rows_to_insert)
+            if progress is not None:
+                progress.update(ingest_task, advance=1, filename=os.path.basename(csv_path))
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_frames_inst_date ON frames(instrument, obsdate);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_frames_object ON frames(object);")
+        conn.commit()
 
-    # Phase 3: build summaries.
-    summary_task = None
-    if progress is not None:
-        summary_task = progress.add_task(
-            "[cyan]Building summaries[/]", total=None, filename="",
-        )
-    rows = conn.execute(
-        """SELECT instrument, obsdate, ccd, object, exptime, read_mode,
-                  MIN(filename), MAX(filename),
-                  MIN(ut_start), MAX(ut_start), COUNT(*)
-           FROM frames
-           GROUP BY instrument, obsdate, ccd, object, exptime, read_mode"""
-    ).fetchall()
-    if progress is not None:
-        progress.update(summary_task, total=len(rows))
-    for r in rows:
+        # Phase 3: build summaries.
+        summary_task = None
+        if progress is not None:
+            summary_task = progress.add_task(
+                "[cyan]Building summaries[/]", total=None, filename="",
+            )
+        rows = conn.execute(
+            """SELECT instrument, obsdate, ccd, object, exptime, read_mode,
+                      MIN(filename), MAX(filename),
+                      MIN(ut_start), MAX(ut_start), COUNT(*)
+               FROM frames
+               GROUP BY instrument, obsdate, ccd, object, exptime, read_mode"""
+        ).fetchall()
+        if progress is not None:
+            progress.update(summary_task, total=len(rows))
+        if rows:
+            conn.executemany(
+                """INSERT INTO summaries
+                   (instrument, obsdate, ccd, object, exptime, read_mode,
+                    frame_start, frame_end, ut_start, ut_end, nframes)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                rows,
+            )
+        if progress is not None:
+            progress.update(summary_task, completed=len(rows))
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_summaries_inst_date ON summaries(instrument, obsdate);")
+        conn.commit()
+
+        # Phase 4: build targets (single aggregation query).
+        targets_task = None
+        if progress is not None:
+            targets_task = progress.add_task(
+                "[cyan]Building targets[/]", total=1, filename="",
+            )
+        _populate_targets(conn)
+        if progress is not None:
+            progress.update(targets_task, advance=1)
         conn.execute(
-            """INSERT INTO summaries
-               (instrument, obsdate, ccd, object, exptime, read_mode,
-                frame_start, frame_end, ut_start, ut_end, nframes)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            r,
+            "INSERT OR REPLACE INTO db_meta (key, value) VALUES ('last_build_at', ?)",
+            (datetime.datetime.now().isoformat(),)
         )
-        if progress is not None:
-            progress.update(summary_task, advance=1)
-    conn.commit()
 
-    # Phase 4: build targets (single aggregation query).
-    targets_task = None
-    if progress is not None:
-        targets_task = progress.add_task(
-            "[cyan]Building targets[/]", total=1, filename="",
-        )
-    _populate_targets(conn)
-    if progress is not None:
-        progress.update(targets_task, advance=1)
-    conn.commit()
-    conn.close()
+        # Restore preserved jobs so build-db doesn't wipe job history.
+        for job in preserved_jobs:
+            conn.execute(
+                "INSERT OR REPLACE INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?)", job
+            )
+
+        conn.commit()
+        conn.close()
+    except BaseException:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+
+    os.replace(tmp_path, db_path)
     return count
 
 
@@ -559,21 +615,28 @@ def save_job(
     returncode: int | None,
     elapsed: int,
     started_at: float,
-    error_desc: str = ""
+    error_desc: str = "",
+    run_type: str = ""
 ) -> None:
     path = db_path()
     conn = sqlite3.connect(path, timeout=30)
     conn.executescript(SCHEMA)
+    # Migration: add run_type column for databases created before this column existed.
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN run_type TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     key = f"{type_}:{inst}/{date}/{target.replace(' ', '')}"
     conn.execute(
-        """INSERT INTO jobs(key, type, instrument, obsdate, target, state, returncode, elapsed, started_at, error_desc)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """INSERT INTO jobs(key, type, instrument, obsdate, target, state, returncode, elapsed, started_at, error_desc, run_type)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(key) DO UPDATE SET
-             state = excluded.state,
+             state      = excluded.state,
              returncode = excluded.returncode,
-             elapsed = excluded.elapsed,
-             error_desc = excluded.error_desc""",
-        (key, type_, inst, date, target, state, returncode, elapsed, started_at, error_desc)
+             elapsed    = excluded.elapsed,
+             error_desc = excluded.error_desc,
+             run_type   = CASE WHEN excluded.run_type != '' THEN excluded.run_type ELSE run_type END""",
+        (key, type_, inst, date, target, state, returncode, elapsed, started_at, error_desc, run_type)
     )
     conn.commit()
     conn.close()
@@ -593,4 +656,23 @@ def get_persisted_jobs() -> list[dict]:
         result.append(d)
     conn.close()
     return result
+
+
+def get_last_build_date(db_path: str) -> str:
+    """Get the date when muscat-db build was run, or the date when the database file was generated."""
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.execute("SELECT value FROM db_meta WHERE key = 'last_build_at'")
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            return row[0][:10]
+    except sqlite3.Error:
+        pass
+
+    try:
+        mtime = os.stat(db_path).st_mtime
+        return datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+    except OSError:
+        return datetime.date.today().strftime("%Y-%m-%d")
 

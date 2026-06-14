@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import os
 import pathlib
 import re
@@ -28,6 +29,7 @@ from muscat_db.database import (
     get_targets as _get_targets,
     set_note as _set_note,
     get_persisted_jobs,
+    get_last_build_date,
 )
 from muscat_db.instruments import INSTRUMENTS
 
@@ -63,7 +65,7 @@ def _wiki_url(inst: str, target: str) -> str | None:
 def _ensure_db():
     """Create the database and schema if they don't exist."""
     db = _db_path()
-    conn = sqlite3.connect(db)
+    conn = sqlite3.connect(db, timeout=10)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.executescript(SCHEMA)
     conn.close()
@@ -104,8 +106,11 @@ async def index():
         return HTMLResponse(cached[1])
 
     targets = _get_targets(db)
+    last_updated = get_last_build_date(db)
+
     html = jinja.get_template("index.html").render(
         targets=targets,
+        last_updated=last_updated,
     )
     _index_cache["index"] = (key, html)
     return HTMLResponse(html)
@@ -377,7 +382,8 @@ def transit_fit_run(payload: dict = Body(...)):
     target = (payload.get("target") or "").strip()
     options = payload.get("options") or {}
     test_run = bool(payload.get("test_run", False))
-    result = fit.start_fit(inst, date, target, options, test_run=test_run)
+    selected_csvs = payload.get("selected_csvs") or None
+    result = fit.start_fit(inst, date, target, options, test_run=test_run, selected_csvs=selected_csvs)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
     return JSONResponse(result)
@@ -389,7 +395,8 @@ def transit_fit_logp(payload: dict = Body(...)):
     date = (payload.get("date") or "").strip()
     target = (payload.get("target") or "").strip()
     options = payload.get("options") or {}
-    result = fit.compute_logp(inst, date, target, options)
+    selected_csvs = payload.get("selected_csvs") or None
+    result = fit.compute_logp(inst, date, target, options, selected_csvs=selected_csvs)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
     return JSONResponse(result)
@@ -436,6 +443,14 @@ def jobs_page():
     all_jobs = get_persisted_jobs()
     phot_jobs = [j for j in all_jobs if j["type"] == "photometry"]
     fit_jobs = [j for j in all_jobs if j["type"] == "transit_fit"]
+
+    # Discover fits completed on-disk outside the web UI.
+    existing_keys = {j["key"] for j in fit_jobs}
+    orphan_fits = fit._discover_orphan_fits(existing_keys)
+    if orphan_fits:
+        fit_jobs.extend(orphan_fits)
+        fit_jobs.sort(key=lambda j: j.get("started_at", 0), reverse=True)
+
     return _render("jobs.html", phot_jobs=phot_jobs, fit_jobs=fit_jobs)
 
 

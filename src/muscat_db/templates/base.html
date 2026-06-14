@@ -125,11 +125,56 @@
       // dragging one column doesn't shove the others around.
       const measured = ths.map(function (th, i) {
         const stored = localStorage.getItem('colw:' + tableId + ':' + i);
-        return stored ? parseFloat(stored) : th.getBoundingClientRect().width;
+        if (stored) return parseFloat(stored);
+        if (th.dataset.sortAttr === 'filters') {
+          return 25;
+        }
+        return th.getBoundingClientRect().width;
       });
-      ths.forEach(function (th, i) {
-        th.style.width = measured[i] + 'px';
-      });
+      let hasStored = false;
+      for (let i = 0; i < ths.length; i++) {
+        if (localStorage.getItem('colw:' + tableId + ':' + i)) {
+          hasStored = true;
+          break;
+        }
+      }
+      if (!hasStored) {
+        const containerW = table.parentElement.clientWidth;
+        let filtersIdx = -1;
+        ths.forEach(function (th, i) {
+          if (th.dataset.sortAttr === 'filters') {
+            filtersIdx = i;
+          }
+        });
+        let remainingW = containerW;
+        let totalMeasuredOthers = 0;
+        measured.forEach(function (w, i) {
+          if (i === filtersIdx) {
+            remainingW -= w;
+          } else {
+            totalMeasuredOthers += w;
+          }
+        });
+        if (totalMeasuredOthers > 0 && remainingW > 0) {
+          const scale = remainingW / totalMeasuredOthers;
+          ths.forEach(function (th, i) {
+            if (i === filtersIdx) {
+              th.style.width = measured[i] + 'px';
+            } else {
+              th.style.width = (measured[i] * scale) + 'px';
+            }
+          });
+        } else {
+          ths.forEach(function (th, i) {
+            th.style.width = measured[i] + 'px';
+          });
+        }
+      } else {
+        ths.forEach(function (th, i) {
+          th.style.width = measured[i] + 'px';
+        });
+      }
+
       // Now switch to fixed layout so column widths are honoured exactly.
       table.classList.add('resizable-init');
       ths.forEach(function (th, i) {
@@ -162,7 +207,8 @@
       th.classList.add('resizing');
       document.body.style.cursor = 'col-resize';
       function onMove(ev) {
-        const newW = Math.max(40, startW + (ev.clientX - startX));
+        const minW = th.dataset.sortAttr === 'filters' ? 15 : 40;
+        const newW = Math.max(minW, startW + (ev.clientX - startX));
         th.style.width = newW + 'px';
       }
       function onUp() {

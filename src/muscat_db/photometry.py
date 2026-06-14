@@ -63,7 +63,7 @@ RUN_DEFAULTS: dict = {
     "max_num_stars": 10,
     "n_stars_align": "",       # "" -> same as max_num_stars
     "cutout_size": 35,
-    "ccd_trim": "10,10",       # "Y,X"
+    "ccd_trim": "",            # "Y,X"; "" -> no trim (pipeline default)
     "bin_size_minutes": 10.0,
     "target_id": "",           # "" -> auto
     "comparison_ids": "",      # "" -> auto, or "1,2,3"
@@ -573,7 +573,7 @@ def build_command(
             args += [flag, str(val)]
     if o.get("n_stars_align") not in (None, ""):
         args += ["--n_stars_align", str(o["n_stars_align"])]
-    if (o.get("ccd_trim") or "").replace(" ", "") not in ("", "10,10"):
+    if (o.get("ccd_trim") or "").replace(" ", ""):
         args += ["--ccd_trim", o["ccd_trim"].replace(" ", "")]
 
     if o.get("make_gif", False):
@@ -695,7 +695,8 @@ def start_run(
             state="running",
             returncode=None,
             elapsed=0,
-            started_at=_JOBS[key].started_at
+            started_at=_JOBS[key].started_at,
+            run_type="test" if test_run else "full"
         )
     return {"ok": True, "key": key}
 

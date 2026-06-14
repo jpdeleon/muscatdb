@@ -520,6 +520,11 @@ class TestRoutes:
         assert "(narrowband)" in r.text
         assert "(broadband)" not in r.text
 
+    def test_index_page(self, client):
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "MuSCAT + LCO database (Last updated on" in r.text
+
     def test_logs_page(self, client):
         r = client.get("/logs")
         assert r.status_code == 200
