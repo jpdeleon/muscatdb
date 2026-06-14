@@ -55,19 +55,125 @@
   .mermaid .edgeLabel rect {
     fill: var(--bg) !important;
   }
+
+  /* Collapsible Cards Styling */
+  .workflow-card.collapsible {
+    transition: all 0.3s ease-in-out;
+  }
+  .workflow-card.collapsible .card-header-toggle {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    user-select: none;
+    gap: 1.5rem;
+  }
+  .workflow-card.collapsible .toggle-icon {
+    font-size: 1rem;
+    color: var(--text-dim);
+    transition: transform 0.3s ease;
+  }
+  .workflow-card.collapsible.collapsed .toggle-icon {
+    transform: rotate(-90deg);
+  }
+  .workflow-card.collapsible .card-body {
+    max-height: 2500px;
+    opacity: 1;
+    overflow: hidden;
+    transition: max-height 0.4s cubic-bezier(0, 1, 0, 1), opacity 0.3s ease, margin-top 0.3s ease;
+    margin-top: 1.5rem;
+  }
+  .workflow-card.collapsible.collapsed .card-body {
+    max-height: 0 !important;
+    opacity: 0;
+    margin-top: 0;
+  }
+
+  /* Table of Contents and Layout Grid */
+  .workflow-layout {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    gap: 2rem;
+    align-items: start;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  .workflow-toc {
+    position: sticky;
+    top: 5rem;
+  }
+  .toc-sticky-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+  }
+  .toc-link {
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 0.95rem;
+    transition: color 0.2s, padding-left 0.2s;
+    display: block;
+    border-left: 2px solid transparent;
+    padding-left: 0.5rem;
+  }
+  .toc-link:hover, .toc-link.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+    padding-left: 0.75rem;
+    text-decoration: none;
+  }
+  .workflow-content {
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+    min-width: 0; /* Prevents flex children from stretching outside boundary */
+  }
+
+  /* Responsive Adjustments */
+  @media (max-width: 992px) {
+    .workflow-layout {
+      grid-template-columns: 1fr;
+    }
+    .workflow-toc {
+      position: static;
+    }
+  }
 </style>
 
-<div class="workflow-container">
-  <div class="workflow-card">
-    <h1 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
-      MuSCAT-db Pipeline Workflow
-    </h1>
-    <p style="color: var(--text-dim); margin-bottom: 1.5rem; font-size: 0.95rem;">
-      An overview of the MuSCAT observation log data ingestion and the photometry and transit fitting analysis pipelines.
-    </p>
+<div class="workflow-layout">
+  <aside class="workflow-toc">
+    <div class="toc-sticky-card">
+      <h3 style="color: var(--text); font-size: 1rem; font-weight: 600; margin-bottom: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; margin-top: 0;">
+        On This Page
+      </h3>
+      <ul style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.75rem;">
+        <li><a href="#muscat-card" class="toc-link">MuSCAT-db Pipeline</a></li>
+        <li><a href="#prose-card" class="toc-link">prose Photometry</a></li>
+        <li><a href="#timer-card" class="toc-link">timer Transit Fitting</a></li>
+        <li><a href="#execution-details" class="toc-link">Execution Details</a></li>
+      </ul>
+    </div>
+  </aside>
 
-    <div class="workflow-diagram-wrap">
-      <pre class="mermaid" style="width: 100%; text-align: center;">
+  <div class="workflow-content">
+    <div class="workflow-card collapsible" id="muscat-card">
+      <div class="card-header-toggle" onclick="toggleCard('muscat-card')">
+        <div class="header-text-wrap">
+          <h1 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; margin-top: 0;">
+            MuSCAT-db Pipeline Workflow
+          </h1>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            An overview of the MuSCAT observation log data ingestion and the photometry and transit fitting analysis pipelines.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
 graph TD
     %% Data Ingestion Stage
     A["Raw FITS Files\n(/data/MuSCAT* and Sinistro)"]:::default -->|1. scan| B["Observation CSV Logs\n(/ut3/muscat/obslog/)"]:::default
@@ -95,11 +201,97 @@ graph TD
     %% Results loop
     G -->|Display preview and plots| D
     J -->|Display parameters and plots| D
-      </pre>
+          </pre>
+        </div>
+      </div>
     </div>
-  </div>
 
-  <div class="workflow-card">
+    <div class="workflow-card collapsible" id="prose-card">
+      <div class="card-header-toggle" onclick="toggleCard('prose-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            prose Photometry Pipeline Workflow
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Detailed step-by-step reduction flow of the calibrated science frames within the <code>prose</code> photometry engine.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% Input
+    A["Raw Science FITS Files\n(Calibrated e91.fits)"]:::default --> B["Band Grouping\n(Grouped by gp, rp, ip, zs filters)"]:::default
+    
+    %% Setup & Reference Frame
+    B --> C["Reference Frame Creation\n(Median stack of middle frame index)"]:::default
+    C --> D["Point Source Detection\n(Brightest stars on reference frame)"]:::default
+    D --> E["Celestial Target Identification\n(WCS matching / MAST coordinate resolution)"]:::default
+    E --> F["Gaia Contamination Sizing\n(Sizes sky annulus RIN & ROUT to exclude contaminants)"]:::default
+    F --> G["Aperture Sizing Grid\n(Multiple radii defined from FWHM up to RIN)"]:::default
+    
+    %% Frame-by-Frame Parallel Photometry
+    B --> H["Parallel Frame Reduction\n(prose.SequenceParallel)"]:::pipeline
+    G --> H
+    H --> H1["CCD Trim\n(Trim borders/edge noise)"]:::default
+    H1 --> H2["Gaussian Modeling\n(Gaussian2D fit for FWHM)"]:::default
+    H2 --> H3["Twirl Alignment\n(ComputeTransformTwirl & AlignReferenceSources)"]:::default
+    H3 --> H4["Centroid Tuning\n(CentroidQuadratic optimization)"]:::default
+    H4 --> H5["Flux Extraction\n(AperturePhotometry & AnnulusBackground)"]:::default
+    
+    %% Post-processing
+    H5 --> I["Differential Photometry\n(autodiff - Broeg et al. 2005)"]:::default
+    I --> J["BJD Time Correction\n(Converts JD-UTC to BJD-TDB via barycorrpy)"]:::default
+    J --> K["Export Results\n(CSV files, apertures.png, alignment.png, gif)"]:::default
+          </pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible" id="timer-card">
+      <div class="card-header-toggle" onclick="toggleCard('timer-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            timer Transit Fitting Workflow
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Transit lightcurve modeling, parameter estimation, and posterior sampling steps executed in the <code>timer</code> MCMC engine.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% Configuration & Input
+    A["Photometry CSV Lightcurves"]:::default --> B["YAML Configuration files\n(fit.yaml & sys.yaml)"]:::default
+    B --> C["Input Validation\n(Parameter conflicts & duplicate configurations)"]:::default
+    C --> D["Data Loading\n(Read lightcurves & detrending covariates)"]:::default
+    
+    %% Model Building
+    D --> E["Prior Initialization\n(Stellar params, planet priors, limb darkening)"]:::default
+    E --> F["Transit Model Assembly\n(PyMC model definition)"]:::pipeline
+    
+    %% Optimization & Sampling
+    F --> G["Mean Fitting / Pre-optimization\n(L-BFGS MAP optimization)"]:::default
+    G --> H["MCMC Sampling\n(PyMC NUTS sampler)"]:::pipeline
+    
+    %% Post-processing
+    H --> I["Outlier Clipping & Detrending\n(Sigma-clip residual outliers)"]:::default
+    I --> J["Compute Information Criteria\n(Calculate BIC, AIC)"]:::default
+    J --> K["Save Outputs\n(Posterior stats, fit.yaml configs)"]:::default
+    J --> L["Generate Visualizations\n(Corner plot, trace plot, LD profile, fit plots)"]:::default
+          </pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card" id="execution-details">
     <h2 style="margin-bottom: 1rem; color: var(--text);">Pipeline Execution Details</h2>
     <div class="workflow-grid">
       
@@ -174,7 +366,8 @@ graph TD
 
     </div>
   </div>
-</div>
+  </div> <!-- closes workflow-content -->
+</div> <!-- closes workflow-layout -->
 {% endblock %}
 
 {% block scripts %}
@@ -207,5 +400,36 @@ graph TD
     });
   });
   observer.observe(document.documentElement, { attributes: true });
+
+  // Collapsible toggle helper
+  window.toggleCard = function(cardId) {
+    const card = document.getElementById(cardId);
+    if (card) {
+      card.classList.toggle('collapsed');
+    }
+  };
+
+  // Scroll spy for TOC links
+  const observerOptions = {
+    root: null,
+    rootMargin: '0px 0px -40% 0px',
+    threshold: 0
+  };
+
+  const spyObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      const id = entry.target.getAttribute('id');
+      const link = document.querySelector(`.toc-link[href="#${id}"]`);
+      if (!link) return;
+      if (entry.isIntersecting) {
+        document.querySelectorAll('.toc-link').forEach(l => l.classList.remove('active'));
+        link.classList.add('active');
+      }
+    });
+  }, observerOptions);
+
+  document.querySelectorAll('.workflow-card').forEach(card => {
+    spyObserver.observe(card);
+  });
 </script>
 {% endblock %}

@@ -119,6 +119,10 @@
   #stellar-ref-container a:hover, .planet-ref-container a:hover {
     text-decoration: underline;
   }
+  .is-invalid {
+    border-color: var(--red) !important;
+    box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.25) !important;
+  }
 </style>
 
 <h1>Transit Fit</h1>
@@ -718,6 +722,51 @@
     return 'c';
   }
 
+  function validatePlanetCard(card) {
+    var checks = [
+      { selector: '.planet-period', min: 0, inclusive: false },
+      { selector: '.planet-period-unc', min: 0, inclusive: true },
+      { selector: '.planet-t0', min: 0, inclusive: false },
+      { selector: '.planet-t0-unc', min: 0, inclusive: true },
+      { selector: '.planet-dur', min: 0, inclusive: false },
+      { selector: '.planet-dur-unc', min: 0, inclusive: true },
+      { selector: '.planet-ror', min: 0, inclusive: false },
+      { selector: '.planet-ror-unc', min: 0, inclusive: true },
+      { selector: '.planet-b', min: 0, inclusive: true },
+      { selector: '.planet-b-unc', min: 0, inclusive: true },
+      { selector: '.planet-tc_pred', min: 0, inclusive: false },
+      { selector: '.planet-tc_pred-unc', min: 0, inclusive: true }
+    ];
+
+    checks.forEach(function (chk) {
+      var el = card.querySelector(chk.selector);
+      if (!el) return;
+      var val = el.value.trim();
+      if (val === '') {
+        el.classList.remove('is-invalid');
+        return;
+      }
+      var num = parseFloat(val);
+      var valid = !isNaN(num);
+      if (valid) {
+        if (chk.inclusive) {
+          valid = num >= chk.min;
+        } else {
+          valid = num > chk.min;
+        }
+      }
+      if (valid) {
+        el.classList.remove('is-invalid');
+      } else {
+        el.classList.add('is-invalid');
+      }
+    });
+  }
+
+  function validateAllPlanetCards() {
+    document.querySelectorAll('.planet-card').forEach(validatePlanetCard);
+  }
+
   function addPlanetCard(letter, values, isInitial) {
     var container = document.getElementById('planet-cards-container');
     if (!container) return;
@@ -892,6 +941,7 @@
             }
           }
 
+          validatePlanetCard(card);
           saveOptions();
           alert('Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '!');
         })
@@ -913,10 +963,17 @@
     }
 
     card.querySelectorAll('input').forEach(function(input) {
-      input.addEventListener('change', saveOptions);
-      input.addEventListener('input', saveOptions);
+      input.addEventListener('change', function() {
+        validatePlanetCard(card);
+        saveOptions();
+      });
+      input.addEventListener('input', function() {
+        validatePlanetCard(card);
+        saveOptions();
+      });
     });
 
+    validatePlanetCard(card);
     syncPlanetsInput();
     if (!isInitial) {
       saveOptions();
@@ -1580,6 +1637,7 @@
           });
 
           syncPlanetsInput();
+          validateAllPlanetCards();
           saveOptions();
           alert('Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '!');
         })
