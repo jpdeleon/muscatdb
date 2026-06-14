@@ -150,7 +150,7 @@
     const total = rows.length;
     const colInputs = Array.from(document.querySelectorAll('tr.filter-row input'));
 
-    // ── persist search state across page navigations ──────────────────────
+    // ── persist search + column filter state across page navigations ────────
     function saveFilters() {
       try {
         localStorage.setItem('home:search', input.value);
@@ -179,6 +179,64 @@
       } catch (_) {}
     }
     restoreFilters();
+
+    // ── persist sort state ────────────────────────────────────────────────────
+    function saveSort(tableId, colIdx, dir) {
+      try {
+        localStorage.setItem('home:sort:' + tableId, JSON.stringify({ col: colIdx, dir }));
+      } catch (_) {}
+    }
+    function restoreSort(tableId) {
+      try {
+        const raw = localStorage.getItem('home:sort:' + tableId);
+        if (!raw) return;
+        const { col, dir } = JSON.parse(raw);
+        if (col == null || !dir) return;
+        const table = document.getElementById(tableId);
+        if (!table) return;
+        const headerRow = table.tHead && table.tHead.rows[0];
+        if (!headerRow) return;
+        const th = headerRow.cells[col];
+        if (!th) return;
+        // Force the saved direction onto the header and simulate the sort
+        // by setting the previous direction to the one that precedes it.
+        // asc comes after '' (initial), desc comes after asc.
+        th.dataset.sortDir = dir === 'asc' ? '' : 'asc';
+        th.click();
+      } catch (_) {}
+    }
+
+    // Intercept sort-header clicks to capture the resulting column+direction.
+    document.querySelectorAll('#targets-table thead tr:first-child th, #unidentified-table thead tr:first-child th').forEach(th => {
+      th.addEventListener('click', function () {
+        // Let base.html's sort handler run first, then read the new state.
+        requestAnimationFrame(() => {
+          const table = th.closest('table');
+          if (!table) return;
+          const dir = th.dataset.sortDir || '';
+          saveSort(table.id, th.cellIndex, dir);
+        });
+      });
+    });
+
+    // Restore sort after the sortable initialiser from base.html has run.
+    requestAnimationFrame(() => {
+      restoreSort('targets-table');
+      restoreSort('unidentified-table');
+    });
+
+    // ── persist <details> open state ─────────────────────────────────────────
+    const detailsEl = document.querySelector('details');
+    if (detailsEl) {
+      try {
+        if (localStorage.getItem('home:details') === 'open') detailsEl.open = true;
+      } catch (_) {}
+      detailsEl.addEventListener('toggle', () => {
+        try {
+          localStorage.setItem('home:details', detailsEl.open ? 'open' : 'closed');
+        } catch (_) {}
+      });
+    }
 
     function escapeRegex(s) {
       return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
