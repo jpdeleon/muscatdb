@@ -28,6 +28,7 @@ import re
 import shlex
 import shutil
 import signal
+import sqlite3
 import subprocess
 import threading
 import time
@@ -695,17 +696,31 @@ def start_run(
         )
         # Record new job in the database
         from muscat_db.database import save_job
-        save_job(
-            type_="photometry",
-            inst=inst,
-            date=date,
-            target=target,
-            state="running",
-            returncode=None,
-            elapsed=0,
-            started_at=_JOBS[key].started_at,
-            run_type="test" if test_run else "full"
-        )
+        try:
+            save_job(
+                type_="photometry",
+                inst=inst,
+                date=date,
+                target=target,
+                state="running",
+                returncode=None,
+                elapsed=0,
+                started_at=_JOBS[key].started_at,
+                run_type="test" if test_run else "full"
+            )
+        except sqlite3.OperationalError as exc:
+            # DB write failed (e.g. read-only database). Roll back the launched
+            # process and job so we don't leak a running pipeline we can't track.
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+            try:
+                logf.close()
+            except OSError:
+                pass
+            _JOBS.pop(key, None)
+            return {"ok": False, "error": f"database not writable: {exc}"}
     return {"ok": True, "key": key}
 
 
