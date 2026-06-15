@@ -198,6 +198,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
         targets = sorted(obj_set)
     obs_type = ""
     is_narrowband = False
+    available_bands: list[str] = []
     if inst and date and target:
         outputs = phot.list_outputs(inst, date, target)
         command = phot.command_str(inst, date, target, test_run=False)
@@ -214,6 +215,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
             if filters:
                 is_narrowband = any("narrow" in f.lower() or f.lower() == "na_d" for f in filters)
                 obs_type = "(narrowband)" if is_narrowband else "(broadband)"
+                available_bands = phot.bands_from_filters(filters)
         except Exception:
             pass
 
@@ -237,6 +239,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
         wiki_url=_wiki_url(inst, target),
         obs_type=obs_type,
         is_narrowband=is_narrowband,
+        available_bands=available_bands,
     )
 
 

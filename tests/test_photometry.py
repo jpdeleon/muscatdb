@@ -736,3 +736,24 @@ class TestRealExample:
         assert {"lightcurves", "covariates", "stacks"}.issubset(set(out["summary"]))
         assert list(out["bands"]) == BANDS
         assert out["npz"] == f"{TARGET}_{INST}_{DATE}.npz"
+
+
+class TestBandsFromFilters:
+    def test_canonicalizes_muscat_filters(self):
+        # raw obslog FILTER values (g, r, i, z_s) -> prose --bands tokens.
+        assert phot.bands_from_filters(["g", "r", "i", "z_s"]) == ["gp", "rp", "ip", "zs"]
+
+    def test_sinistro_passthrough_and_order(self):
+        # Unknown filters (R, V) have no alias and pass through unchanged;
+        # known broadbands are ordered first, extras keep first-seen order.
+        assert phot.bands_from_filters(["R", "rp", "V", "gp"]) == ["gp", "rp", "R", "V"]
+
+    def test_narrowbands_preserved(self):
+        assert phot.bands_from_filters(["g_narrow", "Na_D"]) == ["g_narrow", "Na_D"]
+
+    def test_dedupes_aliased_duplicates(self):
+        assert phot.bands_from_filters(["g", "gp"]) == ["gp"]
+
+    def test_empty_and_blank(self):
+        assert phot.bands_from_filters([]) == []
+        assert phot.bands_from_filters(["", None]) == []

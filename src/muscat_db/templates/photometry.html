@@ -259,15 +259,14 @@
       <div class="opt-grid">
         <div class="opt opt-span2">
           <label>Bands <span class="help-tooltip" title="Filter bands to reduce.">?</span></label>
-          {% set band_list = ['gp', 'rp', 'ip', 'zs', 'Na_D', 'g_narrow', 'i_narrow', 'z_narrow'] %}
-          {% set band_label = {'gp': 'gp', 'rp': 'rp', 'ip': 'ip', 'zs': 'zs',
-                               'Na_D': 'Na_D',
-                               'g_narrow': 'g_narrow',
-                               'i_narrow': 'i_narrow', 'z_narrow': 'z_narrow'} %}
           {% set narrow_bands = ['Na_D', 'g_narrow', 'i_narrow', 'z_narrow'] %}
+          {# available_bands is the obslog-derived list for this target; when it
+             is empty (e.g. manually-typed / un-ingested target) fall back to the
+             standard static list. Shared by the checkboxes and the ref_band select. #}
+          {% set band_choices = available_bands if available_bands else ['gp', 'rp', 'ip', 'zs', 'Na_D', 'g_narrow', 'i_narrow', 'z_narrow'] %}
           <div class="band-checks">
-            {% for b in band_list %}
-            <label><input type="checkbox" name="band" value="{{ b }}" {% if b in run_defaults.bands or (is_narrowband and b in narrow_bands) %}checked{% endif %}> {{ band_label.get(b, b) }}</label>
+            {% for b in band_choices %}
+            <label><input type="checkbox" name="band" value="{{ b }}" {% if available_bands or b in run_defaults.bands or (is_narrowband and b in narrow_bands) %}checked{% endif %}> {{ b }}</label>
             {% endfor %}
           </div>
         </div>
@@ -291,7 +290,7 @@
           <label for="opt-ref_band">Reference band <span class="help-tooltip" title="Band used as alignment reference across other bands (corresponds to --ref_band). Empty means per-band self-reference.">?</span></label>
           <select id="opt-ref_band">
             <option value="">per-band self-reference</option>
-            {% for b in band_list %}<option value="{{ b }}">{{ band_label.get(b, b) }}</option>{% endfor %}
+            {% for b in band_choices %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
           </select>
         </div>
         <div class="opt">
