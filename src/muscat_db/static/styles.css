@@ -560,5 +560,75 @@ th.drag-over-right {
   border-right: 3px solid var(--accent) !important;
 }
 
+/* ---------- Jobs page ---------- */
+.jobs-summary {
+  display: flex; gap: 0.5rem; align-items: center;
+  margin: 1rem 0; flex-wrap: wrap;
+}
+.job-count {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  padding: 0.35rem 0.85rem;
+  border-radius: 999px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  user-select: none;
+}
+.job-count:hover { border-color: var(--accent); }
+.job-count.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.job-count.has-running { border-color: var(--amber, #f59e0b); }
+.job-count.has-done { border-color: var(--green, #10b981); }
+.job-count.has-error { border-color: var(--red); }
+.job-count.has-cancelled { border-color: var(--text-dim); }
+.job-count.active.has-running { background: var(--amber, #f59e0b); border-color: var(--amber, #f59e0b); }
+.job-count.active.has-done { background: var(--green, #10b981); border-color: var(--green, #10b981); }
+.job-count.active.has-error { background: var(--red); border-color: var(--red); }
+.job-count.active.has-cancelled { background: var(--text-dim); border-color: var(--text-dim); }
+.job-count-num { font-weight: 700; font-size: 1rem; }
+.job-count-label { font-size: 0.8rem; opacity: 0.8; }
+.job-count-bar-spacer { flex: 1; }
 
+.job-actions { white-space: nowrap; }
+
+.log-row td { padding: 0; background: var(--surface); }
+.log-row pre.log-content {
+  margin: 0; padding: 1rem;
+  max-height: 400px; overflow: auto;
+  font-size: 0.78rem; line-height: 1.4;
+  background: var(--input-bg);
+  border-radius: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.badge.pulse {
+  animation: pulse 1.5s infinite;
+}
+
+#hide-confirm-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 10000;
+  align-items: center;
+  justify-content: center;
+}
+#hide-confirm-overlay.visible {
+  display: flex;
+}
+.modal-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2rem;
+  max-width: 400px;
+  width: 90%;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+}
 

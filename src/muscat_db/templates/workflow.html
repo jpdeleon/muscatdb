@@ -131,6 +131,60 @@
     min-width: 0; /* Prevents flex children from stretching outside boundary */
   }
 
+    /* FAQ accordion style */
+  .faq-section {
+    margin-top: 0;
+  }
+  .faq-item {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 0.75rem;
+    overflow: hidden;
+    background: var(--surface);
+  }
+  .faq-question {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.85rem 1.2rem;
+    cursor: pointer;
+    user-select: none;
+    font-weight: 500;
+    color: var(--text);
+    transition: background 0.2s;
+  }
+  .faq-question:hover {
+    background: var(--surface2);
+  }
+  .faq-icon {
+    font-size: 1.2rem;
+    color: var(--accent);
+    font-weight: bold;
+    flex-shrink: 0;
+    transition: transform 0.2s;
+  }
+  .faq-item.open .faq-icon {
+    transform: rotate(45deg);
+  }
+  .faq-answer {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.35s ease, padding 0.25s ease;
+    padding: 0 1.2rem;
+    color: var(--text-dim);
+    font-size: 0.92rem;
+    line-height: 1.5;
+  }
+  .faq-answer p { margin-top: 0; }
+  .faq-answer p:last-child { margin-bottom: 0; }
+  .faq-answer ul, .faq-answer ol { margin: 0.5rem 0; padding-left: 1.3rem; }
+  .faq-answer li { margin-bottom: 0.3rem; }
+  .faq-item.open .faq-answer {
+    max-height: 1000px;
+    padding: 0 1.2rem 1rem 1.2rem;
+  }
+
   /* Responsive Adjustments */
   @media (max-width: 992px) {
     .workflow-layout {
@@ -153,6 +207,7 @@
         <li><a href="#prose-card" class="toc-link">prose Photometry</a></li>
         <li><a href="#timer-card" class="toc-link">timer Transit Fitting</a></li>
         <li><a href="#execution-details" class="toc-link">Execution Details</a></li>
+        <li><a href="#faq-card" class="toc-link">FAQs</a></li>
       </ul>
     </div>
   </aside>
@@ -366,6 +421,310 @@ graph TD
 
     </div>
   </div>
+
+    <div class="workflow-card" id="faq-card">
+      <div class="card-header-toggle" onclick="toggleCard('faq-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Frequently Asked Questions
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Detailed explanations of pipeline internals, configuration options, and common workflows.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body faq-section">
+
+        <!-- ==================== Database ==================== -->
+        <h3 style="color: var(--accent); margin-top: 0; margin-bottom: 0.25rem; font-size: 1.1rem;">Database</h3>
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the database work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The database is a SQLite file (<code>muscat.db</code>) that stores observation metadata extracted from FITS headers. The pipeline has two stages:</p>
+            <ol>
+              <li><strong>Scan</strong> — <code>muscat-db scan &lt;inst&gt; &lt;yymmdd&gt;</code> reads every FITS file in the raw data directory, extracts HEADER keywords (OBJECT, FILTER, RA, DEC, EXPTIME, etc.), and writes a CSV log per CCD under <code>/ut3/muscat/obslog/</code>. Calibration frames (bias, dark, flat) are excluded; only science frames are recorded.</li>
+              <li><strong>Build</strong> — <code>muscat-db build-db</code> ingests all scanned CSV logs into SQLite with indexes on instrument, date, object, and filter. The resulting DB powers the web GUI's browse, search, and target discovery features.</li>
+            </ol>
+            <p>The DB also persists background job state (photometry and transit fit runs) so running jobs survive a server restart.</p>
+          </div>
+        </div>
+
+        <!-- ==================== Photometry ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Photometry</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the photometry pipeline work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The prose pipeline processes calibrated FITS frames through a sequence of steps:</p>
+            <ol>
+              <li><strong>Band grouping</strong> — science frames are sorted into photometric bands using the FILTER header keyword</li>
+              <li><strong>Reference frame creation</strong> — one frame (typically the middle frame or the first if <code>--ref_band</code> is used) serves as the reference for alignment</li>
+              <li><strong>Source detection</strong> — point sources are identified on the reference frame</li>
+              <li><strong>Target identification</strong> — the target is located via WCS matching against the resolved sky coordinates (from MAST/SIMBAD name resolution)</li>
+              <li><strong>Gaia-based aperture sizing</strong> — annulus and aperture radii are set to avoid contaminating sources</li>
+              <li><strong>Parallel reduction</strong> — each frame is aligned, centroided, and photometered in parallel</li>
+              <li><strong>Differential photometry</strong> — automatic selection and weighting of comparison stars (Broeg et al. 2005)</li>
+              <li><strong>Time correction</strong> — JD-UTC is converted to BJD-TDB</li>
+              <li><strong>Export</strong> — per-band CSV lightcurves, PNG diagnostics, optional GIF animation</li>
+            </ol>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the Broeg et al. 2005 autodiff algorithm work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The automatic differential photometry algorithm (implemented in prose) optimally selects and weights comparison stars to minimize the scatter in the target's differential lightcurve:</p>
+            <ol>
+              <li><strong>Candidate pool</strong> — all detected stars (excluding the target) are considered as potential comparison stars</li>
+              <li><strong>Iterative selection</strong> — starting with a first guess of the target lightcurve, the algorithm iterates between:
+                <ul>
+                  <li>Building an optimal reference lightcurve as a weighted average of comparison stars</li>
+                  <li>Computing the target's differential lightcurve by dividing its raw flux by this reference</li>
+                  <li>Updating the comparison star weights based on their correlation with the current reference</li>
+                </ul>
+              </li>
+              <li><strong>Weights</strong> — stars with lower intrinsic scatter and higher correlation with the ensemble receive higher weights. Stars affected by systematic noise (e.g., airmass trends, seeing variations) are down-weighted automatically</li>
+              <li><strong>Convergence</strong> — the iteration continues until the target lightcurve stabilizes, typically within a few iterations</li>
+            </ol>
+            <p>The key advantage is that no manual selection of comparison stars is needed — the algorithm handles both the choice and the relative weighting, and it can exclude bad comparison stars that would otherwise introduce noise.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What is the difference between a test run and a full run?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <ul>
+              <li><strong>Test run</strong> — processes only the first 10 frames per band (configurable via <code>--test_run_frames</code>). The pipeline runs all stages (alignment, source detection, centroiding, photometry) but produces a short lightcurve. Used to verify settings, check alignment quality, and preview results before committing to a full reduction.</li>
+              <li><strong>Full run</strong> — processes every science frame in the data directory. Required for publishable lightcurves and transit fitting.</li>
+            </ul>
+            <p>You can always re-run with <code>--overwrite</code> to replace a test run with a full run later.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How do I interpret the diagnostic plots?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <ul>
+              <li><strong>Reference image</strong> (<code>*_ref.png</code>) — the stacked reference frame with detected sources circled and the target marked. Verifies that sources are correctly identified and the target is at the right position.</li>
+              <li><strong>Apertures</strong> (<code>*_apertures.png</code>) — overplot of aperture radii and sky annuli on the reference. Check that the inner annulus excludes nearby stars and the outer annulus is within clean sky.</li>
+              <li><strong>Alignment</strong> (<code>*_alignment.png</code>) — shows the shift (dx, dy) computed for each frame relative to the reference. Large or discontinuous shifts may indicate guiding problems or a bad reference frame.</li>
+              <li><strong>Lightcurves</strong> (<code>lightcurves.png</code>) — multi-band raw and differential lightcurves side by side. The raw flux should be stable; the differential should be flat for non-variable targets. Trends in the differential suggest poor comparison star selection.</li>
+              <li><strong>Covariates</strong> (<code>covariates.png</code>) — systematics summary: FWHM, airmass, background, and centroid positions across the sequence. Correlations between these and the lightcurve can guide detrending choices.</li>
+              <li><strong>Stacks</strong> (<code>stacks.png</code>) — grouped thumbnail grid of one cutout per frame per band to quickly flag outliers (cosmic rays, clouds, tracking losses).</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does Gaia-based aperture sizing work and when should I override it?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The pipeline queries the Gaia DR3 catalog around the target position to identify contaminating sources:</p>
+            <ul>
+              <li><strong>Annulus sizing</strong> — the inner radius (R<sub>in</sub>) is set to 6 &times; FWHM, the outer (R<sub>out</sub>) to 10 &times; FWHM (capped at 100 pix). These values are then adjusted inward if a Gaia source brighter than 10% of the target flux falls within the annulus.</li>
+              <li><strong>Aperture grid</strong> — a series of radii from 1 &times; FWHM up to R<sub>in</sub> in 2-pixel steps is generated, and the one that minimizes scatter on the brightest stars is selected individually per image.</li>
+            </ul>
+            <p><strong>When to override:</strong> for crowded fields where Gaia sources are too numerous (the annulus becomes unusably small), or for isolated bright targets where the heuristic is overly conservative. Use <code>--aper_radii MIN,MAX,DR</code> and <code>--annulus RIN,ROUT</code> to set custom values.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>Why does photometry need a WCS solution?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>WCS (World Coordinate System) maps pixel coordinates to sky coordinates (RA, Dec). The pipeline needs it for two things:</p>
+            <ul>
+              <li><strong>Target identification</strong> — the resolved target coordinates (from MAST/SIMBAD name resolution) are projected onto the image via WCS to locate the target's pixel position among the detected sources. Without WCS, the pipeline cannot automatically identify which star is the target.</li>
+              <li><strong>Gaia query</strong> — the target's sky position is used to query Gaia DR3 around the field for contamination analysis.</li>
+            </ul>
+            <p>If WCS is missing from calibrated headers, <code>--target_coord RA Dec</code> can be passed instead — but source identification then relies on source ordering (brightest = target), which is unreliable for crowded fields.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How is barycentric correction (BJD-TDB) computed?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The pipeline converts observation times from JD-UTC to BJD-TDB to remove the light-travel time variation caused by Earth's orbital motion around the Solar System barycenter:</p>
+            <ul>
+              <li><strong>Default method</strong> — astropy's <code>light_travel_time</code> function computes the barycentric correction using the target's sky coordinates and the observatory geocentric position (derived from the FITS header's SITE keyword or instrument defaults like Teide Observatory for MuSCAT2).</li>
+              <li><strong>barycorrpy option</strong> — when <code>--use_barycorrpy</code> is enabled, the <code>barycorrpy</code> package (a Python wrapper for Jason Eastman's <code>barycorr</code>) is used instead. It accounts for additional effects including Shapiro delay and Earth's precession/nutation.</li>
+            </ul>
+            <p>The difference between the two methods is typically &lt;0.1 seconds for MuSCAT observing cadences. barycorrpy is recommended for sub-minute transit timing measurements.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How is the target_id (tID) auto-detected and when should I override it?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The pipeline identifies the target star among all detected sources by matching the resolved target coordinates (from MAST) against the WCS-transformed positions of every detected source, selecting the nearest match within a tolerance.</p>
+            <p><strong>When to override</strong> — if the WCS solution is poor, if the field contains multiple stars at similar coordinates, or if MAST resolution failed and the fallback assumed the brightest star is the target. Set <code>--tID N</code> where N is the 0-indexed source number from the reference image (circled labels on the <code>*_ref.png</code> plot).</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the pipeline handle narrowband filters differently?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The pipeline auto-detects narrow-band observations by inspecting the obslog CSVs for known narrow-band filter names (<code>g_narrow</code>, <code>Na_D</code>, <code>i_narrow</code>, <code>z_narrow</code>). When narrow bands are present:</p>
+            <ul>
+              <li>The default band list is expanded from the four broadband filters (gp, rp, ip, zs) to include all detected narrow bands.</li>
+              <li>Narrow-band frames are reduced with the same pipeline steps (alignment, centroiding, photometry) as broadband frames.</li>
+              <li>Products are named with the narrow-band token so they don't collide with broadband outputs.</li>
+            </ul>
+            <p>To override the auto-detection, specify bands explicitly with <code>--bands gp rp Na_D</code>.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How do I re-reduce a target with different settings?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The <code>--overwrite</code> flag (enabled by default in the GUI) allows re-running the pipeline over existing results. This is useful when you want to change parameters (aperture radii, bands, reference frame) without manually cleaning the output directory. Simply launch again from the photometry page with the new settings — existing product files are replaced.</p>
+            <p>Note: previous outputs are lost. If you want to preserve an older reduction, rename the results directory or run on a different date/target combination.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What are the default photometry parameters and where are they configured?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>Default parameters are defined in <code>src/muscat_db/photometry.py</code> in the <code>RUN_DEFAULTS</code> dictionary. Key defaults:</p>
+            <ul>
+              <li><strong>bands</strong>: gp, rp, ip, zs</li>
+              <li><strong>aper_radii</strong>: auto (Gaia heuristic)</li>
+              <li><strong>annulus</strong>: auto (Gaia heuristic)</li>
+              <li><strong>aper_unit</strong>: pix</li>
+              <li><strong>max_num_stars</strong>: 10</li>
+              <li><strong>min_star_separation</strong>: 10.0 pix</li>
+              <li><strong>cutout_size</strong>: 35 pix</li>
+              <li><strong>bin_size_minutes</strong>: 10.0</li>
+              <li><strong>gif_stride</strong>: 100</li>
+              <li><strong>test_run_frames</strong>: 10</li>
+              <li><strong>make_gif</strong>: True</li>
+              <li><strong>overwrite</strong>: True</li>
+            </ul>
+            <p>These can be overridden individually in the GUI form or via command-line flags.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What is the difference between aper_unit pix and fwhm?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <ul>
+              <li><strong>pix</strong> — aperture radii and annulus dimensions are specified and applied in absolute pixel units. The same pixel values are used for every frame regardless of seeing conditions.</li>
+              <li><strong>fwhm</strong> — radii are specified as multiples of the FWHM measured on each frame. This adapts the aperture size to the actual seeing: in good seeing (small FWHM), the aperture shrinks to exclude more sky; in poor seeing (large FWHM), it expands to capture more of the star's flux.</li>
+            </ul>
+            <p>Use <code>pix</code> when the PSF is stable and you want a fixed physical aperture. Use <code>fwhm</code> when seeing varies significantly across the sequence — it produces more consistent photometry at the cost of slightly more complex interpretation.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How are saturated stars handled by the pipeline?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The pipeline reads the saturation level from the FITS header (SATURATE keyword or BSCALE/DATAMAX). During source detection, pixels above a configurable fraction of the saturation level are flagged. However:</p>
+            <ul>
+              <li><strong>Detection</strong> — saturated sources are still detected but their centroids may be biased. The pipeline uses Gaussian2D centroiding which degrades on saturated cores.</li>
+              <li><strong>Photometry</strong> — aperture photometry on saturated stars underestimates the true flux because flux is lost in the saturated core. The pipeline does not apply a non-linearity correction.</li>
+              <li><strong>Comparison stars</strong> — the autodiff algorithm will naturally down-weight saturated comparison stars because they produce noisier differential lightcurves.</li>
+            </ul>
+            <p>For heavily saturated targets, use shorter exposure sequences or apply a non-linearity correction externally before running the pipeline.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the ref_band alignment strategy affect photometric precision?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The <code>--ref_band</code> flag controls whether all bands are aligned to a single reference band or each band self-references its own first frame:</p>
+            <ul>
+              <li><strong>Per-band self-reference (default, <code>--ref_band</code> not set)</strong> — each band creates its own reference frame from its first science frame. Alignment is within-camera only. Recommended for multi-camera instruments (MuSCAT3/4) where each band uses a separate CCD, because cross-camera registration would introduce interpolation artifacts from slightly different pointing and distortion.</li>
+              <li><strong>Single reference (<code>--ref_band gp</code> for example)</strong> — all bands align to the reference band's middle frame. This can introduce systematic offsets between bands because different cameras have different pixel scales, rotations, and distortions. The resulting lightcurves may show band-dependent systematics.</li>
+            </ul>
+            <p>For MuSCAT2 (single CCD with filter wheel), both strategies work because all bands share the same detector. Per-band self-reference is still the default and generally recommended.</p>
+          </div>
+        </div>
+
+        <!-- ==================== Transit Fit ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Transit Fitting</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the transit fitting pipeline work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The timer transit fitting pipeline models the transit lightcurve using PyMC's NUTS sampler:</p>
+            <ol>
+              <li><strong>Configuration</strong> — YAML files (<code>fit.yaml</code>, <code>sys.yaml</code>) specify stellar and planetary parameters, priors, detrending covariates, and sampler settings.</li>
+              <li><strong>Data loading</strong> — photometry CSVs are read and merged with covariate data (FWHM, airmass, centroid offsets).</li>
+              <li><strong>Prior initialization</strong> — stellar parameters (Teff, logg, metallicity) are sourced from the TOI catalog or manually entered; planetary priors (period, T0, duration, impact parameter) are set from known ephemerides or the TOI catalog.</li>
+              <li><strong>Model assembly</strong> — a PyMC model is built with the transit model (batman or starry), limb darkening (quadratic or nonlinear), and systematics model (linear or GP).</li>
+              <li><strong>Pre-optimization</strong> — L-BFGS finds the maximum a posteriori (MAP) solution to initialize the sampler.</li>
+              <li><strong>MCMC sampling</strong> — NUTS sampler runs multiple chains (default 4) with several thousand tuning and production steps.</li>
+              <li><strong>Post-processing</strong> — residual outliers are sigma-clipped, information criteria (BIC, AIC) are computed, and diagnostic plots (corner, trace, LD profile, fit) are generated.</li>
+            </ol>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the parameter query from the TOI / NASA Exoplanet Archive work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The transit fit page has a <em>Query Archive</em> button that fetches stellar and planetary parameters from two sources:</p>
+            <ul>
+              <li><strong>TOI Catalog</strong> (<code>source=toi</code>) — queries the TESS Objects of Interest table via the Exoplanet Archive TAP service. The target name is cleaned by removing the TOI prefix, leading zeros, and <code>.01</code> suffix (e.g. <code>TOI07475.01</code> → <code>7475</code>), then matched against the <code>toi</code> column with fallback queries on <code>toidisplay</code> and substring matching. Returns Teff, logg, orbital period, transit midpoint, and transit duration.</li>
+              <li><strong>NASA Exoplanet Archive</strong> (<code>source=nasa</code>) — queries the <code>pscomppars</code> (Planetary Systems Composite Parameters) table by <code>pl_name</code> or <code>hostname</code>. Returns the same parameters plus metallicity, radius ratio, and impact parameter, with literature references.</li>
+            </ul>
+            <p>The fetched values are used to pre-populate the priors in the YAML configuration, which can be edited before running the fit.</p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
   </div> <!-- closes workflow-content -->
 </div> <!-- closes workflow-layout -->
 {% endblock %}
@@ -409,6 +768,14 @@ graph TD
     }
   };
 
+  // FAQ accordion toggle
+  window.toggleFaq = function(el) {
+    const item = el.closest('.faq-item');
+    if (item) {
+      item.classList.toggle('open');
+    }
+  };
+
   // Scroll spy for TOC links
   const observerOptions = {
     root: null,
@@ -428,7 +795,7 @@ graph TD
     });
   }, observerOptions);
 
-  document.querySelectorAll('.workflow-card').forEach(card => {
+  document.querySelectorAll('.workflow-card, #faq-card').forEach(card => {
     spyObserver.observe(card);
   });
 </script>

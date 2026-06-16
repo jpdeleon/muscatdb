@@ -10,6 +10,22 @@ from muscat_db.instruments import INSTRUMENTS, OBSLOG_BASE
 from muscat_db.cache import clear_all_caches
 
 
+def format_elapsed(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    secs = seconds % 60
+    if minutes < 60:
+        return f"{minutes}m {secs}s"
+    hours = minutes // 60
+    mins = minutes % 60
+    if hours < 24:
+        return f"{hours}h {mins}m"
+    days = hours // 24
+    hrs = hours % 24
+    return f"{days}d {hrs}h"
+
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS frames (
@@ -89,7 +105,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     elapsed      INTEGER NOT NULL,
     started_at   REAL NOT NULL,
     error_desc   TEXT,
-    run_type     TEXT NOT NULL DEFAULT ''
+    run_type     TEXT NOT NULL DEFAULT '',
+    params       TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS db_meta (
@@ -624,27 +641,30 @@ def save_job(
     elapsed: int,
     started_at: float,
     error_desc: str = "",
-    run_type: str = ""
+    run_type: str = "",
+    params: str = ""
 ) -> None:
     path = db_path()
     conn = sqlite3.connect(path, timeout=30)
     conn.executescript(SCHEMA)
-    # Migration: add run_type column for databases created before this column existed.
-    try:
-        conn.execute("ALTER TABLE jobs ADD COLUMN run_type TEXT NOT NULL DEFAULT ''")
-    except sqlite3.OperationalError:
-        pass
+    # Migrations for databases created before these columns existed.
+    for col, col_type in [("run_type", "TEXT NOT NULL DEFAULT ''"), ("params", "TEXT NOT NULL DEFAULT ''")]:
+        try:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
     key = f"{type_}:{inst}/{date}/{target.replace(' ', '')}"
     conn.execute(
-        """INSERT INTO jobs(key, type, instrument, obsdate, target, state, returncode, elapsed, started_at, error_desc, run_type)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """INSERT INTO jobs(key, type, instrument, obsdate, target, state, returncode, elapsed, started_at, error_desc, run_type, params)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(key) DO UPDATE SET
              state      = excluded.state,
              returncode = excluded.returncode,
              elapsed    = excluded.elapsed,
              error_desc = excluded.error_desc,
-             run_type   = CASE WHEN excluded.run_type != '' THEN excluded.run_type ELSE run_type END""",
-        (key, type_, inst, date, target, state, returncode, elapsed, started_at, error_desc, run_type)
+             run_type   = CASE WHEN excluded.run_type != '' THEN excluded.run_type ELSE run_type END,
+             params     = CASE WHEN excluded.params != '' THEN excluded.params ELSE params END""",
+        (key, type_, inst, date, target, state, returncode, elapsed, started_at, error_desc, run_type, params)
     )
     conn.commit()
     conn.close()

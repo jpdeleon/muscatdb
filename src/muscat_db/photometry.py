@@ -23,6 +23,7 @@ This module never trusts user input for filesystem access: see
 from __future__ import annotations
 
 import csv as _csv
+import json
 import os
 import re
 import shlex
@@ -682,6 +683,14 @@ def job_key(inst: str, date: str, target: str) -> str:
     return f"{inst}/{date}/{target.replace(' ', '')}"
 
 
+def log_path(inst: str, date: str, target: str) -> Path | None:
+    rdir = results_dir(inst, date) if results_dir(inst, date) else None
+    if rdir is None:
+        return None
+    p = rdir / _RUN_LOG_NAME
+    return p if p.is_file() else None
+
+
 def start_run(
     inst: str,
     date: str,
@@ -741,7 +750,7 @@ def start_run(
         # Record new job in the database
         from muscat_db.database import save_job
         try:
-            save_job(
+                save_job(
                 type_="photometry",
                 inst=inst,
                 date=date,
@@ -750,7 +759,8 @@ def start_run(
                 returncode=None,
                 elapsed=0,
                 started_at=_JOBS[key].started_at,
-                run_type="test" if test_run else "full"
+                run_type="test" if test_run else "full",
+                params=json.dumps({"test_run": test_run, "options": opts}, separators=(",", ":"))
             )
         except sqlite3.OperationalError as exc:
             # DB write failed (e.g. read-only database). Roll back the launched

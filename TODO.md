@@ -1,4 +1,5 @@
 ## TODO
+* File a celerite2 upstream issue/PR: `celerite2/pymc/ops.py` (v0.3.2, latest) uses `import pkg_resources` / `pkg_resources.resource_filename("celerite2", "definitions.json")`, which breaks under setuptools>=81 (pkg_resources removed) with "No module named 'pkg_resources'". Proposed fix: replace with `importlib.resources.files("celerite2").joinpath("definitions.json")`. Repo: https://github.com/exoplanet-dev/celerite2 — also check `celerite2/jax/ops.py` and `celerite2/pymc3/ops.py`. Workaround currently in place: pinned `setuptools<81` in ext_tools/timer/pyproject.toml.
 
 ## Later
 Add mermaid diagram to visualize the workflow

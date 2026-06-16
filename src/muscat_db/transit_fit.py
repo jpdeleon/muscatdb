@@ -4,6 +4,7 @@ run the transit-fit pipeline, poll logs, and return outputs/plots.
 from __future__ import annotations
 
 import csv
+import json
 import math
 import os
 import pathlib
@@ -30,6 +31,12 @@ def fit_output_dir(inst: str, date: str, target: str) -> pathlib.Path:
     """Return the output directory for a transit fitting run."""
     base = pathlib.Path(os.environ.get("MUSCAT_TIMER_DIR", "/ut2/jerome/ql/timer"))
     return base / inst / date / target.replace(" ", "")
+
+
+def log_path(inst: str, date: str, target: str) -> pathlib.Path | None:
+    rdir = fit_output_dir(inst, date, target)
+    p = rdir / "timer-fit.log"
+    return p if p.is_file() else None
 
 
 @dataclass
@@ -684,7 +691,8 @@ def start_fit(
             returncode=None,
             elapsed=0,
             started_at=_FIT_JOBS[key].started_at,
-            run_type="test" if test_run else "full"
+            run_type="test" if test_run else "full",
+            params=json.dumps({"test_run": test_run, "options": options, "selected_csvs": selected_csvs}, separators=(",", ":"))
         )
 
     return {"ok": True, "key": key}

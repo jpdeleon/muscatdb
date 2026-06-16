@@ -12,7 +12,7 @@
 <div id="loading-bar" role="progressbar" aria-label="Loading"></div>
 <nav>
   <a class="brand" href="/">MuSCAT-db</a>
-  <a href="/logs">Logs</a>
+  <a href="/logs">ObsLog</a>
   <a href="/photometry">Photometry</a>
   <a href="/transit-fit">Transit Fit</a>
   <a href="/jobs">Jobs</a>
@@ -293,8 +293,17 @@
       const tbody = table.tBodies[0];
       if (!headerRow || !tbody) return;
       // Snapshot original row order so a third click can restore it.
-      const originalOrder = Array.from(tbody.rows);
-      originalOrder.forEach((r, i) => { r.dataset._origIdx = i; });
+      // Pair detail rows (log-row) with their primary so restore keeps them together.
+      const allInitRows = Array.from(tbody.rows);
+      const initPairs = [];
+      for (let i = 0; i < allInitRows.length; i++) {
+        const primary = allInitRows[i];
+        const detail = (i + 1 < allInitRows.length && allInitRows[i + 1].classList.contains('log-row'))
+          ? allInitRows[++i] : null;
+        initPairs.push({ primary, detail });
+      }
+      initPairs.forEach((p, i) => { p.primary.dataset._origIdx = i; });
+      const originalOrder = initPairs;
 
       Array.from(headerRow.cells).forEach((th, colIdx) => {
         if (th.classList.contains('no-sort')) return;
@@ -307,8 +316,11 @@
           if (next) th.dataset.sortDir = next;
 
           if (!next) {
-            // Restore original order.
-            originalOrder.forEach(r => tbody.appendChild(r));
+            // Restore original order (pairs kept together).
+            originalOrder.forEach(p => {
+              tbody.appendChild(p.primary || p);
+              if (p.detail) tbody.appendChild(p.detail);
+            });
             return;
           }
 
@@ -323,18 +335,31 @@
           const sortAttr = th.dataset.sortAttr;  // camelCase data-* key
 
           const dirSign = next === 'asc' ? 1 : -1;
-          const sorted = Array.from(tbody.rows).slice().sort((a, b) => {
-            const ka = rowKey(a, currentIdx, sortAttr, kind);
-            const kb = rowKey(b, currentIdx, sortAttr, kind);
+          // Pair detail rows (e.g. .log-row) with their preceding primary row
+          // so sorting doesn't break the adjacency.
+          const allRows = Array.from(tbody.rows);
+          const pairs = [];
+          for (let i = 0; i < allRows.length; i++) {
+            const primary = allRows[i];
+            const detail = (i + 1 < allRows.length && allRows[i + 1].classList.contains('log-row'))
+              ? allRows[++i] : null;
+            pairs.push({ primary, detail });
+          }
+          const sorted = pairs.slice().sort((a, b) => {
+            const ka = rowKey(a.primary, currentIdx, sortAttr, kind);
+            const kb = rowKey(b.primary, currentIdx, sortAttr, kind);
             if (ka == null && kb == null) return 0;
             if (ka == null) return 1;   // nulls always last
             if (kb == null) return -1;
             if (ka < kb) return -1 * dirSign;
             if (ka > kb) return  1 * dirSign;
             // stable tiebreak on original index
-            return (parseInt(a.dataset._origIdx, 10) - parseInt(b.dataset._origIdx, 10));
+            return (parseInt(a.primary.dataset._origIdx, 10) - parseInt(b.primary.dataset._origIdx, 10));
           });
-          sorted.forEach(r => tbody.appendChild(r));
+          sorted.forEach(p => {
+            tbody.appendChild(p.primary);
+            if (p.detail) tbody.appendChild(p.detail);
+          });
         });
       });
     }

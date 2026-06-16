@@ -24,8 +24,8 @@ def test_solve_wcs_muscat2_vs_muscat3():
     assert Path(m2_file).is_file(), f"MuSCAT2 test file {m2_file} not found"
     
     # 2. Get target coordinates from catalog/header
-    # The header RA/Dec of this target is '21:48:31', '+6:42:55'
-    target_coord = SkyCoord("21h48m31s", "+6d42m55s", frame="icrs")
+    # The actual J2000 coordinates of TIC466376085 are '21h47m26.5s', '+06d36m17.5s'
+    target_coord = SkyCoord("21h47m26.5s", "+06d36m17.5s", frame="icrs")
     
     # 3. Create FITSImage and run detection
     img = FITSImage(m2_file)
@@ -58,3 +58,50 @@ def test_solve_wcs_muscat2_vs_muscat3():
             min_dist = dist
             
     assert min_dist < 60.0 / 3600.0, f"Closest source distance {min_dist*3600:.2f} arcseconds is too large"
+
+
+def test_wcs_with_gaia_query_scaling():
+    import astropy.wcs.utils as wcsutils
+    
+    # Load calibration test image
+    image_path = "/tmp/muscat_test_calib_toi1266/MSCT0_2201310272_calibrated.fits"
+    if not Path(image_path).is_file():
+        pytest.skip(f"Test image {image_path} not found")
+        
+    image = FITSImage(image_path)
+    detection = blocks.detection.PointSourceDetection()
+    detection.run(image)
+    assert len(image.sources) > 0, "No sources detected in image"
+    
+    pixel_coords = image.sources.coords.copy()
+    radius = image.fov.min() / 12
+    
+    stars = twirl.geometry.sparsify(
+        pixel_coords * image.pixel_scale.to("arcmin").value,
+        radius.to("arcmin").value,
+    ) / image.pixel_scale.to("arcmin").value
+    
+    solved = False
+    for factor in [1.2, 1.5, 2.0, 2.5, 3.0]:
+        try:
+            table = blocks.catalogs.image_gaia_query(
+                image, wcs=False, circular=True, fov=image.fov.max() * factor
+            ).to_pandas()
+        except Exception:
+            continue
+            
+        gaias = np.array([table.ra, table.dec]).T
+        gaias = gaias[~np.any(np.isnan(gaias), 1)]
+        
+        sparse_gaias = twirl.geometry.sparsify(gaias, radius.to("deg").value)
+        sparse_gaias = sparse_gaias[:30]
+        
+        wcs = twirl.compute_wcs(stars, sparse_gaias)
+        if wcs is not None:
+            scales = wcsutils.proj_plane_pixel_scales(wcs) * 3600.0
+            if 0.32 < scales[0] < 0.40 and 0.32 < scales[1] < 0.40:
+                solved = True
+                break
+                
+    assert solved, "Failed to solve WCS using the Gaia search radius scaling"
+

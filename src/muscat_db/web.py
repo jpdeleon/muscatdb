@@ -21,6 +21,7 @@ from muscat_db import transit_fit as fit
 from muscat_db.database import (
     SCHEMA,
     delete_note as _delete_note,
+    format_elapsed,
     get_dates as _get_dates,
     get_frames as _get_frames,
     get_instruments as _get_instruments,
@@ -62,6 +63,18 @@ jinja = Environment(
     loader=FileSystemLoader(str(TEMPLATE_DIR)),
     autoescape=True,
 )
+jinja.globals["format_elapsed"] = format_elapsed
+
+
+def _datetime_from_timestamp(ts: int) -> str:
+    dt = datetime.datetime.fromtimestamp(ts)
+    now = datetime.datetime.now()
+    if dt.year == now.year:
+        return dt.strftime("%b %d %H:%M")
+    return dt.strftime("%b %d %Y")
+
+
+jinja.filters["datetime_from_timestamp"] = _datetime_from_timestamp
 
 
 def _wiki_url(inst: str, target: str) -> str | None:
@@ -321,7 +334,7 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
         ]
         col_str = ", ".join(cols)
 
-        clean_target = target.replace("TOI", "").replace("toi", "").replace("-", "").replace(" ", "").strip()
+        clean_target = target.replace("TOI", "").replace("toi", "").replace("-", "").replace(" ", "").lstrip("0").split(".")[0].strip()
         queries = [
             f"SELECT {col_str} FROM toi WHERE toi = '{clean_target}'",
             f"SELECT {col_str} FROM toi WHERE toidisplay LIKE '%{target}%'",
@@ -520,17 +533,92 @@ def jobs_page():
     phot.sync_jobs()
     fit.sync_jobs()
     all_jobs = get_persisted_jobs()
-    phot_jobs = [j for j in all_jobs if j["type"] == "photometry"]
-    fit_jobs = [j for j in all_jobs if j["type"] == "transit_fit"]
 
     # Discover fits completed on-disk outside the web UI.
-    existing_keys = {j["key"] for j in fit_jobs}
+    existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
     orphan_fits = fit._discover_orphan_fits(existing_keys)
     if orphan_fits:
-        fit_jobs.extend(orphan_fits)
-        fit_jobs.sort(key=lambda j: j.get("started_at", 0), reverse=True)
+        all_jobs.extend(orphan_fits)
+        all_jobs.sort(key=lambda j: j.get("started_at", 0), reverse=True)
 
-    return _render("jobs.html", phot_jobs=phot_jobs, fit_jobs=fit_jobs)
+    counts = {"running": 0, "done": 0, "error": 0, "cancelled": 0}
+    for j in all_jobs:
+        s = j["state"]
+        if s in counts:
+            counts[s] += 1
+
+    return _render("jobs.html", jobs=all_jobs, counts=counts)
+
+
+_last_running: set[str] = set()
+
+@app.get("/jobs/status", response_class=JSONResponse)
+def jobs_status():
+    phot.sync_jobs()
+    fit.sync_jobs()
+    all_jobs = get_persisted_jobs()
+    global _last_running
+    current_running = {j["key"] for j in all_jobs if j["state"] in ("running", "cancelling")}
+    finished = {}
+    for j in all_jobs:
+        if j["key"] in _last_running and j["key"] not in current_running:
+            finished[j["key"]] = {
+                "state": j["state"],
+                "elapsed": j["elapsed"],
+                "error_desc": j.get("error_desc", "") or "",
+                "returncode": j.get("returncode"),
+            }
+    _last_running = current_running
+    running = [
+        {"key": j["key"], "state": j["state"], "elapsed": j["elapsed"]}
+        for j in all_jobs if j["state"] in ("running", "cancelling")
+    ]
+    counts = {"running": 0, "done": 0, "error": 0, "cancelled": 0}
+    for j in all_jobs:
+        s = j["state"]
+        if s in counts:
+            counts[s] += 1
+    return {"running": running, "counts": counts, "finished": finished}
+
+
+@app.get("/jobs/log/{type_}/{inst}/{date}/{target}")
+def job_log(type_: str, inst: str, date: str, target: str):
+    if type_ == "photometry":
+        path = phot.log_path(inst, date, target)
+    elif type_ == "transit_fit":
+        path = fit.log_path(inst, date, target)
+    else:
+        raise HTTPException(400, "unknown job type")
+    if path is None:
+        raise HTTPException(404, "log not found")
+    return FileResponse(str(path))
+
+
+@app.post("/jobs/rerun")
+def jobs_rerun(payload: dict = Body(...)):
+    import json
+    key = (payload.get("key") or "").strip()
+    if not key:
+        raise HTTPException(400, "job key required")
+    all_jobs = get_persisted_jobs()
+    job = next((j for j in all_jobs if j["key"] == key), None)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    inst, date, target = job["inst"], job["date"], job["target"]
+    params_raw = job.get("params", "")
+    try:
+        p = json.loads(params_raw) if params_raw else {}
+    except (json.JSONDecodeError, TypeError):
+        p = {}
+    if job["type"] == "photometry":
+        result = phot.start_run(inst, date, target, options=p.get("options", {}), test_run=p.get("test_run", True))
+    elif job["type"] == "transit_fit":
+        result = fit.start_fit(inst, date, target, options=p.get("options", {}), test_run=p.get("test_run", False), selected_csvs=p.get("selected_csvs"))
+    else:
+        raise HTTPException(400, "unknown job type")
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=400)
+    return JSONResponse(result)
 
 
 @app.get("/photometry/file/{inst}/{date}/{name}")
