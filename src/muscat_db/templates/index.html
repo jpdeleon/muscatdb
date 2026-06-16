@@ -17,6 +17,14 @@
   <a href="/api/targets/export.csv" class="csv-btn" download>⬇ CSV</a>
 </div>
 
+{% set unique_instruments = targets | map(attribute='instruments') | sum(start=[]) | unique | sort %}
+<div class="instrument-badges">
+  <span class="instrument-badges-label">Filter by instrument:</span>
+  {% for inst in unique_instruments %}
+    <span class="badge instrument-badge" data-instrument="{{ inst }}">{{ inst }}</span>
+  {% endfor %}
+</div>
+
 {% macro target_table(rows, table_id) %}
 <div class="csv-wrap">
 <table id="{{ table_id }}">
@@ -29,10 +37,10 @@
       <th data-sort-attr="filters">Filters</th>
       <th data-sort-attr="airmassMax"  data-sort-type="number">Airmass</th>
       <th data-sort-attr="frames"      data-sort-type="number"># Frames</th>
-      <th data-sort-attr="instruments">Instruments</th>
       <th data-sort-attr="phot">Phot</th>
       <th data-sort-attr="fit">Fit</th>
       <th data-sort-attr="note">Notes</th>
+      <th style="width:1px;">Move</th>
     </tr>
     <tr class="filter-row">
       <th><input type="text" data-col="name"        placeholder="contains…"></th>
@@ -42,10 +50,10 @@
       <th><input type="text" data-col="filter"      placeholder="g, r, i, z"></th>
       <th><input type="text" data-col="airmass"     placeholder="<1.5  1.1-2"></th>
       <th><input type="text" data-col="frames"      placeholder="<100  >500"></th>
-      <th><input type="text" data-col="instrument"  placeholder="muscat2"></th>
       <th><input type="text" data-col="phot"        placeholder="Y/N"></th>
       <th><input type="text" data-col="fit"         placeholder="Y/N"></th>
       <th><input type="text" data-col="note"        placeholder="contains…"></th>
+      <th></th>
     </tr>
   </thead>
   <tbody>
@@ -86,11 +94,6 @@
         {% else %}—{% endif %}
       </td>
       <td>{{ t.n_frames }}</td>
-      <td style="white-space:normal;">
-        {% for inst in t.instruments %}
-          <a href="/{{ inst }}"><span class="badge badge-blue">{{ inst }}</span></a>
-        {% endfor %}
-      </td>
       <td style="text-align:center;">
         {% if t.phot == 'full' %}
           <span style="color: var(--green); font-weight: bold;" title="Full photometry exists">Y</span>
@@ -109,6 +112,11 @@
         <span class="note-text">{{ t.note }}</span>
         <span class="note-placeholder" {% if t.note %}style="display:none;"{% endif %}>+ add note</span>
       </td>
+      <td style="text-align:center;">
+        <button class="btn-move" data-object="{{ t.object }}" title="{% if t.is_identified %}Move to Unidentified{% else %}Move to Identified{% endif %}">
+          {% if t.is_identified %}X{% else %}I{% endif %}
+        </button>
+      </td>
     </tr>
   {% endfor %}
   </tbody>
@@ -117,13 +125,20 @@
 {% endmacro %}
 
 {% if identified %}
-  {{ target_table(identified, 'targets-table') }}
+<details id="identified-details" style="margin-top:1.5rem;" open>
+  <summary style="cursor:pointer; padding:0.5rem 0; color:var(--text-dim); font-size:1rem;">
+    Identified targets ({{ identified|length }})
+  </summary>
+  <div style="margin-top:0.75rem;">
+    {{ target_table(identified, 'targets-table') }}
+  </div>
+</details>
 {% else %}
   <p>No identified targets found.</p>
 {% endif %}
 
 {% if unidentified %}
-<details style="margin-top:1.5rem;">
+<details id="unidentified-details" style="margin-top:1.5rem;">
   <summary style="cursor:pointer; padding:0.5rem 0; color:var(--text-dim); font-size:1rem;">
     Unidentified targets ({{ unidentified|length }})
     <span class="hint">— bare numeric OBJECT names, no catalog prefix</span>
@@ -138,6 +153,16 @@
   <a href="#" style="display:inline-block; padding:0.5em 2em; background:#0056b3; color:#fff; text-decoration:none; border-radius:4px;">Back to Top</a>
 </div>
 
+<div id="move-confirm-overlay">
+  <div class="modal-box">
+    <p id="move-confirm-msg" style="margin-bottom:1.25rem;font-size:0.95rem;font-weight:600;"></p>
+    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+      <button class="btn" onclick="closeMoveConfirm()">Cancel</button>
+      <button class="btn danger" onclick="confirmMove()">Move</button>
+    </div>
+  </div>
+</div>
+
 <script>
   (function () {
     const input  = document.getElementById('target-search');
@@ -149,6 +174,8 @@
     ));
     const total = rows.length;
     const colInputs = Array.from(document.querySelectorAll('tr.filter-row input'));
+    const instBadges = Array.from(document.querySelectorAll('.instrument-badge'));
+    let activeInstrument = null;
 
     // ── persist search + column filter state across page navigations ────────
     function saveFilters() {
@@ -159,6 +186,7 @@
         const colVals = {};
         colInputs.forEach(inp => { colVals[inp.dataset.col] = inp.value; });
         localStorage.setItem('home:cols', JSON.stringify(colVals));
+        localStorage.setItem('home:inst', activeInstrument || '');
       } catch (_) {}
     }
     function restoreFilters() {
@@ -174,6 +202,13 @@
           const colVals = JSON.parse(colRaw);
           colInputs.forEach(inp => {
             if (colVals[inp.dataset.col] != null) inp.value = colVals[inp.dataset.col];
+          });
+        }
+        const instVal = localStorage.getItem('home:inst');
+        if (instVal) {
+          activeInstrument = instVal;
+          instBadges.forEach(b => {
+            if (b.dataset.instrument === instVal) b.classList.add('active');
           });
         }
       } catch (_) {}
@@ -226,17 +261,19 @@
     });
 
     // ── persist <details> open state ─────────────────────────────────────────
-    const detailsEl = document.querySelector('details');
-    if (detailsEl) {
+    ['identified-details', 'unidentified-details'].forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const key = 'home:details:' + id;
       try {
-        if (localStorage.getItem('home:details') === 'open') detailsEl.open = true;
+        if (localStorage.getItem(key) === 'closed') el.open = false;
       } catch (_) {}
-      detailsEl.addEventListener('toggle', () => {
+      el.addEventListener('toggle', () => {
         try {
-          localStorage.setItem('home:details', detailsEl.open ? 'open' : 'closed');
+          localStorage.setItem(key, el.open ? 'open' : 'closed');
         } catch (_) {}
       });
-    }
+    });
 
     function escapeRegex(s) {
       return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -313,7 +350,6 @@
       filter:     { val: r => r.dataset.filters,     build: makeText    },
       airmass:    { val: r => parseFloat(r.dataset.airmassMax),  build: makeNumeric },
       frames:     { val: r => parseInt(r.dataset.frames, 10),    build: makeNumeric },
-      instrument: { val: r => r.dataset.instruments, build: makeToken   },
       date:       { val: r => r.dataset.dates,       build: makeText    },
       phot:       { val: r => r.dataset.phot,        build: makeText    },
       fit:        { val: r => r.dataset.fit,         build: makeText    },
@@ -360,10 +396,14 @@
       rows.forEach(r => {
         let ok = textTest(r.dataset.name || '');
         for (let i = 0; ok && i < colPreds.length; i++) ok = colPreds[i](r);
+        if (ok && activeInstrument) {
+          const tokens = (r.dataset.instruments || '').toLowerCase().split(',').map(t => t.trim()).filter(Boolean);
+          ok = tokens.includes(activeInstrument.toLowerCase());
+        }
         r.style.display = ok ? '' : 'none';
         if (ok) visible++;
       });
-      if (q || colPreds.length) {
+      if (q || colPreds.length || activeInstrument) {
         status.textContent = visible + ' / ' + total + ' matching';
       } else {
         status.textContent = total + ' targets';
@@ -374,6 +414,48 @@
     regex.addEventListener('change', function () { filter(); saveFilters(); });
     caseCB.addEventListener('change', function () { filter(); saveFilters(); });
     colInputs.forEach(inp => inp.addEventListener('input', function () { filter(); saveFilters(); }));
+    instBadges.forEach(badge => {
+      badge.addEventListener('click', function () {
+        const inst = this.dataset.instrument;
+        if (activeInstrument === inst) {
+          activeInstrument = null;
+          instBadges.forEach(b => b.classList.remove('active'));
+        } else {
+          activeInstrument = inst;
+          instBadges.forEach(b => b.classList.remove('active'));
+          this.classList.add('active');
+        }
+        filter();
+        saveFilters();
+      });
+    });
+    let pendingMove = null;
+    document.querySelectorAll('.btn-move').forEach(btn => {
+      btn.addEventListener('click', function () {
+        const wasIdentified = this.closest('table').id === 'targets-table';
+        const targetName = this.closest('tr').querySelector('td strong').textContent;
+        const targetTable = wasIdentified ? 'Unidentified' : 'Identified';
+        pendingMove = { obj: this.dataset.object, newVal: wasIdentified ? 0 : 1 };
+        document.getElementById('move-confirm-msg').textContent =
+          `Move "${targetName}" to the ${targetTable} targets table?`;
+        document.getElementById('move-confirm-overlay').classList.add('visible');
+      });
+    });
+    window.confirmMove = function() {
+      if (!pendingMove) return;
+      const { obj, newVal } = pendingMove;
+      pendingMove = null;
+      document.getElementById('move-confirm-overlay').classList.remove('visible');
+      fetch('/api/targets/' + encodeURIComponent(obj) + '/identified', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({is_identified: newVal}),
+      }).then(r => { if (r.ok) location.reload(); });
+    };
+    window.closeMoveConfirm = function() {
+      pendingMove = null;
+      document.getElementById('move-confirm-overlay').classList.remove('visible');
+    };
     filter();
   })();
 </script>

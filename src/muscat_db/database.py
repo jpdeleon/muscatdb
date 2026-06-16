@@ -94,6 +94,12 @@ CREATE TABLE IF NOT EXISTS target_notes (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS target_overrides (
+    object        TEXT PRIMARY KEY,
+    is_identified INTEGER NOT NULL,
+    updated_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
     key          TEXT PRIMARY KEY,
     type         TEXT NOT NULL,
@@ -610,6 +616,30 @@ def delete_note(db_path: str, obj: str) -> None:
     conn.commit()
     conn.close()
     clear_all_caches()
+
+
+def set_identified(db_path: str, obj: str, is_identified: int) -> None:
+    conn = sqlite3.connect(db_path, timeout=30)
+    conn.executescript(SCHEMA)
+    conn.execute(
+        """INSERT INTO target_overrides(object, is_identified, updated_at)
+           VALUES (?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(object) DO UPDATE
+             SET is_identified = excluded.is_identified, updated_at = CURRENT_TIMESTAMP""",
+        (obj, is_identified),
+    )
+    conn.commit()
+    conn.close()
+    clear_all_caches()
+
+
+def get_identified_overrides(db_path: str) -> dict[str, bool]:
+    conn = sqlite3.connect(db_path)
+    conn.executescript(SCHEMA)
+    cur = conn.execute("SELECT object, is_identified FROM target_overrides")
+    result = {row[0]: bool(row[1]) for row in cur.fetchall()}
+    conn.close()
+    return result
 
 
 def get_frames(db_path: str, instrument: str, obsdate: str, ccd: int) -> list[dict]:

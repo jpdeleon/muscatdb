@@ -29,6 +29,8 @@ from muscat_db.database import (
     get_objects as _get_objects,
     get_summaries as _get_summaries,
     get_targets as _get_targets,
+    get_identified_overrides as _get_identified_overrides,
+    set_identified as _set_identified,
     set_note as _set_note,
     get_persisted_jobs,
     get_last_build_date,
@@ -121,6 +123,13 @@ async def index():
         return HTMLResponse(cached[1])
 
     targets = _get_targets(db)
+
+    # Apply user overrides on top of computed is_identified
+    overrides = _get_identified_overrides(db)
+    for t in targets:
+        if t["object"] in overrides:
+            t["is_identified"] = overrides[t["object"]]
+
     last_updated = get_last_build_date(db)
 
     html = jinja.get_template("index.html").render(
@@ -684,6 +693,15 @@ async def api_set_note(obj: str, payload: dict = Body(...)):
 async def api_delete_note(obj: str):
     _delete_note(_db_path(), obj)
     return JSONResponse({"ok": True, "object": obj})
+
+
+@app.put("/api/targets/{obj}/identified")
+async def api_set_identified(obj: str, payload: dict = Body(...)):
+    val = payload.get("is_identified")
+    if val not in (0, 1):
+        raise HTTPException(400, "is_identified must be 0 or 1")
+    _set_identified(_db_path(), obj, val)
+    return JSONResponse({"ok": True, "object": obj, "is_identified": bool(val)})
 
 
 @app.get("/{instrument}", response_class=HTMLResponse)

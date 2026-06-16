@@ -184,12 +184,61 @@ tr.filter-row th input::placeholder { color: var(--text-dim); font-style: italic
 [data-theme="dark"] .badge-filter-i.narrow { background: #382912; color: #c2a76d; }
 [data-theme="dark"] .badge-filter-z.narrow { background: #381c1c; color: #c08e8e; }
 
+/* ---------- Instrument filter badges ---------- */
+.instrument-badges {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+.instrument-badges-label {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  font-weight: 500;
+}
+.instrument-badge {
+  cursor: pointer;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  transition: border-color 0.15s, color 0.15s, transform 0.15s;
+}
+.instrument-badge:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+.instrument-badge.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* ---------- Move-target button ---------- */
+.btn-move {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.15rem 0.35rem;
+  font-size: 0.7rem;
+  cursor: pointer;
+  color: var(--text-dim);
+  white-space: nowrap;
+  transition: border-color 0.15s, color 0.15s;
+}
+.btn-move:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* ---------- Editable note cells ---------- */
 .note-cell { cursor: text; min-width: 140px; position: relative; }
 .note-cell .note-text { color: var(--text); word-break: break-word; }
 .note-cell .note-placeholder { color: var(--text-dim); font-style: italic; font-size: 0.8rem; }
 .note-cell:hover .note-placeholder { color: var(--accent); }
-.note-cell.editing { padding: 0.25rem; }
+.note-cell.editing { padding: 0.25rem; overflow: visible; white-space: normal; }
+.note-cell.editing .note-actions { flex-wrap: wrap; }
 .note-cell textarea {
   width: 100%; min-height: 2.2rem; resize: vertical;
   background: var(--input-bg); color: var(--text);
@@ -288,10 +337,10 @@ tr.filter-row th input::placeholder { color: var(--text-dim); font-style: italic
 .search-bar .hint { color: var(--text-dim); font-size: 0.8rem; }
 .search-bar .invalid { color: var(--red); font-size: 0.8rem; }
 .search-bar .csv-btn {
-  display: inline-flex; align-items: center; gap: 0.3rem;
-  padding: 0.4rem 0.75rem; border-radius: 6px;
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  padding: 0.25rem 0.55rem; border-radius: 4px;
   background: var(--accent); color: #fff;
-  font-size: 0.85rem; font-weight: 600; text-decoration: none;
+  font-size: 0.75rem; font-weight: 600; text-decoration: none;
   white-space: nowrap;
 }
 .search-bar .csv-btn:hover { opacity: 0.85; }
@@ -610,7 +659,8 @@ th.drag-over-right {
   animation: pulse 1.5s infinite;
 }
 
-#hide-confirm-overlay {
+#hide-confirm-overlay,
+#move-confirm-overlay {
   display: none;
   position: fixed;
   inset: 0;
@@ -619,7 +669,8 @@ th.drag-over-right {
   align-items: center;
   justify-content: center;
 }
-#hide-confirm-overlay.visible {
+#hide-confirm-overlay.visible,
+#move-confirm-overlay.visible {
   display: flex;
 }
 .modal-box {

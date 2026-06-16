@@ -127,9 +127,6 @@
       const measured = ths.map(function (th, i) {
         const stored = localStorage.getItem('colw:' + tableId + ':' + i);
         if (stored) return parseFloat(stored);
-        if (th.dataset.sortAttr === 'filters') {
-          return 25;
-        }
         return th.getBoundingClientRect().width;
       });
       let hasStored = false;
@@ -141,16 +138,12 @@
       }
       if (!hasStored) {
         const containerW = table.parentElement.clientWidth;
-        let filtersIdx = -1;
-        ths.forEach(function (th, i) {
-          if (th.dataset.sortAttr === 'filters') {
-            filtersIdx = i;
-          }
-        });
+        // Keep the last column (e.g. Move/Action button) at its narrow natural width.
+        const lastIdx = ths.length - 1;
         let remainingW = containerW;
         let totalMeasuredOthers = 0;
         measured.forEach(function (w, i) {
-          if (i === filtersIdx) {
+          if (i === lastIdx) {
             remainingW -= w;
           } else {
             totalMeasuredOthers += w;
@@ -159,7 +152,7 @@
         if (totalMeasuredOthers > 0 && remainingW > 0) {
           const scale = remainingW / totalMeasuredOthers;
           ths.forEach(function (th, i) {
-            if (i === filtersIdx) {
+            if (i === lastIdx) {
               th.style.width = measured[i] + 'px';
             } else {
               th.style.width = (measured[i] * scale) + 'px';
