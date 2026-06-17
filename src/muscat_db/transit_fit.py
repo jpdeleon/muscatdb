@@ -51,14 +51,21 @@ class TransitFitJob:
     logf: IO
     log_path: pathlib.Path
     started_at: float = field(default_factory=time.time)
-    state: str = "running"  # running | done | error | cancelled
+    state: str = "running"      # running | done | error | cancelled
     returncode: int | None = None
     cancelled: bool = False
     elapsed: int | None = None
+    run_type: str = "full"      # "test" | "full"
 
 
 _FIT_JOBS: dict[str, TransitFitJob] = {}
 _FIT_LOCK = threading.Lock()
+_MAX_FULL_JOBS = 1
+
+
+def _count_running_full() -> int:
+    """Number of currently-running full (non-test) transit fit jobs."""
+    return sum(1 for j in _FIT_JOBS.values() if j.run_type == "full" and j.proc.poll() is None)
 
 
 def fit_job_key(inst: str, date: str, target: str) -> str:
@@ -652,8 +659,28 @@ def start_fit(
     # Copy CSVs and write fit.yaml / sys.yaml from the form options.
     _write_fit_inputs(rdir, inst, date, csvs, options)
 
-    # Launch process
     key = fit_job_key(inst, date, target)
+    run_type = "test" if test_run else "full"
+
+    with _FIT_LOCK:
+        # Queue full jobs when at capacity
+        if run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS:
+            from muscat_db.database import save_job
+            try:
+                save_job(
+                    type_="transit_fit",
+                    inst=inst, date=date, target=target,
+                    state="pending",
+                    returncode=None, elapsed=0,
+                    started_at=time.time(),
+                    run_type=run_type,
+                    params=json.dumps({"test_run": test_run, "options": options, "selected_csvs": selected_csvs}, separators=(",", ":"))
+                )
+            except Exception:
+                return {"ok": False, "error": "database not writable"}
+            return {"ok": True, "key": key, "queued": True}
+
+    # Launch process
     cmd = [*_timer_prefix(), "-v", str(rdir)]
     if test_run:
         cmd.append("--test_run")
@@ -680,6 +707,7 @@ def start_fit(
         _FIT_JOBS[key] = TransitFitJob(
             key=key, inst=inst, date=date, target=target,
             cmd=cmd, proc=proc, logf=logf, log_path=log_path,
+            run_type=run_type,
         )
         # Record new job in the database
         from muscat_db.database import save_job
@@ -692,7 +720,7 @@ def start_fit(
             returncode=None,
             elapsed=0,
             started_at=_FIT_JOBS[key].started_at,
-            run_type="test" if test_run else "full",
+            run_type=run_type,
             params=json.dumps({"test_run": test_run, "options": options, "selected_csvs": selected_csvs}, separators=(",", ":"))
         )
 
@@ -752,18 +780,30 @@ def _kill_after(proc: subprocess.Popen, grace: float = 6.0) -> None:
 
 
 def cancel_fit(inst: str, date: str, target: str) -> dict:
-    """Terminate the running fitting process."""
+    """Terminate the running or pending fitting process."""
     key = fit_job_key(inst, date, target)
     with _FIT_LOCK:
+        from muscat_db.database import save_job, get_persisted_jobs
         job = _FIT_JOBS.get(key)
         if job is None:
+            # May be a pending job (in DB but not yet launched)
+            db_jobs = get_persisted_jobs()
+            db_key = f"transit_fit:{key}"
+            found = [j for j in db_jobs if j["key"] == db_key]
+            if found and found[0]["state"] == "pending":
+                save_job(
+                    type_="transit_fit", inst=inst, date=date, target=target,
+                    state="cancelled", returncode=-1, elapsed=0,
+                    started_at=found[0]["started_at"],
+                    error_desc="Cancelled by user"
+                )
+                return {"ok": True, "key": key}
             return {"ok": False, "error": "no job to cancel"}
         if job.proc.poll() is not None:
             return {"ok": True, "already_finished": True}
         job.cancelled = True
         proc = job.proc
         # Immediately record cancellation in the database
-        from muscat_db.database import save_job
         save_job(
             type_="transit_fit",
             inst=inst,
@@ -1016,4 +1056,53 @@ def sync_jobs() -> None:
                 started_at=started_at,
                 error_desc="Process lost (server restart)"
             )
+
+        # Launch pending full jobs if capacity allows
+        if _count_running_full() < _MAX_FULL_JOBS:
+            db_jobs = get_persisted_jobs()
+            pending = [j for j in db_jobs if j["state"] == "pending" and j["type"] == "transit_fit"]
+            pending.sort(key=lambda j: j["started_at"])
+            for entry in pending:
+                if _count_running_full() >= _MAX_FULL_JOBS:
+                    break
+                if entry["key"] in _FIT_JOBS:
+                    save_job(type_="transit_fit", inst=entry["inst"], date=entry["date"], target=entry["target"], state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry")
+                    continue
+                try:
+                    p = json.loads(entry.get("params") or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    p = {}
+                opts = p.get("options", {})
+                test_run = p.get("test_run", False)
+                selected_csvs = p.get("selected_csvs")
+                inst, date, target = entry["inst"], entry["date"], entry["target"]
+                key = fit_job_key(inst, date, target)
+                rdir = fit_output_dir(inst, date, target)
+                rdir.mkdir(parents=True, exist_ok=True)
+                _write_fit_inputs(rdir, inst, date, get_csv_lightcurves(inst, date, target), opts)
+                cmd = [*_timer_prefix(), "-v", str(rdir)]
+                if test_run:
+                    cmd.append("--test_run")
+                log_path = rdir / "timer-fit.log"
+                try:
+                    logf = open(log_path, "w")
+                    logf.write(f"$ {shlex.join(cmd)}\n\n")
+                    logf.flush()
+                    proc = subprocess.Popen(cmd, cwd=str(rdir), stdout=logf, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+                except (FileNotFoundError, OSError) as exc:
+                    try: logf.close()
+                    except OSError: pass
+                    save_job(type_="transit_fit", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}")
+                    continue
+                run_type = "test" if test_run else "full"
+                _FIT_JOBS[key] = TransitFitJob(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=log_path, run_type=run_type)
+                try:
+                    save_job(type_="transit_fit", inst=inst, date=date, target=target, state="running", returncode=None, elapsed=0, started_at=_FIT_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""))
+                except Exception:
+                    try: proc.terminate()
+                    except OSError: pass
+                    try: logf.close()
+                    except OSError: pass
+                    _FIT_JOBS.pop(key, None)
+                    save_job(type_="transit_fit", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Database error")
 

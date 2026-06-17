@@ -16,6 +16,7 @@
   --accent2: #0f9d8b;
   --red: #c0392b;
   --green: #16a085;
+  --blue: #2980b9;
   --input-bg: #ffffff;
 }
 [data-theme="dark"] {
@@ -29,6 +30,7 @@
   --accent2: #45d6b5;
   --red: #f87171;
   --green: #6ee7b7;
+  --blue: #6c8cff;
   --input-bg: #1a1d27;
 }
 
@@ -642,10 +644,12 @@ th.drag-over-right {
   border-color: var(--accent);
 }
 .job-count.has-running { border-color: var(--amber, #f59e0b); }
+.job-count.has-pending { border-color: var(--blue); }
 .job-count.has-done { border-color: var(--green, #10b981); }
 .job-count.has-error { border-color: var(--red); }
 .job-count.has-cancelled { border-color: var(--text-dim); }
 .job-count.active.has-running { background: var(--amber, #f59e0b); border-color: var(--amber, #f59e0b); }
+.job-count.active.has-pending { background: var(--blue); border-color: var(--blue); }
 .job-count.active.has-done { background: var(--green, #10b981); border-color: var(--green, #10b981); }
 .job-count.active.has-error { background: var(--red); border-color: var(--red); }
 .job-count.active.has-cancelled { background: var(--text-dim); border-color: var(--text-dim); }

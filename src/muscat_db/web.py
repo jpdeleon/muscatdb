@@ -564,7 +564,7 @@ def jobs_page():
         all_jobs.extend(orphan_fits)
         all_jobs.sort(key=lambda j: j.get("started_at", 0), reverse=True)
 
-    counts = {"running": 0, "done": 0, "error": 0, "cancelled": 0}
+    counts = {"running": 0, "done": 0, "error": 0, "cancelled": 0, "pending": 0}
     for j in all_jobs:
         s = j["state"]
         if s in counts:
@@ -596,7 +596,7 @@ def jobs_status():
         {"key": j["key"], "state": j["state"], "elapsed": j["elapsed"]}
         for j in all_jobs if j["state"] in ("running", "cancelling")
     ]
-    counts = {"running": 0, "done": 0, "error": 0, "cancelled": 0}
+    counts = {"running": 0, "done": 0, "error": 0, "cancelled": 0, "pending": 0}
     for j in all_jobs:
         s = j["state"]
         if s in counts:

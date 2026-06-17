@@ -689,10 +689,17 @@ class Job:
     returncode: int | None = None
     cancelled: bool = False
     elapsed: int | None = None
+    run_type: str = "full"  # "test" | "full"
 
 
 _JOBS: dict[str, Job] = {}
 _LOCK = threading.Lock()
+_MAX_FULL_JOBS = 1
+
+
+def _count_running_full() -> int:
+    """Number of currently-running full (non-test) photometry jobs."""
+    return sum(1 for j in _JOBS.values() if j.run_type == "full" and j.proc.poll() is None)
 
 
 def job_key(inst: str, date: str, target: str) -> str:
@@ -737,6 +744,25 @@ def start_run(
         if existing is not None and existing.proc.poll() is None:
             return {"ok": True, "key": key, "already_running": True}
 
+        run_type = "test" if test_run else "full"
+
+        # Queue full jobs when at capacity
+        if run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS:
+            from muscat_db.database import save_job
+            try:
+                save_job(
+                    type_="photometry",
+                    inst=inst, date=date, target=target,
+                    state="pending",
+                    returncode=None, elapsed=0,
+                    started_at=time.time(),
+                    run_type=run_type,
+                    params=json.dumps({"test_run": test_run, "options": opts}, separators=(",", ":"))
+                )
+            except sqlite3.OperationalError as exc:
+                return {"ok": False, "error": f"database not writable: {exc}"}
+            return {"ok": True, "key": key, "queued": True}
+
         rdir = results_dir(inst, date)
         rdir.mkdir(parents=True, exist_ok=True)
         cmd = build_command(inst, date, target, opts, test_run=test_run)
@@ -762,6 +788,7 @@ def start_run(
         _JOBS[key] = Job(
             key=key, inst=inst, date=date, target=target,
             cmd=cmd, proc=proc, logf=logf, log_path=log_path,
+            run_type=run_type,
         )
         # Record new job in the database
         from muscat_db.database import save_job
@@ -775,7 +802,7 @@ def start_run(
                 returncode=None,
                 elapsed=0,
                 started_at=_JOBS[key].started_at,
-                run_type="test" if test_run else "full",
+                run_type=run_type,
                 params=json.dumps({"test_run": test_run, "options": opts}, separators=(",", ":"))
             )
         except sqlite3.OperationalError as exc:
@@ -890,12 +917,25 @@ def _kill_after(proc: subprocess.Popen, grace: float = 6.0) -> None:
 
 
 def cancel_run(inst: str, date: str, target: str) -> dict:
-    """Cancel a running reduction. Sends SIGTERM to the job's process group
+    """Cancel a running or pending reduction. Sends SIGTERM to the job's process group
     and escalates to SIGKILL after a short grace period."""
     key = job_key(inst, date, target)
     with _LOCK:
+        from muscat_db.database import save_job, get_persisted_jobs
         job = _JOBS.get(key)
         if job is None:
+            # May be a pending job (in DB but not yet launched)
+            db_jobs = get_persisted_jobs()
+            db_key = f"photometry:{key}"
+            found = [j for j in db_jobs if j["key"] == db_key]
+            if found and found[0]["state"] == "pending":
+                save_job(
+                    type_="photometry", inst=inst, date=date, target=target,
+                    state="cancelled", returncode=-1, elapsed=0,
+                    started_at=found[0]["started_at"],
+                    error_desc="Cancelled by user"
+                )
+                return {"ok": True, "key": key}
             return {"ok": False, "error": "no job to cancel"}
         if job.proc.poll() is not None:
             return {"ok": True, "already_finished": True}
@@ -903,7 +943,6 @@ def cancel_run(inst: str, date: str, target: str) -> dict:
         proc = job.proc
         
         # Immediately record cancellation in the database
-        from muscat_db.database import save_job
         save_job(
             type_="photometry",
             inst=inst,
@@ -1015,4 +1054,49 @@ def sync_jobs() -> None:
                 started_at=started_at,
                 error_desc="Process lost (server restart)"
             )
+
+        # Launch pending full jobs if capacity allows
+        if _count_running_full() < _MAX_FULL_JOBS:
+            db_jobs = get_persisted_jobs()
+            pending = [j for j in db_jobs if j["state"] == "pending" and j["type"] == "photometry"]
+            pending.sort(key=lambda j: j["started_at"])
+            for entry in pending:
+                if _count_running_full() >= _MAX_FULL_JOBS:
+                    break
+                if entry["key"] in _JOBS:
+                    save_job(type_="photometry", inst=entry["inst"], date=entry["date"], target=entry["target"], state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry")
+                    continue
+                try:
+                    p = json.loads(entry.get("params") or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    p = {}
+                opts = p.get("options", {})
+                test_run = p.get("test_run", True)
+                inst, date, target = entry["inst"], entry["date"], entry["target"]
+                key = job_key(inst, date, target)
+                cmd = build_command(inst, date, target, opts, test_run=test_run)
+                rdir = results_dir(inst, date)
+                rdir.mkdir(parents=True, exist_ok=True)
+                log_path = rdir / _RUN_LOG_NAME
+                try:
+                    logf = open(log_path, "w")
+                    logf.write(f"$ {shlex.join(cmd)}\n\n")
+                    logf.flush()
+                    proc = subprocess.Popen(cmd, cwd=str(prose_project_dir()), stdout=logf, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+                except (FileNotFoundError, OSError) as exc:
+                    try: logf.close()
+                    except OSError: pass
+                    save_job(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}")
+                    continue
+                run_type = "test" if test_run else "full"
+                _JOBS[key] = Job(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=log_path, run_type=run_type)
+                try:
+                    save_job(type_="photometry", inst=inst, date=date, target=target, state="running", returncode=None, elapsed=0, started_at=_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""))
+                except sqlite3.OperationalError as exc:
+                    try: proc.terminate()
+                    except OSError: pass
+                    try: logf.close()
+                    except OSError: pass
+                    _JOBS.pop(key, None)
+                    save_job(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Database not writable: {exc}")
 

@@ -3,8 +3,8 @@
 {% block content %}
 <h1>Jobs</h1>
 
-{% set status_order = ['running', 'done', 'error', 'cancelled'] %}
-{% set status_labels = {'running': 'Running', 'done': 'Done', 'error': 'Failed', 'cancelled': 'Cancelled'} %}
+{% set status_order = ['running', 'pending', 'done', 'error', 'cancelled'] %}
+{% set status_labels = {'running': 'Running', 'pending': 'Pending', 'done': 'Done', 'error': 'Failed', 'cancelled': 'Cancelled'} %}
 
 <div class="jobs-summary" id="jobs-summary">
   {% for s in status_order %}
@@ -75,6 +75,8 @@
           <span class="badge badge-amber status-badge pulse">Running</span>
         {% elif j.state == 'cancelling' %}
           <span class="badge status-badge" style="background:var(--text-dim);color:white;">Cancelling…</span>
+        {% elif j.state == 'pending' %}
+          <span class="badge status-badge" style="background:var(--blue);color:white;">Pending</span>
         {% else %}
           <span class="badge badge-filter-other status-badge">{{ j.state }}</span>
         {% endif %}
@@ -98,6 +100,14 @@
                   onclick="cancelJob(this)">Cancel</button>
         {% elif j.state == 'cancelling' %}
           <button class="btn sm" disabled="">Cancelling…</button>
+        {% elif j.state == 'pending' %}
+          <button class="btn sm danger"
+                  data-key="{{ j.key }}"
+                  data-type="{{ j.type }}"
+                  data-inst="{{ j.inst }}"
+                  data-date="{{ j.date }}"
+                  data-target="{{ j.target }}"
+                  onclick="cancelJob(this)">Cancel</button>
         {% else %}
           <button class="btn sm" onclick="reRunJob(this, '{{ j.key }}')" title="Re-run this job">⟳ Re-run</button>
         {% endif %}
@@ -211,6 +221,7 @@
     else if (state === 'cancelled') html = '<span class="badge status-badge" style="background:var(--text-dim);color:white;">Cancelled</span>';
     else if (state === 'running') html = '<span class="badge badge-amber status-badge pulse">Running</span>';
     else if (state === 'cancelling') html = '<span class="badge status-badge" style="background:var(--text-dim);color:white;">Cancelling…</span>';
+    else if (state === 'pending') html = '<span class="badge status-badge" style="background:var(--blue);color:white;">Pending</span>';
     else html = '<span class="badge badge-filter-other status-badge">' + state + '</span>';
     td.innerHTML = html;
   }
@@ -223,6 +234,8 @@
       html = '<button class="btn sm danger" data-key="' + key + '" data-type="' + type + '" data-inst="' + inst + '" data-date="' + date + '" data-target="' + target + '" onclick="cancelJob(this)">Cancel</button>';
     } else if (state === 'cancelling') {
       html = '<button class="btn sm" disabled="">Cancelling…</button>';
+    } else if (state === 'pending') {
+      html = '<button class="btn sm danger" data-key="' + key + '" data-type="' + type + '" data-inst="' + inst + '" data-date="' + date + '" data-target="' + target + '" onclick="cancelJob(this)">Cancel</button>';
     } else {
       html = '<button class="btn sm" onclick="reRunJob(this, \'' + key + '\')" title="Re-run this job">⟳ Re-run</button>';
     }
