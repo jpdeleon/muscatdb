@@ -454,6 +454,19 @@ graph TD
           </div>
         </div>
 
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How often does the database get updated?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The database is rebuilt automatically once per day at <strong>5:00 PM</strong> local time via a cronjob:</p>
+            <pre>30 17 * * * cd /raid_ut2/home/jerome/github/research/project/muscat-db && uv run muscat-db build-db &gt;&gt; /raid_ut2/home/jerome/github/research/project/muscat-db/logs/build-db.log 2&gt;&amp;1</pre>
+            <p>This re-scans all CSV observation logs under <code>/ut3/muscat/obslog/</code> and rebuilds the <code>summaries</code> and <code>targets</code> tables to reflect any new or corrected scans. Log output is written to <code>logs/build-db.log</code> for troubleshooting.</p>
+            <p>To trigger a manual rebuild at any time, run <code>muscat-db build-db</code> from the repo root.</p>
+          </div>
+        </div>
+
         <!-- ==================== Photometry ==================== -->
         <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Photometry</h3>
 
