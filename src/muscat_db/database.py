@@ -120,6 +120,26 @@ CREATE TABLE IF NOT EXISTS db_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS exposure_coeffs (
+    instrument  TEXT NOT NULL,
+    band        TEXT NOT NULL,
+    focus_mm    REAL NOT NULL,
+    coef        REAL NOT NULL,
+    fwhm_pix    REAL NOT NULL,
+    n_frames    INTEGER NOT NULL DEFAULT 0,
+    updated_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (instrument, band, focus_mm)
+);
+
+CREATE TABLE IF NOT EXISTS exposure_jobs (
+    id          TEXT PRIMARY KEY,
+    instrument  TEXT NOT NULL,
+    state       TEXT NOT NULL DEFAULT 'pending',
+    progress    TEXT NOT NULL DEFAULT '',
+    started_at  REAL NOT NULL,
+    updated_at  REAL NOT NULL
+);
 """
 
 

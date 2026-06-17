@@ -36,6 +36,7 @@ data/*.csv
 *.db-wal
 *.db-shm
 *.sqlite
+*.db.bak-*
 
 # Local logs
 *.log

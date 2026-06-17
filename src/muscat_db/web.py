@@ -17,6 +17,7 @@ from jinja2 import Environment, FileSystemLoader
 from contextlib import asynccontextmanager
 
 from muscat_db import photometry as phot
+from muscat_db import exposure as exp_calc
 from muscat_db import transit_fit as fit
 from muscat_db.database import (
     SCHEMA,
@@ -549,6 +550,131 @@ def transit_fit_file(inst: str, date: str, target: str, name: str):
         raise HTTPException(404, "file not found")
 
     return FileResponse(str(path), headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
+
+
+# ---------------------------------------------------------------------------
+# Exposure Time Calculator
+# ---------------------------------------------------------------------------
+
+
+@app.get("/exposure", response_class=HTMLResponse)
+def exposure_page(inst: str = "", target: str = ""):
+    inst = inst if inst in INSTRUMENTS else ""
+    calibrations = {}
+    for name in INSTRUMENTS:
+        status = exp_calc.calibration_status(name)
+        calibrations[name] = status
+
+    return _render(
+        "exposure.html",
+        instruments=list(INSTRUMENTS),
+        sel_inst=inst,
+        sel_target=target,
+        calibrations=calibrations,
+        inst_params=exp_calc.INSTRUMENT_PARAMS,
+    )
+
+
+@app.post("/exposure/calculate", response_class=JSONResponse)
+def exposure_calculate(payload: dict = Body(...)):
+    inst = (payload.get("instrument") or "").strip()
+    if inst not in INSTRUMENTS:
+        return JSONResponse({"ok": False, "error": "Invalid instrument"}, status_code=400)
+    mags = payload.get("mags") or {}
+    focus_mm = float(payload.get("focus_mm", 0))
+    airmass = float(payload.get("airmass", 1.1))
+    sat_frac = payload.get("sat_frac")
+    mode = payload.get("mode", "exptime")
+    exptime = payload.get("exptime")
+    target_adu = payload.get("target_adu")
+    if exptime is not None:
+        exptime = float(exptime)
+    if target_adu is not None:
+        target_adu = float(target_adu)
+    if sat_frac is not None:
+        sat_frac = float(sat_frac)
+    else:
+        sat_frac = 0.5
+
+    if not mags:
+        return JSONResponse({"ok": False, "error": "No magnitudes provided"}, status_code=400)
+
+    result = exp_calc.calc_all_bands(
+        instrument=inst,
+        mags=mags,
+        focus_mm=focus_mm,
+        airmass=airmass,
+        sat_frac=sat_frac,
+        mode=mode,
+        exptime=exptime,
+        target_adu=target_adu,
+    )
+    return JSONResponse({"ok": True, **result})
+
+
+@app.post("/exposure/calibrate", response_class=JSONResponse)
+def exposure_calibrate(payload: dict = Body(...)):
+    inst = (payload.get("instrument") or "").strip()
+    if inst not in INSTRUMENTS:
+        return JSONResponse({"ok": False, "error": "Invalid instrument"}, status_code=400)
+    force = bool(payload.get("force", False))
+
+    # Run in a thread to avoid blocking
+    import threading
+    result = {"ok": True, "message": f"Calibration started for {inst}"}
+    threading.Thread(target=exp_calc.calibrate_instrument, args=(inst,), daemon=True).start()
+    return JSONResponse(result)
+
+
+@app.post("/exposure/lookup-mags", response_class=JSONResponse)
+def exposure_lookup_mags(payload: dict = Body(...)):
+    target = (payload.get("target") or "").strip()
+    if not target:
+        return JSONResponse({"ok": False, "error": "Target name required"}, status_code=400)
+
+    # Try resolving target name
+    coords = exp_calc.resolve_target_coords(target)
+    if not coords:
+        return JSONResponse({"ok": False, "error": f"Could not resolve target '{target}'"})
+
+    ra, dec = coords
+    mags, source = exp_calc.lookup_magnitudes(ra, dec, return_source=True)
+    if not mags:
+        return JSONResponse({
+            "ok": False,
+            "error": f"No griz magnitudes found for '{target}' in Pan-STARRS or SkyMapper",
+            "ra": ra,
+            "dec": dec,
+        })
+
+    return JSONResponse({
+        "ok": True,
+        "target": target,
+        "ra": ra,
+        "dec": dec,
+        "mags": mags,
+        "source": source,
+    })
+
+
+@app.get("/exposure/status", response_class=JSONResponse)
+def exposure_status():
+    calibrations = {}
+    for name in INSTRUMENTS:
+        calibrations[name] = exp_calc.calibration_status(name)
+    return JSONResponse({"calibrations": calibrations})
+
+
+@app.get("/exposure/coeffs/{instrument}", response_class=JSONResponse)
+def exposure_coeffs(instrument: str):
+    if instrument not in INSTRUMENTS:
+        return JSONResponse({"ok": False, "error": "Invalid instrument"}, status_code=400)
+    coeffs = exp_calc.load_coeffs(instrument)
+    # Convert to serializable format
+    rows = []
+    for (band, focus_mm), (coef, fwhm, n) in sorted(coeffs.items()):
+        rows.append({"band": band, "focus_mm": focus_mm, "coef": round(coef, 4), "fwhm_pix": round(fwhm, 2), "n_frames": n})
+    return JSONResponse({"ok": True, "instrument": instrument, "coeffs": rows})
 
 
 @app.get("/jobs", response_class=HTMLResponse)
