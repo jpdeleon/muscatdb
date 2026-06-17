@@ -1,0 +1,565 @@
+{% extends "base.html" %}
+{% block title %}Exp Calc — MuSCAT-db{% endblock %}
+{% block content %}
+<style>
+  .exp-layout { display: flex; gap: 1.5rem; align-items: flex-start; flex-wrap: wrap; }
+  .exp-form { flex: 1; min-width: 380px; }
+  .exp-results { flex: 1.4; min-width: 460px; position: sticky; top: 1rem; }
+  @media (max-width: 1100px) { .exp-results { position: static; } }
+
+  .exp-section { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.1rem 1.25rem; margin-bottom: 1.1rem; }
+  .exp-section > h3 {
+    font-size: 0.7rem; color: var(--text-dim); margin-bottom: 0.85rem;
+    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
+    display: flex; align-items: center; gap: 0.45rem;
+  }
+  .exp-section > h3::before { content: ''; width: 3px; height: 0.85rem; background: var(--accent2); border-radius: 2px; }
+
+  .exp-grid { display: grid; gap: 0.85rem; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+  .exp-field { display: flex; flex-direction: column; gap: 0.3rem; }
+  .exp-field label { font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+  .exp-field input, .exp-field select {
+    background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 0.45rem 0.6rem; font-size: 0.88rem; font-family: inherit;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .exp-field input:focus, .exp-field select:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+
+  .target-row { display: flex; gap: 0.5rem; align-items: stretch; }
+  .target-row input { flex: 1; }
+
+  /* Magnitudes */
+  .mag-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem; }
+  .mag-head .hint { font-size: 0.74rem; color: var(--text-dim); }
+  .mag-grid { display: grid; gap: 0.55rem; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); }
+  .mag-field { display: flex; flex-direction: column; gap: 0.25rem; }
+  .mag-field label { font-size: 0.72rem; color: var(--text-dim); text-align: center; display: flex; align-items: center; justify-content: center; gap: 0.3rem; }
+  .mag-field input {
+    text-align: center; background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 7px; padding: 0.38rem; font-size: 0.9rem; width: 100%;
+    transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+  }
+  .mag-field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+  .mag-field input.filled { background: color-mix(in srgb, var(--accent2) 10%, var(--input-bg)); border-color: color-mix(in srgb, var(--accent2) 45%, var(--border)); }
+  .mag-field label.narrow { color: var(--accent2); }
+  .band-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+
+  /* Range fields */
+  .range-field { display: flex; flex-direction: column; gap: 0.3rem; }
+  .range-field .rf-top { display: flex; justify-content: space-between; align-items: baseline; }
+  .range-field label { font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+  .range-field .rf-val { font-size: 0.92rem; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+  .range-field input[type="range"] { width: 100%; accent-color: var(--accent); }
+
+  /* Actions */
+  .exp-actions { display: flex; flex-direction: column; gap: 0.75rem; margin-top: 0.5rem; }
+  .exp-actions .primary-row { display: flex; gap: 0.6rem; align-items: center; }
+  .exp-actions .alt-row {
+    display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap;
+    font-size: 0.8rem; color: var(--text-dim);
+    border-top: 1px dashed var(--border); padding-top: 0.75rem;
+  }
+  .exp-actions input.inline-num {
+    width: 74px; background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 0.3rem 0.45rem; font-size: 0.85rem;
+  }
+  .btn[disabled] { opacity: 0.6; cursor: progress; }
+  .spinner { display: inline-block; width: 0.8em; height: 0.8em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: -1px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .msg { font-size: 0.8rem; min-height: 1.1rem; }
+  .msg.err { color: var(--red); }
+  .msg.ok { color: var(--green); }
+  .msg.dim { color: var(--text-dim); }
+
+  /* Calibration badges */
+  .calib-row { display: flex; gap: 0.45rem; flex-wrap: wrap; }
+  .calib-badge { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.28rem 0.6rem; border-radius: 999px; font-size: 0.74rem; border: 1px solid transparent; }
+  .calib-ok { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, transparent); }
+  .calib-none { background: color-mix(in srgb, #f59e0b 14%, transparent); color: #f59e0b; border-color: color-mix(in srgb, #f59e0b 32%, transparent); }
+  .calib-badge .cb-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+  /* Results */
+  table.results { margin-top: 0; width: 100%; }
+  table.results th { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.03em; }
+  table.results td { font-size: 0.85rem; vertical-align: middle; }
+  table.results tr.limiting td { background: color-mix(in srgb, var(--accent2) 12%, transparent); }
+  table.results tr.limiting td:first-child { box-shadow: inset 3px 0 0 var(--accent2); }
+  .band-cell { display: flex; align-items: center; gap: 0.45rem; font-weight: 600; }
+  .limiting-tag { font-size: 0.62rem; color: var(--accent2); font-weight: 700; letter-spacing: 0.04em; }
+
+  .fw-wrap { display: flex; align-items: center; gap: 0.5rem; min-width: 120px; }
+  .fw-bar { flex: 1; height: 7px; border-radius: 4px; background: var(--surface2); overflow: hidden; }
+  .fw-fill { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
+  .fw-pct { font-size: 0.75rem; font-variant-numeric: tabular-nums; color: var(--text-dim); min-width: 38px; text-align: right; }
+  .fill-safe { background: var(--green); }
+  .fill-warn { background: #f59e0b; }
+  .fill-sat  { background: var(--red); }
+
+  .stat-pill { font-size: 0.68rem; font-weight: 700; padding: 0.15rem 0.5rem; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .pill-safe { background: color-mix(in srgb, var(--green) 18%, transparent); color: var(--green); }
+  .pill-warn { background: color-mix(in srgb, #f59e0b 18%, transparent); color: #f59e0b; }
+  .pill-sat  { background: color-mix(in srgb, var(--red) 18%, transparent); color: var(--red); }
+
+  .rec-box { display: flex; align-items: center; justify-content: space-between; gap: 1rem; background: var(--surface2); border: 1px solid color-mix(in srgb, var(--accent2) 30%, var(--border)); border-radius: 10px; padding: 0.9rem 1.1rem; margin-top: 1rem; }
+  .rec-box .rec-main { display: flex; flex-direction: column; gap: 0.15rem; }
+  .rec-box .rec-label { font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
+  .rec-box .rec-val { font-size: 1.8rem; font-weight: 700; color: var(--accent2); line-height: 1; font-variant-numeric: tabular-nums; }
+  .rec-box .rec-note { font-size: 0.72rem; color: var(--text-dim); }
+  .copy-btn { background: var(--input-bg); border: 1px solid var(--border); color: var(--text-dim); border-radius: 7px; padding: 0.4rem 0.7rem; font-size: 0.78rem; cursor: pointer; white-space: nowrap; }
+  .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+  .legend { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.72rem; color: var(--text-dim); margin-top: 0.85rem; }
+  .legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+  /* Instrument param chips */
+  .chip-row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.85rem; }
+  .chip { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 0.4rem 0.65rem; display: flex; flex-direction: column; gap: 0.1rem; }
+  .chip .ck { font-size: 0.62rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+  .chip .cv { font-size: 0.9rem; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+</style>
+
+<h1>Exposure Time Calculator</h1>
+
+<div class="exp-layout">
+  <div class="exp-form">
+    {# ---- Calibration status ---- #}
+    <div class="exp-section">
+      <h3>Calibration Status</h3>
+      <div class="calib-row">
+        {% for name in instruments %}
+          {% set c = calibrations.get(name, {}) %}
+          <span class="calib-badge {% if c and c.n_bands > 0 %}calib-ok{% else %}calib-none{% endif %}">
+            <span class="cb-dot"></span>{{ name }}
+            {% if c and c.n_bands > 0 %}· {{ c.n_bands }} bands{% else %}· empirical{% endif %}
+          </span>
+        {% endfor %}
+      </div>
+    </div>
+
+    {# ---- Input form ---- #}
+    <div class="exp-section">
+      <h3>Target &amp; Instrument</h3>
+      <div class="exp-grid">
+        <div class="exp-field">
+          <label for="sel-inst">Instrument</label>
+          <select id="sel-inst">
+            <option value="">— select —</option>
+            {% for name in instruments %}
+            <option value="{{ name }}" {% if name == sel_inst %}selected{% endif %}>{{ name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="exp-field" style="grid-column: span 2;">
+          <label for="target-name">Target name</label>
+          <div class="target-row">
+            <input type="text" id="target-name" placeholder="e.g. TOI-519 or HAT-P-1" value="{{ sel_target }}" autocomplete="off">
+            <button class="btn" type="button" id="lookup-btn" style="white-space:nowrap;">Lookup mags</button>
+          </div>
+          <span id="lookup-status" class="msg dim"></span>
+        </div>
+      </div>
+    </div>
+
+    {# ---- Magnitudes ---- #}
+    <div class="exp-section" id="mags-section">
+      <div class="mag-head">
+        <h3 style="margin:0;">Magnitudes per band</h3>
+        <button class="copy-btn" type="button" id="clear-mags">Clear</button>
+      </div>
+      <p class="hint" style="margin-bottom:0.6rem;">g/r/i/z from Pan-STARRS / SkyMapper (auto-filled) or manual entry</p>
+      <div class="mag-grid" id="mag-broad"></div>
+      <div class="mag-grid" id="mag-narrow" style="margin-top:0.55rem;"></div>
+    </div>
+
+    {# ---- Observation parameters ---- #}
+    <div class="exp-section">
+      <h3>Observation parameters</h3>
+      <div class="exp-grid">
+        <div class="range-field">
+          <div class="rf-top"><label for="focus-mm">Focus offset</label><span class="rf-val" id="focus-val">0.0 mm</span></div>
+          <input type="range" id="focus-mm" value="0" min="0" max="6" step="0.5">
+        </div>
+        <div class="range-field">
+          <div class="rf-top"><label for="airmass">Airmass</label><span class="rf-val" id="airmass-val">1.10</span></div>
+          <input type="range" id="airmass" value="1.1" min="1" max="3" step="0.05">
+        </div>
+        <div class="exp-field">
+          <label for="sat-frac">Saturation limit</label>
+          <select id="sat-frac">
+            <option value="0.5">50% of full well</option>
+            <option value="0.8">80% of full well</option>
+            <option value="1.0">100% of full well</option>
+            <option value="custom">Custom ADU</option>
+          </select>
+        </div>
+        <div class="exp-field" id="custom-adu-field" style="display:none;">
+          <label for="custom-adu">Target peak (ADU)</label>
+          <input type="number" id="custom-adu" value="30000" min="1000" step="1000">
+        </div>
+      </div>
+    </div>
+
+    <div class="exp-actions">
+      <div class="primary-row">
+        <button class="btn primary" type="button" id="calc-btn" style="padding:0.6rem 1.6rem; flex:1;">▶ Calculate exposure times</button>
+      </div>
+      <div class="alt-row">
+        <span>or for a fixed exposure of</span>
+        <input type="number" id="calc-exptime" class="inline-num" value="30" step="1" min="1" placeholder="exp">
+        <span>s</span>
+        <button class="btn" type="button" id="calc-peak-btn">Calculate peak counts</button>
+      </div>
+      <span id="calc-status" class="msg dim"></span>
+    </div>
+  </div>
+
+  {# ---- Results ---- #}
+  <div class="exp-results">
+    <div class="exp-section">
+      <h3>Results</h3>
+      <div id="results-placeholder" style="text-align:center; padding:3rem 1rem; color:var(--text-dim);">
+        <div style="font-size:2.5rem; margin-bottom:0.75rem;">📐</div>
+        <p>Fill in the form and click <strong>Calculate</strong> to get recommended exposure times per band.</p>
+      </div>
+      <div id="results-content" style="display:none;">
+        <div style="overflow-x:auto;">
+          <table class="results" id="results-table">
+            <thead>
+              <tr>
+                <th>Band</th>
+                <th>Mag</th>
+                <th id="col-primary">Exp (s)</th>
+                <th>Peak (ADU)</th>
+                <th>Full well</th>
+                <th>FWHM (")</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="results-body"></tbody>
+          </table>
+        </div>
+        <div class="legend">
+          <span><i class="fill-safe"></i> safe</span>
+          <span><i class="fill-warn"></i> near limit</span>
+          <span><i class="fill-sat"></i> saturated</span>
+        </div>
+        <div class="rec-box" id="rec-box" style="display:none;">
+          <div class="rec-main">
+            <span class="rec-label">Recommended exposure</span>
+            <span class="rec-val" id="rec-val"></span>
+            <span class="rec-note">conservative — keeps every band below the selected saturation limit</span>
+          </div>
+          <button class="copy-btn" type="button" id="copy-rec">Copy</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="exp-section">
+      <h3>Instrument parameters</h3>
+      <div id="inst-params" style="font-size:0.82rem; color:var(--text-dim);">
+        <p>Select an instrument to see its parameters.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script id="inst-params-data" type="application/json">{{ inst_params | tojson }}</script>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var selInst = document.getElementById('sel-inst');
+  var targetName = document.getElementById('target-name');
+  var lookupBtn = document.getElementById('lookup-btn');
+  var lookupStatus = document.getElementById('lookup-status');
+  var focusMm = document.getElementById('focus-mm');
+  var focusVal = document.getElementById('focus-val');
+  var airmass = document.getElementById('airmass');
+  var airmassVal = document.getElementById('airmass-val');
+  var satFrac = document.getElementById('sat-frac');
+  var customAduField = document.getElementById('custom-adu-field');
+  var customAdu = document.getElementById('custom-adu');
+  var calcBtn = document.getElementById('calc-btn');
+  var calcPeakBtn = document.getElementById('calc-peak-btn');
+  var calcStatus = document.getElementById('calc-status');
+  var resultsBody = document.getElementById('results-body');
+  var resultsContent = document.getElementById('results-content');
+  var resultsPlaceholder = document.getElementById('results-placeholder');
+  var recBox = document.getElementById('rec-box');
+  var recVal = document.getElementById('rec-val');
+  var copyRec = document.getElementById('copy-rec');
+  var clearMags = document.getElementById('clear-mags');
+  var instParams = document.getElementById('inst-params');
+  var colPrimary = document.getElementById('col-primary');
+
+  var INST_PARAMS = {};
+  try { INST_PARAMS = JSON.parse(document.getElementById('inst-params-data').textContent || '{}'); } catch (e) {}
+
+  var STORE_KEY = 'expcalc.v1';
+  var BAND_COLORS = {
+    gp: '#4f9eff', rp: '#e0564a', ip: '#b03a2e', zs: '#8e44ad',
+    g_narrow: '#45d6b5', r_narrow: '#45d6b5', Na_D: '#45d6b5', i_narrow: '#45d6b5', z_narrow: '#45d6b5'
+  };
+  var BROAD = ['gp', 'rp', 'ip', 'zs'];
+  var NARROW = ['g_narrow', 'r_narrow', 'Na_D', 'i_narrow', 'z_narrow'];
+
+  // ---- Build magnitude inputs ----
+  function dot(band) { return '<span class="band-dot" style="background:' + (BAND_COLORS[band] || 'var(--text-dim)') + '"></span>'; }
+  function buildMagFields(container, bands, narrow) {
+    container.innerHTML = bands.map(function (b) {
+      return '<div class="mag-field"><label class="' + (narrow ? 'narrow' : '') + '">' + dot(b) + b + '</label>' +
+        '<input type="number" step="0.01" class="mag-input' + (narrow ? ' narrow' : '') + '" data-band="' + b + '" placeholder="—"></div>';
+    }).join('');
+  }
+  buildMagFields(document.getElementById('mag-broad'), BROAD, false);
+  buildMagFields(document.getElementById('mag-narrow'), NARROW, true);
+  var magInputs = document.querySelectorAll('.mag-input');
+
+  function markFilled(inp) { inp.classList.toggle('filled', inp.value !== '' && parseFloat(inp.value) > 0); }
+  magInputs.forEach(function (inp) {
+    inp.addEventListener('input', function () { markFilled(inp); saveState(); });
+  });
+
+  // ---- Button loading helper ----
+  function withLoading(btn, label, fn) {
+    var orig = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> ' + label;
+    return Promise.resolve().then(fn).finally(function () {
+      btn.disabled = false; btn.innerHTML = orig;
+    });
+  }
+
+  // ---- Range value displays ----
+  function syncFocus() { focusVal.textContent = parseFloat(focusMm.value).toFixed(1) + ' mm'; }
+  function syncAirmass() { airmassVal.textContent = parseFloat(airmass.value).toFixed(2); }
+  focusMm.addEventListener('input', function () { syncFocus(); saveState(); });
+  airmass.addEventListener('input', function () { syncAirmass(); saveState(); });
+
+  // ---- Saturation toggle ----
+  satFrac.addEventListener('change', function () {
+    customAduField.style.display = satFrac.value === 'custom' ? '' : 'none';
+    saveState();
+  });
+  customAdu.addEventListener('input', saveState);
+
+  // ---- State persistence ----
+  function saveState() {
+    try {
+      var mags = {};
+      magInputs.forEach(function (inp) { if (inp.value !== '') mags[inp.dataset.band] = inp.value; });
+      localStorage.setItem(STORE_KEY, JSON.stringify({
+        inst: selInst.value, target: targetName.value, mags: mags,
+        focus: focusMm.value, airmass: airmass.value, satFrac: satFrac.value, customAdu: customAdu.value
+      }));
+    } catch (e) {}
+  }
+  function loadState() {
+    var s;
+    try { s = JSON.parse(localStorage.getItem(STORE_KEY) || '{}'); } catch (e) { s = {}; }
+    if (!selInst.value && s.inst) selInst.value = s.inst;
+    if (!targetName.value && s.target) targetName.value = s.target;
+    if (s.mags) magInputs.forEach(function (inp) { if (s.mags[inp.dataset.band] !== undefined) { inp.value = s.mags[inp.dataset.band]; markFilled(inp); } });
+    if (s.focus !== undefined) focusMm.value = s.focus;
+    if (s.airmass !== undefined) airmass.value = s.airmass;
+    if (s.satFrac) { satFrac.value = s.satFrac; customAduField.style.display = s.satFrac === 'custom' ? '' : 'none'; }
+    if (s.customAdu) customAdu.value = s.customAdu;
+    syncFocus(); syncAirmass();
+  }
+
+  selInst.addEventListener('change', saveState);
+  targetName.addEventListener('input', saveState);
+
+  // ---- Lookup magnitudes ----
+  function doLookup() {
+    var target = targetName.value.trim();
+    if (!target) { lookupStatus.className = 'msg err'; lookupStatus.textContent = 'Enter a target name'; return; }
+    lookupStatus.className = 'msg dim'; lookupStatus.textContent = 'Looking up…';
+    calcStatus.textContent = '';
+    return withLoading(lookupBtn, 'Looking up', function () {
+      return fetch('/exposure/lookup-mags', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: target })
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        if (data.ok) {
+          var parts = BROAD.map(function (b) { return b[0] + '=' + (data.mags[b] !== undefined ? data.mags[b] : '—'); });
+          lookupStatus.className = 'msg ok';
+          lookupStatus.innerHTML = '✓ ' + parts.join('  ') +
+            (data.source ? '  ·  <span style="color:var(--text-dim)">' + data.source + '</span>' : '');
+          magInputs.forEach(function (inp) {
+            if (data.mags[inp.dataset.band] !== undefined) { inp.value = data.mags[inp.dataset.band]; markFilled(inp); }
+          });
+          saveState();
+        } else {
+          lookupStatus.className = 'msg err';
+          lookupStatus.textContent = '✗ ' + (data.error || 'Lookup failed');
+        }
+      }).catch(function (err) {
+        lookupStatus.className = 'msg err';
+        lookupStatus.textContent = '✗ Error: ' + err.message;
+      });
+    });
+  }
+  lookupBtn.addEventListener('click', doLookup);
+  targetName.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); doLookup(); } });
+
+  // ---- Clear mags ----
+  clearMags.addEventListener('click', function () {
+    magInputs.forEach(function (inp) { inp.value = ''; inp.classList.remove('filled'); });
+    lookupStatus.textContent = ''; saveState();
+  });
+
+  // ---- Collect magnitudes ----
+  function collectMags() {
+    var mags = {};
+    magInputs.forEach(function (inp) {
+      var v = parseFloat(inp.value);
+      if (!isNaN(v) && v > 0) mags[inp.dataset.band] = v;
+    });
+    return mags;
+  }
+
+  // ---- Calculate ----
+  function calculate(mode) {
+    var inst = selInst.value;
+    if (!inst) { calcStatus.className = 'msg err'; calcStatus.textContent = 'Select an instrument'; return; }
+    var mags = collectMags();
+    if (Object.keys(mags).length === 0) { calcStatus.className = 'msg err'; calcStatus.textContent = 'Enter at least one magnitude'; return; }
+
+    calcStatus.className = 'msg dim'; calcStatus.textContent = 'Calculating…';
+
+    var payload = {
+      instrument: inst, mags: mags,
+      focus_mm: parseFloat(focusMm.value) || 0,
+      airmass: parseFloat(airmass.value) || 1.1,
+      mode: mode
+    };
+    if (mode === 'exptime') {
+      if (satFrac.value === 'custom') payload.target_adu = parseFloat(customAdu.value);
+      else payload.sat_frac = parseFloat(satFrac.value);
+    } else {
+      payload.exptime = parseFloat(document.getElementById('calc-exptime').value || 30);
+    }
+
+    var btn = mode === 'exptime' ? calcBtn : calcPeakBtn;
+    var label = mode === 'exptime' ? 'Calculating' : 'Calculating';
+    return withLoading(btn, label, function () {
+      return fetch('/exposure/calculate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        if (!data.ok) { calcStatus.className = 'msg err'; calcStatus.textContent = 'Error: ' + (data.error || 'calculation failed'); return; }
+        calcStatus.textContent = '';
+        renderResults(data, mode);
+      }).catch(function (err) {
+        calcStatus.className = 'msg err'; calcStatus.textContent = 'Error: ' + err.message;
+      });
+    });
+  }
+  calcBtn.addEventListener('click', function () { calculate('exptime'); });
+  calcPeakBtn.addEventListener('click', function () { calculate('peak'); });
+  // Enter anywhere in the form (mag/param fields) triggers exposure-time calc
+  document.querySelector('.exp-form').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && e.target !== targetName && e.target.type !== 'button') { e.preventDefault(); calculate('exptime'); }
+  });
+
+  // ---- Render results ----
+  function fwClass(pct) { return pct >= 100 ? 'sat' : (pct >= 70 ? 'warn' : 'safe'); }
+
+  function renderResults(data, mode) {
+    resultsPlaceholder.style.display = 'none';
+    resultsContent.style.display = 'block';
+    resultsBody.innerHTML = '';
+    colPrimary.textContent = mode === 'exptime' ? 'Exp (s)' : 'Exp (s)';
+
+    var rows = data.results || [];
+    var minExp = mode === 'exptime' && rows.length
+      ? Math.min.apply(null, rows.map(function (r) { return r.exptime; })) : null;
+
+    rows.forEach(function (r) {
+      var pct = Number(r.pct_full_well);
+      var cls = r.is_saturated ? 'sat' : fwClass(pct);
+      var pill = cls === 'sat' ? 'pill-sat' : (cls === 'warn' ? 'pill-warn' : 'pill-safe');
+      var pillTxt = cls === 'sat' ? 'saturated' : (cls === 'warn' ? 'near limit' : 'safe');
+      var isLimiting = (minExp !== null && Math.abs(r.exptime - minExp) < 1e-6);
+
+      var tr = document.createElement('tr');
+      if (isLimiting) tr.className = 'limiting';
+      tr.innerHTML =
+        '<td><span class="band-cell">' + dot(r.band) + r.band +
+          (isLimiting ? ' <span class="limiting-tag">limiting</span>' : '') + '</span></td>' +
+        '<td class="mono">' + r.mag.toFixed(2) + '</td>' +
+        '<td><strong>' + r.exptime.toFixed(1) + '</strong></td>' +
+        '<td class="mono">' + Number(r.peak_adu).toLocaleString() + '</td>' +
+        '<td><div class="fw-wrap"><div class="fw-bar"><div class="fw-fill fill-' + cls + '" style="width:' + Math.min(pct, 100) + '%"></div></div>' +
+          '<span class="fw-pct">' + pct.toFixed(0) + '%</span></div></td>' +
+        '<td class="mono">' + r.fwhm_arcsec.toFixed(2) + '</td>' +
+        '<td><span class="stat-pill ' + pill + '">' + pillTxt + '</span></td>';
+      resultsBody.appendChild(tr);
+    });
+
+    if (mode === 'exptime' && data.recommended_exptime) {
+      recBox.style.display = 'flex';
+      recVal.textContent = data.recommended_exptime + ' s';
+    } else {
+      recBox.style.display = 'none';
+    }
+  }
+
+  copyRec.addEventListener('click', function () {
+    var v = (recVal.textContent || '').replace(/[^0-9.]/g, '');
+    navigator.clipboard && navigator.clipboard.writeText(v).then(function () {
+      var o = copyRec.textContent; copyRec.textContent = '✓ Copied'; setTimeout(function () { copyRec.textContent = o; }, 1200);
+    });
+  });
+
+  // ---- Instrument params + calibrated coeffs ----
+  function renderInstParams(inst) {
+    if (!inst) { instParams.innerHTML = '<p>Select an instrument to see its parameters.</p>'; return; }
+    var p = INST_PARAMS[inst];
+    var html = '';
+    if (p) {
+      html += '<div class="chip-row">' +
+        chip('Full well', Number(p.full_well).toLocaleString() + ' e⁻') +
+        chip('Gain', p.gain + ' e⁻/ADU') +
+        chip('Pixel scale', p.pixel_scale + '"/px') +
+        chip('Aperture', p.aperture_m + ' m') +
+        '</div>';
+    }
+    instParams.innerHTML = html + '<div id="coeff-slot" class="msg dim">Loading calibration…</div>';
+
+    fetch('/exposure/coeffs/' + inst).then(function (r) { return r.json(); }).then(function (data) {
+      var slot = document.getElementById('coeff-slot');
+      if (!slot) return;
+      if (!data.ok) { slot.textContent = ''; return; }
+      var n = data.coeffs.length;
+      if (n === 0) { slot.textContent = 'No DB calibration — using empirical MuSCAT3 coefficients (scaled).'; return; }
+      var t = '<p style="margin-bottom:0.4rem;">Calibrated coefficients: <strong>' + n + '</strong></p>' +
+        '<table style="font-size:0.74rem;"><thead><tr><th>Band</th><th>Focus (mm)</th><th>Coef</th><th>FWHM (pix)</th><th>N</th></tr></thead><tbody>';
+      data.coeffs.slice(0, 20).forEach(function (c) {
+        t += '<tr><td>' + c.band + '</td><td>' + c.focus_mm + '</td><td>' + Number(c.coef).toFixed(3) + '</td><td>' + Number(c.fwhm_pix).toFixed(2) + '</td><td>' + c.n_frames + '</td></tr>';
+      });
+      if (n > 20) t += '<tr><td colspan="5" style="text-align:center;">… and ' + (n - 20) + ' more</td></tr>';
+      t += '</tbody></table>';
+      slot.innerHTML = t;
+    }).catch(function () {
+      var slot = document.getElementById('coeff-slot'); if (slot) slot.textContent = '';
+    });
+  }
+  function chip(k, v) { return '<div class="chip"><span class="ck">' + k + '</span><span class="cv">' + v + '</span></div>'; }
+
+  selInst.addEventListener('change', function () { renderInstParams(this.value); });
+
+  // ---- Init ----
+  loadState();
+  if (selInst.value) renderInstParams(selInst.value);
+})();
+</script>
+{% endblock %}

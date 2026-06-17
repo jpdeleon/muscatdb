@@ -6,187 +6,19 @@
 <title>{% block title %}MuSCAT ObsLog{% endblock %}</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230f1117' stroke='%2345d6b5' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='14' fill='none' stroke='%236c8cff' stroke-width='2.5'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%2345d6b5'/%3E%3Cg fill='%23e1e4ed'%3E%3Ccircle cx='12' cy='14' r='1.6'/%3E%3Ccircle cx='52' cy='18' r='1.2'/%3E%3Ccircle cx='50' cy='48' r='1.8'/%3E%3Ccircle cx='14' cy='50' r='1.4'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230f1117' stroke='%2345d6b5' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='14' fill='none' stroke='%236c8cff' stroke-width='2.5'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%2345d6b5'/%3E%3C/svg%3E">
-<style>
-  :root, [data-theme="dark"] {
-    --bg: #0f1117;
-    --surface: #1a1d27;
-    --surface2: #242838;
-    --border: #2e3348;
-    --text: #e1e4ed;
-    --text-dim: #8b90a5;
-    --accent: #6c8cff;
-    --accent2: #45d6b5;
-    --red: #f87171;
-    --green: #6ee7b7;
-    --input-bg: #1a1d27;
-  }
-  [data-theme="light"] {
-    --bg: #f7f8fb;
-    --surface: #ffffff;
-    --surface2: #eef0f6;
-    --border: #d8dce6;
-    --text: #1a1d27;
-    --text-dim: #5b6178;
-    --accent: #3457d5;
-    --accent2: #0f9d8b;
-    --red: #c0392b;
-    --green: #16a085;
-    --input-bg: #ffffff;
-  }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    min-height: 100vh;
-  }
-  nav {
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    padding: 0.75rem 2rem;
-    display: flex; align-items: center; gap: 1.5rem;
-  }
-  nav a {
-    color: var(--text-dim); text-decoration: none; font-size: 0.9rem;
-    transition: color 0.15s;
-  }
-  nav a:hover { color: var(--accent); }
-  nav .brand {
-    color: var(--accent2); font-weight: 700; font-size: 1.1rem;
-  }
-  .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
-  h1 { font-size: 1.5rem; font-weight: 600; margin-bottom: 1.5rem; }
-  h2 { font-size: 1.15rem; font-weight: 500; margin-bottom: 1rem; color: var(--text-dim); }
-  .card-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
-  .card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 1.25rem;
-    transition: border-color 0.15s, transform 0.15s;
-  }
-  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
-  .card a { color: var(--text); text-decoration: none; }
-  .card .name  { font-size: 1.1rem; font-weight: 600; }
-  .card .meta  { font-size: 0.85rem; color: var(--text-dim); margin-top: 0.35rem; }
-  .card .count { font-size: 0.85rem; color: var(--accent2); margin-top: 0.35rem; }
-  table {
-    width: 100%; border-collapse: collapse; margin: 1rem 0;
-    font-size: 0.85rem;
-  }
-  th {
-    background: var(--surface2);
-    color: var(--text-dim);
-    font-weight: 500;
-    text-align: left;
-    padding: 0.6rem 0.75rem;
-    border-bottom: 1px solid var(--border);
-    white-space: nowrap;
-  }
-  td {
-    padding: 0.5rem 0.75rem;
-    border-bottom: 1px solid var(--border);
-    white-space: nowrap;
-  }
-  tr:hover td { background: var(--surface); }
-  .badge {
-    display: inline-block;
-    padding: 0.15rem 0.5rem;
-    border-radius: 4px;
-    font-size: 0.75rem;
-    font-weight: 500;
-  }
-  .badge-green  { background: #065f46; color: #6ee7b7; }
-  .badge-blue   { background: #1e3a5f; color: #93c5fd; }
-  .badge-amber  { background: #5c3d0e; color: #fcd34d; }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  .mono { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.8rem; }
-  nav .spacer { flex: 1; }
-  .theme-toggle {
-    background: var(--surface2);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 0.35rem;
-    width: 2.1rem; height: 2.1rem;
-    display: inline-flex; align-items: center; justify-content: center;
-    cursor: pointer;
-    transition: border-color 0.15s, color 0.15s, transform 0.2s;
-  }
-  .theme-toggle:hover { border-color: var(--accent); color: var(--accent); transform: rotate(15deg); }
-  .theme-toggle svg { width: 1.05rem; height: 1.05rem; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-  [data-theme="dark"] .theme-toggle .icon-sun { display: inline; }
-  [data-theme="dark"] .theme-toggle .icon-moon { display: none; }
-  [data-theme="light"] .theme-toggle .icon-sun { display: none; }
-  [data-theme="light"] .theme-toggle .icon-moon { display: inline; }
-  #loading-bar {
-    position: fixed; top: 0; left: 0; right: 0;
-    height: 3px;
-    background: linear-gradient(90deg, var(--accent), var(--accent2), var(--accent));
-    background-size: 200% 100%;
-    animation: loading-slide 1.1s linear infinite;
-    z-index: 9999;
-    transition: opacity 0.25s ease;
-  }
-  #loading-bar.done { opacity: 0; pointer-events: none; }
-  @keyframes loading-slide {
-    0%   { background-position: 200% 0; }
-    100% { background-position: -200% 0; }
-  }
-  #status-bar {
-    position: fixed; bottom: 0; left: 0; right: 0;
-    background: var(--surface);
-    border-top: 1px solid var(--border);
-    padding: 0.4rem 1rem;
-    font-size: 0.8rem;
-    color: var(--text-dim);
-    display: flex; align-items: center; gap: 0.75rem;
-    transform: translateY(100%);
-    transition: transform 0.25s ease;
-    z-index: 9998;
-  }
-  #status-bar.visible { transform: translateY(0); }
-  #status-bar .dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--accent2);
-    animation: pulse 1.2s ease-in-out infinite;
-  }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50%      { opacity: 0.4; transform: scale(0.7); }
-  }
-  .search-bar {
-    display: flex; gap: 0.5rem; align-items: center;
-    margin-bottom: 1rem; flex-wrap: wrap;
-  }
-  .search-bar input[type="text"] {
-    flex: 1; min-width: 220px;
-    background: var(--input-bg);
-    color: var(--text);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 0.5rem 0.75rem;
-    font-size: 0.9rem;
-  }
-  .search-bar input[type="text"]:focus {
-    outline: none; border-color: var(--accent);
-  }
-  .search-bar label {
-    color: var(--text-dim); font-size: 0.85rem;
-    display: flex; align-items: center; gap: 0.35rem;
-    cursor: pointer;
-  }
-  .search-bar .hint { color: var(--text-dim); font-size: 0.8rem; }
-  .search-bar .invalid { color: var(--red); font-size: 0.8rem; }
-</style>
+<link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
 <div id="loading-bar" role="progressbar" aria-label="Loading"></div>
 <nav>
   <a class="brand" href="/">MuSCAT-db</a>
-  <a href="/">Logs</a>
+  <a href="/logs">ObsLog</a>
+  <a href="/photometry">Photometry</a>
+  <a href="/transit-fit">Transit Fit</a>
+  <a href="/exposure">Exp Calc</a>
+  <a href="/jobs">Jobs</a>
   <span class="spacer"></span>
+  <a href="/workflow" style="margin-right: 0.5rem;">Workflow</a>
   <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">
     <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
       <circle cx="12" cy="12" r="4"/>
@@ -216,7 +48,7 @@
     const root = document.documentElement;
     const btn = document.getElementById('theme-toggle');
     const stored = localStorage.getItem('muscat-theme');
-    apply(stored || 'dark');
+    apply(stored || 'light');
     btn.addEventListener('click', function () {
       const next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
       apply(next);
@@ -243,15 +75,471 @@
         text.textContent = 'Ready';
         setTimeout(function () { status.classList.remove('visible'); }, 700);
       }
-      setTimeout(function () { bar.remove(); }, 400);
+      // Keep the bar in the DOM so we can re-show it on the next navigation.
     }
+
+    function showLoading(label) {
+      bar.classList.remove('done');
+      text.textContent = label || 'Loading…';
+      status.classList.add('visible');
+    }
+    window.showLoading = showLoading;
 
     if (document.readyState === 'complete') {
       done();
     } else {
+      showLoading('Loading…');
       window.addEventListener('load', done);
     }
+
+    // Re-show the bar when the user navigates away via a same-origin link.
+    document.addEventListener('click', function (e) {
+      const link = e.target.closest('a');
+      if (!link) return;
+      if (link.target && link.target !== '_self') return;
+      if (link.hasAttribute('download')) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+      const href = link.getAttribute('href');
+      if (!href || href.startsWith('#') || href.startsWith('javascript:') || href.startsWith('mailto:')) return;
+      const url = new URL(link.href, window.location.href);
+      if (url.origin !== window.location.origin) return;
+      // Skip pure in-page hash changes (same path, different fragment).
+      if (url.pathname === window.location.pathname && url.hash) return;
+      showLoading('Loading…');
+    }, true);
+
+    // Restore on bfcache restores (back/forward navigation).
+    window.addEventListener('pageshow', function (e) {
+      if (e.persisted) done();
+    });
+  })();
+
+  // ----- resizable table columns ------------------------------------------
+  (function () {
+    function initTable(table) {
+      if (table.dataset.resizableInit === '1') return;
+      table.dataset.resizableInit = '1';
+      const headRow = table.tHead && table.tHead.rows[0];
+      if (!headRow) return;
+      const ths = Array.from(headRow.cells);
+      const tableId = table.id || 'tbl-' + Math.random().toString(36).slice(2);
+      // Lock in current natural widths (measured under table-layout: auto) so
+      // dragging one column doesn't shove the others around.
+      const measured = ths.map(function (th, i) {
+        const stored = localStorage.getItem('colw:' + tableId + ':' + i);
+        if (stored) return parseFloat(stored);
+        return th.getBoundingClientRect().width;
+      });
+      let hasStored = false;
+      for (let i = 0; i < ths.length; i++) {
+        if (localStorage.getItem('colw:' + tableId + ':' + i)) {
+          hasStored = true;
+          break;
+        }
+      }
+      if (!hasStored) {
+        const containerW = table.parentElement.clientWidth;
+        // Keep the last column (e.g. Move/Action button) at its narrow natural width.
+        const lastIdx = ths.length - 1;
+        let remainingW = containerW;
+        let totalMeasuredOthers = 0;
+        measured.forEach(function (w, i) {
+          if (i === lastIdx) {
+            remainingW -= w;
+          } else {
+            totalMeasuredOthers += w;
+          }
+        });
+        if (totalMeasuredOthers > 0 && remainingW > 0) {
+          const scale = remainingW / totalMeasuredOthers;
+          ths.forEach(function (th, i) {
+            if (i === lastIdx) {
+              th.style.width = measured[i] + 'px';
+            } else {
+              th.style.width = (measured[i] * scale) + 'px';
+            }
+          });
+        } else {
+          ths.forEach(function (th, i) {
+            th.style.width = measured[i] + 'px';
+          });
+        }
+      } else {
+        ths.forEach(function (th, i) {
+          th.style.width = measured[i] + 'px';
+        });
+      }
+
+      // Now switch to fixed layout so column widths are honoured exactly.
+      table.classList.add('resizable-init');
+      ths.forEach(function (th, i) {
+        if (i === ths.length - 1) return;  // no handle on the last column
+        const handle = document.createElement('div');
+        handle.className = 'col-resizer';
+        handle.title = 'Drag to resize column';
+        th.appendChild(handle);
+        handle.addEventListener('mousedown', function (e) {
+          startResize(e, table, th, th.cellIndex, tableId);
+        });
+        handle.addEventListener('dblclick', function () {
+          // Double-click resets this column to auto-fit content.
+          th.style.width = '';
+          const currentIdx = th.cellIndex;
+          localStorage.removeItem('colw:' + tableId + ':' + currentIdx);
+          th.style.width = th.getBoundingClientRect().width + 'px';
+          localStorage.setItem('colw:' + tableId + ':' + currentIdx,
+                               parseFloat(th.style.width));
+        });
+      });
+    }
+
+    function startResize(e, table, th, idx, tableId) {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = th.getBoundingClientRect().width;
+      const handle = e.currentTarget;
+      handle.classList.add('resizing');
+      th.classList.add('resizing');
+      document.body.style.cursor = 'col-resize';
+      function onMove(ev) {
+        const minW = th.dataset.sortAttr === 'filters' ? 15 : 40;
+        const newW = Math.max(minW, startW + (ev.clientX - startX));
+        th.style.width = newW + 'px';
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        handle.classList.remove('resizing');
+        th.classList.remove('resizing');
+        document.body.style.cursor = '';
+        const finalW = parseFloat(th.style.width);
+        if (!isNaN(finalW)) {
+          localStorage.setItem('colw:' + tableId + ':' + idx, finalW);
+        }
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    }
+
+    function initAll() {
+      document.querySelectorAll('table').forEach(initTable);
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAll);
+    } else {
+      initAll();
+    }
+
+    // Re-init tables inside <details> when expanded (their cells have no
+    // measured width while hidden).
+    // ----- click-to-sort columns ------------------------------------------
+    function raToHours(s) {
+      const m = (s || '').match(/^\s*(-?\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      return parseInt(m[1], 10) + parseInt(m[2], 10)/60 + (parseFloat(m[3]) || 0)/3600;
+    }
+    function decToDegrees(s) {
+      const m = (s || '').match(/^\s*([+-]?)(\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      const sign = m[1] === '-' ? -1 : 1;
+      return sign * (parseInt(m[2], 10) + parseInt(m[3], 10)/60 + (parseFloat(m[4]) || 0)/3600);
+    }
+
+    function detectKind(values) {
+      const non = values.filter(v => v && v.trim() !== '');
+      if (!non.length) return 'string';
+      if (non.every(v => /^[+-]\d{1,2}:\d{2}(:\d+(\.\d+)?)?$/.test(v.trim()))) return 'dec';
+      if (non.every(v => /^\d{1,2}:\d{2}(:\d+(\.\d+)?)?$/.test(v.trim()))) return 'ra';
+      if (non.every(v => !isNaN(parseFloat(v.replace(/[^\d.+\-eE]/g, ''))))) return 'number';
+      return 'string';
+    }
+    function keyFor(kind, raw) {
+      if (raw == null) return null;
+      if (kind === 'number') {
+        const n = parseFloat(raw.replace(/[^\d.+\-eE]/g, ''));
+        return isNaN(n) ? null : n;
+      }
+      if (kind === 'ra')  { const h = raToHours(raw);   return isNaN(h) ? null : h; }
+      if (kind === 'dec') { const d = decToDegrees(raw); return isNaN(d) ? null : d; }
+      return (raw || '').toString().toLowerCase();
+    }
+    function rowKey(row, colIdx, sortAttr, kind) {
+      if (sortAttr && row.dataset[sortAttr] !== undefined) {
+        const raw = row.dataset[sortAttr];
+        if (kind === 'number') {
+          const n = parseFloat(raw);
+          return isNaN(n) ? null : n;
+        }
+        if (kind === 'ra')  { const h = raToHours(raw);    return isNaN(h) ? null : h; }
+        if (kind === 'dec') { const d = decToDegrees(raw); return isNaN(d) ? null : d; }
+        return (raw || '').toString().toLowerCase();
+      }
+      const cell = row.cells[colIdx];
+      return keyFor(kind, cell ? cell.textContent.trim() : '');
+    }
+
+    function initSortable(table) {
+      if (table.dataset.sortableInit === '1') return;
+      table.dataset.sortableInit = '1';
+      const headerRow = table.tHead && table.tHead.rows[0];
+      const tbody = table.tBodies[0];
+      if (!headerRow || !tbody) return;
+      // Snapshot original row order so a third click can restore it.
+      // Pair detail rows (log-row) with their primary so restore keeps them together.
+      const allInitRows = Array.from(tbody.rows);
+      const initPairs = [];
+      for (let i = 0; i < allInitRows.length; i++) {
+        const primary = allInitRows[i];
+        const detail = (i + 1 < allInitRows.length && allInitRows[i + 1].classList.contains('log-row'))
+          ? allInitRows[++i] : null;
+        initPairs.push({ primary, detail });
+      }
+      initPairs.forEach((p, i) => { p.primary.dataset._origIdx = i; });
+      const originalOrder = initPairs;
+
+      Array.from(headerRow.cells).forEach((th, colIdx) => {
+        if (th.classList.contains('no-sort')) return;
+        th.classList.add('sortable');
+        th.addEventListener('click', function (e) {
+          if (e.target.closest('.col-resizer')) return;  // ignore handle clicks
+          const dir = th.dataset.sortDir;
+          const next = dir === 'asc' ? 'desc' : dir === 'desc' ? '' : 'asc';
+          Array.from(headerRow.cells).forEach(h => h.removeAttribute('data-sort-dir'));
+          if (next) th.dataset.sortDir = next;
+
+          if (!next) {
+            // Restore original order (pairs kept together).
+            originalOrder.forEach(p => {
+              tbody.appendChild(p.primary || p);
+              if (p.detail) tbody.appendChild(p.detail);
+            });
+            return;
+          }
+
+          // Decide sort kind: explicit hint or auto-detect from cell text.
+          let kind = th.dataset.sortType;
+          const currentIdx = th.cellIndex;
+          if (!kind) {
+            const samples = Array.from(tbody.rows).slice(0, 25)
+              .map(r => r.cells[currentIdx] ? r.cells[currentIdx].textContent.trim() : '');
+            kind = detectKind(samples);
+          }
+          const sortAttr = th.dataset.sortAttr;  // camelCase data-* key
+
+          const dirSign = next === 'asc' ? 1 : -1;
+          // Pair detail rows (e.g. .log-row) with their preceding primary row
+          // so sorting doesn't break the adjacency.
+          const allRows = Array.from(tbody.rows);
+          const pairs = [];
+          for (let i = 0; i < allRows.length; i++) {
+            const primary = allRows[i];
+            const detail = (i + 1 < allRows.length && allRows[i + 1].classList.contains('log-row'))
+              ? allRows[++i] : null;
+            pairs.push({ primary, detail });
+          }
+          const sorted = pairs.slice().sort((a, b) => {
+            const ka = rowKey(a.primary, currentIdx, sortAttr, kind);
+            const kb = rowKey(b.primary, currentIdx, sortAttr, kind);
+            if (ka == null && kb == null) return 0;
+            if (ka == null) return 1;   // nulls always last
+            if (kb == null) return -1;
+            if (ka < kb) return -1 * dirSign;
+            if (ka > kb) return  1 * dirSign;
+            // stable tiebreak on original index
+            return (parseInt(a.primary.dataset._origIdx, 10) - parseInt(b.primary.dataset._origIdx, 10));
+          });
+          sorted.forEach(p => {
+            tbody.appendChild(p.primary);
+            if (p.detail) tbody.appendChild(p.detail);
+          });
+        });
+      });
+    }
+
+    function initAllSortable() {
+      document.querySelectorAll('table').forEach(initSortable);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAllSortable);
+    } else {
+      initAllSortable();
+    }
+
+    // ----- draggable columns ----------------------------------------------
+    function initDraggableColumns(table) {
+      if (table.dataset.draggableInit === '1') return;
+      table.dataset.draggableInit = '1';
+      const headerRow = table.tHead && table.tHead.rows[0];
+      if (!headerRow) return;
+      const ths = Array.from(headerRow.cells);
+      
+      ths.forEach(function (th) {
+        th.setAttribute('draggable', 'true');
+        
+        th.addEventListener('dragstart', function (e) {
+          if (e.target.closest('.col-resizer')) {
+            e.preventDefault();
+            return;
+          }
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', th.cellIndex);
+          th.classList.add('dragging');
+        });
+        
+        th.addEventListener('dragend', function () {
+          ths.forEach(function (t) {
+            t.classList.remove('dragging', 'drag-over-left', 'drag-over-right');
+          });
+        });
+        
+        th.addEventListener('dragover', function (e) {
+          e.preventDefault();
+          const rect = th.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          
+          ths.forEach(function (t) {
+            t.classList.remove('drag-over-left', 'drag-over-right');
+          });
+          
+          if (relX < rect.width / 2) {
+            th.classList.add('drag-over-left');
+          } else {
+            th.classList.add('drag-over-right');
+          }
+        });
+        
+        th.addEventListener('dragleave', function () {
+          th.classList.remove('drag-over-left', 'drag-over-right');
+        });
+        
+        th.addEventListener('drop', function (e) {
+          e.preventDefault();
+          th.classList.remove('drag-over-left', 'drag-over-right');
+          
+          const sourceIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
+          const targetIdx = th.cellIndex;
+          if (isNaN(sourceIdx) || sourceIdx === targetIdx) return;
+          
+          const rect = th.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          const insertBefore = relX < rect.width / 2;
+          
+          Array.from(table.rows).forEach(function (row) {
+            const cell = row.cells[sourceIdx];
+            const targetCell = row.cells[targetIdx];
+            if (!cell || !targetCell) return;
+            
+            if (insertBefore) {
+              row.insertBefore(cell, targetCell);
+            } else {
+              row.insertBefore(cell, targetCell.nextSibling);
+            }
+          });
+        });
+      });
+    }
+
+    function initAllDraggable() {
+      document.querySelectorAll('table').forEach(initDraggableColumns);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAllDraggable);
+    } else {
+      initAllDraggable();
+    }
+
+    // ----- inline notes editor (delegated) --------------------------------
+    document.addEventListener('click', function (e) {
+      const cell = e.target.closest('.note-cell');
+      if (!cell || cell.classList.contains('editing')) return;
+      if (e.target.closest('a, button')) return;
+      openEditor(cell);
+    });
+
+    function openEditor(cell) {
+      const obj = cell.dataset.object;
+      const current = cell.querySelector('.note-text').textContent;
+      cell.classList.add('editing');
+      cell.innerHTML = '';
+      const ta = document.createElement('textarea');
+      ta.value = current;
+      ta.rows = 2;
+      ta.placeholder = 'Type a note…';
+      const actions = document.createElement('div');
+      actions.className = 'note-actions';
+      const save = document.createElement('button');
+      save.className = 'save'; save.textContent = 'Save';
+      const cancel = document.createElement('button');
+      cancel.textContent = 'Cancel';
+      const del = document.createElement('button');
+      del.className = 'del'; del.textContent = 'Delete';
+      actions.append(save, cancel, del);
+      cell.append(ta, actions);
+      ta.focus(); ta.select();
+
+      function close(note) {
+        cell.classList.remove('editing');
+        cell.innerHTML =
+          '<span class="note-text">' + escapeHtml(note) + '</span>' +
+          '<span class="note-placeholder"' + (note ? ' style="display:none;"' : '') + '>+ add note</span>';
+      }
+      function escapeHtml(s) {
+        return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      }
+
+      async function commit() {
+        const value = ta.value.trim();
+        try {
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({note: value}),
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          close(value);
+        } catch (err) {
+          alert('Save failed: ' + err.message);
+        }
+      }
+      async function destroy() {
+        try {
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {method: 'DELETE'});
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          close('');
+        } catch (err) {
+          alert('Delete failed: ' + err.message);
+        }
+      }
+
+      save.addEventListener('click', commit);
+      del.addEventListener('click', destroy);
+      cancel.addEventListener('click', () => close(current));
+      ta.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); }
+        else if (e.key === 'Escape') { e.preventDefault(); close(current); }
+      });
+    }
+
+    document.addEventListener('toggle', function (e) {
+      if (e.target.tagName === 'DETAILS' && e.target.open) {
+        e.target.querySelectorAll('table').forEach(function (t) {
+          delete t.dataset.resizableInit;
+          t.classList.remove('resizable-init');
+          // Clear previously-set widths so we re-measure from real layout.
+          if (t.tHead && t.tHead.rows[0]) {
+            Array.from(t.tHead.rows[0].cells).forEach(function (th) {
+              th.querySelectorAll('.col-resizer').forEach(h => h.remove());
+              th.style.width = '';
+            });
+          }
+          initTable(t);
+        });
+      }
+    }, true);
   })();
 </script>
+{% block scripts %}{% endblock %}
 </body>
 </html>

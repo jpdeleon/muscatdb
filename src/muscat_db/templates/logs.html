@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Logs — MuSCAT ObsLog{% endblock %}
+{% block content %}
+<h1>Logs</h1>
+
+<h2>Instruments</h2>
+<div class="card-grid">
+{% for inst in instruments %}
+  <div class="card">
+    <a href="/{{ inst.name }}">
+      <div class="name">{{ inst.name }}</div>
+      {% if inst.has_data %}
+        <div class="meta">Click to view observation dates</div>
+      {% else %}
+        <div class="meta" style="color: var(--text-dim);">No data yet — run <code>muscat-db scan-missing {{ inst.name }} &lt;yy&gt;</code></div>
+      {% endif %}
+    </a>
+  </div>
+{% else %}
+  <p>No instruments configured.</p>
+{% endfor %}
+</div>
+
+<h2 style="margin-top: 2.5rem;">Data Summary</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Instrument</th>
+      <th>Observation Dates</th>
+      <th>Science Targets</th>
+      <th>Total Frames</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in summaries %}
+      <tr>
+        <td><strong><a href="/{{ s.name }}">{{ s.name }}</a></strong></td>
+        <td class="mono">{{ s.n_dates }}</td>
+        <td class="mono">{{ s.n_targets }}</td>
+        <td class="mono">{{ s.n_frames }}</td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

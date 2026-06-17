@@ -1,58 +1,89 @@
 {% extends "base.html" %}
-{% block title %}Logs — MuSCAT ObsLog{% endblock %}
+{% block title %}Targets — MuSCAT-db{% endblock %}
 {% block content %}
-<h1>Logs</h1>
+<h1>MuSCAT + LCO database (Last updated on {{ last_updated }})</h1>
 
-<h2>Instruments</h2>
-<div class="card-grid">
-{% for inst in instruments %}
-  <div class="card">
-    <a href="/{{ inst.name }}">
-      <div class="name">{{ inst.name }}</div>
-      {% if inst.has_data %}
-        <div class="meta">Click to view observation dates</div>
-      {% else %}
-        <div class="meta" style="color: var(--text-dim);">No data yet — run <code>muscat-db scan-missing {{ inst.name }} &lt;yy&gt;</code></div>
-      {% endif %}
-    </a>
-  </div>
-{% else %}
-  <p>No instruments configured.</p>
-{% endfor %}
-</div>
+{% set identified   = targets | selectattr('is_identified') | list %}
+{% set unidentified = targets | rejectattr('is_identified') | list %}
 
-<h2 style="margin-top:2rem;">Targets ({{ targets|length }})</h2>
+<h2 style="margin-top:1.5rem;">Targets ({{ identified|length }})</h2>
+
 
 <div class="search-bar">
   <input id="target-search" type="text" placeholder="Search targets by name…" autocomplete="off">
   <label><input id="regex-toggle" type="checkbox"> Regex</label>
   <label><input id="case-toggle" type="checkbox"> Case-sensitive</label>
   <span id="search-status" class="hint"></span>
+  <a href="/api/targets/export.csv" class="csv-btn" download>⬇ CSV</a>
 </div>
 
-{% if targets %}
-<table id="targets-table">
+{% set unique_instruments = targets | map(attribute='instruments') | sum(start=[]) | unique | sort %}
+<div class="instrument-badges">
+  <span class="instrument-badges-label">Filter by instrument:</span>
+  {% for inst in unique_instruments %}
+    <span class="badge instrument-badge" data-instrument="{{ inst }}">{{ inst }}</span>
+  {% endfor %}
+</div>
+
+{% macro target_table(rows, table_id) %}
+<div class="csv-wrap">
+<table id="{{ table_id }}">
   <thead>
     <tr>
-      <th>Target</th>
-      <th>RA</th>
-      <th>Dec</th>
-      <th>Filters</th>
-      <th>Airmass</th>
-      <th># Frames</th>
-      <th>Instruments</th>
-      <th>Dates</th>
+      <th data-sort-attr="name">Target</th>
+      <th data-sort-attr="dates">Dates</th>
+      <th data-sort-attr="ra"          data-sort-type="ra">RA</th>
+      <th data-sort-attr="dec"         data-sort-type="dec">Dec</th>
+      <th data-sort-attr="filters">Filters</th>
+      <th data-sort-attr="airmassMax"  data-sort-type="number">Airmass</th>
+      <th data-sort-attr="frames"      data-sort-type="number"># Frames</th>
+      <th data-sort-attr="phot">Phot</th>
+      <th data-sort-attr="fit">Fit</th>
+      <th data-sort-attr="note">Notes</th>
+      <th style="width:1px;">Move</th>
+    </tr>
+    <tr class="filter-row">
+      <th><input type="text" data-col="name"        placeholder="contains…"></th>
+      <th><input type="text" data-col="date"        placeholder="YYMMDD"></th>
+      <th><input type="text" data-col="ra"          placeholder="hr: >10  5-15"></th>
+      <th><input type="text" data-col="dec"         placeholder="deg: >0  -30:30"></th>
+      <th><input type="text" data-col="filter"      placeholder="g, r, i, z"></th>
+      <th><input type="text" data-col="airmass"     placeholder="<1.5  1.1-2"></th>
+      <th><input type="text" data-col="frames"      placeholder="<100  >500"></th>
+      <th><input type="text" data-col="phot"        placeholder="Y/N"></th>
+      <th><input type="text" data-col="fit"         placeholder="Y/N"></th>
+      <th><input type="text" data-col="note"        placeholder="contains…"></th>
+      <th></th>
     </tr>
   </thead>
   <tbody>
-  {% for t in targets %}
-    <tr data-name="{{ t.object }}">
+  {% for t in rows %}
+    <tr data-name="{{ t.object }}"
+        data-ra="{{ t.ra }}"
+        data-dec="{{ t.declination }}"
+        data-filters="{{ t.filters|join(',') }}"
+        data-frames="{{ t.n_frames }}"
+        data-airmass-min="{{ t.airmass_min if t.airmass_min is not none else '' }}"
+        data-airmass-max="{{ t.airmass_max if t.airmass_max is not none else '' }}"
+        data-instruments="{{ t.instruments|join(',') }}"
+        data-dates="{% for d in t.dates %}{% set inst = t.date_to_inst.get(d, t.instruments[0] if t.instruments else '') %}{{ d }}{% if inst == 'muscat' %}(M1){% elif inst == 'muscat2' %}(M2){% elif inst == 'muscat3' %}(M3){% elif inst == 'muscat4' %}(M4){% elif inst == 'sinistro' %}(S){% endif %}{% if not loop.last %},{% endif %}{% endfor %}"
+        data-phot="{{ 'Y' if t.phot == 'full' else 'N' }}"
+        data-fit="{{ 'Y' if t.fit == 'full' else 'N' }}"
+        data-note="{{ t.note|default('', true) }}">
       <td><strong>{{ t.object }}</strong></td>
+      <td class="mono" style="white-space:nowrap; vertical-align:top;">
+        {% for d in t.dates %}
+          {% set inst = t.date_to_inst.get(d, t.instruments[0] if t.instruments else '') %}
+          <div style="margin-bottom:2px;">
+            <a href="/{{ inst }}/{{ d }}">{{ d }}{% if inst == 'muscat' %}(M1){% elif inst == 'muscat2' %}(M2){% elif inst == 'muscat3' %}(M3){% elif inst == 'muscat4' %}(M4){% elif inst == 'sinistro' %}(S){% endif %}</a><a href="/photometry?inst={{ inst }}&date={{ d }}&target={{ t.object | urlencode }}" title="photometry" style="text-decoration:none;font-size:0.8em;margin-left:1px;">🔭</a><a href="/transit-fit?inst={{ inst }}&date={{ d }}&target={{ t.object | urlencode }}" title="transit fit" style="text-decoration:none;font-size:0.8em;margin-left:2px;">📈</a>
+          </div>
+        {% endfor %}
+      </td>
       <td class="mono">{{ t.ra }}</td>
       <td class="mono">{{ t.declination }}</td>
       <td>
-        {% for f in t.filters %}
-          <span class="badge badge-amber">{{ f }}</span>
+        {% for c in t.filter_chips %}
+          <span class="badge badge-filter-{{ c.color }}{% if c.narrow %} narrow{% endif %}">{{ c.label }}</span>
         {% endfor %}
       </td>
       <td class="mono">
@@ -63,25 +94,74 @@
         {% else %}—{% endif %}
       </td>
       <td>{{ t.n_frames }}</td>
-      <td>
-        {% for inst in t.instruments %}
-          <a href="/{{ inst }}"><span class="badge badge-blue">{{ inst }}</span></a>
-        {% endfor %}
+      <td style="text-align:center;">
+        {% if t.phot == 'full' %}
+          <span style="color: var(--green); font-weight: bold;" title="Full photometry exists">Y</span>
+        {% else %}
+          <span style="color: var(--red);" title="No photometry or test-run only">N</span>
+        {% endif %}
       </td>
-      <td class="mono" style="white-space:normal;">
-        {% for d in t.dates %}
-          {% for inst in t.instruments %}
-            <a href="/{{ inst }}/{{ d }}">{{ d }}</a>{% if not loop.last %}/{% endif %}
-          {% endfor %}{% if not loop.last %}, {% endif %}
-        {% endfor %}
+      <td style="text-align:center;">
+        {% if t.fit == 'full' %}
+          <span style="color: var(--green); font-weight: bold;" title="Transit fit exists">Y</span>
+        {% else %}
+          <span style="color: var(--red);" title="No transit fit">N</span>
+        {% endif %}
+      </td>
+      <td class="note-cell" data-object="{{ t.object }}" style="white-space:normal;">
+        <span class="note-text">{{ t.note }}</span>
+        <span class="note-placeholder" {% if t.note %}style="display:none;"{% endif %}>+ add note</span>
+      </td>
+      <td style="text-align:center;">
+        <button class="btn-move" data-object="{{ t.object }}" title="{% if t.is_identified %}Move to Unidentified{% else %}Move to Identified{% endif %}">
+          {% if t.is_identified %}X{% else %}I{% endif %}
+        </button>
       </td>
     </tr>
   {% endfor %}
   </tbody>
 </table>
+</div>
+{% endmacro %}
+
+{% if identified %}
+<details id="identified-details" style="margin-top:1.5rem;" open>
+  <summary style="cursor:pointer; padding:0.5rem 0; color:var(--text-dim); font-size:1rem;">
+    Identified targets ({{ identified|length }})
+  </summary>
+  <div style="margin-top:0.75rem;">
+    {{ target_table(identified, 'targets-table') }}
+  </div>
+</details>
 {% else %}
-<p>No targets found.</p>
+  <p>No identified targets found.</p>
 {% endif %}
+
+{% if unidentified %}
+<details id="unidentified-details" style="margin-top:1.5rem;">
+  <summary style="cursor:pointer; padding:0.5rem 0; color:var(--text-dim); font-size:1rem;">
+    Unidentified targets ({{ unidentified|length }})
+    <span class="hint">— bare numeric OBJECT names, no catalog prefix</span>
+  </summary>
+  <div style="margin-top:0.75rem;">
+    {{ target_table(unidentified, 'unidentified-table') }}
+  </div>
+</details>
+{% endif %}
+
+<div style="text-align:center; margin:2em 0;">
+  <a href="#" style="display:inline-block; padding:0.5em 2em; background:#0056b3; color:#fff; text-decoration:none; border-radius:4px;">Back to Top</a>
+</div>
+
+<div id="move-confirm-overlay">
+  <div class="modal-box">
+    <p id="move-confirm-msg" style="margin-bottom:1.25rem;font-size:0.95rem;font-weight:600;"></p>
+    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+      <button class="btn" onclick="closeMoveConfirm()">Cancel</button>
+      <button class="btn danger" onclick="confirmMove()">Move</button>
+    </div>
+  </div>
+</div>
 
 <script>
   (function () {
@@ -89,48 +169,293 @@
     const regex  = document.getElementById('regex-toggle');
     const caseCB = document.getElementById('case-toggle');
     const status = document.getElementById('search-status');
-    const rows   = Array.from(document.querySelectorAll('#targets-table tbody tr'));
-    const total  = rows.length;
+    const rows = Array.from(document.querySelectorAll(
+      '#targets-table tbody tr, #unidentified-table tbody tr'
+    ));
+    const total = rows.length;
+    const colInputs = Array.from(document.querySelectorAll('tr.filter-row input'));
+    const instBadges = Array.from(document.querySelectorAll('.instrument-badge'));
+    let activeInstrument = null;
+
+    // ── persist search + column filter state across page navigations ────────
+    function saveFilters() {
+      try {
+        localStorage.setItem('home:search', input.value);
+        localStorage.setItem('home:regex', JSON.stringify(regex.checked));
+        localStorage.setItem('home:case', JSON.stringify(caseCB.checked));
+        const colVals = {};
+        colInputs.forEach(inp => { colVals[inp.dataset.col] = inp.value; });
+        localStorage.setItem('home:cols', JSON.stringify(colVals));
+        localStorage.setItem('home:inst', activeInstrument || '');
+      } catch (_) {}
+    }
+    function restoreFilters() {
+      try {
+        const sv = localStorage.getItem('home:search');
+        if (sv != null) input.value = sv;
+        const rv = localStorage.getItem('home:regex');
+        if (rv != null) regex.checked = JSON.parse(rv);
+        const cv = localStorage.getItem('home:case');
+        if (cv != null) caseCB.checked = JSON.parse(cv);
+        const colRaw = localStorage.getItem('home:cols');
+        if (colRaw) {
+          const colVals = JSON.parse(colRaw);
+          colInputs.forEach(inp => {
+            if (colVals[inp.dataset.col] != null) inp.value = colVals[inp.dataset.col];
+          });
+        }
+        const instVal = localStorage.getItem('home:inst');
+        if (instVal) {
+          activeInstrument = instVal;
+          instBadges.forEach(b => {
+            if (b.dataset.instrument === instVal) b.classList.add('active');
+          });
+        }
+      } catch (_) {}
+    }
+    restoreFilters();
+
+    // ── persist sort state ────────────────────────────────────────────────────
+    function saveSort(tableId, colIdx, dir) {
+      try {
+        localStorage.setItem('home:sort:' + tableId, JSON.stringify({ col: colIdx, dir }));
+      } catch (_) {}
+    }
+    function restoreSort(tableId) {
+      try {
+        const raw = localStorage.getItem('home:sort:' + tableId);
+        if (!raw) return;
+        const { col, dir } = JSON.parse(raw);
+        if (col == null || !dir) return;
+        const table = document.getElementById(tableId);
+        if (!table) return;
+        const headerRow = table.tHead && table.tHead.rows[0];
+        if (!headerRow) return;
+        const th = headerRow.cells[col];
+        if (!th) return;
+        // Force the saved direction onto the header and simulate the sort
+        // by setting the previous direction to the one that precedes it.
+        // asc comes after '' (initial), desc comes after asc.
+        th.dataset.sortDir = dir === 'asc' ? '' : 'asc';
+        th.click();
+      } catch (_) {}
+    }
+
+    // Intercept sort-header clicks to capture the resulting column+direction.
+    document.querySelectorAll('#targets-table thead tr:first-child th, #unidentified-table thead tr:first-child th').forEach(th => {
+      th.addEventListener('click', function () {
+        // Let base.html's sort handler run first, then read the new state.
+        requestAnimationFrame(() => {
+          const table = th.closest('table');
+          if (!table) return;
+          const dir = th.dataset.sortDir || '';
+          saveSort(table.id, th.cellIndex, dir);
+        });
+      });
+    });
+
+    // Restore sort after the sortable initialiser from base.html has run.
+    requestAnimationFrame(() => {
+      restoreSort('targets-table');
+      restoreSort('unidentified-table');
+    });
+
+    // ── persist <details> open state ─────────────────────────────────────────
+    ['identified-details', 'unidentified-details'].forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const key = 'home:details:' + id;
+      try {
+        if (localStorage.getItem(key) === 'closed') el.open = false;
+      } catch (_) {}
+      el.addEventListener('toggle', () => {
+        try {
+          localStorage.setItem(key, el.open ? 'open' : 'closed');
+        } catch (_) {}
+      });
+    });
 
     function escapeRegex(s) {
       return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
+    // ---- Column-filter parsers --------------------------------------------
+    // Returns a predicate function or null on empty / invalid.
+    function makeNumeric(raw) {
+      const s = raw.trim();
+      if (!s) return null;
+      let m;
+      if ((m = s.match(/^(<=|>=|<|>|=)?\s*(-?\d+(?:\.\d+)?)$/))) {
+        const op = m[1] || '=', v = parseFloat(m[2]);
+        return x => {
+          if (x == null || isNaN(x)) return false;
+          if (op === '<')  return x <  v;
+          if (op === '<=') return x <= v;
+          if (op === '>')  return x >  v;
+          if (op === '>=') return x >= v;
+          return Math.abs(x - v) < 1e-9;
+        };
+      }
+      if ((m = s.match(/^(-?\d+(?:\.\d+)?)\s*(?:-|\.\.|:|to)\s*(-?\d+(?:\.\d+)?)$/))) {
+        const a = parseFloat(m[1]), b = parseFloat(m[2]);
+        const lo = Math.min(a,b), hi = Math.max(a,b);
+        return x => x != null && !isNaN(x) && x >= lo && x <= hi;
+      }
+      return 'INVALID';
+    }
+
+    function makeText(raw) {
+      const s = raw.trim();
+      if (!s) return null;
+      const needles = s.toLowerCase().split(/\s*,\s*/).filter(Boolean);
+      // comma-separated: ANY-match (handy for filters like "g,r")
+      return hay => {
+        const h = (hay || '').toLowerCase();
+        return needles.some(n => h.includes(n));
+      };
+    }
+
+    // Whole-token match against a comma-joined list. "muscat" matches only the
+    // exact "muscat" token, not "muscat2"/"muscat3"; "muscat2" still matches.
+    // Comma-separated needles are ANY-match (e.g. "muscat,sinistro").
+    function makeToken(raw) {
+      const s = raw.trim();
+      if (!s) return null;
+      const needles = s.toLowerCase().split(/\s*,\s*/).filter(Boolean);
+      return hay => {
+        const tokens = (hay || '').toLowerCase().split(',')
+          .map(t => t.trim()).filter(Boolean);
+        return needles.some(n => tokens.includes(n));
+      };
+    }
+
+    function raToHours(s) {
+      const m = (s || '').match(/^\s*(-?\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      return parseInt(m[1], 10) + parseInt(m[2], 10)/60 + (parseFloat(m[3]) || 0)/3600;
+    }
+    function decToDegrees(s) {
+      const m = (s || '').match(/^\s*([+-]?)(\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      const sign = m[1] === '-' ? -1 : 1;
+      const d = parseInt(m[2], 10);
+      return sign * (d + parseInt(m[3], 10)/60 + (parseFloat(m[4]) || 0)/3600);
+    }
+
+    // Map data-col → (row → value, parser builder)
+    const colSpec = {
+      name:       { val: r => r.dataset.name,        build: makeText    },
+      ra:         { val: r => raToHours(r.dataset.ra),   build: makeNumeric },
+      dec:        { val: r => decToDegrees(r.dataset.dec), build: makeNumeric },
+      filter:     { val: r => r.dataset.filters,     build: makeText    },
+      airmass:    { val: r => parseFloat(r.dataset.airmassMax),  build: makeNumeric },
+      frames:     { val: r => parseInt(r.dataset.frames, 10),    build: makeNumeric },
+      date:       { val: r => r.dataset.dates,       build: makeText    },
+      phot:       { val: r => r.dataset.phot,        build: makeText    },
+      fit:        { val: r => r.dataset.fit,         build: makeText    },
+      note:       { val: r => r.dataset.note,        build: makeText    },
+    };
+
+    function buildColPredicates() {
+      const preds = [];
+      colInputs.forEach(inp => {
+        const spec = colSpec[inp.dataset.col];
+        if (!spec) return;
+        const p = spec.build(inp.value);
+        inp.classList.remove('invalid');
+        if (p === 'INVALID') {
+          inp.classList.add('invalid');
+          return;
+        }
+        if (p) preds.push(row => p(spec.val(row)));
+      });
+      return preds;
+    }
+
     function filter() {
       const q = input.value;
-      let visible = 0;
       status.textContent = '';
       status.className = 'hint';
 
-      if (!q) {
-        rows.forEach(r => r.style.display = '');
-        status.textContent = total + ' targets';
-        return;
+      let textTest = () => true;
+      if (q) {
+        try {
+          const flags = caseCB.checked ? '' : 'i';
+          const pattern = regex.checked ? q : escapeRegex(q);
+          const re = new RegExp(pattern, flags);
+          textTest = name => re.test(name);
+        } catch (err) {
+          status.textContent = 'Invalid regex: ' + err.message;
+          status.className = 'invalid';
+          return;
+        }
       }
 
-      let test;
-      try {
-        const flags = caseCB.checked ? '' : 'i';
-        const pattern = regex.checked ? q : escapeRegex(q);
-        const re = new RegExp(pattern, flags);
-        test = name => re.test(name);
-      } catch (err) {
-        status.textContent = 'Invalid regex: ' + err.message;
-        status.className = 'invalid';
-        return;
-      }
-
+      const colPreds = buildColPredicates();
+      let visible = 0;
       rows.forEach(r => {
-        const match = test(r.dataset.name || '');
-        r.style.display = match ? '' : 'none';
-        if (match) visible++;
+        let ok = textTest(r.dataset.name || '');
+        for (let i = 0; ok && i < colPreds.length; i++) ok = colPreds[i](r);
+        if (ok && activeInstrument) {
+          const tokens = (r.dataset.instruments || '').toLowerCase().split(',').map(t => t.trim()).filter(Boolean);
+          ok = tokens.includes(activeInstrument.toLowerCase());
+        }
+        r.style.display = ok ? '' : 'none';
+        if (ok) visible++;
       });
-      status.textContent = visible + ' / ' + total + ' matching';
+      if (q || colPreds.length || activeInstrument) {
+        status.textContent = visible + ' / ' + total + ' matching';
+      } else {
+        status.textContent = total + ' targets';
+      }
     }
 
-    input.addEventListener('input', filter);
-    regex.addEventListener('change', filter);
-    caseCB.addEventListener('change', filter);
+    input.addEventListener('input', function () { filter(); saveFilters(); });
+    regex.addEventListener('change', function () { filter(); saveFilters(); });
+    caseCB.addEventListener('change', function () { filter(); saveFilters(); });
+    colInputs.forEach(inp => inp.addEventListener('input', function () { filter(); saveFilters(); }));
+    instBadges.forEach(badge => {
+      badge.addEventListener('click', function () {
+        const inst = this.dataset.instrument;
+        if (activeInstrument === inst) {
+          activeInstrument = null;
+          instBadges.forEach(b => b.classList.remove('active'));
+        } else {
+          activeInstrument = inst;
+          instBadges.forEach(b => b.classList.remove('active'));
+          this.classList.add('active');
+        }
+        filter();
+        saveFilters();
+      });
+    });
+    let pendingMove = null;
+    document.querySelectorAll('.btn-move').forEach(btn => {
+      btn.addEventListener('click', function () {
+        const wasIdentified = this.closest('table').id === 'targets-table';
+        const targetName = this.closest('tr').querySelector('td strong').textContent;
+        const targetTable = wasIdentified ? 'Unidentified' : 'Identified';
+        pendingMove = { obj: this.dataset.object, newVal: wasIdentified ? 0 : 1 };
+        document.getElementById('move-confirm-msg').textContent =
+          `Move "${targetName}" to the ${targetTable} targets table?`;
+        document.getElementById('move-confirm-overlay').classList.add('visible');
+      });
+    });
+    window.confirmMove = function() {
+      if (!pendingMove) return;
+      const { obj, newVal } = pendingMove;
+      pendingMove = null;
+      document.getElementById('move-confirm-overlay').classList.remove('visible');
+      fetch('/api/targets/' + encodeURIComponent(obj) + '/identified', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({is_identified: newVal}),
+      }).then(r => { if (r.ok) location.reload(); });
+    };
+    window.closeMoveConfirm = function() {
+      pendingMove = null;
+      document.getElementById('move-confirm-overlay').classList.remove('visible');
+    };
     filter();
   })();
 </script>

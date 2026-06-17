@@ -1,0 +1,545 @@
+{% extends "base.html" %}
+{% block title %}Jobs — MuSCAT-db{% endblock %}
+{% block content %}
+<h1>Jobs</h1>
+
+{% set status_order = ['running', 'pending', 'done', 'error', 'cancelled'] %}
+{% set status_labels = {'running': 'Running', 'pending': 'Pending', 'done': 'Done', 'error': 'Failed', 'cancelled': 'Cancelled'} %}
+
+<div class="jobs-summary" id="jobs-summary">
+  {% for s in status_order %}
+    {% set c = counts.get(s, 0) %}
+    <span class="job-count {% if c > 0 %}has-{{ s }}{% endif %}" data-status="{{ s }}" onclick="toggleStatus(this, '{{ s }}')">
+      <span class="job-count-num">{{ c }}</span>
+      <span class="job-count-label">{{ status_labels[s] }}</span>
+    </span>
+  {% endfor %}
+  <span class="job-count-bar-spacer"></span>
+  <span class="job-count job-count-clear" id="clear-filter" style="display:none;cursor:pointer;opacity:0.6;" onclick="clearFilter()">✕ Clear filter</span>
+</div>
+
+<div class="jobs-summary" id="type-summary">
+  <span class="job-count" data-type="photometry" onclick="toggleType(this, 'photometry')">Photometry</span>
+  <span class="job-count" data-type="transit_fit" onclick="toggleType(this, 'transit_fit')">Transit Fit</span>
+</div>
+<div class="jobs-summary" id="inst-summary"></div>
+
+<div class="search-bar">
+  <input id="job-search" type="text" placeholder="Search target, instrument, date, type…" autocomplete="off">
+  <span id="search-status" class="hint"></span>
+</div>
+
+{% if jobs %}
+<div class="csv-wrap">
+<table id="jobs-table">
+  <thead>
+    <tr>
+      <th data-sort-attr="target" class="sortable">Target</th>
+      <th data-sort-attr="type" class="sortable">Type</th>
+      <th data-sort-attr="instrument" class="sortable">Instrument</th>
+      <th data-sort-attr="obsdate" class="sortable">Date Obs</th>
+      <th data-sort-attr="started_at" data-sort-type="number" class="sortable">Date Run</th>
+      <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
+      <th data-sort-attr="state" class="sortable">Status</th>
+      <th>Details</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for j in jobs %}
+    {% set link_url -%}
+      {%- if j.type == 'photometry' -%}/photometry?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}
+      {%- else -%}/transit-fit?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}
+      {%- endif -%}
+    {%- endset %}
+    <tr class="job-row" data-key="{{ j.key }}" data-status="{{ j.state }}" data-type="{{ j.type }}"
+        data-search="{{ (j.target + ' ' + j.inst + ' ' + j.date + ' ' + j.type) | lower }}">
+      <td><strong><a href="{{ link_url }}">{{ j.target }}</a></strong></td>
+      <td><span class="badge" style="background:var(--surface2);color:var(--text);">{{ 'Photometry' if j.type == 'photometry' else 'Transit Fit' }}</span></td>
+      <td><span class="badge badge-blue" style="background:var(--surface2);color:var(--text);">{{ j.inst }}</span></td>
+      <td class="mono">{{ j.date }}</td>
+      <td class="mono" style="font-size:0.8rem;color:var(--text-dim);">
+        {% if j.started_at %}
+          {{ j.started_at | int | datetime_from_timestamp }}
+        {% else %}—{% endif %}
+      </td>
+      <td class="mono elapsed-cell" data-elapsed="{{ j.elapsed }}">{{ format_elapsed(j.elapsed) }}</td>
+      <td>
+        {% if j.state == 'done' %}
+          <span class="badge badge-green status-badge">Done</span>
+        {% elif j.state == 'error' %}
+          <span class="badge status-badge" style="background:var(--red);color:white;">Failed</span>
+        {% elif j.state == 'cancelled' %}
+          <span class="badge status-badge" style="background:var(--text-dim);color:white;">Cancelled</span>
+        {% elif j.state == 'running' %}
+          <span class="badge badge-amber status-badge pulse">Running</span>
+        {% elif j.state == 'cancelling' %}
+          <span class="badge status-badge" style="background:var(--text-dim);color:white;">Cancelling…</span>
+        {% elif j.state == 'pending' %}
+          <span class="badge status-badge" style="background:var(--blue);color:white;">Pending</span>
+        {% else %}
+          <span class="badge badge-filter-other status-badge">{{ j.state }}</span>
+        {% endif %}
+      </td>
+      <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">
+        {% if j.run_type %}
+          <span class="badge {% if j.run_type == 'test' %}badge-amber{% else %}badge-blue{% endif %}" style="font-size:0.7rem;">{{ j.run_type }}</span>
+        {% endif %}
+        {% if j.state == 'error' and j.error_desc %}
+          <span class="error-desc" style="color:var(--red);font-size:0.8rem;font-family:monospace;margin-left:0.3rem;">{{ j.error_desc }}</span>
+        {% endif %}
+      </td>
+      <td class="job-actions">
+        {% if j.state == 'running' %}
+          <button class="btn sm danger"
+                  data-key="{{ j.key }}"
+                  data-type="{{ j.type }}"
+                  data-inst="{{ j.inst }}"
+                  data-date="{{ j.date }}"
+                  data-target="{{ j.target }}"
+                  onclick="cancelJob(this)">Cancel</button>
+        {% elif j.state == 'cancelling' %}
+          <button class="btn sm" disabled="">Cancelling…</button>
+        {% elif j.state == 'pending' %}
+          <button class="btn sm danger"
+                  data-key="{{ j.key }}"
+                  data-type="{{ j.type }}"
+                  data-inst="{{ j.inst }}"
+                  data-date="{{ j.date }}"
+                  data-target="{{ j.target }}"
+                  onclick="cancelJob(this)">Cancel</button>
+        {% else %}
+          <button class="btn sm" onclick="reRunJob(this, '{{ j.key }}')" title="Re-run this job">⟳ Re-run</button>
+        {% endif %}
+        <button class="btn sm log-btn" onclick="viewLog(this, '{{ j.type }}', '{{ j.inst }}', '{{ j.date }}', '{{ j.target }}')" title="View log" style="margin-left:0.25rem;">📄 Log</button>
+        <button class="btn sm hide-btn" onclick="hideRow(this, '{{ j.key }}')" title="Hide this row" style="margin-left:0.25rem;">✕</button>
+      </td>
+    </tr>
+    <tr class="log-row" style="display:none;">
+      <td colspan="9">
+        <pre class="log-content">Loading…</pre>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div style="background:var(--surface);border:1px dashed var(--border);border-radius:10px;padding:2rem;text-align:center;margin-top:1rem;">
+  <p style="color:var(--text-dim);">No jobs have been launched yet.</p>
+</div>
+{% endif %}
+
+<div id="hide-confirm-overlay">
+  <div class="modal-box">
+    <p style="margin-bottom:0.75rem;font-size:0.95rem;font-weight:600;">Hide this job?</p>
+    <p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:1.5rem;line-height:1.5;">It will reappear when triggered from the Photometry or Transit Fit page.</p>
+    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+      <button class="btn" onclick="closeHideConfirm()">Cancel</button>
+      <button class="btn danger" onclick="confirmHide()">Hide</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  function formatElapsed(seconds) {
+    if (seconds < 60) return seconds + 's';
+    var m = Math.floor(seconds / 60);
+    var s = seconds % 60;
+    if (m < 60) return m + 'm ' + s + 's';
+    var h = Math.floor(m / 60);
+    m = m % 60;
+    if (h < 24) return h + 'h ' + m + 'm';
+    var d = Math.floor(h / 24);
+    h = h % 24;
+    return d + 'd ' + h + 'h';
+  }
+
+  var allRows = Array.from(document.querySelectorAll('#jobs-table tbody tr.job-row'));
+  var total = allRows.length;
+  var activeStatus = null;
+  var searchInput = document.getElementById('job-search');
+  var searchStatus = document.getElementById('search-status');
+
+  var hiddenKeys = [];
+  try { var s = localStorage.getItem('jobs:hidden'); if (s) hiddenKeys = JSON.parse(s); } catch (_) {}
+
+  var activeType = '';
+  var activeInst = '';
+
+  // ── Type filter (badges) ──────────────────────────────────────────────────
+  window.toggleType = function(el, type) {
+    document.querySelectorAll('#type-summary .job-count').forEach(function(e) { e.classList.remove('active'); });
+    if (activeType === type) { activeType = ''; }
+    else { activeType = type; el.classList.add('active'); }
+    applyFilters(); saveFilters();
+  };
+
+  // ── Instrument filter (badges) ────────────────────────────────────────────
+  window.toggleInst = function(el, inst) {
+    document.querySelectorAll('#inst-summary .job-count').forEach(function(e) { e.classList.remove('active'); });
+    if (activeInst === inst) { activeInst = ''; }
+    else { activeInst = inst; el.classList.add('active'); }
+    applyFilters(); saveFilters();
+  };
+
+  // Populate instrument badges from rows
+  (function() {
+    var insts = {};
+    allRows.forEach(function(r) {
+      var c = r.querySelector('td:nth-child(3)');
+      if (c) { var v = c.textContent.trim(); if (v) insts[v] = true; }
+    });
+    var container = document.getElementById('inst-summary');
+    Object.keys(insts).sort().forEach(function(v) {
+      var span = document.createElement('span');
+      span.className = 'job-count';
+      span.setAttribute('data-inst', v);
+      span.onclick = function() { toggleInst(this, v); };
+      span.textContent = v;
+      container.appendChild(span);
+    });
+  })();
+
+  function rowByKey(key) {
+    for (var i = 0; i < allRows.length; i++) {
+      if (allRows[i].getAttribute('data-key') === key) return allRows[i];
+    }
+    return null;
+  }
+
+  function replaceStatusBadge(row, state) {
+    var td = row.querySelector('td:nth-child(7)');
+    if (!td) return;
+    var html = '';
+    if (state === 'done') html = '<span class="badge badge-green status-badge">Done</span>';
+    else if (state === 'error') html = '<span class="badge status-badge" style="background:var(--red);color:white;">Failed</span>';
+    else if (state === 'cancelled') html = '<span class="badge status-badge" style="background:var(--text-dim);color:white;">Cancelled</span>';
+    else if (state === 'running') html = '<span class="badge badge-amber status-badge pulse">Running</span>';
+    else if (state === 'cancelling') html = '<span class="badge status-badge" style="background:var(--text-dim);color:white;">Cancelling…</span>';
+    else if (state === 'pending') html = '<span class="badge status-badge" style="background:var(--blue);color:white;">Pending</span>';
+    else html = '<span class="badge badge-filter-other status-badge">' + state + '</span>';
+    td.innerHTML = html;
+  }
+
+  function replaceActions(row, state, key, type, inst, date, target) {
+    var td = row.querySelector('td.job-actions');
+    if (!td) return;
+    var html = '';
+    if (state === 'running') {
+      html = '<button class="btn sm danger" data-key="' + key + '" data-type="' + type + '" data-inst="' + inst + '" data-date="' + date + '" data-target="' + target + '" onclick="cancelJob(this)">Cancel</button>';
+    } else if (state === 'cancelling') {
+      html = '<button class="btn sm" disabled="">Cancelling…</button>';
+    } else if (state === 'pending') {
+      html = '<button class="btn sm danger" data-key="' + key + '" data-type="' + type + '" data-inst="' + inst + '" data-date="' + date + '" data-target="' + target + '" onclick="cancelJob(this)">Cancel</button>';
+    } else {
+      html = '<button class="btn sm" onclick="reRunJob(this, \'' + key + '\')" title="Re-run this job">⟳ Re-run</button>';
+    }
+    html += '<button class="btn sm log-btn" onclick="viewLog(this, \'' + type + '\', \'' + inst + '\', \'' + date + '\', \'' + target + '\')" title="View log" style="margin-left:0.25rem;">📄 Log</button>';
+    html += '<button class="btn sm hide-btn" onclick="hideRow(this, \'' + key + '\')" title="Hide this row" style="margin-left:0.25rem;">✕</button>';
+    td.innerHTML = html;
+  }
+
+  function updateErrorDesc(row, text) {
+    var td = row.querySelector('td:nth-child(8)');
+    if (!td) return;
+    var existing = td.querySelector('.error-desc');
+    if (existing) {
+      existing.textContent = text;
+    } else if (text) {
+      var span = document.createElement('span');
+      span.className = 'error-desc';
+      span.style.cssText = 'color:var(--red);font-size:0.8rem;font-family:monospace;margin-left:0.3rem;';
+      span.textContent = text;
+      td.appendChild(span);
+    }
+  }
+
+  // ── Status filter ────────────────────────────────────────────────────────
+  window.toggleStatus = function(el, status) {
+    if (activeStatus === status) {
+      activeStatus = null;
+      document.querySelectorAll('.job-count').forEach(function(e) { e.classList.remove('active'); });
+      document.getElementById('clear-filter').style.display = 'none';
+    } else {
+      activeStatus = status;
+      document.querySelectorAll('.job-count').forEach(function(e) { e.classList.remove('active'); });
+      el.classList.add('active');
+      document.getElementById('clear-filter').style.display = '';
+    }
+    applyFilters(); saveFilters();
+  };
+
+  window.clearFilter = function() {
+    activeStatus = null;
+    activeType = '';
+    activeInst = '';
+    document.querySelectorAll('.job-count').forEach(function(e) { e.classList.remove('active'); });
+    document.getElementById('clear-filter').style.display = 'none';
+    applyFilters(); saveFilters();
+  };
+
+  // ── Search ───────────────────────────────────────────────────────────────
+  function applyFilters() {
+    var q = (searchInput ? searchInput.value : '').toLowerCase().trim();
+    var visible = 0;
+    allRows.forEach(function(r) {
+      var ok = true;
+      if (q) {
+        var haystack = r.getAttribute('data-search') || '';
+        ok = haystack.indexOf(q) !== -1;
+      }
+      if (ok && activeStatus) ok = r.getAttribute('data-status') === activeStatus;
+      if (ok && activeType) ok = r.getAttribute('data-type') === activeType;
+      if (ok && activeInst) {
+        var instCell = r.querySelector('td:nth-child(3)');
+        ok = instCell && instCell.textContent.trim() === activeInst;
+      }
+      var isHidden = hiddenKeys.indexOf(r.getAttribute('data-key')) !== -1;
+      r.style.display = (ok && !isHidden) ? '' : 'none';
+      var logRow = r.nextElementSibling;
+      if (logRow && logRow.classList.contains('log-row') && (!ok || isHidden)) logRow.style.display = 'none';
+      if (ok && !isHidden) visible++;
+    });
+    if (searchStatus) {
+      searchStatus.textContent = (q || activeStatus || activeType || activeInst) ? visible + ' / ' + total + ' matching' : total + ' jobs';
+    }
+  }
+
+  if (searchInput) searchInput.addEventListener('input', function() { applyFilters(); saveFilters(); });
+
+  // ── Hide row (with confirmation) ─────────────────────────────────────────
+  var pendingHideKey = null;
+
+  window.hideRow = function(btn, key) {
+    pendingHideKey = key;
+    document.getElementById('hide-confirm-overlay').classList.add('visible');
+  };
+
+  window.confirmHide = function() {
+    if (pendingHideKey) {
+      if (hiddenKeys.indexOf(pendingHideKey) === -1) hiddenKeys.push(pendingHideKey);
+      try { localStorage.setItem('jobs:hidden', JSON.stringify(hiddenKeys)); } catch (_) {}
+      applyFilters();
+    }
+    closeHideConfirm();
+  };
+
+  window.closeHideConfirm = function() {
+    document.getElementById('hide-confirm-overlay').classList.remove('visible');
+    pendingHideKey = null;
+  };
+
+  // ── Cancel job (in-place) ────────────────────────────────────────────────
+  window.cancelJob = function(btn) {
+    var type   = btn.getAttribute('data-type');
+    var inst   = btn.getAttribute('data-inst');
+    var date   = btn.getAttribute('data-date');
+    var target = btn.getAttribute('data-target');
+    var url    = type === 'transit_fit' ? '/transit-fit/cancel' : '/photometry/cancel';
+
+    btn.disabled = true;
+    btn.innerText = 'Cancelling…';
+
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target })
+    })
+    .then(function(r) { if (!r.ok) return r.json().then(function(e) { throw new Error(e.error || 'Failed'); }); return r.json(); })
+    .then(function() {
+      var row = btn.closest('.job-row');
+      if (row) {
+        row.setAttribute('data-status', 'cancelling');
+        replaceStatusBadge(row, 'cancelling');
+        btn.disabled = true;
+        btn.innerText = 'Cancelling…';
+      }
+    })
+    .catch(function(err) { alert('Error: ' + err.message); btn.disabled = false; btn.innerText = 'Cancel'; });
+  };
+
+  // ── Re-run job (in-place) ───────────────────────────────────────────────
+  window.reRunJob = function(btn, key) {
+    btn.disabled = true;
+    btn.innerText = 'Launching…';
+    fetch('/jobs/rerun', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: key })
+    })
+    .then(function(r) { if (!r.ok) return r.json().then(function(e) { throw new Error(e.error || 'Failed'); }); return r.json(); })
+    .then(function() {
+      var hidx = hiddenKeys.indexOf(key);
+      if (hidx !== -1) {
+        hiddenKeys.splice(hidx, 1);
+        try { localStorage.setItem('jobs:hidden', JSON.stringify(hiddenKeys)); } catch (_) {}
+      }
+      var row = rowByKey(key);
+      if (row) {
+        row.setAttribute('data-status', 'running');
+        var inst = row.querySelector('.job-actions .log-btn');
+        var instV = inst ? inst.getAttribute('onclick').match(/'([^']+)'/g).map(function(m) { return m.replace(/'/g,''); }) : [];
+        replaceStatusBadge(row, 'running');
+        replaceActions(row, 'running', key, instV[0] || '', instV[1] || '', instV[2] || '', instV[3] || '');
+      }
+    })
+    .catch(function(err) { alert('Error: ' + err.message); btn.disabled = false; btn.innerText = '⟳ Re-run'; });
+  };
+
+  // ── View log (inline expand) ────────────────────────────────────────────
+  window.viewLog = function(btn, type, inst, date, target) {
+    var row = btn.closest('tr');
+    var logRow = row.nextElementSibling;
+    if (!logRow || !logRow.classList.contains('log-row')) return;
+    var pre = logRow.querySelector('pre.log-content');
+    if (!pre) return;
+
+    if (logRow.style.display !== 'none') { logRow.style.display = 'none'; return; }
+
+    logRow.style.display = '';
+    pre.textContent = 'Loading…';
+    var url = '/jobs/log/' + encodeURIComponent(type) + '/' + encodeURIComponent(inst) + '/' + encodeURIComponent(date) + '/' + encodeURIComponent(target);
+    fetch(url)
+      .then(function(r) { if (!r.ok) throw new Error('Log not found'); return r.text(); })
+      .then(function(text) { pre.textContent = text; })
+      .catch(function(err) { pre.textContent = 'Error: ' + err.message; });
+  };
+
+  // ── Live polling (in-place updates, no page reload) ────────────────────
+  function pollRunning() {
+    // Client-side elapsed bump
+    document.querySelectorAll('.job-row[data-status="running"] .elapsed-cell, .job-row[data-status="cancelling"] .elapsed-cell').forEach(function(cell) {
+      var e = parseInt(cell.getAttribute('data-elapsed') || '0', 10);
+      cell.setAttribute('data-elapsed', ++e);
+      cell.textContent = formatElapsed(e);
+    });
+
+    fetch('/jobs/status')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        // Update summary counts
+        var countEls = (document.getElementById('jobs-summary') || document.createElement('div')).querySelectorAll('.job-count');
+        countEls.forEach(function(el) {
+          var s = el.getAttribute('data-status');
+          if (s && data.counts[s] !== undefined) {
+            var num = el.querySelector('.job-count-num');
+            if (num) {
+              num.textContent = data.counts[s];
+              el.classList.toggle('has-' + s, data.counts[s] > 0);
+            }
+          }
+        });
+
+        // Update finished jobs in-place
+        for (var key in data.finished) {
+          if (!data.finished.hasOwnProperty(key)) continue;
+          var f = data.finished[key];
+          var row = rowByKey(key);
+          if (!row || row.getAttribute('data-status') === f.state) continue;
+
+          row.setAttribute('data-status', f.state);
+          replaceStatusBadge(row, f.state);
+          var td = row.querySelector('td:nth-child(6) .elapsed-cell') || row.querySelector('td:nth-child(6)');
+          if (td && f.elapsed != null) {
+            td.setAttribute('data-elapsed', f.elapsed);
+            td.textContent = formatElapsed(f.elapsed);
+          }
+          if (f.error_desc) updateErrorDesc(row, f.error_desc);
+
+          // Get inst/date/target from log-btn onclick
+          var logBtn = row.querySelector('.log-btn');
+          var parts = [];
+          if (logBtn) {
+            var m = logBtn.getAttribute('onclick').match(/'([^']+)'/g);
+            if (m) parts = m.map(function(x) { return x.replace(/'/g, ''); });
+          }
+          var type = parts[0] || row.getAttribute('data-type') || '';
+          type = type === 'transit_fit' ? 'transit_fit' : 'photometry';
+          replaceActions(row, f.state, key, type, parts[1] || '', parts[2] || '', parts[3] || '');
+          applyFilters();
+        }
+
+        // Ensure pulse class on running badges
+        allRows.forEach(function(r) {
+          if (r.getAttribute('data-status') === 'running') {
+            var b = r.querySelector('.status-badge');
+            if (b && !b.classList.contains('pulse')) b.classList.add('pulse');
+          }
+        });
+      })
+      .catch(function() {});
+  }
+
+  // ── Initialise ──────────────────────────────────────────────────────────
+  if (searchStatus) searchStatus.textContent = total + ' jobs';
+
+  // Restore / save filter state
+  try {
+    var saved = localStorage.getItem('jobs:activeStatus');
+    if (saved) {
+      var el = document.querySelector('.job-count[data-status="' + saved + '"]');
+      if (el) { toggleStatus(el, saved); }
+    }
+    var savedSearch = localStorage.getItem('jobs:search');
+    if (savedSearch && searchInput) { searchInput.value = savedSearch; applyFilters(); }
+    var savedType = localStorage.getItem('jobs:typeFilter');
+    if (savedType) {
+      var tel = document.querySelector('#type-summary .job-count[data-type="' + savedType + '"]');
+      if (tel) { toggleType(tel, savedType); }
+    }
+    var savedInst = localStorage.getItem('jobs:instFilter');
+    if (savedInst) {
+      var iel = document.querySelector('#inst-summary .job-count[data-inst="' + savedInst + '"]');
+      if (iel) { toggleInst(iel, savedInst); }
+    }
+  } catch (_) {}
+
+  function saveFilters() {
+    try {
+      localStorage.setItem('jobs:activeStatus', activeStatus || '');
+      localStorage.setItem('jobs:search', searchInput ? searchInput.value : '');
+      localStorage.setItem('jobs:typeFilter', activeType || '');
+      localStorage.setItem('jobs:instFilter', activeInst || '');
+    } catch (_) {}
+  }
+
+  applyFilters();
+
+  // ── Sort persistence ────────────────────────────────────────────────────
+  function saveSort(colIdx, dir) {
+    try { localStorage.setItem('jobs:sort', JSON.stringify({ col: colIdx, dir })); } catch (_) {}
+  }
+  function restoreSort() {
+    try {
+      var raw = localStorage.getItem('jobs:sort');
+      if (!raw) return;
+      var ref = JSON.parse(raw);
+      if (ref.col == null || !ref.dir) return;
+      var table = document.getElementById('jobs-table');
+      if (!table) return;
+      var headerRow = table.tHead && table.tHead.rows[0];
+      if (!headerRow) return;
+      var th = headerRow.cells[ref.col];
+      if (!th) return;
+      th.dataset.sortDir = ref.dir === 'asc' ? '' : 'asc';
+      th.click();
+    } catch (_) {}
+  }
+  document.querySelectorAll('#jobs-table thead tr:first-child th.sortable').forEach(function(th) {
+    th.addEventListener('click', function() {
+      requestAnimationFrame(function() { saveSort(th.cellIndex, th.dataset.sortDir || ''); });
+    });
+  });
+  requestAnimationFrame(restoreSort);
+
+  // Start polling
+  var hasRunning = document.querySelectorAll('.job-row[data-status="running"], .job-row[data-status="cancelling"]').length > 0;
+  if (hasRunning) setInterval(pollRunning, 3000);
+})();
+</script>
+{% endblock %}
