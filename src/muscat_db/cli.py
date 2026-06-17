@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import re
+import signal
+import time
 from datetime import date
 
 import click
@@ -65,7 +67,7 @@ def _complete_ccd() -> list[str]:
 
 def _complete_year() -> list[str]:
     this_year = date.today().year
-    return [str(y)[2:] for y in range(this_year, this_year - 5, -1)]
+    return ["all", *(str(y)[2:] for y in range(this_year, this_year - 5, -1))]
 
 
 def _complete_obsdate(ctx: typer.Context) -> list[str]:
@@ -127,11 +129,16 @@ def scan_missing(
         click_type=_INST_CHOICES,
     ),
     year: str = typer.Argument(
-        ..., help="Year prefix (e.g. 25)", autocompletion=_complete_year,
+        ..., help="Year prefix (e.g. 25) or 'all' for every date dir",
+        autocompletion=_complete_year,
     ),
     workers: int | None = _WORKER_OPTION,
+    force: bool = typer.Option(
+        False, "--force", "-f",
+        help="Rescan every date with FITS data, overwriting existing obslog CSVs.",
+    ),
 ):
-    """Scan all dates for an instrument that don't yet have an obslog."""
+    """Scan all dates for an instrument that don't yet have an obslog (or all, with --force)."""
     with Progress(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
@@ -139,17 +146,21 @@ def scan_missing(
         TimeRemainingColumn(),
         console=console,
     ) as progress:
-        dates = scan_missing_dates(instrument, year, max_workers=workers, progress=progress)
+        dates = scan_missing_dates(
+            instrument, year, max_workers=workers, progress=progress, force=force,
+        )
+    label = "Rescanned" if force else "Scanned"
     if dates:
-        console.print(f"[green]Scanned {len(dates)} new dates for {instrument}[/]")
+        console.print(f"[green]{label} {len(dates)} dates for {instrument}[/]")
     else:
-        console.print(f"[yellow]No missing dates found for {instrument} {year}[/]")
+        console.print(f"[yellow]No dates found for {instrument} {year}[/]")
 
 
 @app.command(cls=_Cmd)
 def scan_all(
     year: str = typer.Argument(
-        ..., help="Year prefix (e.g. 25)", autocompletion=_complete_year,
+        ..., help="Year prefix (e.g. 25) or 'all' for every date dir",
+        autocompletion=_complete_year,
     ),
     workers: int | None = _WORKER_OPTION,
 ):
@@ -223,9 +234,100 @@ def build_db(
 ):
     """Build SQLite database from all CSV observation logs."""
     from muscat_db.database import build_db as _build_db
-    console.print("[blue]Building database...[/]")
-    count = _build_db(db)
+    console.print("[cyan]Scanning observation logs...[/]")
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[bold]{task.fields[filename]}"),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        count = _build_db(db, progress=progress)
     console.print(f"[green]Database built: {count} frames indexed in {db}[/]")
+
+
+def _pids_listening_on(port: int) -> list[int]:
+    """PIDs of processes holding a LISTEN socket on ``port`` (Linux /proc).
+
+    Reads the listening-socket inodes for the port from ``/proc/net/tcp{,6}``,
+    then maps them to owning PIDs via each process's ``/proc/<pid>/fd`` links.
+    Dependency-free; returns an empty list if nothing is listening.
+    """
+    listen_state = "0A"  # TCP_LISTEN in /proc/net/tcp
+    inodes: set[str] = set()
+    for proto in ("tcp", "tcp6"):
+        try:
+            with open(f"/proc/net/{proto}") as fh:
+                next(fh, None)  # skip header
+                for line in fh:
+                    parts = line.split()
+                    if len(parts) < 10 or parts[3] != listen_state:
+                        continue
+                    local_port = int(parts[1].rsplit(":", 1)[1], 16)
+                    if local_port == port:
+                        inodes.add(parts[9])
+        except OSError:
+            continue
+    if not inodes:
+        return []
+
+    pids: list[int] = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        fd_dir = f"/proc/{entry}/fd"
+        try:
+            for fd in os.listdir(fd_dir):
+                try:
+                    target = os.readlink(f"{fd_dir}/{fd}")
+                except OSError:
+                    continue
+                if target.startswith("socket:[") and target[8:-1] in inodes:
+                    pids.append(int(entry))
+                    break
+        except OSError:
+            continue  # process vanished or not ours to inspect
+    return pids
+
+
+def _stop_running_servers(port: int, *, timeout: float = 5.0) -> list[int]:
+    """Terminate any servers listening on ``port``. Returns the PIDs signalled.
+
+    Sends SIGTERM first (catches uvicorn's reloader parent and worker, both of
+    which hold the socket), waits up to ``timeout`` for a clean exit, then
+    SIGKILLs any straggler still bound to the port.
+    """
+    me = os.getpid()
+    pids = [p for p in _pids_listening_on(port) if p != me]
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not [p for p in _pids_listening_on(port) if p != me]:
+            return pids
+        time.sleep(0.2)
+
+    for pid in _pids_listening_on(port):
+        if pid == me:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    return pids
+
+
+def _run_server(db: str, host: str, port: int, reload: bool, workers: int = 1) -> None:
+    os.environ["MUSCAT_DB_PATH"] = db
+    import uvicorn
+    if reload:
+        uvicorn.run("muscat_db.web:app", host=host, port=port, reload=True)
+    else:
+        uvicorn.run("muscat_db.web:app", host=host, port=port, workers=workers)
 
 
 @app.command(cls=_Cmd)
@@ -234,11 +336,28 @@ def serve(
     host: str = typer.Option("0.0.0.0", "--host", help="Bind address"),
     port: int = typer.Option(8000, "--port", "-p", help="Port number"),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes"),
+    workers: int = typer.Option(1, "--workers", "-w", help="Number of worker processes"),
 ):
     """Start the web frontend."""
-    os.environ["MUSCAT_DB_PATH"] = db
-    import uvicorn
-    uvicorn.run("muscat_db.web:app", host=host, port=port, reload=reload)
+    _run_server(db, host, port, reload, workers)
+
+
+@app.command(cls=_Cmd)
+def restart(
+    db: str = typer.Option("muscat.db", "--db", help="SQLite database path"),
+    host: str = typer.Option("0.0.0.0", "--host", help="Bind address"),
+    port: int = typer.Option(8000, "--port", "-p", help="Port number"),
+    reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes"),
+    workers: int = typer.Option(1, "--workers", "-w", help="Number of worker processes"),
+):
+    """Stop any server already running on the port, then start a fresh one."""
+    stopped = _stop_running_servers(port)
+    if stopped:
+        console.print(f"[yellow]Stopped running server (pid {', '.join(map(str, stopped))}) on port {port}[/]")
+    else:
+        console.print(f"[dim]No server running on port {port}[/]")
+    console.print(f"[green]Starting server on {host}:{port}[/]")
+    _run_server(db, host, port, reload, workers)
 
 
 if __name__ == "__main__":

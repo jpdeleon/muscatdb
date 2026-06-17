@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ instrument }} {{ obsdate }} CCD{{ ccd }} — MuSCAT ObsLog{% endblock %}
 {% block content %}
-<h1><a href="/" style="color:var(--text-dim);font-weight:400;">Instruments</a>
+<h1><a href="/logs" style="color:var(--text-dim);font-weight:400;">Instruments</a>
   / <a href="/{{ instrument }}" style="color:var(--text-dim);font-weight:400;">{{ instrument }}</a>
   / <a href="/{{ instrument }}/{{ obsdate }}" style="color:var(--text-dim);font-weight:400;">{{ obsdate }}</a>
   / CCD{{ ccd }}</h1>

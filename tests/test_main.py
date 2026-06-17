@@ -116,7 +116,7 @@ class TestInstruments:
         assert MUSCAT4.use_alt_ut_key is True
 
     def test_instruments_dict(self):
-        assert set(INSTRUMENTS) == {"muscat", "muscat2", "muscat3", "muscat4"}
+        assert set(INSTRUMENTS) == {"muscat", "muscat2", "muscat3", "muscat4", "sinistro"}
 
     def test_get_instrument_ok(self):
         assert get_instrument("muscat3") is MUSCAT3
@@ -259,12 +259,14 @@ class TestScanner:
             assert "260101" in result[name]
 
     def test_scan_yesterday(self, tmp_obslog, tmp_data, mocker):
+        import datetime
         from muscat_db.scanner import scan_yesterday
         mock_date = mocker.patch("muscat_db.scanner.date")
-        mock_date.today.return_value.strftime.return_value = "260515"
+        mock_date.today.return_value = datetime.date(2026, 5, 15)
 
         for name in INSTRUMENTS:
-            os.makedirs(f"{tmp_data}/{name}/260514", exist_ok=True)
+            inst = INSTRUMENTS[name]
+            self._make_fits_for_instrument(tmp_data, inst, "260514", 0, 1)
 
         scanned = scan_yesterday(max_workers=1)
         assert len(scanned) > 0
@@ -468,7 +470,8 @@ class TestDatabase:
             )
 
     def test_build_db(self):
-        from muscat_db.database import build_db
+        from muscat_db.database import build_db, get_last_build_date
+        import datetime
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
         try:
@@ -483,6 +486,10 @@ class TestDatabase:
             cur = conn.execute("SELECT COUNT(*) FROM summaries")
             assert cur.fetchone()[0] == 7
             conn.close()
+
+            # Test get_last_build_date reads from metadata
+            last_build = get_last_build_date(db_path)
+            assert last_build == datetime.date.today().strftime("%Y-%m-%d")
         finally:
             os.unlink(db_path)
 

@@ -1,0 +1,818 @@
+{% extends "base.html" %}
+{% block title %}Photometry — MuSCAT-db{% endblock %}
+{% block content %}
+<style>
+  /* Page-specific styles only. Shared components (buttons, .opt* form fields,
+     details.adv, .run-panel, .phot-section, .help-tooltip, #run-log, .dl-row)
+     live in /static/styles.css. */
+  .phot-selectors {
+    display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap;
+    margin-bottom: 1.5rem;
+  }
+  .phot-selectors .field { display: flex; flex-direction: column; gap: 0.3rem; }
+  .phot-selectors label {
+    font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .phot-selectors select {
+    background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.45rem 0.6rem; font-size: 0.9rem; min-width: 11rem;
+  }
+  .phot-selectors select:focus { outline: none; border-color: var(--accent); }
+  .phot-selectors select:disabled { opacity: 0.5; }
+  .phot-empty {
+    margin-top: 1rem; padding: 2rem; text-align: center;
+    background: var(--surface); border: 1px dashed var(--border);
+    border-radius: 10px;
+  }
+  .fig-grid {
+    display: grid; gap: 1rem;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  }
+  .fig {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0.75rem; overflow: hidden;
+  }
+  .fig .cap {
+    font-size: 0.8rem; color: var(--text-dim); margin-bottom: 0.5rem;
+    display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;
+  }
+  .fig img { width: 100%; height: auto; display: block; border-radius: 6px; background: #fff; }
+  /* Default summary layout: one vertical column (light curve, stack, covariates). */
+  .fig-grid.col { grid-template-columns: 1fr; max-width: 780px; }
+  /* drag-to-reorder */
+  .drag-handle {
+    cursor: grab; color: var(--text-dim); font-size: 1rem; line-height: 1;
+    padding: 0 0.2rem; user-select: none; touch-action: none;
+  }
+  .drag-handle:hover { color: var(--accent); }
+  .drag-handle:active { cursor: grabbing; }
+  .fig.drag-ghost { opacity: 0.4; }
+  .fig-grid.sortable .fig { will-change: transform; }
+  .band-tabs { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .band-tab {
+    background: var(--surface2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 0.3rem 0.9rem; font-size: 0.85rem; cursor: pointer;
+  }
+  .band-tab.active { border-color: var(--accent); color: var(--accent); }
+  .band-panel { display: none; }
+  .band-panel.active { display: block; }
+  .warn { color: var(--red); font-size: 0.85rem; margin-top: 0.5rem; }
+  .band-checks { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+  .band-checks label { display: flex; align-items: center; gap: 0.3rem; color: var(--text); font-size: 0.85rem; }
+  .opt-span2 { grid-column: span 2; }
+  .run-cmd { display: flex; gap: 0.5rem; align-items: stretch; margin-top: 1rem; width: 100%; }
+  .run-cmd code {
+    flex: 1; text-align: left; background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.6rem 0.75rem; font-family: 'JetBrains Mono', monospace;
+    font-size: 0.76rem; overflow-x: auto; white-space: pre;
+  }
+  #opt-error { color: var(--red); font-size: 0.8rem; min-height: 1rem; }
+</style>
+
+<h1>Photometry</h1>
+
+<div id="job-banner" style="display:none; margin-bottom:1rem; padding:0.6rem 1rem; border-radius:8px; background:var(--surface2); border:1px solid var(--accent); font-size:0.9rem;">
+  <span id="job-banner-msg"></span>
+  <a id="job-banner-link" style="margin-left:0.5rem; font-weight:600;" href="#">view</a>
+</div>
+
+<form class="phot-selectors" method="get" action="/photometry" id="phot-form">
+  <div class="field">
+    <label for="sel-inst">Instrument</label>
+    <select id="sel-inst" name="inst">
+      <option value="">— select —</option>
+      {% for name in instruments %}
+      <option value="{{ name }}" {% if name == sel_inst %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label for="sel-date">Obs date</label>
+    <select id="sel-date" name="date" {% if not sel_inst %}disabled{% endif %}>
+      <option value="">— select —</option>
+      {% for d in dates %}
+      <option value="{{ d }}" {% if d == sel_date %}selected{% endif %}>{{ d }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label for="sel-target">Target</label>
+    <select id="sel-target" name="target" {% if not sel_date %}disabled{% endif %}>
+      <option value="">— select —</option>
+      {% for t in targets %}
+      <option value="{{ t }}" {% if t == sel_target %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <noscript><button class="btn" type="submit">View</button></noscript>
+</form>
+
+{% if not (sel_inst and sel_date and sel_target) %}
+  <div class="phot-empty">
+    <div style="font-size: 2rem; margin-bottom: 0.75rem;">🔭</div>
+    <p style="color: var(--text-dim);">
+      Pick an instrument, observation date, and target to view its reduction.
+    </p>
+  </div>
+{% else %}
+  <div class="phot-section" style="margin: 1rem 0 0;">
+    <h2 style="display: flex; gap: 1.5rem; align-items: center; flex-wrap: wrap;">
+      <span>
+        <a href="/{{ sel_inst }}/{{ sel_date }}" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">Show Obslog</a>
+        {% if obs_type %}
+          <span style="font-size: 0.85rem; color: var(--text-dim); font-weight: normal; margin-left: 0.35rem;">{{ obs_type }}</span>
+        {% endif %}
+      </span>
+      {% if wiki_url %}<a href="{{ wiki_url }}" target="_blank" rel="noopener" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">MuSCAT2 wiki ↗</a>{% endif %}
+    </h2>
+  </div>
+
+  {% if outputs and outputs.has_any %}
+    {% if outputs.summary %}
+    <div class="phot-section">
+      <h2 style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+        <span>Light curves &amp; Covariates <span style="font-size:0.75rem;color:var(--text-dim);font-weight:400;">— drag ⠿ to rearrange</span></span>
+        {% set ns = namespace(has_csv=false) %}
+        {% for band, prods in outputs.bands.items() %}
+          {% if prods.get('csv') %}{% set ns.has_csv = true %}{% endif %}
+        {% endfor %}
+        {% if ns.has_csv %}
+        <span class="dl-row" style="font-size: 0.85rem; font-weight: 400;">
+          Download csv:
+          {% for band, prods in outputs.bands.items() %}
+            {% if prods.get('csv') %}
+          <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods['csv']['file'] }}" download class="csv-link">⬇ {{ band }}</a>
+            {% endif %}
+          {% endfor %}
+          <a href="#" id="dl-all-csv" style="color: var(--accent2); font-weight: 600;">⬇ all</a>
+        </span>
+        {% endif %}
+      </h2>
+      <div class="fig-grid col sortable" data-sort-key="summary">
+        {% for key in ['lightcurves', 'raw_flux', 'covariates', 'stacks'] %}
+          {% if outputs.summary.get(key) %}
+          <figure class="fig" data-fig-id="{{ key }}">
+            <figcaption class="cap">
+              <span>{{ key }} (Created: {{ outputs.summary[key].created_at }})</span>
+              <span class="drag-handle" title="Drag to reorder">⠿</span>
+            </figcaption>
+            <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.summary[key].file }}" target="_blank">
+              <img draggable="false" loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.summary[key].file }}" alt="{{ key }}">
+            </a>
+          </figure>
+          {% endif %}
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if outputs.bands %}
+    <div class="phot-section">
+      <h2>Per-band products</h2>
+      <div class="band-tabs">
+        {% for band in outputs.bands %}
+        <button type="button" class="band-tab {% if loop.first %}active{% endif %}" data-band="{{ band }}">{{ band }}</button>
+        {% endfor %}
+      </div>
+      {% for band, prods in outputs.bands.items() %}
+      <div class="band-panel {% if loop.first %}active{% endif %}" data-band="{{ band }}">
+        <div class="fig-grid col sortable" data-sort-key="band">
+          {% for key in ['ref', 'apertures', 'alignment', 'gif'] %}
+            {% if prods.get(key) %}
+            <figure class="fig" data-fig-id="{{ key }}">
+              <figcaption class="cap">
+                <span>{{ band }} · {{ key }} (Created: {{ prods[key].created_at }})</span>
+                <span class="drag-handle" title="Drag to reorder">⠿</span>
+              </figcaption>
+              <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods[key].file }}" target="_blank">
+                <img draggable="false" loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods[key].file }}" alt="{{ band }} {{ key }}">
+              </a>
+            </figure>
+            {% endif %}
+          {% endfor %}
+        </div>
+        {% if previews.get(band) and previews[band].headers %}
+        <div class="csv-wrap">
+          <table>
+            <thead><tr>{% for h in previews[band].headers %}<th>{{ h }}</th>{% endfor %}</tr></thead>
+            <tbody>
+              {% for row in previews[band].rows %}
+              <tr>{% for cell in row %}<td class="mono">{{ cell }}</td>{% endfor %}</tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="phot-section">
+      <div class="dl-row">
+        {% if outputs.npz %}<a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.npz }}" download>⬇ data archive (.npz)</a>{% endif %}
+        {% if outputs.log %}<a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.log }}" target="_blank">📄 pipeline log</a>{% endif %}
+      </div>
+    </div>
+  {% else %}
+    <div class="phot-empty">
+      <div style="font-size: 3rem; color: var(--red); margin-bottom: 1rem;">⚠</div>
+      <h2 style="color: var(--text);">No reduction found</h2>
+      <p style="color: var(--text-dim);">No prose outputs yet for this target — configure options below and run.</p>
+    </div>
+  {% endif %}
+
+  {% if outputs.masters %}
+  <div class="phot-section">
+    <h2>Master Calibration Images</h2>
+    <div class="fig-grid" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
+      {% for filename in outputs.masters %}
+      <figure class="fig">
+        <figcaption class="cap">
+          <span>{{ filename }}</span>
+        </figcaption>
+        <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ filename }}" target="_blank">
+          <img draggable="false" loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ filename }}" alt="{{ filename }}">
+        </a>
+      </figure>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# ---- unified run / re-run panel with full option set ---- #}
+  <div class="phot-section run-panel">
+    <h2>{% if outputs and outputs.has_any %}Configure & Run Photometry{% else %}Run reduction{% endif %}</h2>
+    {% if raw_missing %}
+    <p class="warn">⚠ Raw data directory not found ({{ sel_inst }}/{{ sel_date }}) — a run will fail until the frames are available.</p>
+    {% endif %}
+
+    <details class="adv" id="opt-panel">
+      <summary>Pipeline options (all run_photometry arguments)</summary>
+      <div class="opt-grid">
+        <div class="opt opt-span2">
+          <label>Bands <span class="help-tooltip" title="Filter bands to reduce.">?</span></label>
+          {% set narrow_bands = ['Na_D', 'g_narrow', 'i_narrow', 'z_narrow'] %}
+          {# available_bands is the obslog-derived list for this target; when it
+             is empty (e.g. manually-typed / un-ingested target) fall back to the
+             standard static list. Shared by the checkboxes and the ref_band select. #}
+          {% set band_choices = available_bands if available_bands else ['gp', 'rp', 'ip', 'zs', 'Na_D', 'g_narrow', 'i_narrow', 'z_narrow'] %}
+          <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+            <div class="band-checks">
+              {% for b in band_choices %}
+              <label><input type="checkbox" name="band" value="{{ b }}" {% if available_bands or b in run_defaults.bands or (is_narrowband and b in narrow_bands) %}checked{% endif %}> {{ b }}</label>
+              {% endfor %}
+            </div>
+            <button class="btn" type="button" id="defaults-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2; flex-shrink: 0;">Use defaults</button>
+          </div>
+        </div>
+
+        <div class="opt">
+          <label for="opt-target_id">Target ID <span class="help-tooltip" title="Target index in Gaia catalog (corresponds to --tID). Empty means auto-detect target at center.">?</span></label>
+          <input type="text" id="opt-target_id" placeholder="auto" value="{{ run_defaults.target_id }}">
+          <span class="hint">--tID; empty → auto</span>
+        </div>
+        <div class="opt">
+          <label for="opt-comparison_ids">Comparison IDs <span class="help-tooltip" title="Indexes of reference/comparison stars (corresponds to --cID). Comma-separated (e.g. 1,2,3). Empty means auto-detect.">?</span></label>
+          <input type="text" id="opt-comparison_ids" placeholder="auto" value="{{ run_defaults.comparison_ids }}">
+          <span class="hint">--cID; comma-separated, empty → auto</span>
+        </div>
+        <div class="opt">
+          <label for="opt-avoid_comparison_ids">Avoid Comparison IDs <span class="help-tooltip" title="Star indices to exclude as comparisons (corresponds to --avoid_cids). Requires --ref_band; indices refer to that band's catalog. Comma-separated (e.g. 5,7,12). Empty means none excluded.">?</span></label>
+          <input type="text" id="opt-avoid_comparison_ids" placeholder="none" value="{{ run_defaults.avoid_comparison_ids }}" disabled>
+          <span class="hint">--avoid_cids; requires --ref_band; comma-separated, empty → none</span>
+        </div>
+        <div class="opt">
+          <label for="opt-target_coord">Target coordinates <span class="help-tooltip" title="Override target coordinates 'RA Dec' (e.g. '12:34:56.7 -45:32:10.0' or '187.5 -45.5'). When set, bypasses MAST name resolution (useful if astroquery fails).">?</span></label>
+          <input type="text" id="opt-target_coord" placeholder="MAST resolution" value="{{ run_defaults.target_coord }}">
+          <span class="hint">--target_coord; empty → resolve name via MAST</span>
+        </div>
+        <div class="opt">
+          <label for="opt-ref_band">Reference band <span class="help-tooltip" title="Band used as alignment reference across other bands (corresponds to --ref_band). Empty means per-band self-reference.">?</span></label>
+          <select id="opt-ref_band">
+            <option value="">per-band self-reference</option>
+            {% for b in band_choices %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="opt">
+          <label for="opt-refid">Reference frame index <span class="help-tooltip" title="Frame index to use as alignment reference (corresponds to --refid). Empty means auto (middle/best frame).">?</span></label>
+          <input type="number" id="opt-refid" placeholder="auto" min="0">
+        </div>
+        <div class="opt">
+          <label for="opt-aper_unit">Aperture unit <span class="help-tooltip" title="Units for aperture radii (pixels or FWHM) (corresponds to --aper_unit).">?</span></label>
+          <select id="opt-aper_unit">
+             <option value="pix" selected>pix</option>
+            <option value="fwhm">fwhm</option>
+          </select>
+        </div>
+        <div class="opt">
+          <label for="opt-max_num_stars">Max # stars (PSF) <span class="help-tooltip" title="Max number of stars to detect for PSF modeling or alignment (corresponds to --max_num_stars).">?</span></label>
+          <input type="number" id="opt-max_num_stars" value="{{ run_defaults.max_num_stars }}" min="1">
+        </div>
+        <div class="opt">
+          <label for="opt-annulus">Sky annulus (RIN,ROUT) <span class="help-tooltip" title="Inner and outer radii of background sky subtraction annulus (corresponds to --annulus). Required if aperture radii is set.">?</span></label>
+          <input type="text" id="opt-annulus" placeholder="e.g. 25,40">
+          <span class="hint">required with aperture radii</span>
+        </div>
+        <div class="opt">
+          <label for="opt-aper_radii">Aperture radii (MIN,MAX,DR) <span class="help-tooltip" title="Radius grid search parameters as MIN,MAX,DR (corresponds to --aper_radii). Required if annulus is set. Empty means use Gaia heuristic.">?</span></label>
+          <input type="text" id="opt-aper_radii" placeholder="Gaia heuristic">
+          <span class="hint">blank → auto from Gaia</span>
+        </div>
+        <div class="opt">
+          <label for="opt-n_stars_align"># stars for alignment <span class="help-tooltip" title="Number of stars to use for alignment (corresponds to --n_stars_align). Empty means same as Max # stars.">?</span></label>
+          <input type="number" id="opt-n_stars_align" placeholder="= max # stars" min="1">
+        </div>
+        <div class="opt">
+          <label for="opt-min_star_separation">Min star separation (px) <span class="help-tooltip" title="Minimum pixel separation between stars to avoid blended sources (corresponds to --min_star_separation).">?</span></label>
+          <input type="number" id="opt-min_star_separation" value="{{ run_defaults.min_star_separation }}" step="0.5" min="0">
+        </div>
+        <div class="opt">
+          <label for="opt-cutout_size">Cutout size (px) <span class="help-tooltip" title="Postage stamp cutout size around each star (corresponds to --cutout_size).">?</span></label>
+          <input type="number" id="opt-cutout_size" value="{{ run_defaults.cutout_size }}" min="1">
+        </div>
+        <div class="opt">
+          <label for="opt-ccd_trim">CCD trim (Y,X) <span class="help-tooltip" title="Number of pixels to trim from the borders of the image (corresponds to --ccd_trim).">?</span></label>
+          <input type="text" id="opt-ccd_trim" value="{{ run_defaults.ccd_trim }}">
+        </div>
+        <div class="opt">
+          <label for="opt-bin_size_minutes">Bin size (min) <span class="help-tooltip" title="Time binning interval in minutes for plotting light curves (corresponds to --bin_size_minutes).">?</span></label>
+          <input type="number" id="opt-bin_size_minutes" value="{{ run_defaults.bin_size_minutes }}" step="0.5" min="0">
+        </div>
+        <div class="opt">
+          <label for="opt-test_run_frames"># of test-run frames <span class="help-tooltip" title="Number of frames to process during a test-run reduction (corresponds to --test_run_frames).">?</span></label>
+          <input type="number" id="opt-test_run_frames" value="{{ run_defaults.test_run_frames }}" min="1">
+        </div>
+      </div>
+      <div class="opt-check-row">
+        <label class="opt-check-item"><input type="checkbox" id="opt-make_gif" checked> Make GIF <span class="help-tooltip" title="Generate an animated GIF showing target/alignment field over time (corresponds to --gif).">?</span></label>
+        <label class="opt-check-item"><input type="checkbox" id="opt-use_barycorrpy"> Use barycorrpy (BJD-TDB) <span class="help-tooltip" title="Use barycorrpy to perform high-precision BJD time conversion (corresponds to --use_barycorrpy).">?</span></label>
+        <label class="opt-check-item"><input type="checkbox" id="opt-overwrite" checked> Overwrite existing products <span class="help-tooltip" title="Overwrite existing reduction products for this target (corresponds to --overwrite).">?</span></label>
+        <label class="opt-check-item"><input type="checkbox" id="opt-plot_gaia_sources" checked> Plot Gaia sources <span class="help-tooltip" title="Overlay Gaia DR3 source catalog on check plots (corresponds to --plot_gaia_sources).">?</span></label>
+      </div>
+    </details>
+
+    <div id="opt-error"></div>
+    <div class="run-actions">
+      <button class="btn primary" type="button" id="run-test-btn" {% if raw_missing %}disabled{% endif %}>
+        ▶ Run test reduction (first {{ run_defaults.test_run_frames }} frames)
+      </button>
+      <button class="btn primary" type="button" id="run-full-btn" {% if raw_missing %}disabled{% endif %}>
+        ▶ Run full reduction (all frames)
+      </button>
+      <button class="btn" type="button" id="cancel-btn" style="display:none;border-color:var(--red);color:var(--red);">
+        ■ Cancel
+      </button>
+      <span class="hint" style="color: var(--text-dim); font-size: 0.8rem;">
+        Both use the options above; the test run limits frames per band.
+      </span>
+    </div>
+
+    <p style="color: var(--text-dim); font-size: 0.8rem; margin-top: 1rem;">Full reduction (all frames) — copy &amp; run in a shell:</p>
+    <div class="run-cmd">
+      <code id="full-cmd">{{ command }}</code>
+      <button class="btn" type="button" id="copy-cmd">Copy</button>
+    </div>
+    <pre id="run-log"></pre>
+  </div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var inst   = {{ sel_inst|tojson }};
+  var date   = {{ sel_date|tojson }};
+  var target = {{ sel_target|tojson }};
+  var rawMissing = {{ raw_missing|tojson }};
+
+  var SEL_KEY = 'phot:last';
+  var OPT_KEY = 'phot:options:' + inst + ':' + date + ':' + target;
+  var PANEL_KEY = 'phot:panel';
+  var JOB_KEY = 'phot:job';
+
+  // ----- restore the last selection on a bare /photometry visit -----
+  (function () {
+    if (inst || date || target || window.location.search) return;
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(SEL_KEY) || 'null'); } catch (e) { saved = null; }
+    if (saved && saved.inst) {
+      var qs = ['inst', 'date', 'target'].filter(function (k) { return saved[k]; })
+        .map(function (k) { return k + '=' + encodeURIComponent(saved[k]); }).join('&');
+      window.location.replace('/photometry?' + qs);
+    }
+  })();
+  // ...and remember the current selection for next time.
+  if (inst) {
+    try { localStorage.setItem(SEL_KEY, JSON.stringify({ inst: inst, date: date, target: target })); } catch (e) {}
+  }
+
+  // ----- persistent job: resume or show banner across page navigations -----
+  function saveJob() { try { localStorage.setItem(JOB_KEY, JSON.stringify({ inst: inst, date: date, target: target })); } catch (e) {} }
+  function clearJob() { try { localStorage.removeItem(JOB_KEY); } catch (e) {} }
+  (function checkSavedJob() {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(JOB_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved || !saved.inst) return;
+    if (saved.inst === inst && saved.date === date && saved.target === target) {
+      if (logEl) logEl.style.display = 'block';
+      if (!polling) polling = setInterval(poll, 2000);
+      poll();
+      return;
+    }
+    var banner = document.getElementById('job-banner');
+    var bannerMsg = document.getElementById('job-banner-msg');
+    var bannerLink = document.getElementById('job-banner-link');
+    if (!banner) return;
+    (function pollBanner() {
+      var qs = 'inst=' + encodeURIComponent(saved.inst) + '&date=' + encodeURIComponent(saved.date) + '&target=' + encodeURIComponent(saved.target);
+      fetch('/photometry/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
+        if (s.state === 'none') { clearJob(); banner.style.display = 'none'; return; }
+        banner.style.display = '';
+        bannerMsg.textContent = '⚡ ' + saved.target + ' @ ' + saved.inst + '/' + saved.date + ' — ' + s.state;
+        bannerLink.href = '/photometry?inst=' + encodeURIComponent(saved.inst) + '&date=' + encodeURIComponent(saved.date) + '&target=' + encodeURIComponent(saved.target);
+        if (s.state === 'done' || s.state === 'error' || s.state === 'cancelled') {
+          clearJob();
+          setTimeout(function () { banner.style.display = 'none'; }, 15000);
+          return;
+        }
+        setTimeout(pollBanner, 3000);
+      }).catch(function () { setTimeout(pollBanner, 5000); });
+    })();
+  })();
+
+  // ----- cascading selectors: navigate on change -----
+  var selInst   = document.getElementById('sel-inst');
+  var selDate   = document.getElementById('sel-date');
+  var selTarget = document.getElementById('sel-target');
+  function go(params) {
+    if (typeof window.showLoading === 'function') {
+      window.showLoading('Loading…');
+    }
+    var qs = Object.keys(params).filter(function (k) { return params[k]; })
+      .map(function (k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
+    window.location = '/photometry' + (qs ? '?' + qs : '');
+  }
+  if (selInst)   selInst.addEventListener('change', function () { go({ inst: this.value }); });
+  if (selDate)   selDate.addEventListener('change', function () { go({ inst: selInst.value, date: this.value }); });
+  if (selTarget) selTarget.addEventListener('change', function () { go({ inst: selInst.value, date: selDate.value, target: this.value }); });
+
+  // ----- band tabs (results view) -----
+  document.querySelectorAll('.band-tab').forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      var band = this.dataset.band;
+      document.querySelectorAll('.band-tab').forEach(function (t) { t.classList.toggle('active', t.dataset.band === band); });
+      document.querySelectorAll('.band-panel').forEach(function (p) { p.classList.toggle('active', p.dataset.band === band); });
+    });
+  });
+
+  // ----- smooth drag-to-reorder figures (native DnD + FLIP) -----
+  function figItems(container) {
+    return Array.prototype.slice.call(container.children).filter(function (c) {
+      return c.classList && c.classList.contains('fig');
+    });
+  }
+  function orderKey(container) { return 'figorder:' + (container.dataset.sortKey || 'default'); }
+
+  function restoreOrder(container) {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(orderKey(container)) || 'null'); } catch (e) { saved = null; }
+    if (!saved || !saved.length) return;
+    var byId = {};
+    figItems(container).forEach(function (el) { byId[el.dataset.figId] = el; });
+    saved.forEach(function (id) { if (byId[id]) { container.appendChild(byId[id]); delete byId[id]; } });
+  }
+  function saveOrder(container) {
+    try {
+      localStorage.setItem(orderKey(container),
+        JSON.stringify(figItems(container).map(function (el) { return el.dataset.figId; })));
+    } catch (e) {}
+  }
+
+  // FLIP: animate siblings smoothly to their new positions after a DOM move.
+  function flip(container, mutate) {
+    var els = figItems(container);
+    var first = els.map(function (el) { return [el, el.getBoundingClientRect()]; });
+    mutate();
+    first.forEach(function (pair) {
+      var el = pair[0], f = pair[1], l = el.getBoundingClientRect();
+      var dx = f.left - l.left, dy = f.top - l.top;
+      if (dx || dy) {
+        el.style.transition = 'none';
+        el.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
+        requestAnimationFrame(function () {
+          el.style.transition = 'transform 180ms ease';
+          el.style.transform = '';
+        });
+      }
+    });
+  }
+
+  // Reference node to insert the dragged item before (null -> append), chosen by
+  // nearest figure center so it works for both the column and the band grids.
+  function insertRef(container, dragEl, x, y) {
+    var els = figItems(container).filter(function (el) { return el !== dragEl; });
+    if (!els.length) return null;
+    var best = null, bestD = Infinity, before = true;
+    els.forEach(function (el) {
+      var b = el.getBoundingClientRect();
+      var cx = b.left + b.width / 2, cy = b.top + b.height / 2;
+      var d = Math.hypot(x - cx, y - cy);
+      if (d < bestD) {
+        bestD = d; best = el;
+        before = (y < cy - 1) || (y <= b.bottom && y >= b.top && x < cx);
+      }
+    });
+    return before ? best : best.nextElementSibling;
+  }
+
+  function makeSortable(container) {
+    restoreOrder(container);
+    var dragEl = null;
+    figItems(container).forEach(function (el) {
+      var handle = el.querySelector('.drag-handle');
+      // Only let a drag start from the grip handle (keeps image links clickable).
+      if (handle) {
+        handle.addEventListener('mousedown', function () { el.setAttribute('draggable', 'true'); });
+        handle.addEventListener('touchstart', function () { el.setAttribute('draggable', 'true'); }, { passive: true });
+      }
+      el.addEventListener('dragstart', function (e) {
+        dragEl = el; el.classList.add('drag-ghost');
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move';
+          try { e.dataTransfer.setData('text/plain', el.dataset.figId || ''); } catch (_) {}
+        }
+      });
+      el.addEventListener('dragend', function () {
+        el.classList.remove('drag-ghost');
+        el.removeAttribute('draggable');
+        dragEl = null;
+        saveOrder(container);
+      });
+    });
+    container.addEventListener('dragover', function (e) {
+      if (!dragEl) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      var ref = insertRef(container, dragEl, e.clientX, e.clientY);
+      if (ref === dragEl || ref === dragEl.nextElementSibling) return;
+      flip(container, function () { container.insertBefore(dragEl, ref); });
+    });
+    container.addEventListener('drop', function (e) { e.preventDefault(); });
+  }
+
+  document.querySelectorAll('.fig-grid.sortable').forEach(makeSortable);
+
+  // ----- options form -----
+  function val(id) { var e = document.getElementById(id); return e ? e.value : ''; }
+  function chk(id) { var e = document.getElementById(id); return e ? e.checked : false; }
+  function collectOptions() {
+    var bands = Array.prototype.slice.call(document.querySelectorAll('input[name="band"]:checked'))
+      .map(function (c) { return c.value; });
+    return {
+      bands: bands,
+      ref_band: val('opt-ref_band'),
+      refid: val('opt-refid'),
+      aper_unit: val('opt-aper_unit'),
+      aper_radii: val('opt-aper_radii'),
+      annulus: val('opt-annulus'),
+      target_id: val('opt-target_id'),
+      comparison_ids: val('opt-comparison_ids'),
+      avoid_comparison_ids: val('opt-avoid_comparison_ids'),
+      target_coord: val('opt-target_coord'),
+      make_gif: chk('opt-make_gif'),
+      plot_gaia_sources: chk('opt-plot_gaia_sources'),
+      use_barycorrpy: chk('opt-use_barycorrpy'),
+      test_run_frames: val('opt-test_run_frames'),
+      min_star_separation: val('opt-min_star_separation'),
+      max_num_stars: val('opt-max_num_stars'),
+      n_stars_align: val('opt-n_stars_align'),
+      cutout_size: val('opt-cutout_size'),
+      ccd_trim: val('opt-ccd_trim'),
+      bin_size_minutes: val('opt-bin_size_minutes'),
+      overwrite: chk('opt-overwrite')
+    };
+  }
+  function saveOptions() {
+    try { localStorage.setItem(OPT_KEY, JSON.stringify(collectOptions())); } catch (e) {}
+  }
+  function restoreOptions() {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved) return;
+    document.querySelectorAll('input[name="band"]').forEach(function (c) {
+      c.checked = saved.bands && saved.bands.indexOf(c.value) !== -1;
+    });
+    ['ref_band','refid','aper_unit','aper_radii','annulus',
+     'target_id','comparison_ids','avoid_comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
+     'n_stars_align','cutout_size','ccd_trim','bin_size_minutes'].forEach(function (id) {
+      var el = document.getElementById('opt-'+id);
+      if (el && saved[id] !== undefined) el.value = saved[id];
+    });
+    ['make_gif','plot_gaia_sources','use_barycorrpy','overwrite'].forEach(function (id) {
+      var el = document.getElementById('opt-'+id);
+      if (el && saved[id] !== undefined) el.checked = saved[id];
+    });
+  }
+  restoreOptions();
+
+  var DEFAULTS = {{ run_defaults | tojson }};
+  var defaultsBtn = document.getElementById('defaults-btn');
+  if (defaultsBtn) {
+    defaultsBtn.addEventListener('click', function () {
+      document.querySelectorAll('input[name="band"]').forEach(function (c) {
+        c.checked = DEFAULTS.bands && DEFAULTS.bands.indexOf(c.value) !== -1;
+      });
+      ['ref_band','refid','aper_unit','aper_radii','annulus',
+       'target_id','comparison_ids','avoid_comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
+       'n_stars_align','cutout_size','ccd_trim','bin_size_minutes'].forEach(function (id) {
+        var el = document.getElementById('opt-'+id);
+        if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';
+      });
+      ['make_gif','plot_gaia_sources','use_barycorrpy','overwrite'].forEach(function (id) {
+        var el = document.getElementById('opt-'+id);
+        if (el) el.checked = !!DEFAULTS[id];
+      });
+      saveOptions();
+      refreshCmd();
+    });
+  }
+  (function () {
+    var panel = document.getElementById('opt-panel');
+    if (!panel) return;
+    var savedOpen;
+    try { savedOpen = JSON.parse(localStorage.getItem(PANEL_KEY) || 'null'); } catch (e) { savedOpen = null; }
+    if (savedOpen === true) panel.open = true;
+    else if (savedOpen === false) panel.open = false;
+    panel.addEventListener('toggle', function () {
+      try { localStorage.setItem(PANEL_KEY, JSON.stringify(panel.open)); } catch (e) {}
+    });
+  })();
+
+  var cmdEl     = document.getElementById('full-cmd');
+  var errEl     = document.getElementById('opt-error');
+  var testBtn   = document.getElementById('run-test-btn');
+  var fullBtn   = document.getElementById('run-full-btn');
+  var cancelBtn = document.getElementById('cancel-btn');
+  var logEl     = document.getElementById('run-log');
+  var runBtns   = [testBtn, fullBtn].filter(Boolean);
+
+  // ----- restore the log if it was previously saved -----
+  (function restoreLog() {
+    if (!logEl) return;
+    var savedLog;
+    try { savedLog = localStorage.getItem('phot:log:' + inst + ':' + date + ':' + target); } catch (e) { savedLog = null; }
+    if (savedLog) {
+      logEl.style.display = 'block';
+      logEl.textContent = savedLog;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+  })();
+  var hasOptError = false;
+  var polling = null;
+
+  function debounce(fn, ms) {
+    var t; return function () { clearTimeout(t); t = setTimeout(fn, ms); };
+  }
+  function refreshCmd() {
+    saveOptions();
+    if (!cmdEl) return;
+    fetch('/photometry/command', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target, test_run: false, options: collectOptions() })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.command) cmdEl.textContent = d.command;
+      if (errEl) errEl.textContent = d.error || '';
+      hasOptError = !!d.error;
+      if (!polling) {
+        runBtns.forEach(function (b) { b.disabled = hasOptError || rawMissing; });
+      }
+    }).catch(function () {});
+  }
+  function toggleAvoidField() {
+    var refBand = document.getElementById('opt-ref_band');
+    var avoidField = document.getElementById('opt-avoid_comparison_ids');
+    if (refBand && avoidField) {
+      var disabled = refBand.value === '';
+      avoidField.disabled = disabled;
+      if (disabled) avoidField.value = '';
+    }
+  }
+  var refBand = document.getElementById('opt-ref_band');
+  if (refBand) refBand.addEventListener('change', toggleAvoidField);
+  toggleAvoidField();
+
+  var panel = document.querySelector('.run-panel');
+  if (panel) {
+    panel.addEventListener('change', debounce(refreshCmd, 150));
+    panel.addEventListener('input', debounce(refreshCmd, 400));
+  }
+
+  // ----- copy command -----
+  var copyBtn = document.getElementById('copy-cmd');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', function () {
+      navigator.clipboard.writeText(cmdEl.textContent).then(function () {
+        copyBtn.textContent = 'Copied';
+        setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1500);
+      });
+    });
+  }
+
+  // ----- launch / cancel a reduction with live log polling -----
+  function setRunning(on) {
+    runBtns.forEach(function (b) { b.disabled = on || hasOptError || rawMissing; });
+    if (cancelBtn) cancelBtn.style.display = on ? '' : 'none';
+  }
+  function stopPolling() { if (polling) { clearInterval(polling); polling = null; } }
+
+  function poll() {
+    var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
+    fetch('/photometry/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
+      if (s.log) {
+        logEl.textContent = s.log;
+        logEl.scrollTop = logEl.scrollHeight;
+        try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, s.log); } catch (e) {}
+      }
+      if (s.state === 'done') {
+        stopPolling(); clearJob();
+        logEl.textContent += '\n\n✓ done (' + s.elapsed + 's) — reloading…';
+        try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+        if (typeof window.showLoading === 'function') {
+          window.showLoading('Reloading…');
+        }
+        setTimeout(function () { window.location.reload(); }, 1200);
+      } else if (s.state === 'error') {
+        stopPolling(); setRunning(false); clearJob();
+        logEl.textContent += '\n\n✗ pipeline exited with code ' + s.returncode;
+        try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+      } else if (s.state === 'cancelled') {
+        stopPolling(); setRunning(false); clearJob();
+        logEl.textContent += '\n\n■ cancelled';
+        try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+      }
+    }).catch(function () {});
+  }
+
+  function launch(testRun) {
+    setRunning(true);
+    logEl.style.display = 'block';
+    logEl.textContent = 'Launching ' + (testRun ? 'test' : 'full') + ' reduction…';
+    try { localStorage.removeItem('phot:log:' + inst + ':' + date + ':' + target); } catch (e) {}
+    fetch('/photometry/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target, test_run: testRun, options: collectOptions() })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (!res.ok) {
+        setRunning(false);
+        logEl.textContent = 'Error: ' + (res.error || 'failed to start');
+        return;
+      }
+      saveJob();
+      if (!polling) polling = setInterval(poll, 2000);
+      poll();
+    }).catch(function (err) {
+      setRunning(false);
+      logEl.textContent = 'Error: ' + err.message;
+    });
+  }
+
+  if (testBtn) testBtn.addEventListener('click', function () { launch(true); });
+  if (fullBtn) fullBtn.addEventListener('click', function () { launch(false); });
+  if (cancelBtn) cancelBtn.addEventListener('click', function () {
+    cancelBtn.disabled = true;
+    logEl.textContent += '\n\n■ cancelling…';
+    try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+    fetch('/photometry/cancel', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target })
+    }).then(function (r) { return r.json(); }).then(function () {
+      cancelBtn.disabled = false;
+      if (!polling) { polling = setInterval(poll, 2000); poll(); }
+    }).catch(function () { cancelBtn.disabled = false; });
+  });
+
+  // ----- download all CSV links -----
+  var dlAll = document.getElementById('dl-all-csv');
+  if (dlAll) {
+    dlAll.addEventListener('click', function (e) {
+      e.preventDefault();
+      document.querySelectorAll('a.csv-link').forEach(function (a) { a.click(); });
+    });
+  }
+
+  // initial command reflects default options
+  refreshCmd();
+})();
+</script>
+<div style="text-align:center; margin:2em 0; display: flex; justify-content: center; gap: 1rem; align-items: center;">
+  <a href="#" style="display:inline-block; padding:0.5em 2em; background:#0056b3; color:#fff; text-decoration:none; border-radius:4px;">Back to Top</a>
+  {% if sel_inst and sel_date and sel_target %}
+    <a href="/transit-fit?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Transit Fit</a>
+  {% endif %}
+</div>
+{% endblock %}

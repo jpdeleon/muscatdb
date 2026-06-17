@@ -1,0 +1,1682 @@
+{% extends "base.html" %}
+{% block title %}Transit Fit — MuSCAT-db{% endblock %}
+{% block content %}
+<style>
+  /* Page-specific styles only. Shared components (buttons, .opt* form fields,
+     details.adv, .run-panel, .phot-section, .help-tooltip, #run-log, .dl-row)
+     live in /static/styles.css. */
+  .selector-group {
+    display: flex; gap: 1rem; align-items: center; margin-bottom: 2rem; flex-wrap: wrap;
+    background: var(--surface); border: 1px solid var(--border); padding: 1rem; border-radius: 8px;
+  }
+  .selector-group label { font-size: 0.85rem; color: var(--text-dim); display: flex; flex-direction: column; gap: 0.35rem; }
+  .selector-group select {
+    background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 0.45rem 0.75rem; min-width: 160px; font-size: 0.9rem;
+  }
+  .selector-group select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .fig-grid {
+    display: grid; gap: 1.5rem; grid-template-columns: repeat(auto-fill, minmax(480px, 1fr));
+    margin-top: 1rem;
+  }
+  @media (max-width: 600px) {
+    .fig-grid { grid-template-columns: 1fr; }
+  }
+  .fig {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem;
+  }
+  .fig img { width: 100%; height: auto; border-radius: 6px; display: block; background: #000; }
+  .fig .cap { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-dim); }
+
+  /* Bottom-align checkboxes within the options grid (page-specific override). */
+  .opt.check { margin-top: auto; }
+
+  .opt-section-title {
+    grid-column: 1 / -1; font-size: 0.85rem; font-weight: 600; color: var(--accent2);
+    margin-top: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem;
+  }
+
+  /* Collapsible option groups (Sampler / Detrending / GP), collapsed by default. */
+  .opt-collapse { grid-column: 1 / -1; margin-top: 1rem; }
+  .opt-collapse > summary {
+    font-size: 0.85rem; font-weight: 600; color: var(--accent2);
+    border-bottom: 1px solid var(--border); padding-bottom: 0.25rem;
+    cursor: pointer; user-select: none; list-style: none;
+    display: flex; align-items: center; gap: 0.4rem;
+  }
+  .opt-collapse > summary::-webkit-details-marker { display: none; }
+  .opt-collapse > summary::before {
+    content: '\25B8'; color: var(--text-dim); font-size: 0.8rem;
+    transition: transform 0.15s ease;
+  }
+  .opt-collapse[open] > summary::before { transform: rotate(90deg); }
+  .opt-collapse > *:not(summary) { margin-top: 0.7rem; }
+
+  .lightcurve-grid {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-top: 0.5rem;
+  }
+  .lightcurve-card {
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.6rem 0.85rem;
+    min-width: 220px;
+    transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+  }
+  .lightcurve-card:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  }
+  .lightcurve-card .lc-name {
+    font-family: monospace;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 0.25rem;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .lightcurve-card .lc-date {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-left: 1.15rem;
+  }
+  .csv-card {
+    cursor: pointer;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.25rem 0.5rem;
+  }
+  .csv-card .lc-name { margin-bottom: 0; }
+  .csv-card .lc-date { margin-left: 0; }
+  .csv-card.selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  .csv-card.deselected {
+    opacity: 0.55;
+    border-color: var(--border);
+  }
+
+  #stellar-ref-container a, .planet-ref-container a {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 500;
+  }
+  #stellar-ref-container a:hover, .planet-ref-container a:hover {
+    text-decoration: underline;
+  }
+  .is-invalid {
+    border-color: var(--red) !important;
+    box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.25) !important;
+  }
+</style>
+
+<h1>Transit Fit</h1>
+
+<div class="selector-group">
+  <label for="sel-inst">
+    Instrument
+    <select id="sel-inst" name="inst">
+      <option value="">-- select --</option>
+      {% for name in instruments %}
+      <option value="{{ name }}" {% if name == sel_inst %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label for="sel-date">
+    Date
+    <select id="sel-date" name="date" {% if not sel_inst %}disabled{% endif %}>
+      {% if not sel_inst %}
+      <option value="">-- select instrument first --</option>
+      {% else %}
+      <option value="">-- select date --</option>
+      {% for d in dates %}
+      <option value="{{ d }}" {% if d == sel_date %}selected{% endif %}>{{ d }}</option>
+      {% endfor %}
+      {% endif %}
+    </select>
+  </label>
+
+  <label for="sel-target">
+    Target
+    <select id="sel-target" name="target" {% if not sel_date %}disabled{% endif %}>
+      {% if not sel_date %}
+      <option value="">-- select date first --</option>
+      {% else %}
+      <option value="">-- select target --</option>
+      {% for t in targets %}
+      <option value="{{ t }}" {% if t == sel_target %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
+      {% endif %}
+    </select>
+  </label>
+</div>
+
+{% if not (sel_inst and sel_date and sel_target) %}
+  <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 3rem; text-align: center; margin-top: 2rem;">
+    <div style="font-size: 3.5rem; margin-bottom: 1rem;">📈</div>
+    <h2 style="color: var(--text);">Transit Fitting Pipeline</h2>
+    <p style="color: var(--text-dim); max-width: 500px; margin: 0 auto; line-height: 1.6; font-size: 0.9rem;">
+      Select an instrument, date, and target above to configure parameters and run the transit fitting analysis using the conda-based <strong>timer</strong> tool.
+    </p>
+  </div>
+{% elif not csvs %}
+  <div style="background: var(--surface); border: 1px dashed var(--border); border-radius: 10px; padding: 3rem; text-align: center; margin-top: 2rem;">
+    <div style="font-size: 3rem; color: var(--red); margin-bottom: 1rem;">⚠</div>
+    <h2 style="color: var(--text);">No Photometry CSVs Found</h2>
+    <p style="color: var(--text-dim); max-width: 500px; margin: 0 auto 1.5rem; line-height: 1.6; font-size: 0.9rem;">
+      No lightcurve CSV files were found for <strong>{{ sel_target }}</strong> on date <strong>{{ sel_date }}</strong>.
+      You must run the photometry pipeline first before attempting a transit fit.
+    </p>
+    <a href="/photometry?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary">Go to Photometry Page</a>
+  </div>
+{% else %}
+  <div style="margin-bottom: 1.5rem;">
+    <a href="https://exoplanetarchive.ipac.caltech.edu/overview/{{ sel_target }}" target="_blank" style="font-size: 0.9rem; color: var(--accent); text-decoration: none; font-weight: 500;">View NASA Exoplanet Archive ↗</a>
+  </div>
+
+  <!-- Discovered light curves section -->
+  <div class="phot-section">
+    <h2>Discovered Lightcurves</h2>
+    <p style="font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.75rem;">
+      Select the lightcurve files to include in the fit:
+    </p>
+    <div style="margin-bottom: 0.5rem; display: flex; gap: 0.5rem;">
+      <button class="btn sm" type="button" id="select-all-csvs">Select All</button>
+      <button class="btn sm" type="button" id="deselect-all-csvs">Deselect All</button>
+      <span id="csv-count" style="font-size: 0.85rem; color: var(--text-dim); align-self: center; margin-left: 0.5rem;"></span>
+    </div>
+    <div class="lightcurve-grid">
+      {% for csv in csvs %}
+        <div class="lightcurve-card csv-card" data-csv-name="{{ csv.name }}" role="button" tabindex="0">
+          <input type="checkbox" class="csv-checkbox" checked style="margin-right: 0.5rem;">
+          <span class="lc-name">📄 {{ csv.name }}</span>
+          <span class="lc-date">Created: {{ csv.created_at }}</span>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Transit Fit Results Section -->
+  {% if outputs and outputs.has_any %}
+  <div class="phot-section">
+    <h2>Transit Fit Results</h2>
+    
+    <div class="fig-grid">
+      {% for p in outputs.plots %}
+      <figure class="fig">
+        <figcaption class="cap">
+          <span>{{ p.file | replace('.png', '') }} (Created: {{ p.created_at }})</span>
+        </figcaption>
+        <a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/{{ p.file }}" target="_blank">
+          <img draggable="false" loading="lazy" src="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/{{ p.file }}" alt="{{ p.file }}">
+        </a>
+      </figure>
+      {% endfor %}
+    </div>
+
+    {% if outputs.summary %}
+    <div class="phot-section">
+      <h3>Fitted Parameters Summary</h3>
+      <div class="csv-wrap">
+        <table>
+          <thead>
+            <tr>
+              {% for h in outputs.summary.headers %}
+              <th>{{ h }}</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in outputs.summary.rows %}
+            <tr>
+              {% for h in outputs.summary.headers %}
+              <td class="mono">{{ row[h] }}</td>
+              {% endfor %}
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="dl-row">
+      {% if outputs.has_log %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/timer-fit.log" target="_blank">📄 fit run log</a>{% endif %}
+      {% if outputs.has_fit_yaml %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/fit.yaml" target="_blank">⚙ fit.yaml</a>{% endif %}
+      {% if outputs.has_sys_yaml %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/sys.yaml" target="_blank">🪐 sys.yaml</a>{% endif %}
+      {% if outputs.summary %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/summary.csv" download>⬇ download summary (.csv)</a>{% endif %}
+      {% for f in outputs.extra_files %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/{{ f }}" download>⬇ {{ f }}</a>{% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Configure Panel -->
+  <div class="phot-section run-panel">
+    <h2>Configure &amp; Run Transit Fitting</h2>
+    
+    <details class="adv" id="opt-panel">
+      <summary>Fitting Configurations &amp; Parameters</summary>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; gap: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.75rem;">
+        <div style="display: flex; align-items: center; gap: 0.5rem; flex-grow: 1; min-width: 280px;">
+          <label for="archive-target-input" style="font-size: 0.85rem; font-weight: 500; color: var(--text); display: flex; align-items: center; gap: 0.35rem; white-space: nowrap;">
+            🔍 Query Target:
+          </label>
+          <input type="text" id="archive-target-input" value="{{ sel_target }}" placeholder="e.g. WASP-104 b" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.6rem; font-size: 0.85rem; flex-grow: 1;">
+          <select id="archive-source-select" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.3rem 0.4rem; font-size: 0.8rem;">
+            <option value="nasa">NASA Archive</option>
+            <option value="toi">TOI Catalog</option>
+          </select>
+          <button class="btn" type="button" id="archive-query-btn" style="font-size: 0.8rem; padding: 0.35rem 0.75rem; display: flex; align-items: center; gap: 0.35rem;">Query Archive</button>
+        </div>
+        <div style="display: flex; gap: 0.5rem;">
+          <button class="btn" type="button" id="save-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2;">Save values</button>
+          <button class="btn" type="button" id="restore-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2;">Restore values</button>
+          <button class="btn" type="button" id="clear-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2;">Clear values</button>
+        </div>
+      </div>
+      <div class="opt-grid">
+        <div class="opt-section-title">Fitting Pipeline Options</div>
+
+        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: nowrap; align-items: flex-end; padding-bottom: 0.45rem;">
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-chromatic" checked>
+            <label for="opt-chromatic">Chromatic fit <span class="help-tooltip" title="Flag indicating if parameters (like Rp/R*) are chromatic (band-dependent).">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-include_mean" checked>
+            <label for="opt-include_mean">Include mean <span class="help-tooltip" title="Fit the baseline (mean) flux level. Default on. Turn off when using Add bias to avoid a degenerate baseline.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-use_custom_optimizer" checked>
+            <label for="opt-use_custom_optimizer">Custom optimizer <span class="help-tooltip" title="Use timer's custom MAP optimizer instead of PyMC's default for the initial solution. Default on.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-overwrite">
+            <label for="opt-overwrite">Overwrite <span class="help-tooltip" title="Re-run the fit from scratch, ignoring any saved results (sets clobber: true in fit.yaml). Unchecked reuses saved outputs.">?</span></label>
+          </div>
+        </div>
+
+        <div class="opt-section-title" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+          <span>Stellar Parameters <span id="stellar-ref-container" style="font-size: 0.75rem; font-weight: normal; color: var(--text-dim); text-transform: none;"></span></span>
+        </div>
+        <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem;">
+          <div class="opt">
+            <label for="opt-teff">Teff (K) <span class="help-tooltip" title="Stellar effective temperature.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="number" id="opt-teff" value="{{ target_params.teff }}" placeholder="val" style="flex: 3; width: 100%; min-width: 0;">
+              <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
+              <input type="number" id="opt-teff_unc" value="{{ target_params.teff_unc }}" placeholder="unc" style="flex: 2; width: 100%; min-width: 0;">
+            </div>
+          </div>
+          <div class="opt">
+            <label for="opt-logg">log g <span class="help-tooltip" title="Stellar surface gravity.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="number" id="opt-logg" value="{{ target_params.logg }}" placeholder="val" step="0.01" style="flex: 3; width: 100%; min-width: 0;">
+              <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
+              <input type="number" id="opt-logg_unc" value="{{ target_params.logg_unc }}" placeholder="unc" step="0.01" style="flex: 2; width: 100%; min-width: 0;">
+            </div>
+          </div>
+          <div class="opt">
+            <label for="opt-feh">[Fe/H] <span class="help-tooltip" title="Stellar metallicity.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="number" id="opt-feh" value="{{ target_params.feh }}" placeholder="val" step="0.01" style="flex: 3; width: 100%; min-width: 0;">
+              <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
+              <input type="number" id="opt-feh_unc" value="{{ target_params.feh_unc }}" placeholder="unc" step="0.01" style="flex: 2; width: 100%; min-width: 0;">
+            </div>
+          </div>
+        </div>
+
+        <div class="opt-section-title" style="margin-top: 1.5rem; margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem;">
+          <span style="font-weight: 600; color: var(--accent2);">Planet Parameters</span>
+          <button class="btn sm primary" type="button" id="add-planet-btn" style="font-size: 0.8rem; padding: 0.25rem 0.5rem; line-height: 1;">➕ Add Planet</button>
+        </div>
+
+        <div id="planet-cards-container" style="grid-column: 1 / -1;">
+          <!-- Dynamically rendered planet cards go here -->
+        </div>
+
+        <details class="opt-collapse">
+        <summary>Sampler Options <span class="help-tooltip" title="NUTS sampler settings passed to PyMC. Larger values give more reliable posteriors but slower runs.">?</span></summary>
+        <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem;">
+          <div class="opt">
+            <label for="opt-tune">tune <span class="help-tooltip" title="Tuning (warm-up) steps per chain, discarded after step-size adaptation. Default 2000.">?</span></label>
+            <input type="number" id="opt-tune" value="2000" min="1" step="100" style="width: 100%;">
+          </div>
+          <div class="opt">
+            <label for="opt-draws">draws <span class="help-tooltip" title="Posterior samples drawn per chain after tuning. Default 2000.">?</span></label>
+            <input type="number" id="opt-draws" value="2000" min="1" step="100" style="width: 100%;">
+          </div>
+          <div class="opt">
+            <label for="opt-chains">chains <span class="help-tooltip" title="Independent MCMC chains, used for the r_hat convergence diagnostic. Default 2.">?</span></label>
+            <input type="number" id="opt-chains" value="2" min="1" step="1" style="width: 100%;">
+          </div>
+          <div class="opt">
+            <label for="opt-cores">cores <span class="help-tooltip" title="CPU cores for parallel sampling (ideally >= chains). Default 2.">?</span></label>
+            <input type="number" id="opt-cores" value="2" min="1" step="1" style="width: 100%;">
+          </div>
+        </div>
+        </details>
+        <details class="opt-collapse">
+        <summary>Detrending Options <span class="help-tooltip" title="Systematics/detrending settings applied to every light curve (written per-dataset in fit.yaml).">?</span></summary>
+        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: flex-end; padding-bottom: 0.45rem;">
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-trend" checked>
+            <label for="opt-trend">Trend <span class="help-tooltip" title="Include a linear trend (airmass/time) term in the detrending basis. Sets trend: 1 if checked, 0 if unchecked.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-spline">
+            <label for="opt-spline">Spline <span class="help-tooltip" title="Add a B-spline basis to model smooth time-correlated systematics. Default off.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-add_bias">
+            <label for="opt-add_bias">Add bias <span class="help-tooltip" title="Add a constant (column of ones) to the design matrix. Default off. Do not combine with Include mean.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-quadratic">
+            <label for="opt-quadratic">Quadratic <span class="help-tooltip" title="Add a 2nd-order (quadratic) term to the trend basis. Default off.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-clip">
+            <label for="opt-clip">Clip outliers <span class="help-tooltip" title="Sigma-clip residual outliers before the final fit. Default off.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-chunk_offset">
+            <label for="opt-chunk_offset">Chunk offset <span class="help-tooltip" title="Fit a separate flux offset per time chunk (split at gaps larger than Chunk thresh). Default off.">?</span></label>
+          </div>
+        </div>
+        <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(5, 1fr); gap: 1rem;">
+          <div class="opt">
+            <label for="opt-spline_knots">Spline knots <span class="help-tooltip" title="Number of knots in the spline basis (used only when Spline is on). Default 5.">?</span></label>
+            <input type="number" id="opt-spline_knots" value="5" min="1" step="1" style="width: 100%;">
+          </div>
+          <div class="opt">
+            <label for="opt-clip_nsig">Clip &sigma; <span class="help-tooltip" title="Sigma threshold for outlier clipping (used only when Clip outliers is on). Default 7.">?</span></label>
+            <input type="number" id="opt-clip_nsig" value="7" min="1" step="0.5" style="width: 100%;">
+          </div>
+          <div class="opt">
+            <label for="opt-chunk_thresh">Chunk thresh <span class="help-tooltip" title="Time gap (days) that separates data into chunks for Chunk offset. Default 0.">?</span></label>
+            <input type="number" id="opt-chunk_thresh" value="0" min="0" step="0.01" style="width: 100%;">
+          </div>
+          <div class="opt">
+            <label for="opt-trim_beg">Trim begin <span class="help-tooltip" title="Number of data points to trim from the start of each light curve. Empty = none.">?</span></label>
+            <input type="number" id="opt-trim_beg" placeholder="none" min="0" step="1" style="width: 100%;">
+          </div>
+          <div class="opt">
+            <label for="opt-trim_end">Trim end <span class="help-tooltip" title="Number of data points to trim from the end of each light curve. Empty = none.">?</span></label>
+            <input type="number" id="opt-trim_end" placeholder="none" min="0" step="1" style="width: 100%;">
+          </div>
+        </div>
+        </details>
+        <details class="opt-collapse">
+        <summary>Gaussian Process (GP) <span class="help-tooltip" title="Model time-correlated (red) noise with a per-light-curve celerite2 Matern-3/2 kernel. Hyperparameters are in log10 space: amplitude sigma = 10^log_amp (flux units), timescale rho = 10^log_scale (days). The gp block is only written to fit.yaml when Use GP is on.">?</span></summary>
+        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: flex-end; padding-bottom: 0.45rem;">
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-use_gp">
+            <label for="opt-use_gp">Use GP <span class="help-tooltip" title="Enable the Gaussian-process noise model. Requires celerite2 in the timer env. Default off.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-gp_per_dataset_log_amp">
+            <label for="opt-gp_per_dataset_log_amp">Per-dataset amp <span class="help-tooltip" title="Fit an independent log_amp for each light curve instead of one value shared across all datasets.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-gp_per_dataset_log_scale">
+            <label for="opt-gp_per_dataset_log_scale">Per-dataset scale <span class="help-tooltip" title="Fit an independent log_scale for each light curve instead of one value shared across all datasets.">?</span></label>
+          </div>
+        </div>
+        <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.25rem;">
+          <div class="opt">
+            <label for="opt-gp_log_amp">log_amp prior <span class="help-tooltip" title="Prior on log10 of the GP amplitude sigma (flux units): value, uncertainty, and distribution. Default -3 +/- 2, gaussian.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="number" id="opt-gp_log_amp" value="-3" step="0.1" placeholder="val" style="flex: 3; width: 100%; min-width: 0;">
+              <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
+              <input type="number" id="opt-gp_log_amp_unc" value="2" step="0.1" placeholder="unc" style="flex: 2; width: 100%; min-width: 0;">
+              <select id="opt-gp_log_amp_prior" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">
+                <option value="gaussian">gaussian</option>
+                <option value="uniform">uniform</option>
+              </select>
+            </div>
+          </div>
+          <div class="opt">
+            <label for="opt-gp_log_scale">log_scale prior <span class="help-tooltip" title="Prior on log10 of the GP timescale rho (days): value, uncertainty, and distribution. Default -1 +/- 2, gaussian.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="number" id="opt-gp_log_scale" value="-1" step="0.1" placeholder="val" style="flex: 3; width: 100%; min-width: 0;">
+              <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
+              <input type="number" id="opt-gp_log_scale_unc" value="2" step="0.1" placeholder="unc" style="flex: 2; width: 100%; min-width: 0;">
+              <select id="opt-gp_log_scale_prior" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">
+                <option value="gaussian">gaussian</option>
+                <option value="uniform">uniform</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        </details>
+
+      </div>
+
+      <div class="opt-grid" style="margin-top: 1.5rem;">
+        <div class="opt-section-title">Fixed Parameters <span class="help-tooltip" title="Parameters checked here are held fixed at their prior values during the fit; unchecked parameters are left free to vary.">?</span></div>
+        <div class="opt check" style="grid-column: span 2;">
+          <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+            <label><input type="checkbox" name="fixed-params" value="period" checked> period</label>
+            <label><input type="checkbox" name="fixed-params" value="u_star" checked> u_star</label>
+            <label><input type="checkbox" name="fixed-params" value="b"> b</label>
+            <label><input type="checkbox" name="fixed-params" value="ror"> Rp/R*</label>
+            <label><input type="checkbox" name="fixed-params" value="ecc"> eccentricity</label>
+            <label><input type="checkbox" name="fixed-params" value="omega"> omega</label>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <div id="opt-error" style="color: var(--red); font-size: 0.85rem; margin-top: 0.5rem;"></div>
+    
+    <div class="run-actions">
+      <button class="btn" type="button" id="calc-logp-btn">
+        ∑ Calculate logP
+      </button>
+      <span id="logp-result" style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: var(--accent2);"></span>
+      <button class="btn" type="button" id="run-test-btn" style="border-color: var(--accent); color: var(--accent);">
+        ▶ Run Test Fitting
+      </button>
+      <button class="btn primary" type="button" id="run-fit-btn">
+        ▶ Run Full Fitting
+      </button>
+      <button class="btn" type="button" id="cancel-btn" style="display:none;border-color:var(--red);color:var(--red);">
+        ■ Cancel
+      </button>
+      <span class="hint" style="color: var(--text-dim); font-size: 0.8rem;">
+        Runs the fitting script over the copied CSV curves. Test runs a quick fit; Full runs standard MCMC chains.
+      </span>
+    </div>
+
+    <pre id="run-log"></pre>
+  </div>
+{% endif %}
+
+<div id="message-modal">
+  <div class="modal-box">
+    <p id="message-modal-title" style="margin-bottom:0.75rem;font-size:0.95rem;font-weight:600;"></p>
+    <p id="message-modal-text" style="color:var(--text-dim);font-size:0.85rem;margin-bottom:1.5rem;line-height:1.5;"></p>
+    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+      <button class="btn" onclick="closeMessageModal()">OK</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var inst   = {{ sel_inst|tojson }};
+  var date   = {{ sel_date|tojson }};
+  var target = {{ sel_target|tojson }};
+
+  var SEL_KEY = 'fit:last';
+  var OPT_KEY = 'fit:options:' + inst + ':' + date + ':' + target;
+  var CSV_KEY = 'fit:csvs:' + inst + ':' + date + ':' + target;
+  var PANEL_KEY = 'fit:panel';
+  var JOB_KEY = 'fit:job';
+
+  // ----- restore the last selection on a bare /transit-fit visit -----
+  (function () {
+    if (inst || date || target || window.location.search) return;
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(SEL_KEY) || 'null'); } catch (e) { saved = null; }
+    if (saved && saved.inst) {
+      var qs = ['inst', 'date', 'target'].filter(function (k) { return saved[k]; })
+        .map(function (k) { return k + '=' + encodeURIComponent(saved[k]); }).join('&');
+      window.location.replace('/transit-fit?' + qs);
+    }
+  })();
+  // ...and remember the current selection for next time.
+  if (inst) {
+    try { localStorage.setItem(SEL_KEY, JSON.stringify({ inst: inst, date: date, target: target })); } catch (e) {}
+  }
+
+  // ----- cascading selectors -----
+  var selInst   = document.getElementById('sel-inst');
+  var selDate   = document.getElementById('sel-date');
+  var selTarget = document.getElementById('sel-target');
+
+  function go(params) {
+    if (typeof window.showLoading === 'function') {
+      window.showLoading('Loading…');
+    }
+    var qs = Object.keys(params).filter(function (k) { return params[k]; })
+      .map(function (k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
+    window.location = '/transit-fit' + (qs ? '?' + qs : '');
+  }
+
+  if (selInst)   selInst.addEventListener('change', function () { go({ inst: this.value }); });
+  if (selDate)   selDate.addEventListener('change', function () { go({ inst: selInst.value, date: this.value }); });
+  if (selTarget) selTarget.addEventListener('change', function () { go({ inst: selInst.value, date: selDate.value, target: this.value }); });
+
+  // If page is not fully selected, return
+  if (!inst || !date || !target) return;
+
+  var runBtn    = document.getElementById('run-fit-btn');
+  var runTestBtn = document.getElementById('run-test-btn');
+  var cancelBtn = document.getElementById('cancel-btn');
+  var logEl     = document.getElementById('run-log');
+  var errEl     = document.getElementById('opt-error');
+  var polling   = null;
+
+  function val(id) { var e = document.getElementById(id); return e ? e.value : ''; }
+  function chk(id) { var e = document.getElementById(id); return e ? e.checked : false; }
+
+  function collectOptions() {
+    var fixed = [];
+    document.querySelectorAll('input[name="fixed-params"]:checked').forEach(function (c) { fixed.push(c.value); });
+
+    var planetLetters = [];
+    var planetData = {};
+    document.querySelectorAll('.planet-card').forEach(function (card) {
+      var letterInput = card.querySelector('.planet-letter-input');
+      if (!letterInput) return;
+      var letter = letterInput.value.trim().toLowerCase();
+      if (!letter) return;
+      planetLetters.push(letter);
+
+      planetData['query_target_' + letter] = card.querySelector('.planet-query-target').value;
+      planetData['query_source_' + letter] = card.querySelector('.planet-source-select').value;
+      planetData['pl_ref_' + letter] = card.querySelector('.planet-ref-container').innerHTML;
+      planetData['period_' + letter] = card.querySelector('.planet-period').value;
+      planetData['period_unc_' + letter] = card.querySelector('.planet-period-unc').value;
+      planetData['t0_' + letter] = card.querySelector('.planet-t0').value;
+      planetData['t0_unc_' + letter] = card.querySelector('.planet-t0-unc').value;
+      planetData['dur_' + letter] = card.querySelector('.planet-dur').value / 24;
+      planetData['dur_unc_' + letter] = card.querySelector('.planet-dur-unc').value / 24;
+      planetData['tc_pred_' + letter] = card.querySelector('.planet-tc_pred').value;
+      planetData['tc_pred_unc_' + letter] = card.querySelector('.planet-tc_pred-unc').value;
+      planetData['ror_' + letter] = card.querySelector('.planet-ror').value;
+      planetData['ror_unc_' + letter] = card.querySelector('.planet-ror-unc').value;
+      planetData['b_' + letter] = card.querySelector('.planet-b').value;
+      planetData['b_unc_' + letter] = card.querySelector('.planet-b-unc').value;
+    });
+
+    var planetsListStr = planetLetters.join(',');
+
+    var opts = {
+      planets: planetsListStr,
+      chromatic: chk('opt-chromatic') ? 'true' : 'false',
+      trend: chk('opt-trend') ? 'true' : 'false',
+      overwrite: chk('opt-overwrite') ? 'true' : 'false',
+      tune: val('opt-tune'),
+      draws: val('opt-draws'),
+      chains: val('opt-chains'),
+      cores: val('opt-cores'),
+      include_mean: chk('opt-include_mean') ? 'true' : 'false',
+      use_custom_optimizer: chk('opt-use_custom_optimizer') ? 'true' : 'false',
+      spline: chk('opt-spline') ? 'true' : 'false',
+      spline_knots: val('opt-spline_knots'),
+      add_bias: chk('opt-add_bias') ? 'true' : 'false',
+      quadratic: chk('opt-quadratic') ? 'true' : 'false',
+      clip: chk('opt-clip') ? 'true' : 'false',
+      clip_nsig: val('opt-clip_nsig'),
+      chunk_offset: chk('opt-chunk_offset') ? 'true' : 'false',
+      chunk_thresh: val('opt-chunk_thresh'),
+      trim_beg: val('opt-trim_beg'),
+      trim_end: val('opt-trim_end'),
+      use_gp: chk('opt-use_gp') ? 'true' : 'false',
+      gp_log_amp: val('opt-gp_log_amp'),
+      gp_log_amp_unc: val('opt-gp_log_amp_unc'),
+      gp_log_amp_prior: val('opt-gp_log_amp_prior'),
+      gp_log_scale: val('opt-gp_log_scale'),
+      gp_log_scale_unc: val('opt-gp_log_scale_unc'),
+      gp_log_scale_prior: val('opt-gp_log_scale_prior'),
+      gp_per_dataset_log_amp: chk('opt-gp_per_dataset_log_amp') ? 'true' : 'false',
+      gp_per_dataset_log_scale: chk('opt-gp_per_dataset_log_scale') ? 'true' : 'false',
+      teff: val('opt-teff'),
+      teff_unc: val('opt-teff_unc'),
+      logg: val('opt-logg'),
+      logg_unc: val('opt-logg_unc'),
+      feh: val('opt-feh'),
+      feh_unc: val('opt-feh_unc'),
+      fixed: fixed,
+      stellar_ref: document.getElementById('stellar-ref-container') ? document.getElementById('stellar-ref-container').innerHTML : '',
+      archive_source: document.getElementById('archive-source-select') ? document.getElementById('archive-source-select').value : 'nasa'
+    };
+
+    if (planetLetters.length > 0) {
+      var p0 = planetLetters[0];
+      opts['period'] = planetData['period_' + p0] || '';
+      opts['period_unc'] = planetData['period_unc_' + p0] || '';
+      opts['t0'] = planetData['t0_' + p0] || '';
+      opts['t0_unc'] = planetData['t0_unc_' + p0] || '';
+      opts['dur'] = planetData['dur_' + p0] || '';
+      opts['dur_unc'] = planetData['dur_unc_' + p0] || '';
+      opts['ror'] = planetData['ror_' + p0] || '';
+      opts['ror_unc'] = planetData['ror_unc_' + p0] || '';
+      opts['b'] = planetData['b_' + p0] || '';
+      opts['b_unc'] = planetData['b_unc_' + p0] || '';
+      opts['pl_ref'] = planetData['pl_ref_' + p0] || '';
+    } else {
+      opts['period'] = '';
+      opts['period_unc'] = '';
+      opts['t0'] = '';
+      opts['t0_unc'] = '';
+      opts['dur'] = '';
+      opts['dur_unc'] = '';
+      opts['ror'] = '';
+      opts['ror_unc'] = '';
+      opts['b'] = '';
+      opts['b_unc'] = '';
+      opts['pl_ref'] = '';
+    }
+
+    for (var k in planetData) {
+      opts[k] = planetData[k];
+    }
+
+    return opts;
+  }
+
+  function saveOptions() {
+    try { localStorage.setItem(OPT_KEY, JSON.stringify(collectOptions())); } catch (e) {}
+  }
+
+  function syncPlanetsInput() {
+    var container = document.getElementById('planet-cards-container');
+    if (!container) return;
+    var cards = container.querySelectorAll('.planet-card');
+    if (cards.length > 0) {
+      var firstCardLetterInput = cards[0].querySelector('.planet-letter-input');
+      if (firstCardLetterInput) {
+        var optPlanets = document.getElementById('opt-planets');
+        if (optPlanets) {
+          optPlanets.value = firstCardLetterInput.value.trim().toLowerCase() || 'b';
+        }
+      }
+    }
+  }
+
+  function getDefaultQueryTarget(letter) {
+    var mainTargetInput = document.getElementById('archive-target-input');
+    var mainTarget = mainTargetInput ? mainTargetInput.value.trim() : '';
+    if (!mainTarget) return '';
+    var base = mainTarget.replace(/\s+[a-zA-Z]$/, '').trim();
+    return base + ' ' + letter;
+  }
+
+  function getNextPlanetLetter() {
+    var letters = [];
+    document.querySelectorAll('.planet-card').forEach(function(card) {
+      var letterInput = card.querySelector('.planet-letter-input');
+      if (letterInput) {
+        letters.push(letterInput.value.trim().toLowerCase());
+      }
+    });
+    if (letters.length === 0) return 'b';
+    var lastLetter = letters[letters.length - 1];
+    var code = lastLetter.charCodeAt(0);
+    if (code >= 97 && code < 122) {
+      return String.fromCharCode(code + 1);
+    }
+    return 'c';
+  }
+
+  function validatePlanetCard(card) {
+    var checks = [
+      { selector: '.planet-period', min: 0, inclusive: false },
+      { selector: '.planet-period-unc', min: 0, inclusive: true },
+      { selector: '.planet-t0', min: 0, inclusive: false },
+      { selector: '.planet-t0-unc', min: 0, inclusive: true },
+      { selector: '.planet-dur', min: 0, inclusive: false },
+      { selector: '.planet-dur-unc', min: 0, inclusive: true },
+      { selector: '.planet-ror', min: 0, inclusive: false },
+      { selector: '.planet-ror-unc', min: 0, inclusive: true },
+      { selector: '.planet-b', min: 0, inclusive: true },
+      { selector: '.planet-b-unc', min: 0, inclusive: true },
+      { selector: '.planet-tc_pred', min: 0, inclusive: false },
+      { selector: '.planet-tc_pred-unc', min: 0, inclusive: true }
+    ];
+
+    checks.forEach(function (chk) {
+      var el = card.querySelector(chk.selector);
+      if (!el) return;
+      var val = el.value.trim();
+      if (val === '') {
+        el.classList.remove('is-invalid');
+        return;
+      }
+      var num = parseFloat(val);
+      var valid = !isNaN(num);
+      if (valid) {
+        if (chk.inclusive) {
+          valid = num >= chk.min;
+        } else {
+          valid = num > chk.min;
+        }
+      }
+      if (valid) {
+        el.classList.remove('is-invalid');
+      } else {
+        el.classList.add('is-invalid');
+      }
+    });
+  }
+
+  function validateAllPlanetCards() {
+    document.querySelectorAll('.planet-card').forEach(validatePlanetCard);
+  }
+
+  function addPlanetCard(letter, values, isInitial) {
+    var container = document.getElementById('planet-cards-container');
+    if (!container) return;
+
+    var card = document.createElement('div');
+    card.className = 'planet-card';
+    card.setAttribute('data-planet', letter);
+    card.style.background = 'rgba(255, 255, 255, 0.02)';
+    card.style.border = '1px solid var(--border)';
+    card.style.borderRadius = '8px';
+    card.style.padding = '1rem';
+    card.style.marginTop = '1rem';
+    card.style.position = 'relative';
+
+    var defaultQuery = values && values.query_target ? values.query_target : getDefaultQueryTarget(letter);
+    var savedSource = (values && values.source) ? values.source : 'nasa';
+    var isFirst = container.children.length === 0;
+
+    var headerHtml = 
+      '<div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem;">' +
+        '<div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">' +
+          '<span style="font-weight: 600; color: var(--accent2);">Planet:</span>' +
+          '<input type="text" class="planet-letter-input" value="' + letter + '" maxlength="1" style="width: 2.5rem; text-align: center; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 0.2rem; font-size: 0.85rem; font-weight: bold; text-transform: lowercase;">' +
+          '<span class="planet-ref-container" style="font-size: 0.75rem; color: var(--text-dim); margin-left: 0.5rem;">' + (values && values.pl_ref ? values.pl_ref : '') + '</span>' +
+        '</div>' +
+        '<div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">' +
+          '<input type="text" class="planet-query-target" value="' + defaultQuery + '" placeholder="e.g. WASP-104 ' + letter + '" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 0.2rem 0.5rem; font-size: 0.8rem; width: 180px;">' +
+          '<select class="planet-source-select" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 0.2rem 0.25rem; font-size: 0.75rem;">' +
+            '<option value="nasa"' + (savedSource === 'nasa' ? ' selected' : '') + '>NASA</option>' +
+            '<option value="toi"' + (savedSource === 'toi' ? ' selected' : '') + '>TOI</option>' +
+          '</select>' +
+          '<button class="btn sm planet-query-btn" type="button" style="font-size: 0.75rem; padding: 0.2rem 0.5rem;">Query Archive</button>';
+
+    if (!isFirst) {
+      headerHtml += '<button class="btn sm danger planet-remove-btn" type="button" style="font-size: 0.75rem; padding: 0.2rem 0.5rem; border-color: var(--red); color: var(--red);">Remove</button>';
+    }
+
+    headerHtml += '</div></div>';
+
+    var val_period = values && values.period !== undefined ? values.period : '';
+    var val_period_unc = values && values.period_unc !== undefined ? values.period_unc : '';
+    var val_t0 = values && values.t0 !== undefined ? values.t0 : '';
+    var val_t0_unc = values && values.t0_unc !== undefined ? values.t0_unc : '';
+    var val_dur = values && values.dur !== undefined ? values.dur * 24 : '';
+    var val_dur_unc = values && values.dur_unc !== undefined ? values.dur_unc * 24 : '';
+    var val_ror = values && values.ror !== undefined ? values.ror : '';
+    var val_ror_unc = values && values.ror_unc !== undefined ? values.ror_unc : '';
+    var val_b = values && values.b !== undefined ? values.b : '';
+    var val_b_unc = values && values.b_unc !== undefined ? values.b_unc : '';
+    var val_tc_pred = values && values.tc_pred !== undefined ? values.tc_pred : '';
+    var val_tc_pred_unc = values && values.tc_pred_unc !== undefined ? values.tc_pred_unc : '';
+
+    var bodyHtml = 
+      '<div class="opt-grid">' +
+        '<div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem;">' +
+        '<div class="opt">' +
+          '<label>Period (days)</label>' +
+          '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
+            '<input type="number" class="planet-period" value="' + val_period + '" placeholder="val" step="0.00001" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+            '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' +
+            '<input type="number" class="planet-period-unc" value="' + val_period_unc + '" placeholder="unc" step="0.00001" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+          '</div>' +
+        '</div>' +
+        '<div class="opt">' +
+          '<label>Epoch t0 (BJD)</label>' +
+          '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
+            '<input type="number" class="planet-t0" value="' + val_t0 + '" placeholder="val" step="0.00001" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+            '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' +
+            '<input type="number" class="planet-t0-unc" value="' + val_t0_unc + '" placeholder="unc" step="0.00001" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+          '</div>' +
+        '</div>' +
+        '<div class="opt">' +
+          '<label>Duration (hrs)</label>' +
+          '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
+            '<input type="number" class="planet-dur" value="' + val_dur + '" placeholder="val" step="0.01" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+            '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' +
+            '<input type="number" class="planet-dur-unc" value="' + val_dur_unc + '" placeholder="unc" step="0.01" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+          '</div>' +
+        '</div>' +
+        '</div>' +
+        '<div class="opt">' +
+          '<label>Impact parameter b</label>' +
+          '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
+            '<input type="number" class="planet-b" value="' + val_b + '" placeholder="val" step="0.01" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+            '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' +
+            '<input type="number" class="planet-b-unc" value="' + val_b_unc + '" placeholder="unc" step="0.01" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+          '</div>' +
+        '</div>' +
+        '<div class="opt">' +
+          '<label>Rp/R*</label>' +
+          '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
+            '<input type="number" class="planet-ror" value="' + val_ror + '" placeholder="val" step="0.0001" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+            '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' +
+            '<input type="number" class="planet-ror-unc" value="' + val_ror_unc + '" placeholder="unc" step="0.0001" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+          '</div>' +
+        '</div>' +
+        '<div class="opt">' +
+          '<label>tc_pred (BJD) <span class="help-tooltip" title="Predicted transit center epoch (BJD) for this planet on this night. Seeds the t0 prior. Leave empty to use this planet\'s t0 / the data midpoint.">?</span></label>' +
+          '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
+            '<input type="number" class="planet-tc_pred" value="' + val_tc_pred + '" placeholder="auto" step="0.00001" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+            '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' +
+            '<input type="number" class="planet-tc_pred-unc" value="' + val_tc_pred_unc + '" placeholder="unc" step="0.001" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    card.innerHTML = headerHtml + bodyHtml;
+    container.appendChild(card);
+
+    var letterInput = card.querySelector('.planet-letter-input');
+    var queryTargetInput = card.querySelector('.planet-query-target');
+    var queryBtn = card.querySelector('.planet-query-btn');
+    var removeBtn = card.querySelector('.planet-remove-btn');
+
+    letterInput.addEventListener('input', function() {
+      var newLetter = letterInput.value.trim().toLowerCase();
+      card.setAttribute('data-planet', newLetter);
+      syncPlanetsInput();
+      saveOptions();
+    });
+
+    queryBtn.addEventListener('click', function() {
+      var targetVal = queryTargetInput.value.trim();
+      if (!targetVal) {
+        window.showMessageModal('Notice', 'Please enter a target name.');
+        return;
+      }
+      queryBtn.disabled = true;
+      var originalText = queryBtn.innerText;
+      queryBtn.innerText = 'Querying...';
+
+      var sourceSelect = card.querySelector('.planet-source-select');
+      var source = sourceSelect ? sourceSelect.value : 'nasa';
+      var sourceLabel = source === 'toi' ? 'TOI Catalog' : 'NASA Exoplanet Archive';
+
+      fetch('/transit-fit/query-archive?target=' + encodeURIComponent(targetVal) + '&source=' + encodeURIComponent(source))
+        .then(function(res) {
+          if (!res.ok) {
+            return res.json().then(function(err) { throw new Error(err.error || 'Failed to query archive'); });
+          }
+          return res.json();
+        })
+        .then(function(data) {
+          if (!data.ok) {
+            throw new Error(data.error || 'No parameters found.');
+          }
+          var params = data.params;
+
+          card.querySelector('.planet-period').value = params.period !== undefined ? params.period : '';
+          card.querySelector('.planet-period-unc').value = params.period_unc !== undefined ? params.period_unc : '';
+          card.querySelector('.planet-t0').value = params.t0 !== undefined ? params.t0 : '';
+          card.querySelector('.planet-t0-unc').value = params.t0_unc !== undefined ? params.t0_unc : '';
+          card.querySelector('.planet-dur').value = params.dur !== undefined ? params.dur : '';
+          card.querySelector('.planet-dur-unc').value = params.dur_unc !== undefined ? params.dur_unc : '';
+          card.querySelector('.planet-ror').value = params.ror !== undefined ? params.ror : '';
+          card.querySelector('.planet-ror-unc').value = params.ror_unc !== undefined ? params.ror_unc : '';
+          card.querySelector('.planet-b').value = params.b !== undefined ? params.b : '';
+          card.querySelector('.planet-b-unc').value = params.b_unc !== undefined ? params.b_unc : '';
+
+          var plRefContainer = card.querySelector('.planet-ref-container');
+          if (plRefContainer) {
+            plRefContainer.innerHTML = params.pl_ref ? 'Source: ' + params.pl_ref : '';
+          }
+
+          if (data.pl_name && data.pl_name.length > 2 && data.pl_name.indexOf(' ') !== -1) {
+            var parts = data.pl_name.split(' ');
+            var potentialLetter = parts[parts.length - 1].toLowerCase();
+            if (potentialLetter.length === 1 && potentialLetter >= 'b' && potentialLetter <= 'z') {
+              letterInput.value = potentialLetter;
+              card.setAttribute('data-planet', potentialLetter);
+              syncPlanetsInput();
+            }
+          }
+
+          validatePlanetCard(card);
+          saveOptions();
+          window.showMessageModal('Success', 'Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '!');
+        })
+        .catch(function(err) {
+          window.showMessageModal('Error', err.message);
+        })
+        .finally(function() {
+          queryBtn.disabled = false;
+          queryBtn.innerText = originalText;
+        });
+    });
+
+    if (removeBtn) {
+      removeBtn.addEventListener('click', function() {
+        card.remove();
+        syncPlanetsInput();
+        saveOptions();
+      });
+    }
+
+    card.querySelectorAll('input').forEach(function(input) {
+      input.addEventListener('change', function() {
+        validatePlanetCard(card);
+        saveOptions();
+      });
+      input.addEventListener('input', function() {
+        validatePlanetCard(card);
+        saveOptions();
+      });
+    });
+
+    validatePlanetCard(card);
+    syncPlanetsInput();
+    if (!isInitial) {
+      saveOptions();
+    }
+  }
+
+  function restoreOptions() {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); } catch (e) { saved = null; }
+
+    var container = document.getElementById('planet-cards-container');
+    if (container) container.innerHTML = '';
+
+    if (!saved) {
+      var defaultLetter = (DEFAULTS && DEFAULTS.planets) ? DEFAULTS.planets : 'b';
+      addPlanetCard(defaultLetter, {
+        query_target: getDefaultQueryTarget(defaultLetter),
+        period: (DEFAULTS && DEFAULTS.period) !== undefined ? DEFAULTS.period : '',
+        period_unc: (DEFAULTS && DEFAULTS.period_unc) !== undefined ? DEFAULTS.period_unc : '',
+        t0: (DEFAULTS && DEFAULTS.t0) !== undefined ? DEFAULTS.t0 : '',
+        t0_unc: (DEFAULTS && DEFAULTS.t0_unc) !== undefined ? DEFAULTS.t0_unc : '',
+        dur: (DEFAULTS && DEFAULTS.dur) !== undefined ? DEFAULTS.dur : '',
+        dur_unc: (DEFAULTS && DEFAULTS.dur_unc) !== undefined ? DEFAULTS.dur_unc : '',
+        ror: (DEFAULTS && DEFAULTS.ror) !== undefined ? DEFAULTS.ror : '',
+        ror_unc: (DEFAULTS && DEFAULTS.ror_unc) !== undefined ? DEFAULTS.ror_unc : '',
+        b: (DEFAULTS && DEFAULTS.b) !== undefined ? DEFAULTS.b : '',
+        b_unc: (DEFAULTS && DEFAULTS.b_unc) !== undefined ? DEFAULTS.b_unc : '',
+        pl_ref: ''
+      }, true);
+      return;
+    }
+
+    ['teff','teff_unc','logg','logg_unc','feh','feh_unc',
+     'tune','draws','chains','cores','spline_knots','clip_nsig','chunk_thresh','trim_beg','trim_end',
+     'gp_log_amp','gp_log_amp_unc','gp_log_amp_prior','gp_log_scale','gp_log_scale_unc','gp_log_scale_prior'].forEach(function (id) {
+      var el = document.getElementById('opt-'+id);
+      if (el && saved[id] !== undefined) el.value = saved[id];
+    });
+
+    ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset',
+     'use_gp','gp_per_dataset_log_amp','gp_per_dataset_log_scale'].forEach(function (id) {
+      var el = document.getElementById('opt-'+id);
+      if (el && saved[id] !== undefined) el.checked = saved[id] === 'true';
+    });
+
+    var archiveSourceEl = document.getElementById('archive-source-select');
+    if (archiveSourceEl && saved.archive_source !== undefined) archiveSourceEl.value = saved.archive_source;
+
+    var stellarRefEl = document.getElementById('stellar-ref-container');
+    if (stellarRefEl && saved.stellar_ref !== undefined) stellarRefEl.innerHTML = saved.stellar_ref;
+
+    var cEl = document.getElementById('opt-chromatic');
+    if (cEl && saved.chromatic !== undefined) cEl.checked = saved.chromatic === 'true';
+
+    var trEl = document.getElementById('opt-trend');
+    if (trEl && saved.trend !== undefined) trEl.checked = saved.trend === 'true';
+
+    var owEl = document.getElementById('opt-overwrite');
+    if (owEl && saved.overwrite !== undefined) owEl.checked = saved.overwrite === 'true';
+
+    document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
+      c.checked = saved.fixed && saved.fixed.indexOf(c.value) !== -1;
+    });
+
+    var planetLetters = [];
+    if (saved.planets) {
+      planetLetters = saved.planets.split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(function (s) { return s.length === 1; });
+    }
+
+    if (planetLetters.length === 0) {
+      planetLetters = ['b'];
+    }
+
+    planetLetters.forEach(function (letter) {
+      var vals = {
+        source: saved['query_source_' + letter] || 'nasa',
+        query_target: saved['query_target_' + letter] || getDefaultQueryTarget(letter),
+        period: saved['period_' + letter] !== undefined ? saved['period_' + letter] : '',
+        period_unc: saved['period_unc_' + letter] !== undefined ? saved['period_unc_' + letter] : '',
+        t0: saved['t0_' + letter] !== undefined ? saved['t0_' + letter] : '',
+        t0_unc: saved['t0_unc_' + letter] !== undefined ? saved['t0_unc_' + letter] : '',
+        dur: saved['dur_' + letter] !== undefined ? saved['dur_' + letter] : '',
+        dur_unc: saved['dur_unc_' + letter] !== undefined ? saved['dur_unc_' + letter] : '',
+        ror: saved['ror_' + letter] !== undefined ? saved['ror_' + letter] : '',
+        ror_unc: saved['ror_unc_' + letter] !== undefined ? saved['ror_unc_' + letter] : '',
+        b: saved['b_' + letter] !== undefined ? saved['b_' + letter] : '',
+        b_unc: saved['b_unc_' + letter] !== undefined ? saved['b_unc_' + letter] : '',
+        tc_pred: saved['tc_pred_' + letter] !== undefined ? saved['tc_pred_' + letter] : '',
+        tc_pred_unc: saved['tc_pred_unc_' + letter] !== undefined ? saved['tc_pred_unc_' + letter] : '',
+        pl_ref: saved['pl_ref_' + letter] !== undefined ? saved['pl_ref_' + letter] : ''
+      };
+
+      if (letter === planetLetters[0]) {
+        if (vals.tc_pred === '' && saved.tc_pred !== undefined) vals.tc_pred = saved.tc_pred;
+        if (saved.tc_pred_unc !== undefined && saved['tc_pred_unc_' + letter] === undefined) vals.tc_pred_unc = saved.tc_pred_unc;
+        if (vals.period === '' && saved.period !== undefined) vals.period = saved.period;
+        if (vals.period_unc === '' && saved.period_unc !== undefined) vals.period_unc = saved.period_unc;
+        if (vals.t0 === '' && saved.t0 !== undefined) vals.t0 = saved.t0;
+        if (vals.t0_unc === '' && saved.t0_unc !== undefined) vals.t0_unc = saved.t0_unc;
+        if (vals.dur === '' && saved.dur !== undefined) vals.dur = saved.dur;
+        if (vals.dur_unc === '' && saved.dur_unc !== undefined) vals.dur_unc = saved.dur_unc;
+        if (vals.ror === '' && saved.ror !== undefined) vals.ror = saved.ror;
+        if (vals.ror_unc === '' && saved.ror_unc !== undefined) vals.ror_unc = saved.ror_unc;
+        if (vals.b === '' && saved.b !== undefined) vals.b = saved.b;
+        if (vals.b_unc === '' && saved.b_unc !== undefined) vals.b_unc = saved.b_unc;
+        if (vals.pl_ref === '' && saved.pl_ref !== undefined) vals.pl_ref = saved.pl_ref;
+      }
+
+      addPlanetCard(letter, vals, true);
+    });
+  }
+
+  var DEFAULTS = {{ target_params | tojson }};
+  var BACKUP_KEY = 'muscat_fit_options_backup';
+
+  var clearBtn = document.getElementById('clear-btn');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', function () {
+      try {
+        localStorage.setItem(BACKUP_KEY, JSON.stringify(collectOptions()));
+      } catch (e) {}
+
+      ['teff','teff_unc','logg','logg_unc','feh','feh_unc'].forEach(function (id) {
+        var el = document.getElementById('opt-'+id);
+        if (el) el.value = '';
+      });
+
+      var stellarRefEl = document.getElementById('stellar-ref-container');
+      if (stellarRefEl) stellarRefEl.innerHTML = '';
+
+      var cEl = document.getElementById('opt-chromatic');
+      if (cEl) cEl.checked = false;
+
+      var trEl = document.getElementById('opt-trend');
+      if (trEl) trEl.checked = false;
+
+      var owEl = document.getElementById('opt-overwrite');
+      if (owEl) owEl.checked = false;
+
+      var numDefaults = {'opt-tune':'2000','opt-draws':'2000','opt-chains':'2','opt-cores':'2',
+                         'opt-spline_knots':'5','opt-clip_nsig':'7','opt-chunk_thresh':'0','opt-trim_beg':'','opt-trim_end':'',
+                         'opt-gp_log_amp':'-3','opt-gp_log_amp_unc':'2','opt-gp_log_amp_prior':'gaussian',
+                         'opt-gp_log_scale':'-1','opt-gp_log_scale_unc':'2','opt-gp_log_scale_prior':'gaussian'};
+      Object.keys(numDefaults).forEach(function (id) { var el = document.getElementById(id); if (el) el.value = numDefaults[id]; });
+
+      var checkDefaults = {'opt-include_mean':true,'opt-use_custom_optimizer':true,'opt-spline':false,
+                           'opt-add_bias':false,'opt-quadratic':false,'opt-clip':false,'opt-chunk_offset':false,
+                           'opt-use_gp':false,'opt-gp_per_dataset_log_amp':false,'opt-gp_per_dataset_log_scale':false};
+      Object.keys(checkDefaults).forEach(function (id) { var el = document.getElementById(id); if (el) el.checked = checkDefaults[id]; });
+      updateGpEnabled();
+
+      document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
+        c.checked = false;
+      });
+
+      var container = document.getElementById('planet-cards-container');
+      if (container) {
+        container.innerHTML = '';
+        addPlanetCard('b', {}, true);
+      }
+
+      saveOptions();
+      updateChromaticForBands();
+    });
+  }
+  var saveBtn = document.getElementById('save-btn');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', function () {
+      var currentOpts = collectOptions();
+      try {
+        localStorage.setItem(BACKUP_KEY, JSON.stringify(currentOpts));
+        alert('Current values saved.');
+      } catch (e) {
+        alert('Failed to save values.');
+      }
+    });
+  }
+
+  var restoreBtn = document.getElementById('restore-btn');
+  if (restoreBtn) {
+    restoreBtn.addEventListener('click', function () {
+      var backup;
+      try { backup = JSON.parse(localStorage.getItem(BACKUP_KEY) || 'null'); } catch (e) { backup = null; }
+      if (backup) {
+        ['teff','teff_unc','logg','logg_unc','feh','feh_unc',
+         'tune','draws','chains','cores','spline_knots','clip_nsig','chunk_thresh','trim_beg','trim_end',
+         'gp_log_amp','gp_log_amp_unc','gp_log_amp_prior','gp_log_scale','gp_log_scale_unc','gp_log_scale_prior'].forEach(function (id) {
+          var el = document.getElementById('opt-'+id);
+          if (el && backup[id] !== undefined) el.value = backup[id];
+        });
+
+        ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset',
+         'use_gp','gp_per_dataset_log_amp','gp_per_dataset_log_scale'].forEach(function (id) {
+          var el = document.getElementById('opt-'+id);
+          if (el && backup[id] !== undefined) el.checked = backup[id] === 'true';
+        });
+        updateGpEnabled();
+
+        var stellarRefEl = document.getElementById('stellar-ref-container');
+        if (stellarRefEl) stellarRefEl.innerHTML = backup.stellar_ref || '';
+
+        var cEl = document.getElementById('opt-chromatic');
+        if (cEl && backup.chromatic !== undefined) cEl.checked = backup.chromatic === 'true';
+
+        var trEl = document.getElementById('opt-trend');
+        if (trEl && backup.trend !== undefined) trEl.checked = backup.trend === 'true';
+
+        var owEl = document.getElementById('opt-overwrite');
+        if (owEl && backup.overwrite !== undefined) owEl.checked = backup.overwrite === 'true';
+
+        document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
+          c.checked = backup.fixed && backup.fixed.indexOf(c.value) !== -1;
+        });
+
+        var container = document.getElementById('planet-cards-container');
+        if (container) container.innerHTML = '';
+
+        var planetLetters = [];
+        if (backup.planets) {
+          planetLetters = backup.planets.split(',').map(function (s) { return s.trim().toLowerCase(); }).filter(function (s) { return s.length === 1; });
+        }
+        if (planetLetters.length === 0) {
+          planetLetters = ['b'];
+        }
+
+        planetLetters.forEach(function (letter) {
+          var vals = {
+            query_target: backup['query_target_' + letter] || getDefaultQueryTarget(letter),
+            period: backup['period_' + letter] !== undefined ? backup['period_' + letter] : '',
+            period_unc: backup['period_unc_' + letter] !== undefined ? backup['period_unc_' + letter] : '',
+            t0: backup['t0_' + letter] !== undefined ? backup['t0_' + letter] : '',
+            t0_unc: backup['t0_unc_' + letter] !== undefined ? backup['t0_unc_' + letter] : '',
+            dur: backup['dur_' + letter] !== undefined ? backup['dur_' + letter] : '',
+            dur_unc: backup['dur_unc_' + letter] !== undefined ? backup['dur_unc_' + letter] : '',
+            ror: backup['ror_' + letter] !== undefined ? backup['ror_' + letter] : '',
+            ror_unc: backup['ror_unc_' + letter] !== undefined ? backup['ror_unc_' + letter] : '',
+            b: backup['b_' + letter] !== undefined ? backup['b_' + letter] : '',
+            b_unc: backup['b_unc_' + letter] !== undefined ? backup['b_unc_' + letter] : '',
+            tc_pred: backup['tc_pred_' + letter] !== undefined ? backup['tc_pred_' + letter] : '',
+            tc_pred_unc: backup['tc_pred_unc_' + letter] !== undefined ? backup['tc_pred_unc_' + letter] : '',
+            pl_ref: backup['pl_ref_' + letter] !== undefined ? backup['pl_ref_' + letter] : ''
+          };
+
+          if (letter === planetLetters[0]) {
+            if (vals.period === '' && backup.period !== undefined) vals.period = backup.period;
+            if (vals.period_unc === '' && backup.period_unc !== undefined) vals.period_unc = backup.period_unc;
+            if (vals.t0 === '' && backup.t0 !== undefined) vals.t0 = backup.t0;
+            if (vals.t0_unc === '' && backup.t0_unc !== undefined) vals.t0_unc = backup.t0_unc;
+            if (vals.dur === '' && backup.dur !== undefined) vals.dur = backup.dur;
+            if (vals.dur_unc === '' && backup.dur_unc !== undefined) vals.dur_unc = backup.dur_unc;
+            if (vals.ror === '' && backup.ror !== undefined) vals.ror = backup.ror;
+            if (vals.ror_unc === '' && backup.ror_unc !== undefined) vals.ror_unc = backup.ror_unc;
+            if (vals.b === '' && backup.b !== undefined) vals.b = backup.b;
+            if (vals.b_unc === '' && backup.b_unc !== undefined) vals.b_unc = backup.b_unc;
+            if (vals.pl_ref === '' && backup.pl_ref !== undefined) vals.pl_ref = backup.pl_ref;
+          }
+
+          addPlanetCard(letter, vals, true);
+        });
+
+        saveOptions();
+        updateChromaticForBands();
+        alert('Values restored.');
+      } else {
+        alert('No saved backup found to restore.');
+      }
+    });
+  }
+
+  var addPlanetBtn = document.getElementById('add-planet-btn');
+  if (addPlanetBtn) {
+    addPlanetBtn.addEventListener('click', function() {
+      var nextLetter = getNextPlanetLetter();
+      addPlanetCard(nextLetter, {
+        query_target: getDefaultQueryTarget(nextLetter)
+      });
+    });
+  }
+
+  // Grey out the GP prior inputs unless "Use GP" is checked.
+  function updateGpEnabled() {
+    var on = chk('opt-use_gp');
+    ['opt-gp_log_amp','opt-gp_log_amp_unc','opt-gp_log_amp_prior',
+     'opt-gp_log_scale','opt-gp_log_scale_unc','opt-gp_log_scale_prior',
+     'opt-gp_per_dataset_log_amp','opt-gp_per_dataset_log_scale'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) { el.disabled = !on; el.style.opacity = on ? '1' : '0.5'; }
+    });
+  }
+
+  restoreOptions();
+  updateGpEnabled();
+
+  // Panel toggles persistence
+  (function () {
+    var panel = document.getElementById('opt-panel');
+    if (!panel) return;
+    var savedOpen;
+    try { savedOpen = JSON.parse(localStorage.getItem(PANEL_KEY) || 'null'); } catch (e) { savedOpen = null; }
+    if (savedOpen === true) panel.open = true;
+    else if (savedOpen === false) panel.open = false;
+    panel.addEventListener('toggle', function () {
+      try { localStorage.setItem(PANEL_KEY, JSON.stringify(panel.open)); } catch (e) {}
+    });
+  })();
+
+  // Listen to inputs
+  var panel = document.getElementById('opt-panel');
+  if (panel) {
+    panel.addEventListener('change', saveOptions);
+    panel.addEventListener('input', saveOptions);
+    panel.addEventListener('change', function (e) {
+      if (e.target && e.target.id === 'opt-use_gp') updateGpEnabled();
+    });
+  }
+
+  // ----- restore the log if it was previously saved -----
+  (function restoreLog() {
+    if (!logEl) return;
+    var savedLog;
+    try { savedLog = localStorage.getItem('fit:log:' + inst + ':' + date + ':' + target); } catch (e) { savedLog = null; }
+    if (savedLog) {
+      logEl.style.display = 'block';
+      logEl.textContent = savedLog;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+  })();
+
+  // ---- CSV selection ----
+  var csvCards = document.querySelectorAll('.csv-card');
+  function saveCsvSelection() {
+    try { localStorage.setItem(CSV_KEY, JSON.stringify(getSelectedCsvs())); } catch (e) {}
+  }
+  function updateCsvCount() {
+    var el = document.getElementById('csv-count');
+    if (!el) return;
+    var checked = document.querySelectorAll('.csv-checkbox:checked').length;
+    el.textContent = checked + ' / ' + csvCards.length + ' selected';
+  }
+  function getSelectedCsvs() {
+    var names = [];
+    csvCards.forEach(function (card) {
+      var cb = card.querySelector('.csv-checkbox');
+      if (cb && cb.checked) {
+        names.push(card.getAttribute('data-csv-name'));
+      }
+    });
+    return names;
+  }
+  function restoreCsvSelection() {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(CSV_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved || !Array.isArray(saved)) return;
+    var selected = new Set(saved);
+    csvCards.forEach(function (card) {
+      var name = card.getAttribute('data-csv-name');
+      var cb = card.querySelector('.csv-checkbox');
+      if (!cb) return;
+      var isSelected = selected.has(name);
+      cb.checked = isSelected;
+      card.classList.toggle('selected', isSelected);
+      card.classList.toggle('deselected', !isSelected);
+    });
+  }
+  csvCards.forEach(function (card) {
+    card.addEventListener('click', function (e) {
+      if (e.target.type === 'checkbox') return;
+      var cb = card.querySelector('.csv-checkbox');
+      if (cb) cb.checked = !cb.checked;
+      card.classList.toggle('selected', cb.checked);
+      card.classList.toggle('deselected', !cb.checked);
+      updateCsvCount();
+      saveCsvSelection();
+      updateChromaticForBands();
+    });
+    var cb = card.querySelector('.csv-checkbox');
+    if (cb) {
+      cb.addEventListener('change', function () {
+        card.classList.toggle('selected', cb.checked);
+        card.classList.toggle('deselected', !cb.checked);
+        updateCsvCount();
+        saveCsvSelection();
+        updateChromaticForBands();
+      });
+      card.classList.add(cb.checked ? 'selected' : 'deselected');
+    }
+  });
+  restoreCsvSelection();
+
+  function extractBand(csvName) {
+    var parts = csvName.split('_' + inst + '_');
+    if (parts.length > 1) {
+      var band = parts[1].split('_' + date)[0];
+      return band || 'gp';
+    }
+    return 'gp';
+  }
+  function updateChromaticForBands() {
+    var bands = {};
+    csvCards.forEach(function (card) {
+      var cb = card.querySelector('.csv-checkbox');
+      if (cb && cb.checked) {
+        bands[extractBand(card.getAttribute('data-csv-name'))] = true;
+      }
+    });
+    var nBands = Object.keys(bands).length;
+    var cEl = document.getElementById('opt-chromatic');
+    if (!cEl) return;
+    if (nBands < 2) {
+      cEl.checked = false;
+      cEl.disabled = true;
+    } else {
+      cEl.disabled = false;
+    }
+  }
+
+  var selectAllBtn = document.getElementById('select-all-csvs');
+  var deselectAllBtn = document.getElementById('deselect-all-csvs');
+  if (selectAllBtn) selectAllBtn.addEventListener('click', function () {
+    csvCards.forEach(function (card) {
+      var cb = card.querySelector('.csv-checkbox');
+      if (cb) cb.checked = true;
+      card.classList.add('selected');
+      card.classList.remove('deselected');
+    });
+    updateCsvCount();
+    saveCsvSelection();
+    updateChromaticForBands();
+  });
+  if (deselectAllBtn) deselectAllBtn.addEventListener('click', function () {
+    csvCards.forEach(function (card) {
+      var cb = card.querySelector('.csv-checkbox');
+      if (cb) cb.checked = false;
+      card.classList.remove('selected');
+      card.classList.add('deselected');
+    });
+    updateCsvCount();
+    saveCsvSelection();
+    updateChromaticForBands();
+  });
+  updateCsvCount();
+  updateChromaticForBands();
+
+  function setRunning(on) {
+    if (runBtn) runBtn.disabled = on;
+    if (runTestBtn) runTestBtn.disabled = on;
+    if (cancelBtn) cancelBtn.style.display = on ? '' : 'none';
+  }
+  function stopPolling() { if (polling) { clearInterval(polling); polling = null; } }
+  function saveJob() { try { localStorage.setItem(JOB_KEY, JSON.stringify({ inst: inst, date: date, target: target })); } catch (e) {} }
+  function clearJob() { try { localStorage.removeItem(JOB_KEY); } catch (e) {} }
+
+  function poll() {
+    var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
+    fetch('/transit-fit/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
+      if (s.log) {
+        logEl.textContent = s.log;
+        logEl.scrollTop = logEl.scrollHeight;
+        try { localStorage.setItem('fit:log:' + inst + ':' + date + ':' + target, s.log); } catch (e) {}
+      }
+      if (s.state === 'done') {
+        stopPolling(); clearJob();
+        logEl.textContent += '\n\n✓ done — reloading…';
+        try { localStorage.setItem('fit:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+        if (typeof window.showLoading === 'function') {
+          window.showLoading('Reloading…');
+        }
+        setTimeout(function () { window.location.reload(); }, 1200);
+      } else if (s.state === 'error') {
+        stopPolling(); setRunning(false); clearJob();
+        logEl.textContent += '\n\n✗ fit run exited with code ' + s.returncode;
+        try { localStorage.setItem('fit:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+      } else if (s.state === 'cancelled') {
+        stopPolling(); setRunning(false); clearJob();
+        logEl.textContent += '\n\n■ cancelled';
+        try { localStorage.setItem('fit:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+      }
+    }).catch(function () {});
+  }
+
+  function launch(testRun) {
+    setRunning(true);
+    if (errEl) errEl.textContent = '';
+    logEl.style.display = 'block';
+    logEl.textContent = 'Launching transit fitting run…';
+    try { localStorage.removeItem('fit:log:' + inst + ':' + date + ':' + target); } catch (e) {}
+
+    fetch('/transit-fit/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target, test_run: !!testRun, options: collectOptions(), selected_csvs: getSelectedCsvs() })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (!res.ok) {
+        setRunning(false);
+        logEl.textContent = 'Error: ' + (res.error || 'failed to start');
+        return;
+      }
+      saveJob();
+      if (!polling) polling = setInterval(poll, 2000);
+      poll();
+    }).catch(function (err) {
+      setRunning(false);
+      logEl.textContent = 'Error: ' + err.message;
+    });
+  }
+
+  if (runBtn) runBtn.addEventListener('click', function () { launch(false); });
+  if (runTestBtn) runTestBtn.addEventListener('click', function () { launch(true); });
+
+  // Calculate logP: build the model from the current parameters and evaluate
+  // model.logp() at the priors, without launching a full fit.
+  var calcLogpBtn = document.getElementById('calc-logp-btn');
+  var logpResult  = document.getElementById('logp-result');
+  if (calcLogpBtn) calcLogpBtn.addEventListener('click', function () {
+    if (errEl) errEl.textContent = '';
+    calcLogpBtn.disabled = true;
+    var prevText = calcLogpBtn.textContent;
+    calcLogpBtn.textContent = '∑ Calculating…';
+    if (logpResult) { logpResult.style.color = 'var(--text-dim)'; logpResult.textContent = 'computing… (can take ~1 min)'; }
+    fetch('/transit-fit/logp', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target, options: collectOptions(), selected_csvs: getSelectedCsvs() })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      calcLogpBtn.disabled = false;
+      calcLogpBtn.textContent = prevText;
+      if (!res.ok) {
+        if (logpResult) { logpResult.textContent = ''; }
+        if (errEl) errEl.textContent = res.error || 'logP computation failed';
+        return;
+      }
+      if (logpResult) { logpResult.style.color = 'var(--accent2)'; logpResult.textContent = res.text || ('logP= ' + res.logp); }
+    }).catch(function (err) {
+      calcLogpBtn.disabled = false;
+      calcLogpBtn.textContent = prevText;
+      if (logpResult) { logpResult.textContent = ''; }
+      if (errEl) errEl.textContent = 'Error: ' + err.message;
+    });
+  });
+  if (cancelBtn) cancelBtn.addEventListener('click', function () {
+    cancelBtn.disabled = true;
+    logEl.textContent += '\n\n■ cancelling…';
+    try { localStorage.setItem('fit:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+    fetch('/transit-fit/cancel', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target })
+    }).then(function (r) { return r.json(); }).then(function () {
+      cancelBtn.disabled = false;
+      if (!polling) { polling = setInterval(poll, 2000); poll(); }
+    }).catch(function () { cancelBtn.disabled = false; });
+  });
+
+  // Check saved job on page load
+  (function checkSavedJob() {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(JOB_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved || !saved.inst) return;
+    if (saved.inst === inst && saved.date === date && saved.target === target) {
+      if (logEl) logEl.style.display = 'block';
+      if (!polling) polling = setInterval(poll, 2000);
+      poll();
+    }
+  })();
+
+  // ── Message Modal ────────────────────────────────────────────────────────
+  window.showMessageModal = function(title, text) {
+    document.getElementById('message-modal-title').textContent = title;
+    document.getElementById('message-modal-text').textContent = text;
+    document.getElementById('message-modal').classList.add('visible');
+  };
+  window.closeMessageModal = function() {
+    document.getElementById('message-modal').classList.remove('visible');
+  };
+
+  // NASA Exoplanet Archive Query Handler
+  var queryBtn = document.getElementById('archive-query-btn');
+  if (queryBtn) {
+    queryBtn.addEventListener('click', function () {
+      var targetInput = document.getElementById('archive-target-input');
+      if (!targetInput) return;
+      var targetVal = targetInput.value.trim();
+      if (!targetVal) {
+        window.showMessageModal('Notice', 'Please enter a target name.');
+        return;
+      }
+
+      queryBtn.disabled = true;
+      var originalText = queryBtn.innerText;
+      queryBtn.innerText = 'Querying...';
+
+      var sourceSelect = document.getElementById('archive-source-select');
+      var source = sourceSelect ? sourceSelect.value : 'nasa';
+      var sourceLabel = source === 'toi' ? 'TOI Catalog' : 'NASA Exoplanet Archive';
+
+      fetch('/transit-fit/query-archive?target=' + encodeURIComponent(targetVal) + '&source=' + encodeURIComponent(source))
+        .then(function (res) {
+          if (!res.ok) {
+            return res.json().then(function (err) { throw new Error(err.error || 'Failed to query archive'); });
+          }
+          return res.json();
+        })
+        .then(function (data) {
+          if (!data.ok) {
+            throw new Error(data.error || 'No parameters found.');
+          }
+          var params = data.params;
+
+          // Populate the stellar fields
+          ['teff','teff_unc','logg','logg_unc','feh','feh_unc'].forEach(function (id) {
+            var el = document.getElementById('opt-'+id);
+            if (el && params[id] !== undefined) el.value = params[id];
+          });
+
+          // Stellar parameters reference
+          var stellarRefEl = document.getElementById('stellar-ref-container');
+          if (stellarRefEl) {
+            stellarRefEl.innerHTML = params.st_ref ? 'Source: ' + params.st_ref : '';
+          }
+
+          // Sync first planet card's priors
+          var container = document.getElementById('planet-cards-container');
+          if (container && container.children.length > 0) {
+            var firstCard = container.children[0];
+
+            var firstLetterInput = firstCard.querySelector('.planet-letter-input');
+            if (params.planets && firstLetterInput) {
+              var plLetter = params.planets.trim().toLowerCase();
+              if (plLetter.length === 1) {
+                firstLetterInput.value = plLetter;
+                firstCard.setAttribute('data-planet', plLetter);
+              }
+            }
+
+            firstCard.querySelector('.planet-period').value = params.period !== undefined ? params.period : '';
+            firstCard.querySelector('.planet-period-unc').value = params.period_unc !== undefined ? params.period_unc : '';
+            firstCard.querySelector('.planet-t0').value = params.t0 !== undefined ? params.t0 : '';
+            firstCard.querySelector('.planet-t0-unc').value = params.t0_unc !== undefined ? params.t0_unc : '';
+            firstCard.querySelector('.planet-dur').value = params.dur !== undefined ? params.dur : '';
+            firstCard.querySelector('.planet-dur-unc').value = params.dur_unc !== undefined ? params.dur_unc : '';
+            firstCard.querySelector('.planet-ror').value = params.ror !== undefined ? params.ror : '';
+            firstCard.querySelector('.planet-ror-unc').value = params.ror_unc !== undefined ? params.ror_unc : '';
+            firstCard.querySelector('.planet-b').value = params.b !== undefined ? params.b : '';
+            firstCard.querySelector('.planet-b-unc').value = params.b_unc !== undefined ? params.b_unc : '';
+
+            var plRefContainer = firstCard.querySelector('.planet-ref-container');
+            if (plRefContainer) {
+              plRefContainer.innerHTML = params.pl_ref ? 'Source: ' + params.pl_ref : '';
+            }
+
+            var firstQueryTarget = firstCard.querySelector('.planet-query-target');
+            if (firstQueryTarget) {
+              firstQueryTarget.value = targetVal;
+            }
+          }
+
+          var cEl = document.getElementById('opt-chromatic');
+          if (cEl) cEl.checked = true;
+          updateChromaticForBands();
+
+          var trEl = document.getElementById('opt-trend');
+          if (trEl) trEl.checked = true;
+
+          var fcard = document.querySelector('.planet-card');
+          if (fcard) {
+            var tcEl = fcard.querySelector('.planet-tc_pred');
+            if (tcEl) tcEl.value = '';
+            var tcuEl = fcard.querySelector('.planet-tc_pred-unc');
+            if (tcuEl) tcuEl.value = '';
+          }
+
+          document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
+            c.checked = c.value === 'period' || c.value === 'u_star';
+          });
+
+          syncPlanetsInput();
+          validateAllPlanetCards();
+          saveOptions();
+          window.showMessageModal('Success', 'Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '!');
+        })
+        .catch(function (err) {
+          window.showMessageModal('Error', err.message);
+        })
+        .finally(function () {
+          queryBtn.disabled = false;
+          queryBtn.innerText = originalText;
+        });
+    });
+  }
+})();
+</script>
+<div style="text-align:center; margin:2em 0; display: flex; justify-content: center; gap: 1rem; align-items: center;">
+  <a href="#" style="display:inline-block; padding:0.5em 2em; background:#0056b3; color:#fff; text-decoration:none; border-radius:4px;">Back to Top</a>
+  {% if sel_inst and sel_date and sel_target %}
+    <a href="/photometry?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Photometry</a>
+  {% else %}
+    <a href="/photometry" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Photometry</a>
+  {% endif %}
+</div>
+{% endblock %}
