@@ -4,6 +4,8 @@
 ## Later
 Add mermaid diagram to visualize the workflow
 
+Normalize target names without destroying originals: instead of the in-place `UPDATE frames SET object` in `scripts/fix_malformed_names.py` (Stage 3), add a separate normalized-name column and keep the raw FITS `object` as the source of truth. Decide whether the normalized name is (a) canonical identity used for grouping/joins so duplicate spellings merge into one target (requires migrating `target_notes`/`target_overrides` keys), or (b) display/search-only alias (no migration, but `55Cnc` and `55 Cnc` stay separate target rows). Make normalization a pure function applied during `build_db()` ingestion (not a post-hoc UPDATE) so derived `summaries`/`targets` tables can't go stale.
+
 ## Done
 * In GUI Transit Fit page, add an url to https://exoplanetarchive.ipac.caltech.edu/overview/<target_name> that opens a new browser tab when clicked.
 * In GUI Jobs page, persist a table of jobs whether finished or still at queue. Just update the status but keep the history record.

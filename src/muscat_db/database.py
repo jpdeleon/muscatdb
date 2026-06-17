@@ -8,6 +8,7 @@ import sqlite3
 
 from muscat_db.instruments import INSTRUMENTS, OBSLOG_BASE
 from muscat_db.cache import clear_all_caches
+from muscat_db.coord import CoordRepr, unpack as _unpack_coord
 
 
 def format_elapsed(seconds: int) -> str:
@@ -166,6 +167,9 @@ def build_db(db_path: str, progress=None) -> int:
 
     try:
         conn = sqlite3.connect(tmp_path)
+        # Robust coordinate picker (filters malformed strings, keeps RA/Dec
+        # paired, takes the median) — replaces the old MAX() string aggregation.
+        conn.create_aggregate("coord_repr", 2, CoordRepr)
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=OFF;")
         conn.execute("PRAGMA cache_size=100000;")
@@ -227,15 +231,18 @@ def build_db(db_path: str, progress=None) -> int:
             summary_task = progress.add_task(
                 "[cyan]Building summaries[/]", total=None, filename="",
             )
-        rows = conn.execute(
+        raw = conn.execute(
             """SELECT instrument, obsdate, ccd, object, exptime, read_mode,
                       MIN(filename), MAX(filename),
                       MIN(ut_start), MAX(ut_start), COUNT(*),
-                      MAX(filter), MAX(ra), MAX(declination),
+                      MAX(filter), coord_repr(ra, declination),
                       MIN(NULLIF(airmass, 0)), MAX(NULLIF(airmass, 0))
                FROM frames
                GROUP BY instrument, obsdate, ccd, object, exptime, read_mode"""
         ).fetchall()
+        # Split the packed coord (col 12) back into (ra, declination) so the
+        # INSERT column layout below is unchanged.
+        rows = [(*r[:12], *_unpack_coord(r[12]), r[13], r[14]) for r in raw]
         if progress is not None:
             progress.update(summary_task, total=len(rows))
         if rows:
@@ -274,7 +281,11 @@ def build_db(db_path: str, progress=None) -> int:
         # Restore preserved jobs so build-db doesn't wipe job history.
         for job in preserved_jobs:
             conn.execute(
-                "INSERT OR REPLACE INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?,?)", job
+                """INSERT OR REPLACE INTO jobs
+                   (key, type, instrument, obsdate, target, state, returncode,
+                    elapsed, started_at, error_desc, run_type, params)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                job,
             )
 
         conn.commit()
@@ -309,8 +320,7 @@ def _populate_targets(conn: sqlite3.Connection) -> None:
               GROUP_CONCAT(DISTINCT instrument || ':' || obsdate) AS inst_dates,
               GROUP_CONCAT(DISTINCT filter)      AS filters,
               SUM(COALESCE(exptime * nframes, 0)) AS total_exptime,
-              MAX(ra)                            AS ra,
-              MAX(declination)                   AS declination,
+              coord_repr(ra, declination)        AS coord,
               MIN(NULLIF(airmass_min, 0))        AS airmass_min,
               MAX(NULLIF(airmass_max, 0))        AS airmass_max,
               CASE WHEN object GLOB '*[A-Za-z]*' THEN 1 ELSE 0 END
@@ -341,7 +351,8 @@ def _populate_targets(conn: sqlite3.Connection) -> None:
             exact=", ".join(f"'{s}'" for s in _TARGET_EXCLUDE_EXACT),
         )
     )
-    rows = cur.fetchall()
+    # Split the packed coord (col 8) back into (ra, declination).
+    rows = [(*r[:8], *_unpack_coord(r[8]), r[9], r[10], r[11]) for r in cur.fetchall()]
     conn.executemany(
         """INSERT INTO targets
            (object, n_dates, n_frames, instruments, dates, inst_dates,
