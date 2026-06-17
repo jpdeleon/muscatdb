@@ -73,7 +73,7 @@
   #opt-error { color: var(--red); font-size: 0.8rem; min-height: 1rem; }
 </style>
 
-<h1>Photometry <span class="help-tooltip" style="width: 18px; height: 18px; font-size: 0.8rem; margin-left: 6px;" title="Tips:&#10;1. Select Instrument, Date, and Target to view products.&#10;2. If no products exist, use options below to run a reduction.&#10;3. Drag figures to reorder them (orders are saved).&#10;4. Download CSVs or the full NPZ archive at the bottom.">ℹ</span></h1>
+<h1>Photometry</h1>
 
 <div id="job-banner" style="display:none; margin-bottom:1rem; padding:0.6rem 1rem; border-radius:8px; background:var(--surface2); border:1px solid var(--accent); font-size:0.9rem;">
   <span id="job-banner-msg"></span>
@@ -253,9 +253,6 @@
 
     <details class="adv" id="opt-panel">
       <summary>Pipeline options (all run_photometry arguments)</summary>
-      <div style="display: flex; justify-content: flex-end; margin-top: 0.25rem; margin-bottom: 0.5rem;">
-        <button class="btn" type="button" id="defaults-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2;">Use defaults</button>
-      </div>
       <div class="opt-grid">
         <div class="opt opt-span2">
           <label>Bands <span class="help-tooltip" title="Filter bands to reduce.">?</span></label>
@@ -264,10 +261,13 @@
              is empty (e.g. manually-typed / un-ingested target) fall back to the
              standard static list. Shared by the checkboxes and the ref_band select. #}
           {% set band_choices = available_bands if available_bands else ['gp', 'rp', 'ip', 'zs', 'Na_D', 'g_narrow', 'i_narrow', 'z_narrow'] %}
-          <div class="band-checks">
-            {% for b in band_choices %}
-            <label><input type="checkbox" name="band" value="{{ b }}" {% if available_bands or b in run_defaults.bands or (is_narrowband and b in narrow_bands) %}checked{% endif %}> {{ b }}</label>
-            {% endfor %}
+          <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+            <div class="band-checks">
+              {% for b in band_choices %}
+              <label><input type="checkbox" name="band" value="{{ b }}" {% if available_bands or b in run_defaults.bands or (is_narrowband and b in narrow_bands) %}checked{% endif %}> {{ b }}</label>
+              {% endfor %}
+            </div>
+            <button class="btn" type="button" id="defaults-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2; flex-shrink: 0;">Use defaults</button>
           </div>
         </div>
 
@@ -280,6 +280,11 @@
           <label for="opt-comparison_ids">Comparison IDs <span class="help-tooltip" title="Indexes of reference/comparison stars (corresponds to --cID). Comma-separated (e.g. 1,2,3). Empty means auto-detect.">?</span></label>
           <input type="text" id="opt-comparison_ids" placeholder="auto" value="{{ run_defaults.comparison_ids }}">
           <span class="hint">--cID; comma-separated, empty → auto</span>
+        </div>
+        <div class="opt">
+          <label for="opt-avoid_comparison_ids">Avoid Comparison IDs <span class="help-tooltip" title="Star indices to exclude as comparisons (corresponds to --avoid_cids). Requires --ref_band; indices refer to that band's catalog. Comma-separated (e.g. 5,7,12). Empty means none excluded.">?</span></label>
+          <input type="text" id="opt-avoid_comparison_ids" placeholder="none" value="{{ run_defaults.avoid_comparison_ids }}" disabled>
+          <span class="hint">--avoid_cids; requires --ref_band; comma-separated, empty → none</span>
         </div>
         <div class="opt">
           <label for="opt-target_coord">Target coordinates <span class="help-tooltip" title="Override target coordinates 'RA Dec' (e.g. '12:34:56.7 -45:32:10.0' or '187.5 -45.5'). When set, bypasses MAST name resolution (useful if astroquery fails).">?</span></label>
@@ -338,14 +343,16 @@
           <label for="opt-bin_size_minutes">Bin size (min) <span class="help-tooltip" title="Time binning interval in minutes for plotting light curves (corresponds to --bin_size_minutes).">?</span></label>
           <input type="number" id="opt-bin_size_minutes" value="{{ run_defaults.bin_size_minutes }}" step="0.5" min="0">
         </div>
-        <div class="opt check"><input type="checkbox" id="opt-make_gif" checked><label for="opt-make_gif">Make GIF <span class="help-tooltip" title="Generate an animated GIF showing target/alignment field over time (corresponds to --gif).">?</span></label></div>
         <div class="opt">
           <label for="opt-test_run_frames"># of test-run frames <span class="help-tooltip" title="Number of frames to process during a test-run reduction (corresponds to --test_run_frames).">?</span></label>
           <input type="number" id="opt-test_run_frames" value="{{ run_defaults.test_run_frames }}" min="1">
         </div>
-        <div class="opt check"><input type="checkbox" id="opt-use_barycorrpy"><label for="opt-use_barycorrpy">Use barycorrpy (BJD-TDB) <span class="help-tooltip" title="Use barycorrpy to perform high-precision BJD time conversion (corresponds to --use_barycorrpy).">?</span></label></div>
-        <div class="opt check"><input type="checkbox" id="opt-overwrite" checked><label for="opt-overwrite">Overwrite existing products <span class="help-tooltip" title="Overwrite existing reduction products for this target (corresponds to --overwrite).">?</span></label></div>
-        <div class="opt check"><input type="checkbox" id="opt-plot_gaia_sources" checked><label for="opt-plot_gaia_sources">Plot Gaia sources <span class="help-tooltip" title="Overlay Gaia DR3 catalog sources on check plots (corresponds to --plot_gaia_sources).">?</span></label></div>
+      </div>
+      <div class="opt-check-row">
+        <label class="opt-check-item"><input type="checkbox" id="opt-make_gif" checked> Make GIF <span class="help-tooltip" title="Generate an animated GIF showing target/alignment field over time (corresponds to --gif).">?</span></label>
+        <label class="opt-check-item"><input type="checkbox" id="opt-use_barycorrpy"> Use barycorrpy (BJD-TDB) <span class="help-tooltip" title="Use barycorrpy to perform high-precision BJD time conversion (corresponds to --use_barycorrpy).">?</span></label>
+        <label class="opt-check-item"><input type="checkbox" id="opt-overwrite" checked> Overwrite existing products <span class="help-tooltip" title="Overwrite existing reduction products for this target (corresponds to --overwrite).">?</span></label>
+        <label class="opt-check-item"><input type="checkbox" id="opt-plot_gaia_sources" checked> Plot Gaia sources <span class="help-tooltip" title="Overlay Gaia DR3 source catalog on check plots (corresponds to --plot_gaia_sources).">?</span></label>
       </div>
     </details>
 
@@ -575,6 +582,7 @@
       annulus: val('opt-annulus'),
       target_id: val('opt-target_id'),
       comparison_ids: val('opt-comparison_ids'),
+      avoid_comparison_ids: val('opt-avoid_comparison_ids'),
       target_coord: val('opt-target_coord'),
       make_gif: chk('opt-make_gif'),
       plot_gaia_sources: chk('opt-plot_gaia_sources'),
@@ -600,7 +608,7 @@
       c.checked = saved.bands && saved.bands.indexOf(c.value) !== -1;
     });
     ['ref_band','refid','aper_unit','aper_radii','annulus',
-     'target_id','comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
+     'target_id','comparison_ids','avoid_comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
      'n_stars_align','cutout_size','ccd_trim','bin_size_minutes'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
@@ -620,7 +628,7 @@
         c.checked = DEFAULTS.bands && DEFAULTS.bands.indexOf(c.value) !== -1;
       });
       ['ref_band','refid','aper_unit','aper_radii','annulus',
-       'target_id','comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
+       'target_id','comparison_ids','avoid_comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
        'n_stars_align','cutout_size','ccd_trim','bin_size_minutes'].forEach(function (id) {
         var el = document.getElementById('opt-'+id);
         if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';
@@ -685,6 +693,19 @@
       }
     }).catch(function () {});
   }
+  function toggleAvoidField() {
+    var refBand = document.getElementById('opt-ref_band');
+    var avoidField = document.getElementById('opt-avoid_comparison_ids');
+    if (refBand && avoidField) {
+      var disabled = refBand.value === '';
+      avoidField.disabled = disabled;
+      if (disabled) avoidField.value = '';
+    }
+  }
+  var refBand = document.getElementById('opt-ref_band');
+  if (refBand) refBand.addEventListener('change', toggleAvoidField);
+  toggleAvoidField();
+
   var panel = document.querySelector('.run-panel');
   if (panel) {
     panel.addEventListener('change', debounce(refreshCmd, 150));

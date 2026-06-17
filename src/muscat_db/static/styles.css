@@ -391,6 +391,17 @@ tr.filter-row th input::placeholder { color: var(--text-dim); font-style: italic
 .opt.check label { color: var(--text); font-size: 0.85rem; }
 .opt .hint { font-size: 0.7rem; color: var(--text-dim); }
 
+.opt-check-row {
+  display: flex; flex-wrap: wrap; gap: 1rem 1.5rem;
+  padding: 0.25rem 0 0.5rem;
+}
+.opt-check-item {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  cursor: pointer; font-size: 0.85rem; color: var(--text);
+  white-space: nowrap;
+}
+.opt-check-item input { cursor: pointer; }
+
 /* ---------- Advanced disclosure ---------- */
 details.adv {
   background: var(--surface); border: 1px solid var(--border);

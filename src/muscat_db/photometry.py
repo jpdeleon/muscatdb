@@ -71,6 +71,7 @@ RUN_DEFAULTS: dict = {
     "bin_size_minutes": 10.0,
     "target_id": "",           # "" -> auto
     "comparison_ids": "",      # "" -> auto, or "1,2,3"
+    "avoid_comparison_ids": "",  # "" -> none; "1,2,3" -> --avoid_cids (requires --ref_band)
     "target_coord": "",        # "" -> resolve via MAST; "RA Dec" -> bypass name resolution
     "gif_stride": 100,
     "overwrite": True,
@@ -523,7 +524,7 @@ def normalize_run_options(raw: dict | None) -> dict:
     if "bands" in raw:  # present-but-empty must surface as an error, not default
         o["bands"] = [str(b).strip() for b in (bands or []) if str(b).strip()]
 
-    for key in ("ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "target_coord"):
+    for key in ("ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "target_coord"):
         if raw.get(key) is not None:
             o[key] = str(raw[key]).strip()
 
@@ -620,6 +621,10 @@ def build_command(
         cids = [c.strip() for c in o["comparison_ids"].split(",") if c.strip()]
         if cids:
             args += ["--cID", *cids]
+    if o.get("avoid_comparison_ids") not in (None, ""):
+        aids = [a.strip() for a in o["avoid_comparison_ids"].split(",") if a.strip()]
+        if aids:
+            args += ["--avoid_cids", *aids]
 
     # Numeric overrides: only emit when the user changed them from the default.
     for flag, key in (

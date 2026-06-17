@@ -286,6 +286,20 @@ class TestRunOptions:
         cmd = phot.build_command(INST, DATE, TARGET, {"plot_gaia_sources": False})
         assert "--plot_gaia_sources" not in cmd
 
+    def test_avoid_comparison_ids_passed_through(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        cmd = phot.build_command(INST, DATE, TARGET,
+                                 {"avoid_comparison_ids": "5,7,12"}, test_run=False)
+        s = " ".join(cmd)
+        assert "--avoid_cids" in s
+        assert " --avoid_cids 5 7 12" in s or "--avoid_cids 5 7 12 " in s
+
+    def test_empty_avoid_comparison_ids_emits_nothing(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        cmd = phot.build_command(INST, DATE, TARGET,
+                                 {"avoid_comparison_ids": ""}, test_run=False)
+        assert "--avoid_cids" not in cmd
+
     def test_validate_requires_band(self):
         assert phot.validate_run_options(phot.normalize_run_options({"bands": []}))
 
