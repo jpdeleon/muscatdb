@@ -670,6 +670,7 @@ th.drag-over-right {
   animation: pulse 1.5s infinite;
 }
 
+#message-modal,
 #hide-confirm-overlay,
 #move-confirm-overlay {
   display: none;
@@ -680,6 +681,7 @@ th.drag-over-right {
   align-items: center;
   justify-content: center;
 }
+#message-modal.visible,
 #hide-confirm-overlay.visible,
 #move-confirm-overlay.visible {
   display: flex;

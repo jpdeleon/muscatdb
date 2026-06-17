@@ -417,7 +417,7 @@
             var num = el.querySelector('.job-count-num');
             if (num) {
               num.textContent = data.counts[s];
-              el.className = 'job-count' + (data.counts[s] > 0 ? ' has-' + s : '');
+              el.classList.toggle('has-' + s, data.counts[s] > 0);
             }
           }
         });

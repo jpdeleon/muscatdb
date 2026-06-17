@@ -508,6 +508,16 @@
     <pre id="run-log"></pre>
   </div>
 {% endif %}
+
+<div id="message-modal">
+  <div class="modal-box">
+    <p id="message-modal-title" style="margin-bottom:0.75rem;font-size:0.95rem;font-weight:600;"></p>
+    <p id="message-modal-text" style="color:var(--text-dim);font-size:0.85rem;margin-bottom:1.5rem;line-height:1.5;"></p>
+    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+      <button class="btn" onclick="closeMessageModal()">OK</button>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -890,7 +900,7 @@
     queryBtn.addEventListener('click', function() {
       var targetVal = queryTargetInput.value.trim();
       if (!targetVal) {
-        alert('Please enter a target name.');
+        window.showMessageModal('Notice', 'Please enter a target name.');
         return;
       }
       queryBtn.disabled = true;
@@ -942,10 +952,10 @@
 
           validatePlanetCard(card);
           saveOptions();
-          alert('Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '!');
+          window.showMessageModal('Success', 'Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '!');
         })
         .catch(function(err) {
-          alert('Error: ' + err.message);
+          window.showMessageModal('Error', err.message);
         })
         .finally(function() {
           queryBtn.disabled = false;
@@ -1535,6 +1545,16 @@
     }
   })();
 
+  // ── Message Modal ────────────────────────────────────────────────────────
+  window.showMessageModal = function(title, text) {
+    document.getElementById('message-modal-title').textContent = title;
+    document.getElementById('message-modal-text').textContent = text;
+    document.getElementById('message-modal').classList.add('visible');
+  };
+  window.closeMessageModal = function() {
+    document.getElementById('message-modal').classList.remove('visible');
+  };
+
   // NASA Exoplanet Archive Query Handler
   var queryBtn = document.getElementById('archive-query-btn');
   if (queryBtn) {
@@ -1543,7 +1563,7 @@
       if (!targetInput) return;
       var targetVal = targetInput.value.trim();
       if (!targetVal) {
-        alert('Please enter a target name.');
+        window.showMessageModal('Notice', 'Please enter a target name.');
         return;
       }
 
@@ -1638,10 +1658,10 @@
           syncPlanetsInput();
           validateAllPlanetCards();
           saveOptions();
-          alert('Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '!');
+          window.showMessageModal('Success', 'Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '!');
         })
         .catch(function (err) {
-          alert('Error: ' + err.message);
+          window.showMessageModal('Error', err.message);
         })
         .finally(function () {
           queryBtn.disabled = false;
