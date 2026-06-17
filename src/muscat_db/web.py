@@ -413,12 +413,25 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
         ]
         col_str = ", ".join(cols)
 
+        norm_target = re.sub(r'^([A-Za-z]+)(\d)', r'\1 \2', target)
+
         queries = [
             f"SELECT {col_str} FROM pscomppars WHERE pl_name = '{target}'",
             f"SELECT {col_str} FROM pscomppars WHERE hostname = '{target}'",
+            f"SELECT {col_str} FROM pscomppars WHERE hip_name = '{target}'",
+            f"SELECT {col_str} FROM pscomppars WHERE hd_name = '{target}'",
             f"SELECT {col_str} FROM pscomppars WHERE pl_name LIKE '%{target}%'",
-            f"SELECT {col_str} FROM pscomppars WHERE hostname LIKE '%{target}%'"
+            f"SELECT {col_str} FROM pscomppars WHERE hostname LIKE '%{target}%'",
+            f"SELECT {col_str} FROM pscomppars WHERE hip_name LIKE '%{target}%'",
+            f"SELECT {col_str} FROM pscomppars WHERE hd_name LIKE '%{target}%'",
         ]
+
+        if norm_target != target:
+            queries.extend([
+                f"SELECT {col_str} FROM pscomppars WHERE hostname = '{norm_target}'",
+                f"SELECT {col_str} FROM pscomppars WHERE hip_name = '{norm_target}'",
+                f"SELECT {col_str} FROM pscomppars WHERE hd_name = '{norm_target}'",
+            ])
 
         data = []
         for q in queries:
