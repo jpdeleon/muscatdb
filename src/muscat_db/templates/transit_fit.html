@@ -221,10 +221,10 @@
       {% for p in outputs.plots %}
       <figure class="fig">
         <figcaption class="cap">
-          <span>{{ p }}</span>
+          <span>{{ p.file | replace('.png', '') }} (Created: {{ p.created_at }})</span>
         </figcaption>
-        <a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/{{ p }}" target="_blank">
-          <img draggable="false" loading="lazy" src="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/{{ p }}" alt="{{ p }}">
+        <a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/{{ p.file }}" target="_blank">
+          <img draggable="false" loading="lazy" src="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/{{ p.file }}" alt="{{ p.file }}">
         </a>
       </figure>
       {% endfor %}

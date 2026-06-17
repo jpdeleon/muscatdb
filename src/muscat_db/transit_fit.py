@@ -4,6 +4,7 @@ run the transit-fit pipeline, poll logs, and return outputs/plots.
 from __future__ import annotations
 
 import csv
+import datetime
 import json
 import math
 import os
@@ -854,7 +855,12 @@ def get_fit_outputs(inst: str, date: str, target: str) -> dict:
     # Show every PNG plot produced by the run, sorted by name.
     for p in sorted(out_dir.glob("*.png")):
         if p.is_file():
-            outputs["plots"].append(p.name)
+            try:
+                mtime = p.stat().st_mtime
+                created_at = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
+            except Exception:
+                created_at = "Unknown"
+            outputs["plots"].append({"file": p.name, "created_at": created_at})
             outputs["has_any"] = True
 
     # Collect any other output files for download (exclude plots already shown

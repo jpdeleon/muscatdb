@@ -245,8 +245,9 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
         if outputs["has_any"]:
             rdir = phot.results_dir(inst, date)
             for band, prods in outputs["bands"].items():
-                if prods.get("csv"):
-                    headers, rows = phot.csv_preview(rdir / prods["csv"], n=8)
+                csv_info = prods.get("csv")
+                if csv_info:
+                    headers, rows = phot.csv_preview(rdir / csv_info["file"], n=8)
                     previews[band] = {"headers": headers, "rows": rows}
 
     return _render(

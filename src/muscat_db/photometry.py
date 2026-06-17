@@ -23,6 +23,7 @@ This module never trusts user input for filesystem access: see
 from __future__ import annotations
 
 import csv as _csv
+import datetime
 import json
 import os
 import re
@@ -300,7 +301,12 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
 
         for suf, key in _SUMMARY_SUFFIX.items():
             if name == multi + suf:
-                out["summary"][key] = name
+                try:
+                    mtime = p.stat().st_mtime
+                    created_at = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
+                except Exception:
+                    created_at = "Unknown"
+                out["summary"][key] = {"file": name, "created_at": created_at}
                 out["has_any"] = True
                 break
         else:
@@ -315,7 +321,12 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
             key = _BAND_SUFFIX.get(rest)
             if key is None:
                 continue
-            out["bands"].setdefault(m.group("band"), {})[key] = name
+            try:
+                mtime = p.stat().st_mtime
+                created_at = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
+            except Exception:
+                created_at = "Unknown"
+            out["bands"].setdefault(m.group("band"), {})[key] = {"file": name, "created_at": created_at}
             out["has_any"] = True
 
     if inst in ("muscat", "muscat2"):
@@ -423,9 +434,9 @@ def _calculate_photometry_status(inst: str, date: str, target: str, rdir: Path) 
     csv_found = False
     max_rows = 0
     for band_data in out.get("bands", {}).values():
-        csv_name = band_data.get("csv")
-        if csv_name:
-            csv_path = rdir / csv_name
+        csv_info = band_data.get("csv")
+        if csv_info:
+            csv_path = rdir / csv_info["file"]
             if csv_path.is_file():
                 csv_found = True
                 try:
