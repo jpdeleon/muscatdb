@@ -96,10 +96,10 @@ _VIZIER_BACKOFF_SEC = 1.0
 # Approximate full-well capacity and gain for each instrument (used as
 # reference saturation limits). Actual values may differ per CCD.
 INSTRUMENT_PARAMS = {
-    "muscat":  {"full_well": 150000, "gain": 1.0, "pixel_scale": 0.36, "aperture_m": 1.88},
-    "muscat2": {"full_well": 150000, "gain": 1.0, "pixel_scale": 0.44, "aperture_m": 0.82},
-    "muscat3": {"full_well": 100000, "gain": 1.9, "pixel_scale": 0.27, "aperture_m": 2.0},
-    "muscat4": {"full_well": 100000, "gain": 1.5, "pixel_scale": 0.39, "aperture_m": 1.0},
+    "muscat":  {"full_well": 55000, "gain": 1.0, "pixel_scale": 0.358, "aperture_m": 1.88},
+    "muscat2": {"full_well": 62000, "gain": 1.0, "pixel_scale": 0.44, "aperture_m": 1.52},
+    "muscat3": {"full_well": 99000, "gain": 1.8, "pixel_scale": 0.267, "aperture_m": 2.0},
+    "muscat4": {"full_well": 99000, "gain": 1.8, "pixel_scale": 0.267, "aperture_m": 2.0},
     "sinistro": {"full_well": 100000, "gain": 1.5, "pixel_scale": 0.39, "aperture_m": 1.0},
 }
 
@@ -445,11 +445,11 @@ def _scale_coef(instrument: str, band: str, focus_mm: float) -> tuple[float, flo
     params = INSTRUMENT_PARAMS.get(instrument, {})
     muscat3_params = INSTRUMENT_PARAMS.get("muscat3", {})
     area_ratio = (params.get("aperture_m", 1.0) / muscat3_params.get("aperture_m", 2.0)) ** 2
-    ps_ratio = (muscat3_params.get("pixel_scale", 0.27) / params.get("pixel_scale", 0.27)) ** 2
-    gain_ratio = params.get("gain", 1.9) / muscat3_params.get("gain", 1.9)
+    ps_ratio = (muscat3_params.get("pixel_scale", 0.267) / params.get("pixel_scale", 0.267)) ** 2
+    gain_ratio = params.get("gain", 1.8) / muscat3_params.get("gain", 1.8)
     coef = coef + math.log10(area_ratio) + math.log10(ps_ratio) + math.log10(gain_ratio)
     # Scale FWHM by pixel scale ratio (coarser pixels = fewer pixels for same PSF)
-    fwhm = fwhm * (params.get("pixel_scale", 0.27) / muscat3_params.get("pixel_scale", 0.27))
+    fwhm = fwhm * (params.get("pixel_scale", 0.267) / muscat3_params.get("pixel_scale", 0.267))
     return (coef, fwhm)
 
 
