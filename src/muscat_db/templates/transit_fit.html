@@ -1480,6 +1480,12 @@
         return;
       }
       saveJob();
+      // Unhide this job on the Jobs page
+      try {
+        var h = JSON.parse(localStorage.getItem('jobs:hidden') || '[]');
+        var jk = 'transit_fit:' + inst + '/' + date + '/' + target.replace(/ /g, '_');
+        var hi = h.indexOf(jk); if (hi !== -1) { h.splice(hi, 1); localStorage.setItem('jobs:hidden', JSON.stringify(h)); }
+      } catch (_) {}
       if (!polling) polling = setInterval(poll, 2000);
       poll();
     }).catch(function (err) {
