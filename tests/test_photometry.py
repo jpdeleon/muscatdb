@@ -88,8 +88,8 @@ class TestListOutputs:
         out = phot.list_outputs(INST, DATE, TARGET)
         assert out["has_any"]
         assert set(out["summary"]) == {"lightcurves", "raw_flux", "covariates", "stacks"}
-        assert out["summary"]["lightcurves"] == f"{TARGET}_{INST}_{DATE}_lightcurves.png"
-        assert out["summary"]["raw_flux"] == f"{TARGET}_{INST}_{DATE}_raw_flux.png"
+        assert out["summary"]["lightcurves"]["file"] == f"{TARGET}_{INST}_{DATE}_lightcurves.png"
+        assert out["summary"]["raw_flux"]["file"] == f"{TARGET}_{INST}_{DATE}_raw_flux.png"
         assert out["npz"] == f"{TARGET}_{INST}_{DATE}.npz"
         assert out["log"].endswith(".log")
 
@@ -115,7 +115,7 @@ class TestListOutputs:
         assert list(out["bands"]) == BANDS  # canonical order gp, rp, ip, zs
         gp = out["bands"]["gp"]
         assert set(gp) == {"ref", "apertures", "alignment", "gif", "csv"}
-        assert gp["csv"] == f"{TARGET}_{INST}_gp_{DATE}.csv"
+        assert gp["csv"]["file"] == f"{TARGET}_{INST}_gp_{DATE}.csv"
 
     def test_missing_dir_returns_empty(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
@@ -692,9 +692,8 @@ class TestRoutes:
         r = client.get("/jobs")
         assert r.status_code == 200
         assert "Jobs" in r.text
-        assert "Photometry Jobs" in r.text
-        assert "Transit Fit Jobs" in r.text
-        assert "View reduction" not in r.text
+        assert 'data-type="photometry"' in r.text
+        assert 'data-type="transit_fit"' in r.text
         assert "cancelJob(this)" in r.text
         assert 'data-target="TOI-5684.01"' in r.text
         assert "TOI-5684.02" in r.text
