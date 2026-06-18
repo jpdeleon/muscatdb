@@ -831,6 +831,26 @@ def _tail(path: Path, n: int = 200) -> str:
         return ""
 
 
+def _log_has_partial_failure(path: Path | None) -> bool:
+    if path is None or not path.is_file():
+        return False
+    return "photometry PARTIAL FAILURE" in _tail(path, n=1000)
+
+
+def _terminal_job_state(
+    returncode: int,
+    cancelled: bool,
+    log_path_: Path | None,
+) -> str:
+    if cancelled:
+        return "cancelled"
+    if returncode != 0:
+        return "error"
+    if _log_has_partial_failure(log_path_):
+        return "error"
+    return "done"
+
+
 def job_status(inst: str, date: str, target: str) -> dict:
     """Poll a launched job and return its state plus a tail of the run log."""
     key = job_key(inst, date, target)
@@ -842,10 +862,7 @@ def job_status(inst: str, date: str, target: str) -> dict:
         if rc is None:
             state = "cancelling" if job.cancelled else "running"
         else:
-            if job.cancelled:
-                state = "cancelled"
-            else:
-                state = "done" if rc == 0 else "error"
+            state = _terminal_job_state(rc, job.cancelled, job.log_path)
             if job.state in ("running",):
                 job.state = state
                 job.returncode = rc
@@ -873,10 +890,7 @@ def get_all_jobs() -> list[dict]:
             if rc is None:
                 state = "cancelling" if job.cancelled else "running"
             else:
-                if job.cancelled:
-                    state = "cancelled"
-                else:
-                    state = "done" if rc == 0 else "error"
+                state = _terminal_job_state(rc, job.cancelled, job.log_path)
                 if job.state in ("running",):
                     job.state = state
                     job.returncode = rc
@@ -992,6 +1006,26 @@ def sync_jobs() -> None:
     from muscat_db.database import save_job, get_persisted_jobs
     with _LOCK:
         db_jobs = get_persisted_jobs()
+        for entry in db_jobs:
+            if entry["type"] != "photometry" or entry["state"] != "done":
+                continue
+            entry_log_path = log_path(entry["inst"], entry["date"], entry["target"])
+            if not _log_has_partial_failure(entry_log_path):
+                continue
+            save_job(
+                type_="photometry",
+                inst=entry["inst"],
+                date=entry["date"],
+                target=entry["target"],
+                state="error",
+                returncode=entry.get("returncode"),
+                elapsed=entry.get("elapsed") or 0,
+                started_at=entry.get("started_at") or time.time(),
+                error_desc=_get_error_desc(entry_log_path) if entry_log_path else "Partial failure",
+                run_type=entry.get("run_type") or "",
+                params=entry.get("params") or "",
+            )
+
         running_keys = {j["key"] for j in db_jobs if j["state"] == "running" and j["type"] == "photometry"}
         
         for key, job in _JOBS.items():
@@ -1000,10 +1034,7 @@ def sync_jobs() -> None:
             if rc is None:
                 state = "cancelling" if job.cancelled else "running"
             else:
-                if job.cancelled:
-                    state = "cancelled"
-                else:
-                    state = "done" if rc == 0 else "error"
+                state = _terminal_job_state(rc, job.cancelled, job.log_path)
                 if job.state in ("running",):
                     job.state = state
                     job.returncode = rc
@@ -1077,9 +1108,9 @@ def sync_jobs() -> None:
                 cmd = build_command(inst, date, target, opts, test_run=test_run)
                 rdir = results_dir(inst, date)
                 rdir.mkdir(parents=True, exist_ok=True)
-                log_path = rdir / _RUN_LOG_NAME
+                pending_log_path = rdir / _RUN_LOG_NAME
                 try:
-                    logf = open(log_path, "w")
+                    logf = open(pending_log_path, "w")
                     logf.write(f"$ {shlex.join(cmd)}\n\n")
                     logf.flush()
                     proc = subprocess.Popen(cmd, cwd=str(prose_project_dir()), stdout=logf, stderr=subprocess.STDOUT, text=True, start_new_session=True)
@@ -1089,7 +1120,7 @@ def sync_jobs() -> None:
                     save_job(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}")
                     continue
                 run_type = "test" if test_run else "full"
-                _JOBS[key] = Job(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=log_path, run_type=run_type)
+                _JOBS[key] = Job(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=pending_log_path, run_type=run_type)
                 try:
                     save_job(type_="photometry", inst=inst, date=date, target=target, state="running", returncode=None, elapsed=0, started_at=_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""))
                 except sqlite3.OperationalError as exc:
@@ -1099,4 +1130,3 @@ def sync_jobs() -> None:
                     except OSError: pass
                     _JOBS.pop(key, None)
                     save_job(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Database not writable: {exc}")
-
