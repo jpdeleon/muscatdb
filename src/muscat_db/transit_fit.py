@@ -292,6 +292,13 @@ def _planet_value(options: dict, key: str, planet: str, first_planet: str):
     return _to_float(raw)
 
 
+def _uniform_bounds(options: dict, param: str, planet: str, first_planet: str) -> list[float]:
+    lo_default, hi_default = _UNIFORM_DEFAULT_BOUNDS[param]
+    lo = _planet_value(options, param, planet, first_planet)
+    hi = _planet_value(options, f"{param}_unc", planet, first_planet)
+    return [lo if lo is not None else lo_default, hi if hi is not None else hi_default]
+
+
 def validate_fit_options(options: dict | None) -> str | None:
     """Return a user-facing error string for invalid fitting options, else ``None``.
 
@@ -400,15 +407,21 @@ def validate_fit_options(options: dict | None) -> str | None:
             return f"{param} cannot be both fixed and use a uniform prior"
 
         # A Uniform parameter's two keys hold explicit [low, high] bounds.
-        # Reject obviously invalid ranges early; blanks fall back to the pipeline
-        # default bounds and are validated by timer.
         for p in tokens:
-            lo = _planet_value(o, param, p, tokens[0])
-            hi = _planet_value(o, f"{param}_unc", p, tokens[0])
-            if lo is None or hi is None:
-                continue
+            for key, name in ((param, "low"), (f"{param}_unc", "high")):
+                raw = o.get(f"{key}_{p}")
+                if raw is None and p == tokens[0]:
+                    raw = o.get(key)
+                if raw is not None and str(raw).strip():
+                    value = _to_float(raw)
+                    if value is None or not math.isfinite(value):
+                        return f"{param} uniform {name} bound (planet {p}) must be a number"
+
+            lo, hi = _uniform_bounds(o, param, p, tokens[0])
             if not lo < hi:
                 return f"{param} uniform bounds (planet {p}) must have low < high"
+            if param in {"period", "dur"} and (lo <= 0 or hi <= 0):
+                return f"{param} uniform bounds (planet {p}) must be greater than 0"
             if param == "ror" and (lo < 0 or hi > 1):
                 return f"{param} uniform bounds (planet {p}) must stay within [0, 1]"
             if param == "b" and lo < 0:
@@ -649,12 +662,6 @@ def _write_fit_inputs(
     # fixed wins.
     first_planet = planet_list[0]
 
-    def _uniform_bounds(param: str, p: str) -> list[float]:
-        lo_default, hi_default = _UNIFORM_DEFAULT_BOUNDS[param]
-        lo = _planet_value(options, param, p, first_planet)
-        hi = _planet_value(options, f"{param}_unc", p, first_planet)
-        return [lo if lo is not None else lo_default, hi if hi is not None else hi_default]
-
     fixed_params = set(fit_data["fixed"])
     uniform_block: dict = {}
     for param in _PRIOR_PARAMS:
@@ -662,7 +669,7 @@ def _write_fit_inputs(
             continue
         if _prior_choice(options, param, first_planet, first_planet) != "uniform":
             continue
-        bounds = [_uniform_bounds(param, p) for p in planet_list]
+        bounds = [_uniform_bounds(options, param, p, first_planet) for p in planet_list]
         # Single planet -> flat [low, high]; multiple -> per-planet [[low, high], ...].
         uniform_block[param] = bounds[0] if len(planet_list) == 1 else bounds
     if uniform_block:
@@ -692,7 +699,7 @@ def _write_fit_inputs(
             # so sys.yaml still seeds a sensible (in-bounds) initial value; timer
             # reads the actual prior range from fit.yaml's uniform block.
             if _prior_choice(options, param, p, first_planet) == "uniform":
-                lo, hi = _uniform_bounds(param, p)
+                lo, hi = _uniform_bounds(options, param, p, first_planet)
                 return [(lo + hi) / 2, (hi - lo) / 2]
             return [float(get_val(param, val_default)), float(get_val(f"{param}_unc", unc_default))]
 

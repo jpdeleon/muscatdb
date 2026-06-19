@@ -106,6 +106,34 @@ def test_uniform_inverted_bounds_rejected():
     assert "low < high" in error
 
 
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        (
+            {"planets": "b", "period_prior_b": "uniform", "period_b": "2", "period_unc_b": ""},
+            "low < high",
+        ),
+        (
+            {"planets": "b", "period_prior_b": "uniform", "period_b": "bad", "period_unc_b": "3"},
+            "low bound",
+        ),
+        (
+            {"planets": "b", "period_prior_b": "uniform", "period_b": "0", "period_unc_b": "1"},
+            "greater than 0",
+        ),
+        (
+            {"planets": "b", "dur_prior_b": "uniform", "dur_b": "-1", "dur_unc_b": "1"},
+            "greater than 0",
+        ),
+    ],
+)
+def test_uniform_bounds_validate_input_and_effective_range(options, message):
+    error = fit.validate_fit_options(options)
+
+    assert error is not None
+    assert message in error
+
+
 def test_invalid_prior_choice_rejected():
     options = {"planets": "b", "ror_prior_b": "lognormal"}
 
