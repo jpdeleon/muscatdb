@@ -93,8 +93,10 @@ _LOOKUP_RADII_ARCSEC = (3.0, 5.0, 10.0)
 _VIZIER_RETRIES = 3
 _VIZIER_BACKOFF_SEC = 1.0
 
-# Approximate full-well capacity and gain for each instrument (used as
-# reference saturation limits). Actual values may differ per CCD.
+# Telescope reference values used to scale the MuSCAT3 calibration and set
+# saturation limits. Values mirror prose2's .telescope files; full_well is in
+# electrons, gain in electrons/ADU, pixel_scale in arcsec/pixel, and aperture_m
+# in metres. Individual CCDs may differ.
 INSTRUMENT_PARAMS = {
     "muscat":  {"full_well": 55000, "gain": 1.0, "pixel_scale": 0.358, "aperture_m": 1.88},
     "muscat2": {"full_well": 62000, "gain": 1.0, "pixel_scale": 0.44, "aperture_m": 1.52},
