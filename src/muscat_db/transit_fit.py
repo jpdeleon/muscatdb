@@ -54,7 +54,10 @@ def _target_dir_name(target: str) -> str:
 
 
 def log_path(inst: str, date: str, target: str) -> pathlib.Path | None:
-    rdir = fit_output_dir(inst, date, target)
+    try:
+        rdir = fit_output_dir(inst, date, target)
+    except ValueError:
+        return None
     p = rdir / "timer-fit.log"
     return p if p.is_file() else None
 
@@ -1111,8 +1114,24 @@ def sync_jobs() -> None:
                 test_run = p.get("test_run", False)
                 selected_csvs = p.get("selected_csvs")
                 inst, date, target = entry["inst"], entry["date"], entry["target"]
-                key = fit_job_key(inst, date, target)
-                rdir = fit_output_dir(inst, date, target)
+                try:
+                    key = fit_job_key(inst, date, target)
+                    rdir = fit_output_dir(inst, date, target)
+                except ValueError:
+                    save_job(
+                        type_="transit_fit",
+                        inst=inst,
+                        date=date,
+                        target=target,
+                        state="error",
+                        returncode=-1,
+                        elapsed=0,
+                        started_at=entry["started_at"],
+                        error_desc="Invalid target",
+                        run_type=entry.get("run_type", ""),
+                        params=entry.get("params", ""),
+                    )
+                    continue
                 rdir.mkdir(parents=True, exist_ok=True)
                 _write_fit_inputs(rdir, inst, date, get_csv_lightcurves(inst, date, target), opts)
                 cmd = [*_timer_prefix(), "-v", str(rdir)]
