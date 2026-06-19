@@ -664,6 +664,10 @@ class TestRoutes:
         r = client.get("/transit-fit/file/muscat3/250717/evil..target/timer-fit.log")
         assert r.status_code == 400
 
+    def test_transit_fit_log_rejects_bad_target(self, client):
+        r = client.get("/jobs/log/transit_fit/muscat3/250717/evil..target")
+        assert r.status_code == 404
+
     def test_transit_fit_query_archive_success(self, client, mocker):
         mock_response = mocker.MagicMock()
         mock_response.__enter__.return_value = mock_response
@@ -794,6 +798,32 @@ class TestRoutes:
         assert r.status_code == 200
         assert "MuSCAT-db Pipeline Workflow" in r.text
         assert "mermaid" in r.text
+
+
+class TestTransitFitJobs:
+    def test_sync_jobs_marks_invalid_pending_target_error(self, monkeypatch):
+        from muscat_db import transit_fit as fit
+
+        pending_job = {
+            "key": "transit_fit:muscat3/250717/evil..target",
+            "type": "transit_fit",
+            "inst": "muscat3",
+            "date": "250717",
+            "target": "evil..target",
+            "state": "pending",
+            "started_at": 1.0,
+            "params": "{}",
+        }
+        saved = []
+        monkeypatch.setattr("muscat_db.database.get_persisted_jobs", lambda: [pending_job])
+        monkeypatch.setattr("muscat_db.database.save_job", lambda **kwargs: saved.append(kwargs))
+        monkeypatch.setattr(fit, "_FIT_JOBS", {})
+
+        fit.sync_jobs()
+
+        assert saved[-1]["state"] == "error"
+        assert saved[-1]["target"] == "evil..target"
+        assert saved[-1]["error_desc"] == "Invalid target"
 
 
 class TestTransitFitOptions:
