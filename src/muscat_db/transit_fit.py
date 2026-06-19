@@ -388,6 +388,19 @@ def _normalize_band(raw: str) -> str:
     return f"{base}_narrow" if is_narrow else base
 
 
+def _band_sort_key(band: str) -> tuple:
+    """Sort key for band display order.
+
+    Broadband:  g → r → i → z
+    Narrowband: g_narrow → Na_D → i_narrow → z_narrow
+    """
+    order = {
+        "g": (0, 0), "r": (0, 1), "i": (0, 2), "z": (0, 3),
+        "g_narrow": (1, 0), "Na_D": (1, 1), "i_narrow": (1, 2), "z_narrow": (1, 3),
+    }
+    return order.get(band, (9, 9))
+
+
 def _write_fit_inputs(
     rdir: pathlib.Path,
     inst: str,
@@ -440,8 +453,15 @@ def _write_fit_inputs(
         "trim_end": _trim_opt("trim_end"),
     }
 
+    # Sort CSVs by canonical band order so chromatic plots always appear
+    # g→r→i→z (broadband) or g_narrow→Na_D→i_narrow→z_narrow (narrowband).
+    def _csv_band_key(c: pathlib.Path) -> tuple:
+        parts = c.name.split(f"_{inst}_")
+        raw_band = parts[1].split(f"_{date}")[0] if len(parts) > 1 else "gp"
+        return _band_sort_key(_normalize_band(raw_band))
+
     fit_data: dict = {"data": {}}
-    for c in csvs:
+    for c in sorted(csvs, key=_csv_band_key):
         fname = c.name
         parts = fname.split(f"_{inst}_")
         band = parts[1].split(f"_{date}")[0] if len(parts) > 1 else "gp"
