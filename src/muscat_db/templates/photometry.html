@@ -340,7 +340,7 @@
           <input type="text" id="opt-ccd_trim" value="{{ run_defaults.ccd_trim }}">
         </div>
         <div class="opt">
-          <label for="opt-bin_size_minutes">Bin size (min) <span class="help-tooltip" title="Time binning interval in minutes for plotting light curves (corresponds to --bin_size_minutes).">?</span></label>
+          <label for="opt-bin_size_minutes">Plot bin size (min) <span class="help-tooltip" title="Time binning interval in minutes for plotting light curves (corresponds to --bin_size_minutes).">?</span></label>
           <input type="number" id="opt-bin_size_minutes" value="{{ run_defaults.bin_size_minutes }}" step="0.5" min="0">
         </div>
         <div class="opt">
@@ -359,10 +359,10 @@
     <div id="opt-error"></div>
     <div class="run-actions">
       <button class="btn primary" type="button" id="run-test-btn" {% if raw_missing %}disabled{% endif %}>
-        ▶ Run test reduction (first {{ run_defaults.test_run_frames }} frames)
+        ▶ Run Test Reduction (first N frames)
       </button>
       <button class="btn primary" type="button" id="run-full-btn" {% if raw_missing %}disabled{% endif %}>
-        ▶ Run full reduction (all frames)
+        ▶ Run Full Reduction (all frames)
       </button>
       <button class="btn" type="button" id="cancel-btn" style="display:none;border-color:var(--red);color:var(--red);">
         ■ Cancel
