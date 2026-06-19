@@ -299,10 +299,6 @@
             <label for="opt-chromatic">Chromatic fit <span class="help-tooltip" title="Flag indicating if parameters (like Rp/R*) are chromatic (band-dependent).">?</span></label>
           </div>
           <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-include_mean" checked>
-            <label for="opt-include_mean">Include mean <span class="help-tooltip" title="Fit the baseline (mean) flux level. Default on. Turn off when using Add bias to avoid a degenerate baseline.">?</span></label>
-          </div>
-          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
             <input type="checkbox" id="opt-use_custom_optimizer" checked>
             <label for="opt-use_custom_optimizer">Custom optimizer <span class="help-tooltip" title="Use timer's custom MAP optimizer instead of PyMC's default for the initial solution. Default on.">?</span></label>
           </div>
@@ -319,25 +315,25 @@
           <div class="opt">
             <label for="opt-teff">Teff (K) <span class="help-tooltip" title="Stellar effective temperature.">?</span></label>
             <div style="display: flex; gap: 0.5rem; align-items: center;">
-              <input type="number" id="opt-teff" value="{{ target_params.teff }}" placeholder="val" style="flex: 3; width: 100%; min-width: 0;">
+              <input type="number" id="opt-teff" value="" placeholder="val" style="flex: 3; width: 100%; min-width: 0;">
               <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
-              <input type="number" id="opt-teff_unc" value="{{ target_params.teff_unc }}" placeholder="unc" style="flex: 2; width: 100%; min-width: 0;">
+              <input type="number" id="opt-teff_unc" value="" placeholder="unc" style="flex: 2; width: 100%; min-width: 0;">
             </div>
           </div>
           <div class="opt">
             <label for="opt-logg">log g <span class="help-tooltip" title="Stellar surface gravity.">?</span></label>
             <div style="display: flex; gap: 0.5rem; align-items: center;">
-              <input type="number" id="opt-logg" value="{{ target_params.logg }}" placeholder="val" step="0.01" style="flex: 3; width: 100%; min-width: 0;">
+              <input type="number" id="opt-logg" value="" placeholder="val" step="0.01" style="flex: 3; width: 100%; min-width: 0;">
               <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
-              <input type="number" id="opt-logg_unc" value="{{ target_params.logg_unc }}" placeholder="unc" step="0.01" style="flex: 2; width: 100%; min-width: 0;">
+              <input type="number" id="opt-logg_unc" value="" placeholder="unc" step="0.01" style="flex: 2; width: 100%; min-width: 0;">
             </div>
           </div>
           <div class="opt">
             <label for="opt-feh">[Fe/H] <span class="help-tooltip" title="Stellar metallicity.">?</span></label>
             <div style="display: flex; gap: 0.5rem; align-items: center;">
-              <input type="number" id="opt-feh" value="{{ target_params.feh }}" placeholder="val" step="0.01" style="flex: 3; width: 100%; min-width: 0;">
+              <input type="number" id="opt-feh" value="" placeholder="val" step="0.01" style="flex: 3; width: 100%; min-width: 0;">
               <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
-              <input type="number" id="opt-feh_unc" value="{{ target_params.feh_unc }}" placeholder="unc" step="0.01" style="flex: 2; width: 100%; min-width: 0;">
+              <input type="number" id="opt-feh_unc" value="" placeholder="unc" step="0.01" style="flex: 2; width: 100%; min-width: 0;">
             </div>
           </div>
         </div>
@@ -388,6 +384,10 @@
             <label for="opt-add_bias">Add bias <span class="help-tooltip" title="Add a constant (column of ones) to the design matrix. Default off. Do not combine with Include mean.">?</span></label>
           </div>
           <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-include_mean" checked>
+            <label for="opt-include_mean">Include mean <span class="help-tooltip" title="Fit the baseline (mean) flux level. Default on. Turn off when using Add bias to avoid a degenerate baseline.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
             <input type="checkbox" id="opt-quadratic">
             <label for="opt-quadratic">Quadratic <span class="help-tooltip" title="Add a 2nd-order (quadratic) term to the trend basis. Default off.">?</span></label>
           </div>
@@ -403,15 +403,15 @@
         <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(5, 1fr); gap: 1rem;">
           <div class="opt">
             <label for="opt-spline_knots">Spline knots <span class="help-tooltip" title="Number of knots in the spline basis (used only when Spline is on). Default 5.">?</span></label>
-            <input type="number" id="opt-spline_knots" value="5" min="1" step="1" style="width: 100%;">
+            <input type="number" id="opt-spline_knots" value="5" min="1" step="1" style="width: 100%;" disabled>
           </div>
           <div class="opt">
             <label for="opt-clip_nsig">Clip &sigma; <span class="help-tooltip" title="Sigma threshold for outlier clipping (used only when Clip outliers is on). Default 7.">?</span></label>
-            <input type="number" id="opt-clip_nsig" value="7" min="1" step="0.5" style="width: 100%;">
+            <input type="number" id="opt-clip_nsig" value="7" min="1" step="0.5" style="width: 100%;" disabled>
           </div>
           <div class="opt">
             <label for="opt-chunk_thresh">Chunk thresh <span class="help-tooltip" title="Time gap (days) that separates data into chunks for Chunk offset. Default 0.">?</span></label>
-            <input type="number" id="opt-chunk_thresh" value="0" min="0" step="0.01" style="width: 100%;">
+            <input type="number" id="opt-chunk_thresh" value="0" min="0" step="0.01" style="width: 100%;" disabled>
           </div>
           <div class="opt">
             <label for="opt-trim_beg">Trim begin <span class="help-tooltip" title="Number of data points to trim from the start of each light curve. Empty = none.">?</span></label>
@@ -431,36 +431,32 @@
             <label for="opt-use_gp">Use GP <span class="help-tooltip" title="Enable the Gaussian-process noise model. Requires celerite2 in the timer env. Default off.">?</span></label>
           </div>
           <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-gp_per_dataset_log_amp">
+            <input type="checkbox" id="opt-gp_per_dataset_log_amp" disabled>
             <label for="opt-gp_per_dataset_log_amp">Per-dataset amp <span class="help-tooltip" title="Fit an independent log_amp for each light curve instead of one value shared across all datasets.">?</span></label>
           </div>
           <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-gp_per_dataset_log_scale">
+            <input type="checkbox" id="opt-gp_per_dataset_log_scale" disabled>
             <label for="opt-gp_per_dataset_log_scale">Per-dataset scale <span class="help-tooltip" title="Fit an independent log_scale for each light curve instead of one value shared across all datasets.">?</span></label>
           </div>
         </div>
         <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.25rem;">
           <div class="opt">
-            <label for="opt-gp_log_amp">log_amp prior <span class="help-tooltip" title="Prior on log10 of the GP amplitude sigma (flux units): value, uncertainty, and distribution. Default -3 +/- 2, gaussian.">?</span></label>
+            <label for="opt-gp_log_amp">log_amp prior <span class="help-tooltip" title="Prior on log10 of the GP amplitude sigma (flux units). Gaussian: enter mean,uncertainty. Uniform: enter low,high bounds. Default -3,2 Gaussian.">?</span></label>
             <div style="display: flex; gap: 0.5rem; align-items: center;">
-              <input type="number" id="opt-gp_log_amp" value="-3" step="0.1" placeholder="val" style="flex: 3; width: 100%; min-width: 0;">
-              <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
-              <input type="number" id="opt-gp_log_amp_unc" value="2" step="0.1" placeholder="unc" style="flex: 2; width: 100%; min-width: 0;">
-              <select id="opt-gp_log_amp_prior" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">
-                <option value="gaussian">gaussian</option>
-                <option value="uniform">uniform</option>
+              <input type="text" id="opt-gp_log_amp" value="-3,2" placeholder="mean,unc" style="flex: 3; width: 100%; min-width: 0;" disabled>
+              <select id="opt-gp_log_amp_prior" title="Prior shape — Gaussian: enter mean,uncertainty. Uniform: enter low,high bounds." style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;" disabled>
+                <option value="gaussian">Gaussian</option>
+                <option value="uniform">Uniform</option>
               </select>
             </div>
           </div>
           <div class="opt">
-            <label for="opt-gp_log_scale">log_scale prior <span class="help-tooltip" title="Prior on log10 of the GP timescale rho (days): value, uncertainty, and distribution. Default -1 +/- 2, gaussian.">?</span></label>
+            <label for="opt-gp_log_scale">log_scale prior <span class="help-tooltip" title="Prior on log10 of the GP timescale rho (days). Gaussian: enter mean,uncertainty. Uniform: enter low,high bounds. Default -1,2 Gaussian.">?</span></label>
             <div style="display: flex; gap: 0.5rem; align-items: center;">
-              <input type="number" id="opt-gp_log_scale" value="-1" step="0.1" placeholder="val" style="flex: 3; width: 100%; min-width: 0;">
-              <span style="color: var(--text-dim); font-size: 0.8rem;">±</span>
-              <input type="number" id="opt-gp_log_scale_unc" value="2" step="0.1" placeholder="unc" style="flex: 2; width: 100%; min-width: 0;">
-              <select id="opt-gp_log_scale_prior" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">
-                <option value="gaussian">gaussian</option>
-                <option value="uniform">uniform</option>
+              <input type="text" id="opt-gp_log_scale" value="-1,2" placeholder="mean,unc" style="flex: 3; width: 100%; min-width: 0;" disabled>
+              <select id="opt-gp_log_scale_prior" title="Prior shape — Gaussian: enter mean,uncertainty. Uniform: enter low,high bounds." style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;" disabled>
+                <option value="gaussian">Gaussian</option>
+                <option value="uniform">Uniform</option>
               </select>
             </div>
           </div>
@@ -474,11 +470,11 @@
         <div class="opt check" style="grid-column: span 2;">
           <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
             <label><input type="checkbox" name="fixed-params" value="period" checked> period</label>
+            <label><input type="checkbox" name="fixed-params" value="t0"> t0</label>
+            <label><input type="checkbox" name="fixed-params" value="dur"> duration</label>
             <label><input type="checkbox" name="fixed-params" value="u_star" checked> u_star</label>
             <label><input type="checkbox" name="fixed-params" value="b"> b</label>
             <label><input type="checkbox" name="fixed-params" value="ror"> Rp/R*</label>
-            <label><input type="checkbox" name="fixed-params" value="ecc"> eccentricity</label>
-            <label><input type="checkbox" name="fixed-params" value="omega"> omega</label>
           </div>
         </div>
       </div>
@@ -491,11 +487,11 @@
         ∑ Calculate logP
       </button>
       <span id="logp-result" style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: var(--accent2);"></span>
-      <button class="btn" type="button" id="run-test-btn" style="border-color: var(--accent); color: var(--accent);">
-        ▶ Run Test Fitting
+      <button class="btn primary" type="button" id="run-test-btn">
+        ▶ Run Test Fit (steps=20)
       </button>
       <button class="btn primary" type="button" id="run-fit-btn">
-        ▶ Run Full Fitting
+        ▶ Run Full Fit
       </button>
       <button class="btn" type="button" id="cancel-btn" style="display:none;border-color:var(--red);color:var(--red);">
         ■ Cancel
@@ -580,6 +576,60 @@
   function val(id) { var e = document.getElementById(id); return e ? e.value : ''; }
   function chk(id) { var e = document.getElementById(id); return e ? e.checked : false; }
 
+  // Round a numeric value (or numeric string) to `sf` significant figures for
+  // display, returning a clean string. Blanks and non-numeric values pass
+  // through unchanged so partially-typed input is never clobbered.
+  function fmtSig(x, sf) {
+    if (x === undefined || x === null) return '';
+    var s = String(x).trim();
+    if (s === '') return '';
+    var n = Number(s);
+    if (isNaN(n) || !isFinite(n)) return s;
+    if (n === 0) return '0';
+    return String(Number(n.toPrecision(sf)));
+  }
+  // Display precision (significant figures) per fitting parameter.
+  var SIG_FIGS = { period: 6, dur: 4, ror: 2, b: 2 };
+
+  // Round to a fixed number of decimal places (clean string). Used for t0,
+  // where significant figures would destroy the integer-heavy BJD epoch.
+  function fmtDp(x, dp) {
+    if (x === undefined || x === null) return '';
+    var s = String(x).trim();
+    if (s === '') return '';
+    var n = Number(s);
+    if (isNaN(n) || !isFinite(n)) return s;
+    return String(Number(n.toFixed(dp)));
+  }
+  var T0_DECIMALS = 6;
+
+  // Join two values into "a,b", each rounded to `dp` decimal places (used for
+  // the t0 epoch field, where significant figures would crush the BJD).
+  function joinDp(a, b, dp) {
+    var as = fmtDp(a, dp), bs = fmtDp(b, dp);
+    if (as === '' && bs === '') return '';
+    return bs === '' ? as : as + ',' + bs;
+  }
+
+  // Split a single "a,b" prior field into [first, second] trimmed strings.
+  // first = mean (Gaussian) or low (Uniform); second = unc or high.
+  function splitPair(str) {
+    var parts = String(str === undefined || str === null ? '' : str).split(',');
+    return [(parts[0] || '').trim(), (parts.length > 1 ? parts[1] : '').trim()];
+  }
+  function combinePriorPair(first, second) {
+    var a = first === undefined || first === null ? '' : String(first).trim();
+    var b = second === undefined || second === null ? '' : String(second).trim();
+    if (a === '' && b === '') return '';
+    return b === '' ? a : a + ',' + b;
+  }
+  // Convert an hours string to a days string, preserving blanks/invalid as-is.
+  function hoursToDays(part) {
+    if (part === '') return '';
+    var n = parseFloat(part);
+    return isNaN(n) ? part : (n / 24);
+  }
+
   function collectOptions() {
     var fixed = [];
     document.querySelectorAll('input[name="fixed-params"]:checked').forEach(function (c) { fixed.push(c.value); });
@@ -596,22 +646,42 @@
       planetData['query_target_' + letter] = card.querySelector('.planet-query-target').value;
       planetData['query_source_' + letter] = card.querySelector('.planet-source-select').value;
       planetData['pl_ref_' + letter] = card.querySelector('.planet-ref-container').innerHTML;
-      planetData['period_' + letter] = card.querySelector('.planet-period').value;
-      planetData['period_unc_' + letter] = card.querySelector('.planet-period-unc').value;
-      planetData['t0_' + letter] = card.querySelector('.planet-t0').value;
-      planetData['t0_unc_' + letter] = card.querySelector('.planet-t0-unc').value;
-      planetData['dur_' + letter] = card.querySelector('.planet-dur').value / 24;
-      planetData['dur_unc_' + letter] = card.querySelector('.planet-dur-unc').value / 24;
+
+      // Prior parameters use one "a,b" field; split into the two backend keys.
+      var periodPair = splitPair(card.querySelector('.planet-period').value);
+      var durPair = splitPair(card.querySelector('.planet-dur').value);
+      var rorPair = splitPair(card.querySelector('.planet-ror').value);
+      var bPair = splitPair(card.querySelector('.planet-b').value);
+      planetData['period_' + letter] = periodPair[0];
+      planetData['period_unc_' + letter] = periodPair[1];
+      // t0 field is mean,unc (BJD) -> stored directly.
+      var t0Pair = splitPair(card.querySelector('.planet-t0').value);
+      planetData['t0_' + letter] = t0Pair[0];
+      planetData['t0_unc_' + letter] = t0Pair[1];
+      planetData['dur_' + letter] = hoursToDays(durPair[0]);
+      planetData['dur_unc_' + letter] = hoursToDays(durPair[1]);
       planetData['tc_pred_' + letter] = card.querySelector('.planet-tc_pred').value;
       planetData['tc_pred_unc_' + letter] = card.querySelector('.planet-tc_pred-unc').value;
-      planetData['ror_' + letter] = card.querySelector('.planet-ror').value;
-      planetData['ror_unc_' + letter] = card.querySelector('.planet-ror-unc').value;
-      planetData['b_' + letter] = card.querySelector('.planet-b').value;
-      planetData['b_unc_' + letter] = card.querySelector('.planet-b-unc').value;
+      planetData['ror_' + letter] = rorPair[0];
+      planetData['ror_unc_' + letter] = rorPair[1];
+      planetData['b_' + letter] = bPair[0];
+      planetData['b_unc_' + letter] = bPair[1];
+
+      // Per-parameter prior shapes (gaussian|uniform).
+      var periodPriorEl = card.querySelector('.planet-period-prior');
+      var durPriorEl = card.querySelector('.planet-dur-prior');
+      var rorPriorEl = card.querySelector('.planet-ror-prior');
+      var bPriorEl = card.querySelector('.planet-b-prior');
+      planetData['period_prior_' + letter] = periodPriorEl ? periodPriorEl.value : 'gaussian';
+      planetData['dur_prior_' + letter] = durPriorEl ? durPriorEl.value : 'gaussian';
+      planetData['ror_prior_' + letter] = rorPriorEl ? rorPriorEl.value : 'gaussian';
+      planetData['b_prior_' + letter] = bPriorEl ? bPriorEl.value : 'gaussian';
     });
 
     var planetsListStr = planetLetters.join(',');
 
+    var gpLogAmpPair = splitPair(val('opt-gp_log_amp'));
+    var gpLogScalePair = splitPair(val('opt-gp_log_scale'));
     var opts = {
       planets: planetsListStr,
       chromatic: chk('opt-chromatic') ? 'true' : 'false',
@@ -634,11 +704,11 @@
       trim_beg: val('opt-trim_beg'),
       trim_end: val('opt-trim_end'),
       use_gp: chk('opt-use_gp') ? 'true' : 'false',
-      gp_log_amp: val('opt-gp_log_amp'),
-      gp_log_amp_unc: val('opt-gp_log_amp_unc'),
+      gp_log_amp: gpLogAmpPair[0],
+      gp_log_amp_unc: gpLogAmpPair[1],
       gp_log_amp_prior: val('opt-gp_log_amp_prior'),
-      gp_log_scale: val('opt-gp_log_scale'),
-      gp_log_scale_unc: val('opt-gp_log_scale_unc'),
+      gp_log_scale: gpLogScalePair[0],
+      gp_log_scale_unc: gpLogScalePair[1],
       gp_log_scale_prior: val('opt-gp_log_scale_prior'),
       gp_per_dataset_log_amp: chk('opt-gp_per_dataset_log_amp') ? 'true' : 'false',
       gp_per_dataset_log_scale: chk('opt-gp_per_dataset_log_scale') ? 'true' : 'false',
@@ -665,6 +735,10 @@
       opts['ror_unc'] = planetData['ror_unc_' + p0] || '';
       opts['b'] = planetData['b_' + p0] || '';
       opts['b_unc'] = planetData['b_unc_' + p0] || '';
+      opts['period_prior'] = planetData['period_prior_' + p0] || 'gaussian';
+      opts['dur_prior'] = planetData['dur_prior_' + p0] || 'gaussian';
+      opts['ror_prior'] = planetData['ror_prior_' + p0] || 'gaussian';
+      opts['b_prior'] = planetData['b_prior_' + p0] || 'gaussian';
       opts['pl_ref'] = planetData['pl_ref_' + p0] || '';
     } else {
       opts['period'] = '';
@@ -732,43 +806,71 @@
   }
 
   function validatePlanetCard(card) {
-    var checks = [
-      { selector: '.planet-period', min: 0, inclusive: false },
-      { selector: '.planet-period-unc', min: 0, inclusive: true },
-      { selector: '.planet-t0', min: 0, inclusive: false },
-      { selector: '.planet-t0-unc', min: 0, inclusive: true },
-      { selector: '.planet-dur', min: 0, inclusive: false },
-      { selector: '.planet-dur-unc', min: 0, inclusive: true },
-      { selector: '.planet-ror', min: 0, inclusive: false },
-      { selector: '.planet-ror-unc', min: 0, inclusive: true },
-      { selector: '.planet-b', min: 0, inclusive: true },
-      { selector: '.planet-b-unc', min: 0, inclusive: true },
+    function setValid(el, ok) {
+      if (!el) return;
+      if (el.value.trim() === '' || ok) el.classList.remove('is-invalid');
+      else el.classList.add('is-invalid');
+    }
+
+    // tc_pred is always centre ± width (two fields, no prior selector).
+    [
       { selector: '.planet-tc_pred', min: 0, inclusive: false },
       { selector: '.planet-tc_pred-unc', min: 0, inclusive: true }
-    ];
-
-    checks.forEach(function (chk) {
+    ].forEach(function (chk) {
       var el = card.querySelector(chk.selector);
       if (!el) return;
-      var val = el.value.trim();
-      if (val === '') {
-        el.classList.remove('is-invalid');
-        return;
-      }
-      var num = parseFloat(val);
-      var valid = !isNaN(num);
-      if (valid) {
-        if (chk.inclusive) {
-          valid = num >= chk.min;
-        } else {
-          valid = num > chk.min;
-        }
-      }
-      if (valid) {
-        el.classList.remove('is-invalid');
+      var v = el.value.trim();
+      if (v === '') { el.classList.remove('is-invalid'); return; }
+      var n = parseFloat(v);
+      setValid(el, !isNaN(n) && (chk.inclusive ? n >= chk.min : n > chk.min));
+    });
+
+    // t0 is a mean,unc epoch field: mean > 0, unc >= 0 (unc may be blank).
+    var t0El = card.querySelector('.planet-t0');
+    if (t0El) {
+      if (t0El.value.trim() === '') {
+        t0El.classList.remove('is-invalid');
       } else {
-        el.classList.add('is-invalid');
+        var t0p = splitPair(t0El.value);
+        var t0m = parseFloat(t0p[0]), t0u = parseFloat(t0p[1]);
+        var t0MeanOk = t0p[0] === '' || (!isNaN(t0m) && t0m > 0);
+        var t0UncOk = t0p[1] === '' || (!isNaN(t0u) && t0u >= 0);
+        setValid(t0El, t0MeanOk && t0UncOk);
       }
+    }
+
+    // Prior-aware parameters, each a single "a,b" field. Gaussian -> mean,unc
+    // (mean > 0 or >= 0; unc >= 0). Uniform -> low,high with low < high (ror in
+    // [0,1], b low >= 0). The second value may be blank (uses a pipeline default).
+    [
+      { field: '.planet-period' },
+      { field: '.planet-dur' },
+      { field: '.planet-ror', range01: true },
+      { field: '.planet-b', valNonNeg: true }
+    ].forEach(function (pp) {
+      var fieldEl = card.querySelector(pp.field);
+      var selEl = card.querySelector(pp.field + '-prior');
+      if (!fieldEl) return;
+      if (fieldEl.value.trim() === '') { fieldEl.classList.remove('is-invalid'); return; }
+
+      var parts = splitPair(fieldEl.value);
+      var aStr = parts[0], bStr = parts[1];
+      var a = parseFloat(aStr), b = parseFloat(bStr);
+      var aNum = aStr !== '' && !isNaN(a);
+      var bNum = bStr !== '' && !isNaN(b);
+      var ok;
+
+      if (selEl && selEl.value === 'uniform') {
+        var ordered = !(aNum && bNum) || a < b;
+        var lowOk = aStr === '' || (aNum && ((pp.range01 || pp.valNonNeg) ? a >= 0 : true));
+        var highOk = bStr === '' || (bNum && (pp.range01 ? b <= 1 : true));
+        ok = lowOk && highOk && ordered;
+      } else {
+        var meanOk = aStr === '' || (aNum && (pp.valNonNeg ? a >= 0 : a > 0));
+        var uncOk = bStr === '' || (bNum && b >= 0);
+        ok = meanOk && uncOk;
+      }
+      setValid(fieldEl, ok);
     });
   }
 
@@ -819,8 +921,10 @@
     var val_period_unc = values && values.period_unc !== undefined ? values.period_unc : '';
     var val_t0 = values && values.t0 !== undefined ? values.t0 : '';
     var val_t0_unc = values && values.t0_unc !== undefined ? values.t0_unc : '';
-    var val_dur = values && values.dur !== undefined ? values.dur * 24 : '';
-    var val_dur_unc = values && values.dur_unc !== undefined ? values.dur_unc * 24 : '';
+    // Duration is stored in days; display in hours. Guard '' so it stays empty
+    // (otherwise '' * 24 === 0 would show a spurious 0).
+    var val_dur = values && values.dur !== undefined && values.dur !== '' ? values.dur * 24 : '';
+    var val_dur_unc = values && values.dur_unc !== undefined && values.dur_unc !== '' ? values.dur_unc * 24 : '';
     var val_ror = values && values.ror !== undefined ? values.ror : '';
     var val_ror_unc = values && values.ror_unc !== undefined ? values.ror_unc : '';
     var val_b = values && values.b !== undefined ? values.b : '';
@@ -828,49 +932,76 @@
     var val_tc_pred = values && values.tc_pred !== undefined ? values.tc_pred : '';
     var val_tc_pred_unc = values && values.tc_pred_unc !== undefined ? values.tc_pred_unc : '';
 
-    var bodyHtml = 
+    // Prior shape per fitting parameter: 'gaussian' or 'uniform'. Defaults to
+    // gaussian to match timer. Each parameter uses ONE comma-separated field:
+    // "mean,unc" for Gaussian, "low,high" for Uniform.
+    var val_period_prior = values && values.period_prior ? values.period_prior : 'gaussian';
+    var val_dur_prior = values && values.dur_prior ? values.dur_prior : 'gaussian';
+    var val_ror_prior = values && values.ror_prior ? values.ror_prior : 'gaussian';
+    var val_b_prior = values && values.b_prior ? values.b_prior : 'gaussian';
+
+    // Join two stored values into the single "a,b" field, rounded to `sf`
+    // significant figures (dropping empties).
+    function combinePair(a, b, sf) {
+      var as = fmtSig(a, sf), bs = fmtSig(b, sf);
+      if (as === '' && bs === '') return '';
+      return bs === '' ? as : as + ',' + bs;
+    }
+    var cmb_period = combinePair(val_period, val_period_unc, SIG_FIGS.period);
+    var cmb_dur = combinePair(val_dur, val_dur_unc, SIG_FIGS.dur);
+    var cmb_ror = combinePair(val_ror, val_ror_unc, SIG_FIGS.ror);
+    var cmb_b = combinePair(val_b, val_b_unc, SIG_FIGS.b);
+
+    // t0 is a reference epoch entered as mean,unc (BJD). timer fits the transit
+    // centre with a uniform prior driven by tc_pred / tc_pred_unc, not by this
+    // value, so t0 carries no prior-shape selector.
+    var cmb_t0 = joinDp(val_t0, val_t0_unc, T0_DECIMALS);
+
+    function priorPlaceholder(prior) { return prior === 'uniform' ? 'low,high' : 'mean,unc'; }
+
+    function priorSelect(cls, selected) {
+      return '<select class="' + cls + '" title="Prior shape — Gaussian: enter mean,uncertainty. Uniform: enter low,high bounds." style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+        '<option value="gaussian"' + (selected === 'uniform' ? '' : ' selected') + '>Gaussian</option>' +
+        '<option value="uniform"' + (selected === 'uniform' ? ' selected' : '') + '>Uniform</option>' +
+      '</select>';
+    }
+
+    // One comma-separated field + prior selector for a fitting parameter.
+    function priorField(cls, combined, prior) {
+      return '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
+        '<input type="text" class="' + cls + '" value="' + combined + '" placeholder="' + priorPlaceholder(prior) + '" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+        priorSelect(cls + '-prior', prior) +
+      '</div>';
+    }
+
+    // A plain single comma field (no prior selector), used for the t0 epoch.
+    function plainPairField(cls, combined, placeholder) {
+      return '<input type="text" class="' + cls + '" value="' + combined + '" placeholder="' + placeholder + '" style="width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">';
+    }
+
+    var bodyHtml =
       '<div class="opt-grid">' +
         '<div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem;">' +
         '<div class="opt">' +
           '<label>Period (days)</label>' +
-          '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
-            '<input type="number" class="planet-period" value="' + val_period + '" placeholder="val" step="0.00001" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
-            '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' +
-            '<input type="number" class="planet-period-unc" value="' + val_period_unc + '" placeholder="unc" step="0.00001" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
-          '</div>' +
+          priorField('planet-period', cmb_period, val_period_prior) +
         '</div>' +
         '<div class="opt">' +
-          '<label>Epoch t0 (BJD)</label>' +
-          '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
-            '<input type="number" class="planet-t0" value="' + val_t0 + '" placeholder="val" step="0.00001" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
-            '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' +
-            '<input type="number" class="planet-t0-unc" value="' + val_t0_unc + '" placeholder="unc" step="0.00001" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
-          '</div>' +
+          '<label>Epoch t0 (BJD) <span class="help-tooltip" title="Reference epoch entered as mean,uncertainty (BJD). timer fits the transit centre with a uniform prior centred on tc_pred (this value is the fallback when tc_pred is blank), full width tc_pred_unc (default 0.04 d).">?</span></label>' +
+          plainPairField('planet-t0', cmb_t0, 'mean,unc') +
         '</div>' +
         '<div class="opt">' +
           '<label>Duration (hrs)</label>' +
-          '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
-            '<input type="number" class="planet-dur" value="' + val_dur + '" placeholder="val" step="0.01" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
-            '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' +
-            '<input type="number" class="planet-dur-unc" value="' + val_dur_unc + '" placeholder="unc" step="0.01" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
-          '</div>' +
+          priorField('planet-dur', cmb_dur, val_dur_prior) +
         '</div>' +
         '</div>' +
         '<div class="opt">' +
           '<label>Impact parameter b</label>' +
-          '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
-            '<input type="number" class="planet-b" value="' + val_b + '" placeholder="val" step="0.01" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
-            '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' +
-            '<input type="number" class="planet-b-unc" value="' + val_b_unc + '" placeholder="unc" step="0.01" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
-          '</div>' +
+          priorField('planet-b', cmb_b, val_b_prior) +
         '</div>' +
         '<div class="opt">' +
           '<label>Rp/R*</label>' +
-          '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
-            '<input type="number" class="planet-ror" value="' + val_ror + '" placeholder="val" step="0.0001" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
-            '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' +
-            '<input type="number" class="planet-ror-unc" value="' + val_ror_unc + '" placeholder="unc" step="0.0001" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
-          '</div>' +
+          priorField('planet-ror', cmb_ror, val_ror_prior) +
         '</div>' +
         '<div class="opt">' +
           '<label>tc_pred (BJD) <span class="help-tooltip" title="Predicted transit center epoch (BJD) for this planet on this night. Seeds the t0 prior. Leave empty to use this planet\'s t0 / the data midpoint.">?</span></label>' +
@@ -889,6 +1020,33 @@
     var queryTargetInput = card.querySelector('.planet-query-target');
     var queryBtn = card.querySelector('.planet-query-btn');
     var removeBtn = card.querySelector('.planet-remove-btn');
+
+    // Prior-selectable parameters, each a single "a,b" field + shape selector.
+    // limits: reasonable [low, high] auto-fill on switching to Uniform.
+    // sigmaSpan: when no fixed limits, switching to Uniform spans the bounds
+    // mean ± sigmaSpan*unc (and the reverse recovers unc = half-width/sigmaSpan).
+    var PRIOR_SPECS = [
+      { field: '.planet-period', sel: '.planet-period-prior', limits: null, sigmaSpan: 3, sf: SIG_FIGS.period },
+      { field: '.planet-dur', sel: '.planet-dur-prior', limits: null, sigmaSpan: 3, sf: SIG_FIGS.dur },
+      { field: '.planet-ror', sel: '.planet-ror-prior', limits: [0, 0.5], sf: SIG_FIGS.ror },
+      { field: '.planet-b', sel: '.planet-b-prior', limits: [0, 1], sf: SIG_FIGS.b }
+    ];
+
+    function setPriorPlaceholders(spec) {
+      var fieldEl = card.querySelector(spec.field);
+      var selEl = card.querySelector(spec.sel);
+      if (fieldEl) fieldEl.placeholder = (selEl && selEl.value === 'uniform') ? 'low,high' : 'mean,unc';
+    }
+
+    // Reset all prior selectors to Gaussian (used after an archive query, which
+    // returns mean,unc values).
+    function resetPriorsToGaussian() {
+      PRIOR_SPECS.forEach(function (spec) {
+        var selEl = card.querySelector(spec.sel);
+        if (selEl) { selEl.value = 'gaussian'; selEl.dataset.mode = 'gaussian'; }
+        setPriorPlaceholders(spec);
+      });
+    }
 
     letterInput.addEventListener('input', function() {
       var newLetter = letterInput.value.trim().toLowerCase();
@@ -924,16 +1082,19 @@
           }
           var params = data.params;
 
-          card.querySelector('.planet-period').value = params.period !== undefined ? params.period : '';
-          card.querySelector('.planet-period-unc').value = params.period_unc !== undefined ? params.period_unc : '';
-          card.querySelector('.planet-t0').value = params.t0 !== undefined ? params.t0 : '';
-          card.querySelector('.planet-t0-unc').value = params.t0_unc !== undefined ? params.t0_unc : '';
-          card.querySelector('.planet-dur').value = params.dur !== undefined ? params.dur : '';
-          card.querySelector('.planet-dur-unc').value = params.dur_unc !== undefined ? params.dur_unc : '';
-          card.querySelector('.planet-ror').value = params.ror !== undefined ? params.ror : '';
-          card.querySelector('.planet-ror-unc').value = params.ror_unc !== undefined ? params.ror_unc : '';
-          card.querySelector('.planet-b').value = params.b !== undefined ? params.b : '';
-          card.querySelector('.planet-b-unc').value = params.b_unc !== undefined ? params.b_unc : '';
+          // The archive returns mean,unc values -> reset prior fields to Gaussian
+          // and fill each single comma-separated field.
+          function joinPair(a, b, sf) {
+            var as = fmtSig(a, sf), bs = fmtSig(b, sf);
+            if (as === '' && bs === '') return '';
+            return bs === '' ? as : as + ',' + bs;
+          }
+          resetPriorsToGaussian();
+          card.querySelector('.planet-period').value = joinPair(params.period, params.period_unc, SIG_FIGS.period);
+          card.querySelector('.planet-t0').value = joinDp(params.t0, params.t0_unc, T0_DECIMALS);
+          card.querySelector('.planet-dur').value = joinPair(params.dur, params.dur_unc, SIG_FIGS.dur);
+          card.querySelector('.planet-ror').value = joinPair(params.ror, params.ror_unc, SIG_FIGS.ror);
+          card.querySelector('.planet-b').value = joinPair(params.b, params.b_unc, SIG_FIGS.b);
 
           var plRefContainer = card.querySelector('.planet-ref-container');
           if (plRefContainer) {
@@ -982,6 +1143,40 @@
       });
     });
 
+    // Wire up the prior-shape selectors. Each parameter's single "a,b" field is
+    // reinterpreted and auto-filled when the shape changes.
+    PRIOR_SPECS.forEach(function (spec) {
+      var fieldEl = card.querySelector(spec.field);
+      var selEl = card.querySelector(spec.sel);
+      if (!fieldEl || !selEl) return;
+      selEl.dataset.mode = selEl.value === 'uniform' ? 'uniform' : 'gaussian';
+      setPriorPlaceholders(spec);
+      selEl.addEventListener('change', function () {
+        var next = selEl.value === 'uniform' ? 'uniform' : 'gaussian';
+        var prev = selEl.dataset.mode || 'gaussian';
+        if (next !== prev) {
+          var parts = splitPair(fieldEl.value);
+          var a = parseFloat(parts[0]), b = parseFloat(parts[1]);
+          if (next === 'uniform') {
+            // Auto-fill reasonable [low, high] limits, or span mean ± sigmaSpan*unc.
+            if (spec.limits) {
+              fieldEl.value = fmtSig(spec.limits[0], spec.sf) + ',' + fmtSig(spec.limits[1], spec.sf);
+            } else if (spec.sigmaSpan && !isNaN(a) && !isNaN(b)) {
+              fieldEl.value = fmtSig(a - spec.sigmaSpan * b, spec.sf) + ',' + fmtSig(a + spec.sigmaSpan * b, spec.sf);
+            }
+          } else if (!isNaN(a) && !isNaN(b)) {
+            // [low, high] -> mean,unc. Recover unc from the span when sigma-based.
+            var halfWidth = (b - a) / 2;
+            fieldEl.value = fmtSig((a + b) / 2, spec.sf) + ',' + fmtSig(spec.sigmaSpan ? halfWidth / spec.sigmaSpan : halfWidth, spec.sf);
+          }
+          selEl.dataset.mode = next;
+          setPriorPlaceholders(spec);
+        }
+        validatePlanetCard(card);
+        saveOptions();
+      });
+    });
+
     validatePlanetCard(card);
     syncPlanetsInput();
     if (!isInitial) {
@@ -998,18 +1193,16 @@
 
     if (!saved) {
       var defaultLetter = (DEFAULTS && DEFAULTS.planets) ? DEFAULTS.planets : 'b';
+      // Default: every star/planet field empty (populated only when the user
+      // queries the archive), except b and Rp/R* which default to Uniform
+      // priors over their physical limits (b: [0,1], ror: [0,0.5]).
       addPlanetCard(defaultLetter, {
         query_target: getDefaultQueryTarget(defaultLetter),
-        period: (DEFAULTS && DEFAULTS.period) !== undefined ? DEFAULTS.period : '',
-        period_unc: (DEFAULTS && DEFAULTS.period_unc) !== undefined ? DEFAULTS.period_unc : '',
-        t0: (DEFAULTS && DEFAULTS.t0) !== undefined ? DEFAULTS.t0 : '',
-        t0_unc: (DEFAULTS && DEFAULTS.t0_unc) !== undefined ? DEFAULTS.t0_unc : '',
-        dur: (DEFAULTS && DEFAULTS.dur) !== undefined ? DEFAULTS.dur : '',
-        dur_unc: (DEFAULTS && DEFAULTS.dur_unc) !== undefined ? DEFAULTS.dur_unc : '',
-        ror: (DEFAULTS && DEFAULTS.ror) !== undefined ? DEFAULTS.ror : '',
-        ror_unc: (DEFAULTS && DEFAULTS.ror_unc) !== undefined ? DEFAULTS.ror_unc : '',
-        b: (DEFAULTS && DEFAULTS.b) !== undefined ? DEFAULTS.b : '',
-        b_unc: (DEFAULTS && DEFAULTS.b_unc) !== undefined ? DEFAULTS.b_unc : '',
+        period: '', period_unc: '',
+        t0: '', t0_unc: '',
+        dur: '', dur_unc: '',
+        ror: 0, ror_unc: 0.5, ror_prior: 'uniform',
+        b: 0, b_unc: 1, b_prior: 'uniform',
         pl_ref: ''
       }, true);
       return;
@@ -1017,9 +1210,15 @@
 
     ['teff','teff_unc','logg','logg_unc','feh','feh_unc',
      'tune','draws','chains','cores','spline_knots','clip_nsig','chunk_thresh','trim_beg','trim_end',
-     'gp_log_amp','gp_log_amp_unc','gp_log_amp_prior','gp_log_scale','gp_log_scale_unc','gp_log_scale_prior'].forEach(function (id) {
+     'gp_log_amp_prior','gp_log_scale_prior'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
+    });
+    [['gp_log_amp', 'gp_log_amp_unc'], ['gp_log_scale', 'gp_log_scale_unc']].forEach(function (keys) {
+      var el = document.getElementById('opt-' + keys[0]);
+      if (el && (saved[keys[0]] !== undefined || saved[keys[1]] !== undefined)) {
+        el.value = combinePriorPair(saved[keys[0]], saved[keys[1]]);
+      }
     });
 
     ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset',
@@ -1072,6 +1271,10 @@
         b_unc: saved['b_unc_' + letter] !== undefined ? saved['b_unc_' + letter] : '',
         tc_pred: saved['tc_pred_' + letter] !== undefined ? saved['tc_pred_' + letter] : '',
         tc_pred_unc: saved['tc_pred_unc_' + letter] !== undefined ? saved['tc_pred_unc_' + letter] : '',
+        period_prior: saved['period_prior_' + letter] !== undefined ? saved['period_prior_' + letter] : 'gaussian',
+        dur_prior: saved['dur_prior_' + letter] !== undefined ? saved['dur_prior_' + letter] : 'gaussian',
+        ror_prior: saved['ror_prior_' + letter] !== undefined ? saved['ror_prior_' + letter] : 'gaussian',
+        b_prior: saved['b_prior_' + letter] !== undefined ? saved['b_prior_' + letter] : 'gaussian',
         pl_ref: saved['pl_ref_' + letter] !== undefined ? saved['pl_ref_' + letter] : ''
       };
 
@@ -1088,6 +1291,10 @@
         if (vals.ror_unc === '' && saved.ror_unc !== undefined) vals.ror_unc = saved.ror_unc;
         if (vals.b === '' && saved.b !== undefined) vals.b = saved.b;
         if (vals.b_unc === '' && saved.b_unc !== undefined) vals.b_unc = saved.b_unc;
+        if (saved['period_prior_' + letter] === undefined && saved.period_prior !== undefined) vals.period_prior = saved.period_prior;
+        if (saved['dur_prior_' + letter] === undefined && saved.dur_prior !== undefined) vals.dur_prior = saved.dur_prior;
+        if (saved['ror_prior_' + letter] === undefined && saved.ror_prior !== undefined) vals.ror_prior = saved.ror_prior;
+        if (saved['b_prior_' + letter] === undefined && saved.b_prior !== undefined) vals.b_prior = saved.b_prior;
         if (vals.pl_ref === '' && saved.pl_ref !== undefined) vals.pl_ref = saved.pl_ref;
       }
 
@@ -1124,15 +1331,16 @@
 
       var numDefaults = {'opt-tune':'2000','opt-draws':'2000','opt-chains':'2','opt-cores':'2',
                          'opt-spline_knots':'5','opt-clip_nsig':'7','opt-chunk_thresh':'0','opt-trim_beg':'','opt-trim_end':'',
-                         'opt-gp_log_amp':'-3','opt-gp_log_amp_unc':'2','opt-gp_log_amp_prior':'gaussian',
-                         'opt-gp_log_scale':'-1','opt-gp_log_scale_unc':'2','opt-gp_log_scale_prior':'gaussian'};
+                         'opt-gp_log_amp':'-3,2','opt-gp_log_amp_prior':'gaussian',
+                         'opt-gp_log_scale':'-1,2','opt-gp_log_scale_prior':'gaussian'};
       Object.keys(numDefaults).forEach(function (id) { var el = document.getElementById(id); if (el) el.value = numDefaults[id]; });
 
       var checkDefaults = {'opt-include_mean':true,'opt-use_custom_optimizer':true,'opt-spline':false,
                            'opt-add_bias':false,'opt-quadratic':false,'opt-clip':false,'opt-chunk_offset':false,
                            'opt-use_gp':false,'opt-gp_per_dataset_log_amp':false,'opt-gp_per_dataset_log_scale':false};
       Object.keys(checkDefaults).forEach(function (id) { var el = document.getElementById(id); if (el) el.checked = checkDefaults[id]; });
-      updateGpEnabled();
+      refreshGpPriorControls();
+      updateDependentFields();
 
       document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
         c.checked = false;
@@ -1169,9 +1377,15 @@
       if (backup) {
         ['teff','teff_unc','logg','logg_unc','feh','feh_unc',
          'tune','draws','chains','cores','spline_knots','clip_nsig','chunk_thresh','trim_beg','trim_end',
-         'gp_log_amp','gp_log_amp_unc','gp_log_amp_prior','gp_log_scale','gp_log_scale_unc','gp_log_scale_prior'].forEach(function (id) {
+         'gp_log_amp_prior','gp_log_scale_prior'].forEach(function (id) {
           var el = document.getElementById('opt-'+id);
           if (el && backup[id] !== undefined) el.value = backup[id];
+        });
+        [['gp_log_amp', 'gp_log_amp_unc'], ['gp_log_scale', 'gp_log_scale_unc']].forEach(function (keys) {
+          var el = document.getElementById('opt-' + keys[0]);
+          if (el && (backup[keys[0]] !== undefined || backup[keys[1]] !== undefined)) {
+            el.value = combinePriorPair(backup[keys[0]], backup[keys[1]]);
+          }
         });
 
         ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset',
@@ -1179,7 +1393,8 @@
           var el = document.getElementById('opt-'+id);
           if (el && backup[id] !== undefined) el.checked = backup[id] === 'true';
         });
-        updateGpEnabled();
+        refreshGpPriorControls();
+        updateDependentFields();
 
         var stellarRefEl = document.getElementById('stellar-ref-container');
         if (stellarRefEl) stellarRefEl.innerHTML = backup.stellar_ref || '';
@@ -1262,19 +1477,76 @@
     });
   }
 
-  // Grey out the GP prior inputs unless "Use GP" is checked.
-  function updateGpEnabled() {
-    var on = chk('opt-use_gp');
-    ['opt-gp_log_amp','opt-gp_log_amp_unc','opt-gp_log_amp_prior',
-     'opt-gp_log_scale','opt-gp_log_scale_unc','opt-gp_log_scale_prior',
-     'opt-gp_per_dataset_log_amp','opt-gp_per_dataset_log_scale'].forEach(function (id) {
-      var el = document.getElementById(id);
-      if (el) { el.disabled = !on; el.style.opacity = on ? '1' : '0.5'; }
+  var GP_PRIOR_SPECS = [
+    { field: 'opt-gp_log_amp', prior: 'opt-gp_log_amp_prior' },
+    { field: 'opt-gp_log_scale', prior: 'opt-gp_log_scale_prior' }
+  ];
+
+  function refreshGpPriorControls() {
+    GP_PRIOR_SPECS.forEach(function (spec) {
+      var field = document.getElementById(spec.field);
+      var prior = document.getElementById(spec.prior);
+      if (!field || !prior) return;
+      prior.dataset.mode = prior.value === 'uniform' ? 'uniform' : 'gaussian';
+      field.placeholder = prior.dataset.mode === 'uniform' ? 'low,high' : 'mean,unc';
+    });
+  }
+
+  // Match planet prior selectors: switching Gaussian -> Uniform converts
+  // mean,unc to bounds spanning +/- 3 sigma; switching back reverses it.
+  function setupGpPriorSelectors() {
+    refreshGpPriorControls();
+    GP_PRIOR_SPECS.forEach(function (spec) {
+      var field = document.getElementById(spec.field);
+      var prior = document.getElementById(spec.prior);
+      if (!field || !prior) return;
+      prior.addEventListener('change', function () {
+        var next = prior.value === 'uniform' ? 'uniform' : 'gaussian';
+        var prev = prior.dataset.mode || 'gaussian';
+        var pair = splitPair(field.value);
+        var a = parseFloat(pair[0]), b = parseFloat(pair[1]);
+        if (next !== prev && !isNaN(a) && !isNaN(b)) {
+          if (next === 'uniform') {
+            field.value = fmtSig(a - 3 * b, 4) + ',' + fmtSig(a + 3 * b, 4);
+          } else {
+            field.value = fmtSig((a + b) / 2, 4) + ',' + fmtSig((b - a) / 6, 4);
+          }
+        }
+        prior.dataset.mode = next;
+        field.placeholder = next === 'uniform' ? 'low,high' : 'mean,unc';
+      });
+    });
+  }
+
+  var CONTROL_DEPENDENCIES = [
+    { controller: 'opt-spline', targets: ['opt-spline_knots'] },
+    { controller: 'opt-clip', targets: ['opt-clip_nsig'] },
+    { controller: 'opt-chunk_offset', targets: ['opt-chunk_thresh'] },
+    {
+      controller: 'opt-use_gp',
+      targets: [
+        'opt-gp_log_amp', 'opt-gp_log_amp_prior',
+        'opt-gp_log_scale', 'opt-gp_log_scale_prior',
+        'opt-gp_per_dataset_log_amp', 'opt-gp_per_dataset_log_scale'
+      ]
+    }
+  ];
+
+  function updateDependentFields() {
+    CONTROL_DEPENDENCIES.forEach(function (dependency) {
+      var enabled = chk(dependency.controller);
+      dependency.targets.forEach(function (id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.disabled = !enabled;
+        el.style.opacity = enabled ? '1' : '0.5';
+      });
     });
   }
 
   restoreOptions();
-  updateGpEnabled();
+  setupGpPriorSelectors();
+  updateDependentFields();
 
   // Panel toggles persistence
   (function () {
@@ -1295,7 +1567,11 @@
     panel.addEventListener('change', saveOptions);
     panel.addEventListener('input', saveOptions);
     panel.addEventListener('change', function (e) {
-      if (e.target && e.target.id === 'opt-use_gp') updateGpEnabled();
+      if (!e.target) return;
+      var controlsDependency = CONTROL_DEPENDENCIES.some(function (dependency) {
+        return dependency.controller === e.target.id;
+      });
+      if (controlsDependency) updateDependentFields();
     });
   }
 
@@ -1620,16 +1896,26 @@
               }
             }
 
-            firstCard.querySelector('.planet-period').value = params.period !== undefined ? params.period : '';
-            firstCard.querySelector('.planet-period-unc').value = params.period_unc !== undefined ? params.period_unc : '';
-            firstCard.querySelector('.planet-t0').value = params.t0 !== undefined ? params.t0 : '';
-            firstCard.querySelector('.planet-t0-unc').value = params.t0_unc !== undefined ? params.t0_unc : '';
-            firstCard.querySelector('.planet-dur').value = params.dur !== undefined ? params.dur : '';
-            firstCard.querySelector('.planet-dur-unc').value = params.dur_unc !== undefined ? params.dur_unc : '';
-            firstCard.querySelector('.planet-ror').value = params.ror !== undefined ? params.ror : '';
-            firstCard.querySelector('.planet-ror-unc').value = params.ror_unc !== undefined ? params.ror_unc : '';
-            firstCard.querySelector('.planet-b').value = params.b !== undefined ? params.b : '';
-            firstCard.querySelector('.planet-b-unc').value = params.b_unc !== undefined ? params.b_unc : '';
+            // Archive returns mean,unc -> reset the prior fields to Gaussian and
+            // fill each single comma-separated field.
+            function joinPair(a, b, sf) {
+              var as = fmtSig(a, sf), bs = fmtSig(b, sf);
+              if (as === '' && bs === '') return '';
+              return bs === '' ? as : as + ',' + bs;
+            }
+            ['.planet-period-prior', '.planet-dur-prior', '.planet-ror-prior', '.planet-b-prior'].forEach(function (sel) {
+              var selEl = firstCard.querySelector(sel);
+              if (selEl) { selEl.value = 'gaussian'; selEl.dataset.mode = 'gaussian'; }
+            });
+            ['.planet-period', '.planet-dur', '.planet-ror', '.planet-b'].forEach(function (sel) {
+              var el = firstCard.querySelector(sel);
+              if (el) el.placeholder = 'mean,unc';
+            });
+            firstCard.querySelector('.planet-period').value = joinPair(params.period, params.period_unc, SIG_FIGS.period);
+            firstCard.querySelector('.planet-t0').value = joinDp(params.t0, params.t0_unc, T0_DECIMALS);
+            firstCard.querySelector('.planet-dur').value = joinPair(params.dur, params.dur_unc, SIG_FIGS.dur);
+            firstCard.querySelector('.planet-ror').value = joinPair(params.ror, params.ror_unc, SIG_FIGS.ror);
+            firstCard.querySelector('.planet-b').value = joinPair(params.b, params.b_unc, SIG_FIGS.b);
 
             var plRefContainer = firstCard.querySelector('.planet-ref-container');
             if (plRefContainer) {
