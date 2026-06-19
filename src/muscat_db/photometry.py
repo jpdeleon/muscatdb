@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import csv as _csv
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -122,7 +123,7 @@ def bands_from_filters(filters: list[str]) -> list[str]:
 
 
 ALLOWED_EXTS = {".png", ".gif", ".csv", ".npz", ".log"}
-_RUN_LOG_NAME = "_webrun.log"  # combined stdout/stderr of a web-launched run
+_RUN_LOG_NAME = "_webrun.log"
 _CONDA_ENV_DEFAULT = "prose"   # prose deps live in a conda env named "prose"
 _MODULE = "prose.scripts.run_photometry"
 
@@ -706,11 +707,16 @@ def job_key(inst: str, date: str, target: str) -> str:
     return f"{inst}/{date}/{target.replace(' ', '')}"
 
 
+def _run_log_path(rdir: Path, inst: str, date: str, target: str) -> Path:
+    digest = hashlib.sha256(job_key(inst, date, target).encode()).hexdigest()[:16]
+    return rdir / f"_webrun_{digest}.log"
+
+
 def log_path(inst: str, date: str, target: str) -> Path | None:
     rdir = results_dir(inst, date) if results_dir(inst, date) else None
     if rdir is None:
         return None
-    p = rdir / _RUN_LOG_NAME
+    p = _run_log_path(rdir, inst, date, target)
     return p if p.is_file() else None
 
 
@@ -766,7 +772,7 @@ def start_run(
         rdir = results_dir(inst, date)
         rdir.mkdir(parents=True, exist_ok=True)
         cmd = build_command(inst, date, target, opts, test_run=test_run)
-        log_path = rdir / _RUN_LOG_NAME
+        log_path = _run_log_path(rdir, inst, date, target)
         logf = open(log_path, "w")
         logf.write(f"$ {shlex.join(cmd)}\n\n")
         logf.flush()
@@ -1108,7 +1114,7 @@ def sync_jobs() -> None:
                 cmd = build_command(inst, date, target, opts, test_run=test_run)
                 rdir = results_dir(inst, date)
                 rdir.mkdir(parents=True, exist_ok=True)
-                pending_log_path = rdir / _RUN_LOG_NAME
+                pending_log_path = _run_log_path(rdir, inst, date, target)
                 try:
                     logf = open(pending_log_path, "w")
                     logf.write(f"$ {shlex.join(cmd)}\n\n")

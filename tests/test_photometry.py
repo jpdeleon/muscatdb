@@ -363,7 +363,7 @@ class TestStartRun:
 
         rdir = tmp_path / INST / DATE
         rdir.mkdir(parents=True)
-        (rdir / phot._RUN_LOG_NAME).write_text(
+        phot._run_log_path(rdir, INST, DATE, TARGET).write_text(
             "$ python -m prose.scripts.run_photometry\n"
             "2026-06-18 15:06:36,352 - ERROR: photometry PARTIAL FAILURE: "
             "2/4 bands reduced (156s elapsed); failed/skipped=['gp', 'rp']\n"
@@ -400,6 +400,42 @@ class TestStartRun:
         assert saved[0]["state"] == "error"
         assert saved[0]["returncode"] == 0
         assert "PARTIAL FAILURE" in saved[0]["error_desc"]
+
+    def test_sync_jobs_uses_target_specific_partial_failure_log(
+        self, monkeypatch, tmp_path
+    ):
+        with phot._LOCK:
+            phot._JOBS.clear()
+
+        rdir = tmp_path / INST / DATE
+        rdir.mkdir(parents=True)
+        phot._run_log_path(rdir, INST, DATE, "Other Target").write_text(
+            "ERROR: photometry PARTIAL FAILURE\n"
+        )
+        monkeypatch.setattr(phot, "results_dir", lambda inst, date: rdir)
+        jobs = [{
+            "key": f"photometry:{INST}/{DATE}/{TARGET}",
+            "type": "photometry",
+            "inst": INST,
+            "date": DATE,
+            "target": TARGET,
+            "state": "done",
+            "returncode": 0,
+            "elapsed": 10,
+            "started_at": 1.0,
+            "error_desc": "",
+            "run_type": "test",
+            "params": "",
+        }]
+        saved = []
+        monkeypatch.setattr("muscat_db.database.get_persisted_jobs", lambda: jobs)
+        monkeypatch.setattr(
+            "muscat_db.database.save_job", lambda **kwargs: saved.append(kwargs)
+        )
+
+        phot.sync_jobs()
+
+        assert saved == []
 
     def test_cancel_no_job(self):
         r = phot.cancel_run(INST, "222222", "Nobody")
