@@ -13,7 +13,7 @@ Normalize target names without destroying originals: instead of the in-place `UP
 * Add a new favicon for transit fit in dates column beside the telescope favicon that leads to the transit page for that target.
 * Add GUI photometry page, add a button named "To Transit Fit" to go to Transit Fit page for this target. The url is identical to the favicon in the muscat-db table.
 * Add persistence to GUI Transit Fit page, similar to GUI photometry page.
-* In GUI Jobs page, Create two tables to summarize jobs: one is for photometry and another for transit fit.
+* In GUI Jobs page, create one persistent table summarizing both photometry and transit-fit jobs.
 * In GUI transit fit, change the output dir from /ut2/jerome/ql/prose/<inst>/<date>/transit_fit_<target> to /ut2/jerome/ql/timer/<isnt>/<date>/<target>
 * In timer, add a new argument called --test_run similar to run_photometry scripts' to run preliminary fits given short run time.
 * Add a test to check solve wcs worked on a target that is observed with either muscat or msucat2 and compare with muscat3 with correct headers.

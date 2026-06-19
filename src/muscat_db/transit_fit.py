@@ -29,7 +29,11 @@ _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent.resolve()
 
 
 def fit_output_dir(inst: str, date: str, target: str) -> pathlib.Path:
-    """Return the output directory for a transit fitting run."""
+    """Return a transit-fit output directory confined below the timer root.
+
+    Spaces are removed from the target directory component. ``ValueError`` is
+    raised for an empty target or one containing ``..``, ``/``, or ``\\``.
+    """
     base = pathlib.Path(os.environ.get("MUSCAT_TIMER_DIR", "/ut2/jerome/ql/timer")).expanduser().resolve(strict=False)
     target_dir = _target_dir_name(target)
     path = (base / inst / date / target_dir).resolve(strict=False)
@@ -91,6 +95,7 @@ def _count_running_full() -> int:
 
 
 def fit_job_key(inst: str, date: str, target: str) -> str:
+    """Return a job key using the validated target directory name."""
     return f"{inst}/{date}/{_target_dir_name(target)}"
 
 

@@ -708,6 +708,7 @@ def job_key(inst: str, date: str, target: str) -> str:
 
 
 def _run_log_path(rdir: Path, inst: str, date: str, target: str) -> Path:
+    """Return a deterministic, target-specific web-run log path."""
     digest = hashlib.sha256(job_key(inst, date, target).encode()).hexdigest()[:16]
     return rdir / f"_webrun_{digest}.log"
 
@@ -848,6 +849,7 @@ def _terminal_job_state(
     cancelled: bool,
     log_path_: Path | None,
 ) -> str:
+    """Map process completion to state, treating logged partial runs as errors."""
     if cancelled:
         return "cancelled"
     if returncode != 0:
@@ -858,7 +860,11 @@ def _terminal_job_state(
 
 
 def job_status(inst: str, date: str, target: str) -> dict:
-    """Poll a launched job and return its state plus a tail of the run log."""
+    """Poll a job and return its state plus its target-specific log tail.
+
+    A zero exit status is still an error when the pipeline logged
+    ``photometry PARTIAL FAILURE``.
+    """
     key = job_key(inst, date, target)
     with _LOCK:
         job = _JOBS.get(key)

@@ -70,6 +70,7 @@ jinja.globals["format_elapsed"] = format_elapsed
 
 
 def _adql_literal(value: str) -> str:
+    """Quote a string as an ADQL literal, escaping embedded apostrophes."""
     return "'" + value.replace("'", "''") + "'"
 
 

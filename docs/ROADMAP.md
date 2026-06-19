@@ -27,12 +27,16 @@ Schema recap (see `src/muscat_db/database.py`):
 - Instrument-column filter uses whole-token matching (`muscat` no longer
   matches `muscat3/4`).
 - Daily scan cron line documented.
+- Per-target/night photometry and transit-fitting pages run the external
+  pipelines, display their products, and persist status in a unified Jobs page.
+- Workflow page documents ingestion, photometry, and transit fitting with
+  Mermaid diagrams.
 
 ---
 
 ## Phase 1 — Consolidate the science view (highest value)
 
-**Goal:** make a single target the unit of navigation and show its photometry.
+**Goal:** make a single target the unit of navigation across observing nights.
 
 ### 1.1 Per-target detail page  `/target/{name}`
 - **Why:** clicking a target currently does nothing; its observations are
@@ -44,20 +48,6 @@ Schema recap (see `src/muscat_db/database.py`):
 - **Effort:** S–M. New route + template + one aggregation query (prefer
   `summaries`).
 
-### 1.2 Light-curve viewer (finish the Photometry stub)
-- **Why:** for transit follow-up this is the scientific payoff; the page is
-  currently "under construction".
-- **Contents:** flux/airmass vs time per band (g/r/i/z) for a chosen
-  target+night; band overlay; zoom/pan. Start simple with existing per-frame
-  values, then ingest reduced photometry if/when available.
-- **Data:** `frames.jd_start`, `airmass`, `filter` exist. **Gap:** actual
-  relative-flux measurements are not in the DB yet — decide whether to ingest
-  reduced light curves (new table) or render instrument metadata only first.
-- **Effort:** M (metadata plot) → L (real photometry ingestion).
-- **Depends on:** 1.1 for navigation; a charting lib (e.g. uPlot/Plotly).
-
----
-
 ## Phase 2 — Planning & discovery
 
 ### 2.1 Observability tools
@@ -65,8 +55,10 @@ Schema recap (see `src/muscat_db/database.py`):
   Maunakea/Haleakalā?" Uses RA/Dec + `astroplan`/`astropy`.
 - **Effort:** M. New dependency (`astroplan`).
 
-### 2.2 External catalog integration + name resolution
-- Auto-link targets to SIMBAD, ExoFOP-TESS, NASA Exoplanet Archive.
+### 2.2 Expand external catalog integration + name resolution
+- Transit Fit already queries the NASA Exoplanet Archive and links its target
+  overview. Add automatic links from other target views to SIMBAD and
+  ExoFOP-TESS.
 - Resolve `TIC`/`TOI` names → canonical coordinates & magnitudes.
 - Optional embedded Aladin Lite sky cutout per target.
 - **Effort:** M. External HTTP calls — cache results in a new `target_xmatch`
@@ -144,8 +136,8 @@ Schema recap (see `src/muscat_db/database.py`):
 
 ## Suggested sequencing
 
-1. **Phase 1** (target page → light curves) — biggest science value, shared
-   data path.
+1. **Phase 1** (cross-night target page) — connects the existing per-night
+   photometry and transit-fit workflows through one target-centric view.
 2. **Phase 3.1 + 3.2** (data-quality flags + aliasing) — correctness/trust;
    cheap and improves every other view.
 3. **Phase 2** (planning + catalog links) — turns review into planning.
