@@ -878,6 +878,54 @@
     document.querySelectorAll('.planet-card').forEach(validatePlanetCard);
   }
 
+  function emptyPlanetValues(letter) {
+    return {
+      query_target: getDefaultQueryTarget(letter),
+      period: '', period_unc: '',
+      t0: '', t0_unc: '',
+      dur: '', dur_unc: '',
+      ror: 0, ror_unc: 0.5, ror_prior: 'uniform',
+      b: 0, b_unc: 1, b_prior: 'uniform',
+      pl_ref: ''
+    };
+  }
+
+  function storedPlanetValues(stored, letter, firstLetter) {
+    var vals = {
+      source: stored['query_source_' + letter] || 'nasa',
+      query_target: stored['query_target_' + letter] || getDefaultQueryTarget(letter),
+      period: stored['period_' + letter] !== undefined ? stored['period_' + letter] : '',
+      period_unc: stored['period_unc_' + letter] !== undefined ? stored['period_unc_' + letter] : '',
+      t0: stored['t0_' + letter] !== undefined ? stored['t0_' + letter] : '',
+      t0_unc: stored['t0_unc_' + letter] !== undefined ? stored['t0_unc_' + letter] : '',
+      dur: stored['dur_' + letter] !== undefined ? stored['dur_' + letter] : '',
+      dur_unc: stored['dur_unc_' + letter] !== undefined ? stored['dur_unc_' + letter] : '',
+      ror: stored['ror_' + letter] !== undefined ? stored['ror_' + letter] : '',
+      ror_unc: stored['ror_unc_' + letter] !== undefined ? stored['ror_unc_' + letter] : '',
+      b: stored['b_' + letter] !== undefined ? stored['b_' + letter] : '',
+      b_unc: stored['b_unc_' + letter] !== undefined ? stored['b_unc_' + letter] : '',
+      tc_pred: stored['tc_pred_' + letter] !== undefined ? stored['tc_pred_' + letter] : '',
+      tc_pred_unc: stored['tc_pred_unc_' + letter] !== undefined ? stored['tc_pred_unc_' + letter] : '',
+      period_prior: stored['period_prior_' + letter] !== undefined ? stored['period_prior_' + letter] : 'gaussian',
+      dur_prior: stored['dur_prior_' + letter] !== undefined ? stored['dur_prior_' + letter] : 'gaussian',
+      ror_prior: stored['ror_prior_' + letter] !== undefined ? stored['ror_prior_' + letter] : 'gaussian',
+      b_prior: stored['b_prior_' + letter] !== undefined ? stored['b_prior_' + letter] : 'gaussian',
+      pl_ref: stored['pl_ref_' + letter] !== undefined ? stored['pl_ref_' + letter] : ''
+    };
+
+    if (letter === firstLetter) {
+      if (vals.tc_pred === '' && stored.tc_pred !== undefined) vals.tc_pred = stored.tc_pred;
+      if (stored.tc_pred_unc !== undefined && stored['tc_pred_unc_' + letter] === undefined) vals.tc_pred_unc = stored.tc_pred_unc;
+      ['period', 'period_unc', 't0', 't0_unc', 'dur', 'dur_unc', 'ror', 'ror_unc', 'b', 'b_unc', 'pl_ref'].forEach(function (key) {
+        if (vals[key] === '' && stored[key] !== undefined) vals[key] = stored[key];
+      });
+      ['period_prior', 'dur_prior', 'ror_prior', 'b_prior'].forEach(function (key) {
+        if (stored[key + '_' + letter] === undefined && stored[key] !== undefined) vals[key] = stored[key];
+      });
+    }
+    return vals;
+  }
+
   function addPlanetCard(letter, values, isInitial) {
     var container = document.getElementById('planet-cards-container');
     if (!container) return;
@@ -1196,15 +1244,7 @@
       // Default: every star/planet field empty (populated only when the user
       // queries the archive), except b and Rp/R* which default to Uniform
       // priors over their physical limits (b: [0,1], ror: [0,0.5]).
-      addPlanetCard(defaultLetter, {
-        query_target: getDefaultQueryTarget(defaultLetter),
-        period: '', period_unc: '',
-        t0: '', t0_unc: '',
-        dur: '', dur_unc: '',
-        ror: 0, ror_unc: 0.5, ror_prior: 'uniform',
-        b: 0, b_unc: 1, b_prior: 'uniform',
-        pl_ref: ''
-      }, true);
+      addPlanetCard(defaultLetter, emptyPlanetValues(defaultLetter), true);
       return;
     }
 
@@ -1256,49 +1296,7 @@
     }
 
     planetLetters.forEach(function (letter) {
-      var vals = {
-        source: saved['query_source_' + letter] || 'nasa',
-        query_target: saved['query_target_' + letter] || getDefaultQueryTarget(letter),
-        period: saved['period_' + letter] !== undefined ? saved['period_' + letter] : '',
-        period_unc: saved['period_unc_' + letter] !== undefined ? saved['period_unc_' + letter] : '',
-        t0: saved['t0_' + letter] !== undefined ? saved['t0_' + letter] : '',
-        t0_unc: saved['t0_unc_' + letter] !== undefined ? saved['t0_unc_' + letter] : '',
-        dur: saved['dur_' + letter] !== undefined ? saved['dur_' + letter] : '',
-        dur_unc: saved['dur_unc_' + letter] !== undefined ? saved['dur_unc_' + letter] : '',
-        ror: saved['ror_' + letter] !== undefined ? saved['ror_' + letter] : '',
-        ror_unc: saved['ror_unc_' + letter] !== undefined ? saved['ror_unc_' + letter] : '',
-        b: saved['b_' + letter] !== undefined ? saved['b_' + letter] : '',
-        b_unc: saved['b_unc_' + letter] !== undefined ? saved['b_unc_' + letter] : '',
-        tc_pred: saved['tc_pred_' + letter] !== undefined ? saved['tc_pred_' + letter] : '',
-        tc_pred_unc: saved['tc_pred_unc_' + letter] !== undefined ? saved['tc_pred_unc_' + letter] : '',
-        period_prior: saved['period_prior_' + letter] !== undefined ? saved['period_prior_' + letter] : 'gaussian',
-        dur_prior: saved['dur_prior_' + letter] !== undefined ? saved['dur_prior_' + letter] : 'gaussian',
-        ror_prior: saved['ror_prior_' + letter] !== undefined ? saved['ror_prior_' + letter] : 'gaussian',
-        b_prior: saved['b_prior_' + letter] !== undefined ? saved['b_prior_' + letter] : 'gaussian',
-        pl_ref: saved['pl_ref_' + letter] !== undefined ? saved['pl_ref_' + letter] : ''
-      };
-
-      if (letter === planetLetters[0]) {
-        if (vals.tc_pred === '' && saved.tc_pred !== undefined) vals.tc_pred = saved.tc_pred;
-        if (saved.tc_pred_unc !== undefined && saved['tc_pred_unc_' + letter] === undefined) vals.tc_pred_unc = saved.tc_pred_unc;
-        if (vals.period === '' && saved.period !== undefined) vals.period = saved.period;
-        if (vals.period_unc === '' && saved.period_unc !== undefined) vals.period_unc = saved.period_unc;
-        if (vals.t0 === '' && saved.t0 !== undefined) vals.t0 = saved.t0;
-        if (vals.t0_unc === '' && saved.t0_unc !== undefined) vals.t0_unc = saved.t0_unc;
-        if (vals.dur === '' && saved.dur !== undefined) vals.dur = saved.dur;
-        if (vals.dur_unc === '' && saved.dur_unc !== undefined) vals.dur_unc = saved.dur_unc;
-        if (vals.ror === '' && saved.ror !== undefined) vals.ror = saved.ror;
-        if (vals.ror_unc === '' && saved.ror_unc !== undefined) vals.ror_unc = saved.ror_unc;
-        if (vals.b === '' && saved.b !== undefined) vals.b = saved.b;
-        if (vals.b_unc === '' && saved.b_unc !== undefined) vals.b_unc = saved.b_unc;
-        if (saved['period_prior_' + letter] === undefined && saved.period_prior !== undefined) vals.period_prior = saved.period_prior;
-        if (saved['dur_prior_' + letter] === undefined && saved.dur_prior !== undefined) vals.dur_prior = saved.dur_prior;
-        if (saved['ror_prior_' + letter] === undefined && saved.ror_prior !== undefined) vals.ror_prior = saved.ror_prior;
-        if (saved['b_prior_' + letter] === undefined && saved.b_prior !== undefined) vals.b_prior = saved.b_prior;
-        if (vals.pl_ref === '' && saved.pl_ref !== undefined) vals.pl_ref = saved.pl_ref;
-      }
-
-      addPlanetCard(letter, vals, true);
+      addPlanetCard(letter, storedPlanetValues(saved, letter, planetLetters[0]), true);
     });
   }
 
@@ -1349,7 +1347,7 @@
       var container = document.getElementById('planet-cards-container');
       if (container) {
         container.innerHTML = '';
-        addPlanetCard('b', {}, true);
+        addPlanetCard('b', emptyPlanetValues('b'), true);
       }
 
       saveOptions();
@@ -1424,38 +1422,7 @@
         }
 
         planetLetters.forEach(function (letter) {
-          var vals = {
-            query_target: backup['query_target_' + letter] || getDefaultQueryTarget(letter),
-            period: backup['period_' + letter] !== undefined ? backup['period_' + letter] : '',
-            period_unc: backup['period_unc_' + letter] !== undefined ? backup['period_unc_' + letter] : '',
-            t0: backup['t0_' + letter] !== undefined ? backup['t0_' + letter] : '',
-            t0_unc: backup['t0_unc_' + letter] !== undefined ? backup['t0_unc_' + letter] : '',
-            dur: backup['dur_' + letter] !== undefined ? backup['dur_' + letter] : '',
-            dur_unc: backup['dur_unc_' + letter] !== undefined ? backup['dur_unc_' + letter] : '',
-            ror: backup['ror_' + letter] !== undefined ? backup['ror_' + letter] : '',
-            ror_unc: backup['ror_unc_' + letter] !== undefined ? backup['ror_unc_' + letter] : '',
-            b: backup['b_' + letter] !== undefined ? backup['b_' + letter] : '',
-            b_unc: backup['b_unc_' + letter] !== undefined ? backup['b_unc_' + letter] : '',
-            tc_pred: backup['tc_pred_' + letter] !== undefined ? backup['tc_pred_' + letter] : '',
-            tc_pred_unc: backup['tc_pred_unc_' + letter] !== undefined ? backup['tc_pred_unc_' + letter] : '',
-            pl_ref: backup['pl_ref_' + letter] !== undefined ? backup['pl_ref_' + letter] : ''
-          };
-
-          if (letter === planetLetters[0]) {
-            if (vals.period === '' && backup.period !== undefined) vals.period = backup.period;
-            if (vals.period_unc === '' && backup.period_unc !== undefined) vals.period_unc = backup.period_unc;
-            if (vals.t0 === '' && backup.t0 !== undefined) vals.t0 = backup.t0;
-            if (vals.t0_unc === '' && backup.t0_unc !== undefined) vals.t0_unc = backup.t0_unc;
-            if (vals.dur === '' && backup.dur !== undefined) vals.dur = backup.dur;
-            if (vals.dur_unc === '' && backup.dur_unc !== undefined) vals.dur_unc = backup.dur_unc;
-            if (vals.ror === '' && backup.ror !== undefined) vals.ror = backup.ror;
-            if (vals.ror_unc === '' && backup.ror_unc !== undefined) vals.ror_unc = backup.ror_unc;
-            if (vals.b === '' && backup.b !== undefined) vals.b = backup.b;
-            if (vals.b_unc === '' && backup.b_unc !== undefined) vals.b_unc = backup.b_unc;
-            if (vals.pl_ref === '' && backup.pl_ref !== undefined) vals.pl_ref = backup.pl_ref;
-          }
-
-          addPlanetCard(letter, vals, true);
+          addPlanetCard(letter, storedPlanetValues(backup, letter, planetLetters[0]), true);
         });
 
         saveOptions();
@@ -1471,9 +1438,7 @@
   if (addPlanetBtn) {
     addPlanetBtn.addEventListener('click', function() {
       var nextLetter = getNextPlanetLetter();
-      addPlanetCard(nextLetter, {
-        query_target: getDefaultQueryTarget(nextLetter)
-      });
+      addPlanetCard(nextLetter, emptyPlanetValues(nextLetter));
     });
   }
 
