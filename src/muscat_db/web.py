@@ -69,6 +69,11 @@ jinja = Environment(
 jinja.globals["format_elapsed"] = format_elapsed
 
 
+def _adql_literal(value: str) -> str:
+    """Quote a string as an ADQL literal, escaping embedded apostrophes."""
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _datetime_from_timestamp(ts: int) -> str:
     dt = datetime.datetime.fromtimestamp(ts)
     now = datetime.datetime.now()
@@ -347,9 +352,9 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
 
         clean_target = target.replace("TOI", "").replace("toi", "").replace("-", "").replace(" ", "").lstrip("0").split(".")[0].strip()
         queries = [
-            f"SELECT {col_str} FROM toi WHERE toi = '{clean_target}'",
-            f"SELECT {col_str} FROM toi WHERE toidisplay LIKE '%{target}%'",
-            f"SELECT {col_str} FROM toi WHERE toi LIKE '%{clean_target}%'",
+            f"SELECT {col_str} FROM toi WHERE toi = {_adql_literal(clean_target)}",
+            f"SELECT {col_str} FROM toi WHERE toidisplay LIKE {_adql_literal('%' + target + '%')}",
+            f"SELECT {col_str} FROM toi WHERE toi LIKE {_adql_literal('%' + clean_target + '%')}",
         ]
 
         data = []
@@ -417,21 +422,21 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
         norm_target = re.sub(r'^([A-Za-z]+)(\d)', r'\1 \2', target)
 
         queries = [
-            f"SELECT {col_str} FROM pscomppars WHERE pl_name = '{target}'",
-            f"SELECT {col_str} FROM pscomppars WHERE hostname = '{target}'",
-            f"SELECT {col_str} FROM pscomppars WHERE hip_name = '{target}'",
-            f"SELECT {col_str} FROM pscomppars WHERE hd_name = '{target}'",
-            f"SELECT {col_str} FROM pscomppars WHERE pl_name LIKE '%{target}%'",
-            f"SELECT {col_str} FROM pscomppars WHERE hostname LIKE '%{target}%'",
-            f"SELECT {col_str} FROM pscomppars WHERE hip_name LIKE '%{target}%'",
-            f"SELECT {col_str} FROM pscomppars WHERE hd_name LIKE '%{target}%'",
+            f"SELECT {col_str} FROM pscomppars WHERE pl_name = {_adql_literal(target)}",
+            f"SELECT {col_str} FROM pscomppars WHERE hostname = {_adql_literal(target)}",
+            f"SELECT {col_str} FROM pscomppars WHERE hip_name = {_adql_literal(target)}",
+            f"SELECT {col_str} FROM pscomppars WHERE hd_name = {_adql_literal(target)}",
+            f"SELECT {col_str} FROM pscomppars WHERE pl_name LIKE {_adql_literal('%' + target + '%')}",
+            f"SELECT {col_str} FROM pscomppars WHERE hostname LIKE {_adql_literal('%' + target + '%')}",
+            f"SELECT {col_str} FROM pscomppars WHERE hip_name LIKE {_adql_literal('%' + target + '%')}",
+            f"SELECT {col_str} FROM pscomppars WHERE hd_name LIKE {_adql_literal('%' + target + '%')}",
         ]
 
         if norm_target != target:
             queries.extend([
-                f"SELECT {col_str} FROM pscomppars WHERE hostname = '{norm_target}'",
-                f"SELECT {col_str} FROM pscomppars WHERE hip_name = '{norm_target}'",
-                f"SELECT {col_str} FROM pscomppars WHERE hd_name = '{norm_target}'",
+                f"SELECT {col_str} FROM pscomppars WHERE hostname = {_adql_literal(norm_target)}",
+                f"SELECT {col_str} FROM pscomppars WHERE hip_name = {_adql_literal(norm_target)}",
+                f"SELECT {col_str} FROM pscomppars WHERE hd_name = {_adql_literal(norm_target)}",
             ])
 
         data = []
@@ -536,7 +541,10 @@ def transit_fit_file(inst: str, date: str, target: str, name: str):
     if ".." in name or "/" in name:
         raise HTTPException(400, "invalid filename")
 
-    rdir = fit.fit_output_dir(inst, date, target)
+    try:
+        rdir = fit.fit_output_dir(inst, date, target)
+    except ValueError:
+        raise HTTPException(400, "invalid target")
     out_dir = rdir / "out"
 
     # ``name`` is already sanitized above (no "/" or ".."), so it can only

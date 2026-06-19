@@ -88,8 +88,8 @@ class TestListOutputs:
         out = phot.list_outputs(INST, DATE, TARGET)
         assert out["has_any"]
         assert set(out["summary"]) == {"lightcurves", "raw_flux", "covariates", "stacks"}
-        assert out["summary"]["lightcurves"] == f"{TARGET}_{INST}_{DATE}_lightcurves.png"
-        assert out["summary"]["raw_flux"] == f"{TARGET}_{INST}_{DATE}_raw_flux.png"
+        assert out["summary"]["lightcurves"]["file"] == f"{TARGET}_{INST}_{DATE}_lightcurves.png"
+        assert out["summary"]["raw_flux"]["file"] == f"{TARGET}_{INST}_{DATE}_raw_flux.png"
         assert out["npz"] == f"{TARGET}_{INST}_{DATE}.npz"
         assert out["log"].endswith(".log")
 
@@ -115,7 +115,7 @@ class TestListOutputs:
         assert list(out["bands"]) == BANDS  # canonical order gp, rp, ip, zs
         gp = out["bands"]["gp"]
         assert set(gp) == {"ref", "apertures", "alignment", "gif", "csv"}
-        assert gp["csv"] == f"{TARGET}_{INST}_gp_{DATE}.csv"
+        assert gp["csv"]["file"] == f"{TARGET}_{INST}_gp_{DATE}.csv"
 
     def test_missing_dir_returns_empty(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
@@ -346,6 +346,97 @@ class TestStartRun:
         s = phot.job_status(INST, "111111", "Nobody")
         assert s["state"] == "none"
 
+    def test_terminal_state_treats_partial_failure_log_as_error(self, tmp_path):
+        log = tmp_path / "_webrun.log"
+        log.write_text(
+            "2026-06-18 15:06:36,352 - ERROR: photometry PARTIAL FAILURE: "
+            "2/4 bands reduced (156s elapsed); failed/skipped=['gp', 'rp']\n"
+        )
+
+        assert phot._terminal_job_state(0, False, log) == "error"
+
+    def test_sync_jobs_repairs_persisted_done_partial_failure(
+        self, monkeypatch, tmp_path
+    ):
+        with phot._LOCK:
+            phot._JOBS.clear()
+
+        rdir = tmp_path / INST / DATE
+        rdir.mkdir(parents=True)
+        phot._run_log_path(rdir, INST, DATE, TARGET).write_text(
+            "$ python -m prose.scripts.run_photometry\n"
+            "2026-06-18 15:06:36,352 - ERROR: photometry PARTIAL FAILURE: "
+            "2/4 bands reduced (156s elapsed); failed/skipped=['gp', 'rp']\n"
+        )
+        monkeypatch.setattr(phot, "results_dir", lambda inst, date: rdir)
+
+        jobs = [
+            {
+                "key": f"photometry:{INST}/{DATE}/{TARGET}",
+                "type": "photometry",
+                "inst": INST,
+                "date": DATE,
+                "target": TARGET,
+                "state": "done",
+                "returncode": 0,
+                "elapsed": 156,
+                "started_at": 1.0,
+                "error_desc": "",
+                "run_type": "test",
+                "params": "",
+            }
+        ]
+        saved = []
+
+        monkeypatch.setattr("muscat_db.database.get_persisted_jobs", lambda: jobs)
+        monkeypatch.setattr(
+            "muscat_db.database.save_job",
+            lambda **kwargs: saved.append(kwargs),
+        )
+
+        phot.sync_jobs()
+
+        assert saved
+        assert saved[0]["state"] == "error"
+        assert saved[0]["returncode"] == 0
+        assert "PARTIAL FAILURE" in saved[0]["error_desc"]
+
+    def test_sync_jobs_uses_target_specific_partial_failure_log(
+        self, monkeypatch, tmp_path
+    ):
+        with phot._LOCK:
+            phot._JOBS.clear()
+
+        rdir = tmp_path / INST / DATE
+        rdir.mkdir(parents=True)
+        phot._run_log_path(rdir, INST, DATE, "Other Target").write_text(
+            "ERROR: photometry PARTIAL FAILURE\n"
+        )
+        monkeypatch.setattr(phot, "results_dir", lambda inst, date: rdir)
+        jobs = [{
+            "key": f"photometry:{INST}/{DATE}/{TARGET}",
+            "type": "photometry",
+            "inst": INST,
+            "date": DATE,
+            "target": TARGET,
+            "state": "done",
+            "returncode": 0,
+            "elapsed": 10,
+            "started_at": 1.0,
+            "error_desc": "",
+            "run_type": "test",
+            "params": "",
+        }]
+        saved = []
+        monkeypatch.setattr("muscat_db.database.get_persisted_jobs", lambda: jobs)
+        monkeypatch.setattr(
+            "muscat_db.database.save_job", lambda **kwargs: saved.append(kwargs)
+        )
+
+        phot.sync_jobs()
+
+        assert saved == []
+
     def test_cancel_no_job(self):
         r = phot.cancel_run(INST, "222222", "Nobody")
         assert r["ok"] is False
@@ -569,6 +660,14 @@ class TestRoutes:
         assert "dummy_muscat3_250717.csv" in r.text
         assert "Created:" in r.text
 
+    def test_transit_fit_file_rejects_bad_target(self, client):
+        r = client.get("/transit-fit/file/muscat3/250717/evil..target/timer-fit.log")
+        assert r.status_code == 400
+
+    def test_transit_fit_log_rejects_bad_target(self, client):
+        r = client.get("/jobs/log/transit_fit/muscat3/250717/evil..target")
+        assert r.status_code == 404
+
     def test_transit_fit_query_archive_success(self, client, mocker):
         mock_response = mocker.MagicMock()
         mock_response.__enter__.return_value = mock_response
@@ -581,6 +680,44 @@ class TestRoutes:
         assert data["ok"] is True
         assert data["pl_name"] == "WASP-104 b"
         assert data["params"]["teff"] == 5475.0
+
+    def test_transit_fit_query_archive_escapes_adql_literals(self, client, mocker):
+        seen_queries = []
+
+        def side_effect(req, *args, **kwargs):
+            from urllib.parse import parse_qs, urlparse
+            url_str = req.get_full_url() if hasattr(req, "get_full_url") else str(req)
+            seen_queries.append(parse_qs(urlparse(url_str).query).get("query", [""])[0])
+            mock_resp = mocker.MagicMock()
+            mock_resp.__enter__.return_value = mock_resp
+            mock_resp.read.return_value = b"[]"
+            return mock_resp
+
+        mocker.patch("urllib.request.urlopen", side_effect=side_effect)
+
+        r = client.get("/transit-fit/query-archive", params={"target": "WASP-104' OR 'x'='x"})
+        assert r.status_code == 200
+        assert seen_queries
+        assert "WASP-104'' OR ''x''=''x" in seen_queries[0]
+
+    def test_transit_fit_query_archive_escapes_toi_literals(self, client, mocker):
+        seen_queries = []
+
+        def side_effect(req, *args, **kwargs):
+            from urllib.parse import parse_qs, urlparse
+            url_str = req.get_full_url() if hasattr(req, "get_full_url") else str(req)
+            seen_queries.append(parse_qs(urlparse(url_str).query).get("query", [""])[0])
+            mock_resp = mocker.MagicMock()
+            mock_resp.__enter__.return_value = mock_resp
+            mock_resp.read.return_value = b"[]"
+            return mock_resp
+
+        mocker.patch("urllib.request.urlopen", side_effect=side_effect)
+
+        r = client.get("/transit-fit/query-archive", params={"target": "TOI' OR '1'='1", "source": "toi"})
+        assert r.status_code == 200
+        assert seen_queries
+        assert "TOI'' OR ''1''=''1" in seen_queries[1]
 
     def test_transit_fit_query_archive_hip_target(self, client, mocker):
         hip_data = b'[{"pl_name": "HIP 67522 b", "hostname": "HIP 67522", "hip_name": "HIP 67522", "st_teff": 5675.0, "st_tefferr1": 75.0, "st_tefferr2": -75.0, "st_logg": 4.0, "st_loggerr1": null, "st_loggerr2": null, "st_met": 0.0, "st_meterr1": null, "st_meterr2": null, "pl_orbper": 6.9594731, "pl_orbpererr1": 2.2e-06, "pl_orbpererr2": -2.2e-06, "pl_tranmid": 2458604.02376, "pl_tranmiderr1": 0.00033, "pl_tranmiderr2": -0.00032, "pl_trandur": 4.85, "pl_trandurerr1": 1.13, "pl_trandurerr2": -0.36, "pl_ratror": 0.06644, "pl_ratrorerr1": 0.0015, "pl_ratrorerr2": -0.0014, "pl_imppar": 0.03, "pl_impparerr1": 0.19, "pl_impparerr2": -0.22, "st_teff_reflink": "", "pl_orbper_reflink": ""}]'
@@ -650,9 +787,8 @@ class TestRoutes:
         r = client.get("/jobs")
         assert r.status_code == 200
         assert "Jobs" in r.text
-        assert "Photometry Jobs" in r.text
-        assert "Transit Fit Jobs" in r.text
-        assert "View reduction" not in r.text
+        assert 'data-type="photometry"' in r.text
+        assert 'data-type="transit_fit"' in r.text
         assert "cancelJob(this)" in r.text
         assert 'data-target="TOI-5684.01"' in r.text
         assert "TOI-5684.02" in r.text
@@ -662,6 +798,32 @@ class TestRoutes:
         assert r.status_code == 200
         assert "MuSCAT-db Pipeline Workflow" in r.text
         assert "mermaid" in r.text
+
+
+class TestTransitFitJobs:
+    def test_sync_jobs_marks_invalid_pending_target_error(self, monkeypatch):
+        from muscat_db import transit_fit as fit
+
+        pending_job = {
+            "key": "transit_fit:muscat3/250717/evil..target",
+            "type": "transit_fit",
+            "inst": "muscat3",
+            "date": "250717",
+            "target": "evil..target",
+            "state": "pending",
+            "started_at": 1.0,
+            "params": "{}",
+        }
+        saved = []
+        monkeypatch.setattr("muscat_db.database.get_persisted_jobs", lambda: [pending_job])
+        monkeypatch.setattr("muscat_db.database.save_job", lambda **kwargs: saved.append(kwargs))
+        monkeypatch.setattr(fit, "_FIT_JOBS", {})
+
+        fit.sync_jobs()
+
+        assert saved[-1]["state"] == "error"
+        assert saved[-1]["target"] == "evil..target"
+        assert saved[-1]["error_desc"] == "Invalid target"
 
 
 class TestTransitFitOptions:

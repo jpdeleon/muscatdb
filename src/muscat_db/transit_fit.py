@@ -29,13 +29,39 @@ _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent.resolve()
 
 
 def fit_output_dir(inst: str, date: str, target: str) -> pathlib.Path:
-    """Return the output directory for a transit fitting run."""
-    base = pathlib.Path(os.environ.get("MUSCAT_TIMER_DIR", "/ut2/jerome/ql/timer"))
-    return base / inst / date / target.replace(" ", "")
+    """Return a transit-fit output directory confined below the timer root.
+
+    Spaces are removed from the target directory component. ``ValueError`` is
+    raised for an empty target or one containing ``..``, ``/``, or ``\\``.
+    """
+    base = pathlib.Path(os.environ.get("MUSCAT_TIMER_DIR", "/ut2/jerome/ql/timer")).expanduser().resolve(strict=False)
+    target_dir = _target_dir_name(target)
+    path = (base / inst / date / target_dir).resolve(strict=False)
+    try:
+        path.relative_to(base)
+    except ValueError as exc:
+        raise ValueError("invalid target") from exc
+    return path
+
+
+def _target_dir_name(target: str) -> str:
+    target_dir = (target or "").replace(" ", "")
+    if (
+        not target_dir
+        or ".." in target_dir
+        or "/" in target_dir
+        or "\\" in target_dir
+        or target_dir in {".", ".."}
+    ):
+        raise ValueError("invalid target")
+    return target_dir
 
 
 def log_path(inst: str, date: str, target: str) -> pathlib.Path | None:
-    rdir = fit_output_dir(inst, date, target)
+    try:
+        rdir = fit_output_dir(inst, date, target)
+    except ValueError:
+        return None
     p = rdir / "timer-fit.log"
     return p if p.is_file() else None
 
@@ -69,7 +95,8 @@ def _count_running_full() -> int:
 
 
 def fit_job_key(inst: str, date: str, target: str) -> str:
-    return f"{inst}/{date}/{target.replace(' ', '')}"
+    """Return a job key using the validated target directory name."""
+    return f"{inst}/{date}/{_target_dir_name(target)}"
 
 
 def _timer_prefix() -> list[str]:
@@ -558,6 +585,10 @@ def compute_logp(inst: str, date: str, target: str, options: dict, selected_csvs
         return {"ok": False, "error": "date must be 6-digit yymmdd"}
     if not (target or "").strip():
         return {"ok": False, "error": "target is required"}
+    try:
+        fit_output_dir(inst, date, target)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
 
     err = validate_fit_options(options)
     if err:
@@ -627,6 +658,10 @@ def start_fit(
         return {"ok": False, "error": "date must be 6-digit yymmdd"}
     if not (target or "").strip():
         return {"ok": False, "error": "target is required"}
+    try:
+        rdir = fit_output_dir(inst, date, target)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
 
     # Validate the fitting configuration before touching the filesystem so bad
     # input fails fast without deleting prior run products.
@@ -644,7 +679,6 @@ def start_fit(
             return {"ok": False, "error": "No lightcurves selected for fitting."}
 
     # Working directory
-    rdir = fit_output_dir(inst, date, target)
     rdir.mkdir(parents=True, exist_ok=True)
 
     # Clean old run files
@@ -729,7 +763,10 @@ def start_fit(
 
 def job_status(inst: str, date: str, target: str) -> dict:
     """Retrieve logs and status of an active transit fitting job."""
-    key = fit_job_key(inst, date, target)
+    try:
+        key = fit_job_key(inst, date, target)
+    except ValueError as exc:
+        return {"state": "none", "log": "", "returncode": None, "elapsed": 0, "error": str(exc)}
     with _FIT_LOCK:
         job = _FIT_JOBS.get(key)
         if job is None:
@@ -781,7 +818,10 @@ def _kill_after(proc: subprocess.Popen, grace: float = 6.0) -> None:
 
 def cancel_fit(inst: str, date: str, target: str) -> dict:
     """Terminate the running or pending fitting process."""
-    key = fit_job_key(inst, date, target)
+    try:
+        key = fit_job_key(inst, date, target)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
     with _FIT_LOCK:
         from muscat_db.database import save_job, get_persisted_jobs
         job = _FIT_JOBS.get(key)
@@ -867,9 +907,6 @@ _fit_outputs_cache = register_cache(ttl=300.0)
 @_fit_outputs_cache
 def get_fit_outputs(inst: str, date: str, target: str) -> dict:
     """Check and retrieve output files, plots, and summary values from completed run."""
-    rdir = fit_output_dir(inst, date, target)
-    out_dir = rdir / "out"
-
     outputs = {
         "has_any": False,
         "plots": [],
@@ -879,6 +916,12 @@ def get_fit_outputs(inst: str, date: str, target: str) -> dict:
         "has_sys_yaml": False,
         "extra_files": []
     }
+
+    try:
+        rdir = fit_output_dir(inst, date, target)
+    except ValueError:
+        return outputs
+    out_dir = rdir / "out"
 
     if (rdir / "timer-fit.log").is_file():
         outputs["has_log"] = True
@@ -1076,8 +1119,24 @@ def sync_jobs() -> None:
                 test_run = p.get("test_run", False)
                 selected_csvs = p.get("selected_csvs")
                 inst, date, target = entry["inst"], entry["date"], entry["target"]
-                key = fit_job_key(inst, date, target)
-                rdir = fit_output_dir(inst, date, target)
+                try:
+                    key = fit_job_key(inst, date, target)
+                    rdir = fit_output_dir(inst, date, target)
+                except ValueError:
+                    save_job(
+                        type_="transit_fit",
+                        inst=inst,
+                        date=date,
+                        target=target,
+                        state="error",
+                        returncode=-1,
+                        elapsed=0,
+                        started_at=entry["started_at"],
+                        error_desc="Invalid target",
+                        run_type=entry.get("run_type", ""),
+                        params=entry.get("params", ""),
+                    )
+                    continue
                 rdir.mkdir(parents=True, exist_ok=True)
                 _write_fit_inputs(rdir, inst, date, get_csv_lightcurves(inst, date, target), opts)
                 cmd = [*_timer_prefix(), "-v", str(rdir)]
@@ -1105,4 +1164,3 @@ def sync_jobs() -> None:
                     except OSError: pass
                     _FIT_JOBS.pop(key, None)
                     save_job(type_="transit_fit", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Database error")
-
