@@ -482,7 +482,11 @@
   // ----- persistent job: resume or show banner across page navigations -----
   function saveJob() { try { localStorage.setItem(JOB_KEY, JSON.stringify({ inst: inst, date: date, target: target })); } catch (e) {} }
   function clearJob() { try { localStorage.removeItem(JOB_KEY); } catch (e) {} }
-  (function checkSavedJob() {
+  // Defined here but invoked at the end of the script, after cancelBtn, logEl,
+  // runBtns, and polling are assigned. Calling it inline would run setRunning()
+  // while those vars are still undefined, so the cancel button would never show
+  // (and runBtns.forEach would throw) when returning to a page with a live job.
+  function checkSavedJob() {
     var saved;
     try { saved = JSON.parse(localStorage.getItem(JOB_KEY) || 'null'); } catch (e) { saved = null; }
     if (!saved || !saved.inst) return;
@@ -512,7 +516,7 @@
         setTimeout(pollBanner, 3000);
       }).catch(function () { setTimeout(pollBanner, 5000); });
     })();
-  })();
+  }
 
   // ----- cascading selectors: navigate on change -----
   var selInst   = document.getElementById('sel-inst');
@@ -932,6 +936,10 @@
 
   // initial command reflects default options
   refreshCmd();
+
+  // Restore running-job state (cancel button, log polling) now that all the
+  // DOM refs and helpers above are defined.
+  checkSavedJob();
 })();
 </script>
 <div style="text-align:center; margin:2em 0; display: flex; justify-content: center; gap: 1rem; align-items: center;">
