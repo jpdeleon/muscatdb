@@ -487,6 +487,7 @@
     try { saved = JSON.parse(localStorage.getItem(JOB_KEY) || 'null'); } catch (e) { saved = null; }
     if (!saved || !saved.inst) return;
     if (saved.inst === inst && saved.date === date && saved.target === target) {
+      setRunning(true);
       if (logEl) logEl.style.display = 'block';
       if (!polling) polling = setInterval(poll, 2000);
       poll();
@@ -857,6 +858,8 @@
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent += '\n\n■ cancelled';
         try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+      } else if (s.state === 'none') {
+        stopPolling(); setRunning(false); clearJob();
       }
     }).catch(function () {});
   }
