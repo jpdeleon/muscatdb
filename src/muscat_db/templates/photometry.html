@@ -269,10 +269,7 @@
 
     <details class="adv" id="opt-panel">
       <summary>Pipeline options (all run_photometry arguments)</summary>
-      <div style="display: flex; justify-content: flex-end; margin-top: 0.5rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.75rem;">
-        <button class="btn" type="button" id="defaults-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2;">Use default settings</button>
-      </div>
-      <div class="opt-grid">
+      <div class="opt-grid" style="margin-top: 0.5rem;">
         <div class="opt opt-span2">
           <label>Bands <span class="help-tooltip" title="Filter bands to reduce.">?</span></label>
           {% set narrow_bands = ['Na_D', 'g_narrow', 'i_narrow', 'z_narrow'] %}
@@ -280,10 +277,13 @@
              is empty (e.g. manually-typed / un-ingested target) fall back to the
              standard static list. Shared by the checkboxes and the ref_band select. #}
           {% set band_choices = available_bands if available_bands else ['gp', 'rp', 'ip', 'zs', 'Na_D', 'g_narrow', 'i_narrow', 'z_narrow'] %}
-          <div class="band-checks">
-            {% for b in band_choices %}
-            <label><input type="checkbox" name="band" value="{{ b }}" {% if available_bands or b in run_defaults.bands or (is_narrowband and b in narrow_bands) %}checked{% endif %}> {{ b }}</label>
-            {% endfor %}
+          <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+            <div class="band-checks">
+              {% for b in band_choices %}
+              <label><input type="checkbox" name="band" value="{{ b }}" {% if available_bands or b in run_defaults.bands or (is_narrowband and b in narrow_bands) %}checked{% endif %}> {{ b }}</label>
+              {% endfor %}
+            </div>
+            <button class="btn" type="button" id="defaults-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2; flex-shrink: 0;">Use default settings</button>
           </div>
         </div>
 
