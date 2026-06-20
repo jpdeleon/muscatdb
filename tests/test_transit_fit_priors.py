@@ -67,6 +67,13 @@ def test_mixed_prior_shapes_across_planets_rejected():
     assert "same for every planet" in error
 
 
+def test_duplicate_planet_designations_rejected():
+    error = fit.validate_fit_options({"planets": "b,b"})
+
+    assert error is not None
+    assert "unique" in error
+
+
 def test_uniform_and_fixed_conflict_rejected():
     options = {"planets": "b", "ror_prior_b": "uniform", "fixed": ["ror"]}
 
