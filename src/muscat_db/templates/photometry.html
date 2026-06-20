@@ -71,6 +71,22 @@
     font-size: 0.76rem; overflow-x: auto; white-space: pre;
   }
   #opt-error { color: var(--red); font-size: 0.8rem; min-height: 1rem; }
+
+  /* Collapsible option groups (Sigma Clipping), collapsed by default. */
+  .opt-collapse { grid-column: 1 / -1; margin-top: 1rem; }
+  .opt-collapse > summary {
+    font-size: 0.85rem; font-weight: 600; color: var(--accent2);
+    border-bottom: 1px solid var(--border); padding-bottom: 0.25rem;
+    cursor: pointer; user-select: none; list-style: none;
+    display: flex; align-items: center; gap: 0.4rem;
+  }
+  .opt-collapse > summary::-webkit-details-marker { display: none; }
+  .opt-collapse > summary::before {
+    content: '\25B8'; color: var(--text-dim); font-size: 0.8rem;
+    transition: transform 0.15s ease;
+  }
+  .opt-collapse[open] > summary::before { transform: rotate(90deg); }
+  .opt-collapse > *:not(summary) { margin-top: 0.7rem; }
 </style>
 
 <h1>Photometry</h1>
@@ -347,24 +363,24 @@
           <label for="opt-test_run_frames"># of test-run frames <span class="help-tooltip" title="Number of frames to process during a test-run reduction (corresponds to --test_run_frames).">?</span></label>
           <input type="number" id="opt-test_run_frames" value="{{ run_defaults.test_run_frames }}" min="1">
         </div>
-        <details class="adv" style="grid-column: 1 / -1; margin: 0.5rem 0; padding: 0.5rem 1rem;">
-          <summary style="font-weight: 600;">Sigma Clipping</summary>
-          <div class="opt-grid" style="margin-top: 0.5rem; border: none; padding: 0; background: transparent;">
+        <details class="opt-collapse">
+          <summary>Sigma Clipping <span class="help-tooltip" title="Sigma threshold parameters for sky background, FWHM, and X/Y target drift outlier clipping.">?</span></summary>
+          <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem;">
             <div class="opt">
               <label for="opt-sig_bkg">SIGMA_BKG <span class="help-tooltip" title="Sigma threshold for sky background outlier clipping (corresponds to --sig_bkg).">?</span></label>
-              <input type="number" id="opt-sig_bkg" value="{{ run_defaults.sig_bkg }}" step="0.1" min="0">
+              <input type="number" id="opt-sig_bkg" value="{{ run_defaults.sig_bkg }}" step="0.1" min="0" style="width: 100%;">
             </div>
             <div class="opt">
               <label for="opt-sig_fwhm">SIGMA_FWHM <span class="help-tooltip" title="Sigma threshold for FWHM outlier clipping (corresponds to --sig_fwhm).">?</span></label>
-              <input type="number" id="opt-sig_fwhm" value="{{ run_defaults.sig_fwhm }}" step="0.1" min="0">
+              <input type="number" id="opt-sig_fwhm" value="{{ run_defaults.sig_fwhm }}" step="0.1" min="0" style="width: 100%;">
             </div>
             <div class="opt">
               <label for="opt-sig_dx">SIGMA_DX <span class="help-tooltip" title="Sigma threshold for drift X outlier clipping (corresponds to --sig_dx).">?</span></label>
-              <input type="number" id="opt-sig_dx" value="{{ run_defaults.sig_dx }}" step="0.1" min="0">
+              <input type="number" id="opt-sig_dx" value="{{ run_defaults.sig_dx }}" step="0.1" min="0" style="width: 100%;">
             </div>
             <div class="opt">
               <label for="opt-sig_dy">SIGMA_DY <span class="help-tooltip" title="Sigma threshold for drift Y outlier clipping (corresponds to --sig_dy).">?</span></label>
-              <input type="number" id="opt-sig_dy" value="{{ run_defaults.sig_dy }}" step="0.1" min="0">
+              <input type="number" id="opt-sig_dy" value="{{ run_defaults.sig_dy }}" step="0.1" min="0" style="width: 100%;">
             </div>
           </div>
         </details>
