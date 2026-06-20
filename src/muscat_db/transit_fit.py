@@ -314,6 +314,8 @@ def validate_fit_options(options: dict | None) -> str | None:
         return "planets is required (e.g. b or b,c)"
     if any(not _PLANET_TOKEN_RE.match(t) for t in tokens):
         return "planets must be single letters separated by commas (e.g. b or b,c)"
+    if len(tokens) != len(set(tokens)):
+        return "planet designations must be unique"
 
     # tc_pred is optional; validate only when provided.
     if str(o.get("tc_pred", "")).strip() and _to_float(o.get("tc_pred")) is None:

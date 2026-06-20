@@ -908,6 +908,26 @@
     };
   }
 
+  function addedPlanetValues(letter) {
+    var values = emptyPlanetValues(letter);
+    var existingCard = document.querySelector('.planet-card');
+    if (!existingCard) return values;
+
+    ['period', 'dur', 'ror', 'b'].forEach(function (param) {
+      var selector = existingCard.querySelector('.planet-' + param + '-prior');
+      values[param + '_prior'] = selector && selector.value === 'uniform' ? 'uniform' : 'gaussian';
+    });
+    if (values.ror_prior === 'gaussian') {
+      values.ror = '';
+      values.ror_unc = '';
+    }
+    if (values.b_prior === 'gaussian') {
+      values.b = '';
+      values.b_unc = '';
+    }
+    return values;
+  }
+
   function storedPlanetValues(stored, letter, firstLetter) {
     var vals = {
       source: stored['query_source_' + letter] || 'nasa',
@@ -1447,7 +1467,7 @@
   if (addPlanetBtn) {
     addPlanetBtn.addEventListener('click', function() {
       var nextLetter = getNextPlanetLetter();
-      addPlanetCard(nextLetter, emptyPlanetValues(nextLetter));
+      addPlanetCard(nextLetter, addedPlanetValues(nextLetter));
     });
   }
 
