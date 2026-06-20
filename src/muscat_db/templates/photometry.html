@@ -287,82 +287,109 @@
           </div>
         </div>
 
-        <div class="opt">
-          <label for="opt-target_id">Target ID <span class="help-tooltip" title="Target index in Gaia catalog (corresponds to --tID). Empty means auto-detect target at center.">?</span></label>
-          <input type="text" id="opt-target_id" placeholder="auto" value="{{ run_defaults.target_id }}">
-          <span class="hint">--tID; empty → auto</span>
-        </div>
-        <div class="opt">
-          <label for="opt-comparison_ids">Comparison IDs <span class="help-tooltip" title="Indexes of reference/comparison stars (corresponds to --cID). Comma-separated (e.g. 1,2,3). Empty means auto-detect.">?</span></label>
-          <input type="text" id="opt-comparison_ids" placeholder="auto" value="{{ run_defaults.comparison_ids }}">
-          <span class="hint">--cID; comma-separated, empty → auto</span>
-        </div>
-        <div class="opt">
-          <label for="opt-avoid_comparison_ids">Avoid Comparison IDs <span class="help-tooltip" title="Star indices to exclude as comparisons (corresponds to --avoid_cids). Requires --ref_band; indices refer to that band's catalog. Comma-separated (e.g. 5,7,12). Empty means none excluded.">?</span></label>
-          <input type="text" id="opt-avoid_comparison_ids" placeholder="none" value="{{ run_defaults.avoid_comparison_ids }}" disabled>
-          <span class="hint">--avoid_cids; requires --ref_band; comma-separated, empty → none</span>
-        </div>
-        <div class="opt">
-          <label for="opt-target_coord">Target coordinates <span class="help-tooltip" title="Override target coordinates 'RA Dec' (e.g. '12:34:56.7 -45:32:10.0' or '187.5 -45.5'). When set, bypasses MAST name resolution (useful if astroquery fails).">?</span></label>
-          <input type="text" id="opt-target_coord" placeholder="MAST resolution" value="{{ run_defaults.target_coord }}">
-          <span class="hint">--target_coord; empty → resolve name via MAST</span>
-        </div>
-        <div class="opt">
-          <label for="opt-ref_band">Reference band <span class="help-tooltip" title="Band used as alignment reference across other bands (corresponds to --ref_band). Empty means per-band self-reference.">?</span></label>
-          <select id="opt-ref_band">
-            <option value="">per-band self-reference</option>
-            {% for b in band_choices %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
-          </select>
-        </div>
-        <div class="opt">
-          <label for="opt-refid">Reference frame index <span class="help-tooltip" title="Frame index to use as alignment reference (corresponds to --refid). Empty means auto (middle/best frame).">?</span></label>
-          <input type="number" id="opt-refid" placeholder="auto" min="0">
-        </div>
-        <div class="opt">
-          <label for="opt-aper_unit">Aperture unit <span class="help-tooltip" title="Units for aperture radii (pixels or FWHM) (corresponds to --aper_unit).">?</span></label>
-          <select id="opt-aper_unit">
-             <option value="pix" selected>pix</option>
-            <option value="fwhm">fwhm</option>
-          </select>
-        </div>
-        <div class="opt">
-          <label for="opt-max_num_stars">Max # stars (PSF) <span class="help-tooltip" title="Max number of stars to detect for PSF modeling or alignment (corresponds to --max_num_stars).">?</span></label>
-          <input type="number" id="opt-max_num_stars" value="{{ run_defaults.max_num_stars }}" min="1">
-        </div>
-        <div class="opt">
-          <label for="opt-annulus">Sky annulus (RIN,ROUT) <span class="help-tooltip" title="Inner and outer radii of background sky subtraction annulus (corresponds to --annulus). Required if aperture radii is set.">?</span></label>
-          <input type="text" id="opt-annulus" placeholder="e.g. 25,40">
-          <span class="hint">required with aperture radii</span>
-        </div>
-        <div class="opt">
-          <label for="opt-aper_radii">Aperture radii (MIN,MAX,DR) <span class="help-tooltip" title="Radius grid search parameters as MIN,MAX,DR (corresponds to --aper_radii). Required if annulus is set. Empty means use Gaia heuristic.">?</span></label>
-          <input type="text" id="opt-aper_radii" placeholder="Gaia heuristic">
-          <span class="hint">blank → auto from Gaia</span>
-        </div>
-        <div class="opt">
-          <label for="opt-n_stars_align"># stars for alignment <span class="help-tooltip" title="Number of stars to use for alignment (corresponds to --n_stars_align). Empty means same as Max # stars.">?</span></label>
-          <input type="number" id="opt-n_stars_align" placeholder="= max # stars" min="1">
-        </div>
-        <div class="opt">
-          <label for="opt-min_star_separation">Min star separation (px) <span class="help-tooltip" title="Minimum pixel separation between stars to avoid blended sources (corresponds to --min_star_separation).">?</span></label>
-          <input type="number" id="opt-min_star_separation" value="{{ run_defaults.min_star_separation }}" step="0.5" min="0">
-        </div>
-        <div class="opt">
-          <label for="opt-cutout_size">Cutout size (px) <span class="help-tooltip" title="Postage stamp cutout size around each star (corresponds to --cutout_size).">?</span></label>
-          <input type="number" id="opt-cutout_size" value="{{ run_defaults.cutout_size }}" min="1">
-        </div>
-        <div class="opt">
-          <label for="opt-ccd_trim">CCD trim (Y,X) <span class="help-tooltip" title="Number of pixels to trim from the borders of the image (corresponds to --ccd_trim).">?</span></label>
-          <input type="text" id="opt-ccd_trim" value="{{ run_defaults.ccd_trim }}">
-        </div>
-        <div class="opt">
-          <label for="opt-bin_size_minutes">Plot bin size (min) <span class="help-tooltip" title="Time binning interval in minutes for plotting light curves (corresponds to --bin_size_minutes).">?</span></label>
-          <input type="number" id="opt-bin_size_minutes" value="{{ run_defaults.bin_size_minutes }}" step="0.5" min="0">
-        </div>
-        <div class="opt">
-          <label for="opt-test_run_frames"># of test-run frames <span class="help-tooltip" title="Number of frames to process during a test-run reduction (corresponds to --test_run_frames).">?</span></label>
-          <input type="number" id="opt-test_run_frames" value="{{ run_defaults.test_run_frames }}" min="1">
-        </div>
+        <!-- Target & Star Selection -->
+        <details class="opt-collapse">
+          <summary>Target & Star Selection <span class="help-tooltip" title="Settings to identify target coordinate and comparison stars.">?</span></summary>
+          <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem;">
+            <div class="opt">
+              <label for="opt-target_id">Target ID <span class="help-tooltip" title="Target index in Gaia catalog (corresponds to --tID). Empty means auto-detect target at center.">?</span></label>
+              <input type="text" id="opt-target_id" placeholder="auto" value="{{ run_defaults.target_id }}" style="width: 100%;">
+              <span class="hint">--tID; empty → auto</span>
+            </div>
+            <div class="opt">
+              <label for="opt-target_coord">Target coordinates <span class="help-tooltip" title="Override target coordinates 'RA Dec' (e.g. '12:34:56.7 -45:32:10.0' or '187.5 -45.5'). When set, bypasses MAST name resolution (useful if astroquery fails).">?</span></label>
+              <input type="text" id="opt-target_coord" placeholder="MAST resolution" value="{{ run_defaults.target_coord }}" style="width: 100%;">
+              <span class="hint">--target_coord; empty → resolve name via MAST</span>
+            </div>
+            <div class="opt">
+              <label for="opt-comparison_ids">Comparison IDs <span class="help-tooltip" title="Indexes of reference/comparison stars (corresponds to --cID). Comma-separated (e.g. 1,2,3). Empty means auto-detect.">?</span></label>
+              <input type="text" id="opt-comparison_ids" placeholder="auto" value="{{ run_defaults.comparison_ids }}" style="width: 100%;">
+              <span class="hint">--cID; comma-separated, empty → auto</span>
+            </div>
+            <div class="opt">
+              <label for="opt-avoid_comparison_ids">Avoid Comparison IDs <span class="help-tooltip" title="Star indices to exclude as comparisons (corresponds to --avoid_cids). Requires --ref_band; indices refer to that band's catalog. Comma-separated (e.g. 5,7,12). Empty means none excluded.">?</span></label>
+              <input type="text" id="opt-avoid_comparison_ids" placeholder="none" value="{{ run_defaults.avoid_comparison_ids }}" disabled style="width: 100%;">
+              <span class="hint">--avoid_cids; requires --ref_band; comma-separated, empty → none</span>
+            </div>
+          </div>
+        </details>
+
+        <!-- Reference & Alignment -->
+        <details class="opt-collapse">
+          <summary>Reference & Alignment <span class="help-tooltip" title="Settings to establish the reference frame and coordinate source alignment.">?</span></summary>
+          <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem;">
+            <div class="opt">
+              <label for="opt-ref_band">Reference band <span class="help-tooltip" title="Band used as alignment reference across other bands (corresponds to --ref_band). Empty means per-band self-reference.">?</span></label>
+              <select id="opt-ref_band" style="width: 100%;">
+                <option value="">per-band self-reference</option>
+                {% for b in band_choices %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="opt">
+              <label for="opt-refid">Reference frame index <span class="help-tooltip" title="Frame index to use as alignment reference (corresponds to --refid). Empty means auto (middle/best frame).">?</span></label>
+              <input type="number" id="opt-refid" placeholder="auto" min="0" style="width: 100%;">
+            </div>
+            <div class="opt">
+              <label for="opt-max_num_stars">Max # stars (PSF) <span class="help-tooltip" title="Max number of stars to detect for PSF modeling or alignment (corresponds to --max_num_stars).">?</span></label>
+              <input type="number" id="opt-max_num_stars" value="{{ run_defaults.max_num_stars }}" min="1" style="width: 100%;">
+            </div>
+            <div class="opt">
+              <label for="opt-n_stars_align"># stars for alignment <span class="help-tooltip" title="Number of stars to use for alignment (corresponds to --n_stars_align). Empty means same as Max # stars.">?</span></label>
+              <input type="number" id="opt-n_stars_align" placeholder="= max # stars" min="1" style="width: 100%;">
+            </div>
+            <div class="opt">
+              <label for="opt-min_star_separation">Min star separation (px) <span class="help-tooltip" title="Minimum pixel separation between stars to avoid blended sources (corresponds to --min_star_separation).">?</span></label>
+              <input type="number" id="opt-min_star_separation" value="{{ run_defaults.min_star_separation }}" step="0.5" min="0" style="width: 100%;">
+            </div>
+          </div>
+        </details>
+
+        <!-- Aperture & Geometry -->
+        <details class="opt-collapse">
+          <summary>Aperture & Geometry <span class="help-tooltip" title="Settings defining photometry aperture radii, sky background annulus, and trimming.">?</span></summary>
+          <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem;">
+            <div class="opt">
+              <label for="opt-aper_unit">Aperture unit <span class="help-tooltip" title="Units for aperture radii (pixels or FWHM) (corresponds to --aper_unit).">?</span></label>
+              <select id="opt-aper_unit" style="width: 100%;">
+                <option value="pix" selected>pix</option>
+                <option value="fwhm">fwhm</option>
+              </select>
+            </div>
+            <div class="opt">
+              <label for="opt-aper_radii">Aperture radii (MIN,MAX,DR) <span class="help-tooltip" title="Radius grid search parameters as MIN,MAX,DR (corresponds to --aper_radii). Required if annulus is set. Empty means use Gaia heuristic.">?</span></label>
+              <input type="text" id="opt-aper_radii" placeholder="Gaia heuristic" style="width: 100%;">
+              <span class="hint">blank → auto from Gaia</span>
+            </div>
+            <div class="opt">
+              <label for="opt-annulus">Sky annulus (RIN,ROUT) <span class="help-tooltip" title="Inner and outer radii of background sky subtraction annulus (corresponds to --annulus). Required if aperture radii is set.">?</span></label>
+              <input type="text" id="opt-annulus" placeholder="e.g. 25,40" style="width: 100%;">
+              <span class="hint">required with aperture radii</span>
+            </div>
+            <div class="opt">
+              <label for="opt-cutout_size">Cutout size (px) <span class="help-tooltip" title="Postage stamp cutout size around each star (corresponds to --cutout_size).">?</span></label>
+              <input type="number" id="opt-cutout_size" value="{{ run_defaults.cutout_size }}" min="1" style="width: 100%;">
+            </div>
+            <div class="opt">
+              <label for="opt-ccd_trim">CCD trim (Y,X) <span class="help-tooltip" title="Number of pixels to trim from the borders of the image (corresponds to --ccd_trim).">?</span></label>
+              <input type="text" id="opt-ccd_trim" value="{{ run_defaults.ccd_trim }}" style="width: 100%;">
+            </div>
+          </div>
+        </details>
+
+        <!-- Reduction & Binning -->
+        <details class="opt-collapse">
+          <summary>Reduction & Binning <span class="help-tooltip" title="Reduction limits and plot plotting configuration.">?</span></summary>
+          <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem;">
+            <div class="opt">
+              <label for="opt-bin_size_minutes">Plot bin size (min) <span class="help-tooltip" title="Time binning interval in minutes for plotting light curves (corresponds to --bin_size_minutes).">?</span></label>
+              <input type="number" id="opt-bin_size_minutes" value="{{ run_defaults.bin_size_minutes }}" step="0.5" min="0" style="width: 100%;">
+            </div>
+            <div class="opt">
+              <label for="opt-test_run_frames"># of test-run frames <span class="help-tooltip" title="Number of frames to process during a test-run reduction (corresponds to --test_run_frames).">?</span></label>
+              <input type="number" id="opt-test_run_frames" value="{{ run_defaults.test_run_frames }}" min="1" style="width: 100%;">
+            </div>
+          </div>
+        </details>
         <details class="opt-collapse">
           <summary>Sigma Clipping <span class="help-tooltip" title="Sigma threshold parameters for sky background, FWHM, and X/Y target drift outlier clipping.">?</span></summary>
           <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem;">
