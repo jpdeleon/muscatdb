@@ -626,7 +626,7 @@
   // Convert an hours string to a days string, preserving blanks/invalid as-is.
   function hoursToDays(part) {
     if (part === '') return '';
-    var n = parseFloat(part);
+    var n = Number(part);
     return isNaN(n) ? part : (n / 24);
   }
 
