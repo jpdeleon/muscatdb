@@ -449,6 +449,10 @@
             td.setAttribute('data-elapsed', f.elapsed);
             td.textContent = formatElapsed(f.elapsed);
           }
+          var dateRunTd = row.querySelector('td:nth-child(5)');
+          if (dateRunTd && f.started_at_str) {
+            dateRunTd.textContent = f.started_at_str;
+          }
           if (f.error_desc) updateErrorDesc(row, f.error_desc);
 
           // Get inst/date/target from log-btn onclick
@@ -462,6 +466,19 @@
           type = type === 'transit_fit' ? 'transit_fit' : 'photometry';
           replaceActions(row, f.state, key, type, parts[1] || '', parts[2] || '', parts[3] || '');
           applyFilters();
+        }
+
+        // Update running jobs started_at_str in-place
+        if (data.running) {
+          data.running.forEach(function(rj) {
+            var row = rowByKey(rj.key);
+            if (row) {
+              var dateRunTd = row.querySelector('td:nth-child(5)');
+              if (dateRunTd && rj.started_at_str) {
+                dateRunTd.textContent = rj.started_at_str;
+              }
+            }
+          });
         }
 
         // Ensure pulse class on running badges

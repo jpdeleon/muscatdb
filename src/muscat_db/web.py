@@ -724,10 +724,16 @@ def jobs_status():
                 "elapsed": j["elapsed"],
                 "error_desc": j.get("error_desc", "") or "",
                 "returncode": j.get("returncode"),
+                "started_at_str": _datetime_from_timestamp(int(j["started_at"])) if j.get("started_at") else "—",
             }
     _last_running = current_running
     running = [
-        {"key": j["key"], "state": j["state"], "elapsed": j["elapsed"]}
+        {
+            "key": j["key"],
+            "state": j["state"],
+            "elapsed": j["elapsed"],
+            "started_at_str": _datetime_from_timestamp(int(j["started_at"])) if j.get("started_at") else "—",
+        }
         for j in all_jobs if j["state"] in ("running", "cancelling")
     ]
     counts = {"running": 0, "done": 0, "error": 0, "cancelled": 0, "pending": 0}
