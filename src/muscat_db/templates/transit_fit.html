@@ -615,7 +615,25 @@
   // first = mean (Gaussian) or low (Uniform); second = unc or high.
   function splitPair(str) {
     var parts = String(str === undefined || str === null ? '' : str).split(',');
-    return [(parts[0] || '').trim(), (parts.length > 1 ? parts[1] : '').trim()];
+    return [(parts[0] || '').trim(), parts.slice(1).join(',').trim()];
+  }
+
+  function resetAllPlanetPriorsToGaussian(archiveCard) {
+    document.querySelectorAll('.planet-card').forEach(function (card) {
+      ['period', 'dur', 'ror', 'b'].forEach(function (param) {
+        var selEl = card.querySelector('.planet-' + param + '-prior');
+        if (!selEl) return;
+        if (card !== archiveCard && selEl.value === 'uniform') {
+          selEl.value = 'gaussian';
+          selEl.dispatchEvent(new Event('change'));
+          return;
+        }
+        selEl.value = 'gaussian';
+        selEl.dataset.mode = 'gaussian';
+        var fieldEl = card.querySelector('.planet-' + param);
+        if (fieldEl) fieldEl.placeholder = 'mean,unc';
+      });
+    });
   }
   function combinePriorPair(first, second) {
     var a = first === undefined || first === null ? '' : String(first).trim();
@@ -832,7 +850,7 @@
         t0El.classList.remove('is-invalid');
       } else {
         var t0p = splitPair(t0El.value);
-        var t0m = parseFloat(t0p[0]), t0u = parseFloat(t0p[1]);
+        var t0m = Number(t0p[0]), t0u = Number(t0p[1]);
         var t0MeanOk = t0p[0] === '' || (!isNaN(t0m) && t0m > 0);
         var t0UncOk = t0p[1] === '' || (!isNaN(t0u) && t0u >= 0);
         setValid(t0El, t0MeanOk && t0UncOk);
@@ -855,7 +873,7 @@
 
       var parts = splitPair(fieldEl.value);
       var aStr = parts[0], bStr = parts[1];
-      var a = parseFloat(aStr), b = parseFloat(bStr);
+      var a = Number(aStr), b = Number(bStr);
       var aNum = aStr !== '' && !isNaN(a);
       var bNum = bStr !== '' && !isNaN(b);
       var ok;
@@ -1086,16 +1104,6 @@
       if (fieldEl) fieldEl.placeholder = (selEl && selEl.value === 'uniform') ? 'low,high' : 'mean,unc';
     }
 
-    // Reset all prior selectors to Gaussian (used after an archive query, which
-    // returns mean,unc values).
-    function resetPriorsToGaussian() {
-      PRIOR_SPECS.forEach(function (spec) {
-        var selEl = card.querySelector(spec.sel);
-        if (selEl) { selEl.value = 'gaussian'; selEl.dataset.mode = 'gaussian'; }
-        setPriorPlaceholders(spec);
-      });
-    }
-
     letterInput.addEventListener('input', function() {
       var newLetter = letterInput.value.trim().toLowerCase();
       card.setAttribute('data-planet', newLetter);
@@ -1137,7 +1145,7 @@
             if (as === '' && bs === '') return '';
             return bs === '' ? as : as + ',' + bs;
           }
-          resetPriorsToGaussian();
+          resetAllPlanetPriorsToGaussian(card);
           card.querySelector('.planet-period').value = joinPair(params.period, params.period_unc, SIG_FIGS.period);
           card.querySelector('.planet-t0').value = joinDp(params.t0, params.t0_unc, T0_DECIMALS);
           card.querySelector('.planet-dur').value = joinPair(params.dur, params.dur_unc, SIG_FIGS.dur);
@@ -1204,15 +1212,16 @@
         var prev = selEl.dataset.mode || 'gaussian';
         if (next !== prev) {
           var parts = splitPair(fieldEl.value);
-          var a = parseFloat(parts[0]), b = parseFloat(parts[1]);
+          var a = Number(parts[0]), b = Number(parts[1]);
+          var hasPair = parts[0] !== '' && parts[1] !== '' && isFinite(a) && isFinite(b);
           if (next === 'uniform') {
             // Auto-fill reasonable [low, high] limits, or span mean ± sigmaSpan*unc.
             if (spec.limits) {
               fieldEl.value = fmtSig(spec.limits[0], spec.sf) + ',' + fmtSig(spec.limits[1], spec.sf);
-            } else if (spec.sigmaSpan && !isNaN(a) && !isNaN(b)) {
+            } else if (spec.sigmaSpan && hasPair) {
               fieldEl.value = fmtSig(a - spec.sigmaSpan * b, spec.sf) + ',' + fmtSig(a + spec.sigmaSpan * b, spec.sf);
             }
-          } else if (!isNaN(a) && !isNaN(b)) {
+          } else if (hasPair) {
             // [low, high] -> mean,unc. Recover unc from the span when sigma-based.
             var halfWidth = (b - a) / 2;
             fieldEl.value = fmtSig((a + b) / 2, spec.sf) + ',' + fmtSig(spec.sigmaSpan ? halfWidth / spec.sigmaSpan : halfWidth, spec.sf);
@@ -1469,8 +1478,9 @@
         var next = prior.value === 'uniform' ? 'uniform' : 'gaussian';
         var prev = prior.dataset.mode || 'gaussian';
         var pair = splitPair(field.value);
-        var a = parseFloat(pair[0]), b = parseFloat(pair[1]);
-        if (next !== prev && !isNaN(a) && !isNaN(b)) {
+        var a = Number(pair[0]), b = Number(pair[1]);
+        var hasPair = pair[0] !== '' && pair[1] !== '' && isFinite(a) && isFinite(b);
+        if (next !== prev && hasPair) {
           if (next === 'uniform') {
             field.value = fmtSig(a - 3 * b, 4) + ',' + fmtSig(a + 3 * b, 4);
           } else {
@@ -1868,14 +1878,7 @@
               if (as === '' && bs === '') return '';
               return bs === '' ? as : as + ',' + bs;
             }
-            ['.planet-period-prior', '.planet-dur-prior', '.planet-ror-prior', '.planet-b-prior'].forEach(function (sel) {
-              var selEl = firstCard.querySelector(sel);
-              if (selEl) { selEl.value = 'gaussian'; selEl.dataset.mode = 'gaussian'; }
-            });
-            ['.planet-period', '.planet-dur', '.planet-ror', '.planet-b'].forEach(function (sel) {
-              var el = firstCard.querySelector(sel);
-              if (el) el.placeholder = 'mean,unc';
-            });
+            resetAllPlanetPriorsToGaussian(firstCard);
             firstCard.querySelector('.planet-period').value = joinPair(params.period, params.period_unc, SIG_FIGS.period);
             firstCard.querySelector('.planet-t0').value = joinDp(params.t0, params.t0_unc, T0_DECIMALS);
             firstCard.querySelector('.planet-dur').value = joinPair(params.dur, params.dur_unc, SIG_FIGS.dur);
