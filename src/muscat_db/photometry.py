@@ -707,6 +707,12 @@ _JOBS: dict[str, Job] = {}
 _LOCK = threading.Lock()
 _MAX_FULL_JOBS = 1
 
+# Watchdog limits for hung reductions. A healthy run writes to its log
+# continuously, so a long silence means it has stalled; the absolute cap is a
+# backstop. Both are env-tunable. Observed legitimate full runs finish in <35 min.
+_STALL_LIMIT_S = int(os.environ.get("MUSCAT_PHOT_STALL_LIMIT_S", 25 * 60))
+_MAX_RUNTIME_S = int(os.environ.get("MUSCAT_PHOT_MAX_RUNTIME_S", 3 * 60 * 60))
+
 
 def _count_running_full() -> int:
     """Number of currently-running full (non-test) photometry jobs."""
@@ -869,6 +875,35 @@ def _terminal_job_state(
     return "done"
 
 
+def _pending_status(inst: str, date: str, target: str) -> dict | None:
+    """Return a queued-job status dict if a pending DB entry exists, else None.
+
+    A full run launched while the single full-job slot is occupied is recorded
+    in the DB as ``pending`` but not added to ``_JOBS``; surface that here so the
+    photometry page can show a "queued" state instead of silently resetting.
+    """
+    from muscat_db.database import get_persisted_jobs
+
+    db_key = f"photometry:{job_key(inst, date, target)}"
+    try:
+        for entry in get_persisted_jobs():
+            if (
+                entry["key"] == db_key
+                and entry["type"] == "photometry"
+                and entry["state"] == "pending"
+            ):
+                started = entry.get("started_at") or time.time()
+                return {
+                    "state": "pending",
+                    "returncode": None,
+                    "log": "",
+                    "elapsed": round(time.time() - started),
+                }
+    except Exception:
+        pass
+    return None
+
+
 def job_status(inst: str, date: str, target: str) -> dict:
     """Poll a job and return its state plus its target-specific log tail.
 
@@ -879,6 +914,9 @@ def job_status(inst: str, date: str, target: str) -> dict:
     with _LOCK:
         job = _JOBS.get(key)
         if job is None:
+            pending = _pending_status(inst, date, target)
+            if pending is not None:
+                return pending
             return {"state": "none", "log": "", "returncode": None, "elapsed": 0}
         rc = job.proc.poll()
         if rc is None:
@@ -950,6 +988,32 @@ def _kill_after(proc: subprocess.Popen, grace: float = 6.0) -> None:
             proc.kill()
         except OSError:
             pass
+
+
+def _terminate_pg(proc: subprocess.Popen) -> None:
+    """SIGTERM a job's whole process group, escalating to SIGKILL in the background."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+    threading.Thread(target=_kill_after, args=(proc,), daemon=True).start()
+
+
+def _watchdog_breach(job: "Job", now: float) -> str | None:
+    """Return a kill reason if a running job looks hung, else None."""
+    if now - job.started_at > _MAX_RUNTIME_S:
+        return f"exceeded max runtime ({_MAX_RUNTIME_S // 3600}h)"
+    try:
+        mtime = job.log_path.stat().st_mtime
+    except OSError:
+        mtime = job.started_at
+    stall = now - mtime
+    if stall > _STALL_LIMIT_S:
+        return f"no log output for {int(stall // 60)} min"
+    return None
 
 
 def cancel_run(inst: str, date: str, target: str) -> dict:
@@ -1027,6 +1091,30 @@ def _get_error_desc(log_path: Path) -> str:
 def sync_jobs() -> None:
     from muscat_db.database import save_job, get_persisted_jobs
     with _LOCK:
+        # Watchdog: kill runs that have hung (no log output, or past the absolute
+        # cap) and record them as errors. This frees the single full-job slot so the
+        # queue-drain below can promote a pending job in the same pass.
+        now = time.time()
+        for key in list(_JOBS.keys()):
+            job = _JOBS[key]
+            if job.cancelled or job.state != "running" or job.proc.poll() is not None:
+                continue
+            reason = _watchdog_breach(job, now)
+            if reason is None:
+                continue
+            _terminate_pg(job.proc)
+            try:
+                job.logf.close()
+            except OSError:
+                pass
+            save_job(
+                type_="photometry", inst=job.inst, date=job.date, target=job.target,
+                state="error", returncode=-1,
+                elapsed=round(now - job.started_at), started_at=job.started_at,
+                error_desc=f"watchdog: {reason}", run_type=job.run_type,
+            )
+            _JOBS.pop(key, None)
+
         db_jobs = get_persisted_jobs()
         for entry in db_jobs:
             if entry["type"] != "photometry" or entry["state"] != "done":

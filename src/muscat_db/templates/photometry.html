@@ -858,6 +858,12 @@
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent += '\n\n■ cancelled';
         try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+      } else if (s.state === 'pending') {
+        setRunning(true);
+        if (!s.log) {
+          logEl.style.display = 'block';
+          logEl.textContent = '⏳ Queued — waiting for the running full reduction to finish…';
+        }
       } else if (s.state === 'none') {
         stopPolling(); setRunning(false); clearJob();
       }
@@ -865,6 +871,15 @@
   }
 
   function launch(testRun) {
+    saveJob();
+    // Unhide this job on the Jobs page
+    try {
+      var h = JSON.parse(localStorage.getItem('jobs:hidden') || '[]');
+      var key = inst + '/' + date + '/' + target.replace(/ /g, '');
+      var jk = 'photometry:' + key;
+      var hi = h.indexOf(jk); if (hi !== -1) { h.splice(hi, 1); localStorage.setItem('jobs:hidden', JSON.stringify(h)); }
+    } catch (_) {}
+
     setRunning(true);
     logEl.style.display = 'block';
     logEl.textContent = 'Launching ' + (testRun ? 'test' : 'full') + ' reduction…';
@@ -874,20 +889,18 @@
       body: JSON.stringify({ inst: inst, date: date, target: target, test_run: testRun, options: collectOptions() })
     }).then(function (r) { return r.json(); }).then(function (res) {
       if (!res.ok) {
+        clearJob();
         setRunning(false);
         logEl.textContent = 'Error: ' + (res.error || 'failed to start');
         return;
       }
-      saveJob();
-      // Unhide this job on the Jobs page
-      try {
-        var h = JSON.parse(localStorage.getItem('jobs:hidden') || '[]');
-        var jk = 'photometry:' + res.key;
-        var hi = h.indexOf(jk); if (hi !== -1) { h.splice(hi, 1); localStorage.setItem('jobs:hidden', JSON.stringify(h)); }
-      } catch (_) {}
+      if (res.queued) {
+        logEl.textContent = '⏳ Queued — waiting for the running full reduction to finish…';
+      }
       if (!polling) polling = setInterval(poll, 2000);
       poll();
     }).catch(function (err) {
+      clearJob();
       setRunning(false);
       logEl.textContent = 'Error: ' + err.message;
     });

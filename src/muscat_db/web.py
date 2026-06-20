@@ -820,6 +820,9 @@ def photometry_command(payload: dict = Body(...)):
 
 @app.get("/photometry/status")
 def photometry_status(inst: str, date: str, target: str):
+    # Drain the queue so a pending full job is promoted once the slot frees,
+    # even when only the photometry page (not the Jobs page) is polling.
+    phot.sync_jobs()
     return JSONResponse(phot.job_status(inst, date, target))
 
 
