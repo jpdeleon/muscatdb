@@ -347,6 +347,27 @@
           <label for="opt-test_run_frames"># of test-run frames <span class="help-tooltip" title="Number of frames to process during a test-run reduction (corresponds to --test_run_frames).">?</span></label>
           <input type="number" id="opt-test_run_frames" value="{{ run_defaults.test_run_frames }}" min="1">
         </div>
+        <details class="adv" style="grid-column: 1 / -1; margin: 0.5rem 0; padding: 0.5rem 1rem;">
+          <summary style="font-weight: 600;">Sigma Clipping</summary>
+          <div class="opt-grid" style="margin-top: 0.5rem; border: none; padding: 0; background: transparent;">
+            <div class="opt">
+              <label for="opt-sig_bkg">SIGMA_BKG <span class="help-tooltip" title="Sigma threshold for sky background outlier clipping (corresponds to --sig_bkg).">?</span></label>
+              <input type="number" id="opt-sig_bkg" value="{{ run_defaults.sig_bkg }}" step="0.1" min="0">
+            </div>
+            <div class="opt">
+              <label for="opt-sig_fwhm">SIGMA_FWHM <span class="help-tooltip" title="Sigma threshold for FWHM outlier clipping (corresponds to --sig_fwhm).">?</span></label>
+              <input type="number" id="opt-sig_fwhm" value="{{ run_defaults.sig_fwhm }}" step="0.1" min="0">
+            </div>
+            <div class="opt">
+              <label for="opt-sig_dx">SIGMA_DX <span class="help-tooltip" title="Sigma threshold for drift X outlier clipping (corresponds to --sig_dx).">?</span></label>
+              <input type="number" id="opt-sig_dx" value="{{ run_defaults.sig_dx }}" step="0.1" min="0">
+            </div>
+            <div class="opt">
+              <label for="opt-sig_dy">SIGMA_DY <span class="help-tooltip" title="Sigma threshold for drift Y outlier clipping (corresponds to --sig_dy).">?</span></label>
+              <input type="number" id="opt-sig_dy" value="{{ run_defaults.sig_dy }}" step="0.1" min="0">
+            </div>
+          </div>
+        </details>
       </div>
       <div class="opt-check-row">
         <label class="opt-check-item"><input type="checkbox" id="opt-make_gif" checked> Make GIF <span class="help-tooltip" title="Generate an animated GIF showing target/alignment field over time (corresponds to --gif).">?</span></label>
@@ -594,7 +615,11 @@
       cutout_size: val('opt-cutout_size'),
       ccd_trim: val('opt-ccd_trim'),
       bin_size_minutes: val('opt-bin_size_minutes'),
-      overwrite: chk('opt-overwrite')
+      overwrite: chk('opt-overwrite'),
+      sig_bkg: val('opt-sig_bkg'),
+      sig_fwhm: val('opt-sig_fwhm'),
+      sig_dx: val('opt-sig_dx'),
+      sig_dy: val('opt-sig_dy')
     };
   }
   function saveOptions() {
@@ -609,7 +634,7 @@
     });
     ['ref_band','refid','aper_unit','aper_radii','annulus',
      'target_id','comparison_ids','avoid_comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
-     'n_stars_align','cutout_size','ccd_trim','bin_size_minutes'].forEach(function (id) {
+     'n_stars_align','cutout_size','ccd_trim','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
     });
@@ -629,7 +654,7 @@
       });
       ['ref_band','refid','aper_unit','aper_radii','annulus',
        'target_id','comparison_ids','avoid_comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
-       'n_stars_align','cutout_size','ccd_trim','bin_size_minutes'].forEach(function (id) {
+       'n_stars_align','cutout_size','ccd_trim','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy'].forEach(function (id) {
         var el = document.getElementById('opt-'+id);
         if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';
       });
