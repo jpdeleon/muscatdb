@@ -80,6 +80,7 @@ RUN_DEFAULTS: dict = {
     "sig_fwhm": 5.0,
     "sig_dx": 5.0,
     "sig_dy": 5.0,
+    "min_star_area": 10,
 }
 
 # Narrow-band tokens, kept after the broadband four in the canonical order.
@@ -538,7 +539,7 @@ def normalize_run_options(raw: dict | None) -> dict:
             val = str(raw.get(key, "")).strip()
             o[key] = "" if val == "" else (_to_int(val) if _to_int(val) is not None else "")
 
-    for key in ("test_run_frames", "max_num_stars", "cutout_size", "gif_stride"):
+    for key in ("test_run_frames", "max_num_stars", "cutout_size", "gif_stride", "min_star_area"):
         if str(raw.get(key, "")).strip() != "":
             iv = _to_int(raw[key])
             if iv is not None:
@@ -643,6 +644,7 @@ def build_command(
         ("--sig_fwhm", "sig_fwhm"),
         ("--sig_dx", "sig_dx"),
         ("--sig_dy", "sig_dy"),
+        ("--min_star_area", "min_star_area"),
     ):
         val = o.get(key)
         if val in (None, ""):
