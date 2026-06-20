@@ -123,6 +123,10 @@
     border-color: var(--red) !important;
     box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.25) !important;
   }
+  .field-error {
+    color: var(--red); font-size: 0.75rem; margin-top: 0.15rem; line-height: 1.2; display: none;
+  }
+  .field-error.visible { display: block; }
 </style>
 
 <h1>Transit Fit</h1>
@@ -833,6 +837,13 @@
     return 'c';
   }
 
+  function setPlanetCardError(optDiv, msg) {
+    var err = optDiv.querySelector('.field-error');
+    if (!err) return;
+    if (msg) { err.textContent = msg; err.classList.add('visible'); }
+    else { err.classList.remove('visible'); err.textContent = ''; }
+  }
+
   function validatePlanetCard(card) {
     function setValid(el, ok) {
       if (!el) return;
@@ -842,15 +853,17 @@
 
     // tc_pred is always centre ± width (two fields, no prior selector).
     [
-      { selector: '.planet-tc_pred', min: 0, inclusive: false },
-      { selector: '.planet-tc_pred-unc', min: 0, inclusive: true }
+      { selector: '.planet-tc_pred', min: 0, inclusive: false, msg: 'Must be > 0' },
+      { selector: '.planet-tc_pred-unc', min: 0, inclusive: true, msg: 'Must be ≥ 0' }
     ].forEach(function (chk) {
       var el = card.querySelector(chk.selector);
       if (!el) return;
       var v = el.value.trim();
-      if (v === '') { el.classList.remove('is-invalid'); return; }
+      if (v === '') { el.classList.remove('is-invalid'); setPlanetCardError(el.closest('.opt'), ''); return; }
       var n = parseFloat(v);
-      setValid(el, !isNaN(n) && (chk.inclusive ? n >= chk.min : n > chk.min));
+      var ok = !isNaN(n) && (chk.inclusive ? n >= chk.min : n > chk.min);
+      setValid(el, ok);
+      setPlanetCardError(el.closest('.opt'), ok ? '' : chk.msg);
     });
 
     // t0 is a mean,unc epoch field: mean > 0, unc >= 0 (unc may be blank).
@@ -858,12 +871,14 @@
     if (t0El) {
       if (t0El.value.trim() === '') {
         t0El.classList.remove('is-invalid');
+        setPlanetCardError(t0El.closest('.opt'), '');
       } else {
         var t0p = splitPair(t0El.value);
         var t0m = Number(t0p[0]), t0u = Number(t0p[1]);
         var t0MeanOk = t0p[0] === '' || (!isNaN(t0m) && t0m > 0);
         var t0UncOk = t0p[1] === '' || (!isNaN(t0u) && t0u >= 0);
         setValid(t0El, t0MeanOk && t0UncOk);
+        setPlanetCardError(t0El.closest('.opt'), (t0MeanOk && t0UncOk) ? '' : 'Invalid: mean>0, unc≥0');
       }
     }
 
@@ -871,15 +886,15 @@
     // (mean > 0 or >= 0; unc >= 0). Uniform -> low,high with low < high (ror in
     // [0,1], b low >= 0). The second value may be blank (uses a pipeline default).
     [
-      { field: '.planet-period' },
-      { field: '.planet-dur' },
-      { field: '.planet-ror', range01: true },
-      { field: '.planet-b', valNonNeg: true }
+      { field: '.planet-period', label: 'period' },
+      { field: '.planet-dur', label: 'duration' },
+      { field: '.planet-ror', label: 'Rp/R*', range01: true },
+      { field: '.planet-b', label: 'b', valNonNeg: true }
     ].forEach(function (pp) {
       var fieldEl = card.querySelector(pp.field);
       var selEl = card.querySelector(pp.field + '-prior');
       if (!fieldEl) return;
-      if (fieldEl.value.trim() === '') { fieldEl.classList.remove('is-invalid'); return; }
+      if (fieldEl.value.trim() === '') { fieldEl.classList.remove('is-invalid'); setPlanetCardError(fieldEl.closest('.opt'), ''); return; }
 
       var parts = splitPair(fieldEl.value);
       var aStr = parts[0], bStr = parts[1];
@@ -888,17 +903,21 @@
       var bNum = bStr !== '' && !isNaN(b);
       var ok;
 
+      var hint = '';
       if (selEl && selEl.value === 'uniform') {
         var ordered = !(aNum && bNum) || a < b;
         var lowOk = aStr === '' || (aNum && ((pp.range01 || pp.valNonNeg) ? a >= 0 : true));
         var highOk = bStr === '' || (bNum && (pp.range01 ? b <= 1 : true));
         ok = lowOk && highOk && ordered;
+        if (!ok) hint = 'Low<high' + (pp.range01 ? ', 0≤low<high≤1' : '') + (pp.valNonNeg && !pp.range01 ? ', low≥0' : '');
       } else {
         var meanOk = aStr === '' || (aNum && (pp.valNonNeg ? a >= 0 : a > 0));
         var uncOk = bStr === '' || (bNum && b >= 0);
         ok = meanOk && uncOk;
+        if (!ok) hint = (pp.valNonNeg ? 'Mean≥0' : 'Mean>0') + ', unc≥0';
       }
       setValid(fieldEl, ok);
+      setPlanetCardError(fieldEl.closest('.opt'), ok ? '' : 'Invalid ' + pp.label + ': ' + hint);
     });
   }
 
@@ -1111,6 +1130,12 @@
 
     card.innerHTML = headerHtml + bodyHtml;
     container.appendChild(card);
+
+    card.querySelectorAll('.opt').forEach(function (optDiv) {
+      var err = document.createElement('span');
+      err.className = 'field-error';
+      optDiv.appendChild(err);
+    });
 
     var letterInput = card.querySelector('.planet-letter-input');
     var queryTargetInput = card.querySelector('.planet-query-target');
@@ -1556,6 +1581,117 @@
   setupGpPriorSelectors();
   updateDependentFields();
 
+  // ----- field validation -----
+  var FIELD_RULES = [
+    { id: 'opt-teff',        type: 'number', min: 0, exclusiveMin: true, optional: true },
+    { id: 'opt-teff_unc',    type: 'number', min: 0, optional: true },
+    { id: 'opt-logg',        type: 'number', optional: true },
+    { id: 'opt-logg_unc',    type: 'number', min: 0, optional: true },
+    { id: 'opt-feh',         type: 'number', optional: true },
+    { id: 'opt-feh_unc',     type: 'number', min: 0, optional: true },
+    { id: 'opt-tune',        type: 'integer', min: 1 },
+    { id: 'opt-draws',       type: 'integer', min: 1 },
+    { id: 'opt-chains',      type: 'integer', min: 1 },
+    { id: 'opt-cores',       type: 'integer', min: 1 },
+    { id: 'opt-spline_knots', type: 'integer', min: 1, dependsOn: 'opt-spline' },
+    { id: 'opt-clip_nsig',    type: 'number', min: 0, exclusiveMin: true, dependsOn: 'opt-clip' },
+    { id: 'opt-chunk_thresh', type: 'number', min: 0, dependsOn: 'opt-chunk_offset' },
+    { id: 'opt-trim_beg',     type: 'integer', min: 0, optional: true },
+    { id: 'opt-trim_end',     type: 'integer', min: 0, optional: true },
+    { id: 'opt-gp_log_amp',   type: 'pair', dependsOn: 'opt-use_gp' },
+    { id: 'opt-gp_log_scale', type: 'pair', dependsOn: 'opt-use_gp' },
+  ];
+
+  function validateField(id, rules) {
+    var el = document.getElementById(id);
+    if (!el) return true;
+
+    var container = el.closest('.opt') || el.parentNode;
+    var err = container.querySelector('.field-error');
+    if (!err) {
+      err = document.createElement('span');
+      err.className = 'field-error';
+      container.appendChild(err);
+    }
+
+    var val = el.value.trim();
+
+    if (rules.dependsOn) {
+      var ctrl = document.getElementById(rules.dependsOn);
+      if (ctrl && !ctrl.checked) {
+        err.classList.remove('visible'); err.textContent = '';
+        return true;
+      }
+    }
+
+    if (val === '') {
+      if (rules.optional) { err.classList.remove('visible'); err.textContent = ''; return true; }
+      err.textContent = 'Required'; err.classList.add('visible'); return false;
+    }
+
+    if (rules.type === 'pair') {
+      var parts = val.split(',').map(function (s) { return s.trim(); });
+      if (parts.length < 2 || parts[0] === '' || parts[1] === '') {
+        err.textContent = 'Enter mean,unc (or low,high)'; err.classList.add('visible'); return false;
+      }
+      var a = Number(parts[0]), b = Number(parts[1]);
+      if (isNaN(a) || !isFinite(a) || isNaN(b) || !isFinite(b)) {
+        err.textContent = 'Must be two numbers'; err.classList.add('visible'); return false;
+      }
+      err.classList.remove('visible'); err.textContent = ''; return true;
+    }
+
+    var n = Number(val);
+    if (rules.type === 'integer') {
+      if (!Number.isInteger(n) || !isFinite(n)) {
+        err.textContent = 'Must be a whole number'; err.classList.add('visible'); return false;
+      }
+    } else if (rules.type === 'number') {
+      if (isNaN(n) || !isFinite(n)) {
+        err.textContent = 'Must be a number'; err.classList.add('visible'); return false;
+      }
+    }
+
+    if (rules.exclusiveMin && n <= rules.min) {
+      err.textContent = 'Must be > ' + rules.min; err.classList.add('visible'); return false;
+    }
+    if (rules.min !== undefined && n < rules.min) {
+      err.textContent = 'Must be ≥ ' + rules.min; err.classList.add('visible'); return false;
+    }
+
+    err.classList.remove('visible'); err.textContent = ''; return true;
+  }
+
+  function validateAllFields() {
+    var ok = true, firstErr = null;
+    FIELD_RULES.forEach(function (rule) {
+      if (!validateField(rule.id, rule)) { ok = false; if (!firstErr) firstErr = document.getElementById(rule.id); }
+    });
+    document.querySelectorAll('.planet-card').forEach(function (card) {
+      validatePlanetCard(card);
+      var cardInvalid = card.querySelector('.is-invalid');
+      if (cardInvalid) { ok = false; if (!firstErr) firstErr = cardInvalid; }
+    });
+    if (firstErr) {
+      if (typeof firstErr.scrollIntoView === 'function') firstErr.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      firstErr.focus();
+    }
+    return ok;
+  }
+
+  // Blur validation for non-planet fields
+  FIELD_RULES.forEach(function (rule) {
+    var el = document.getElementById(rule.id);
+    if (el) {
+      el.addEventListener('blur', function () { validateField(rule.id, rule); });
+      el.addEventListener('input', function () {
+        var container = el.closest('.opt') || el.parentNode;
+        var err = container.querySelector('.field-error');
+        if (err) { err.classList.remove('visible'); err.textContent = ''; }
+      });
+    }
+  });
+
   // Panel toggles persistence
   (function () {
     var panel = document.getElementById('opt-panel');
@@ -1748,6 +1884,7 @@
   }
 
   function launch(testRun) {
+    if (!validateAllFields()) { return; }
     setRunning(true);
     if (errEl) errEl.textContent = '';
     logEl.style.display = 'block';
@@ -1786,6 +1923,7 @@
   var calcLogpBtn = document.getElementById('calc-logp-btn');
   var logpResult  = document.getElementById('logp-result');
   if (calcLogpBtn) calcLogpBtn.addEventListener('click', function () {
+    if (!validateAllFields()) { return; }
     if (errEl) errEl.textContent = '';
     calcLogpBtn.disabled = true;
     var prevText = calcLogpBtn.textContent;
