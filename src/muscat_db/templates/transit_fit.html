@@ -1301,7 +1301,8 @@
     });
 
     ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset',
-     'use_gp','gp_per_dataset_log_amp','gp_per_dataset_log_scale'].forEach(function (id) {
+     'use_gp','gp_per_dataset_log_amp','gp_per_dataset_log_scale',
+     'plot_midtransit','plot_ingress_egress'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.checked = saved[id] === 'true';
     });
@@ -1374,7 +1375,8 @@
 
       var checkDefaults = {'opt-include_mean':true,'opt-use_custom_optimizer':true,'opt-spline':false,
                            'opt-add_bias':false,'opt-quadratic':false,'opt-clip':false,'opt-chunk_offset':false,
-                           'opt-use_gp':false,'opt-gp_per_dataset_log_amp':false,'opt-gp_per_dataset_log_scale':false};
+                           'opt-use_gp':false,'opt-gp_per_dataset_log_amp':false,'opt-gp_per_dataset_log_scale':false,
+                           'opt-plot_midtransit':false,'opt-plot_ingress_egress':false};
       Object.keys(checkDefaults).forEach(function (id) { var el = document.getElementById(id); if (el) el.checked = checkDefaults[id]; });
       refreshGpPriorControls();
       updateDependentFields();
@@ -1426,7 +1428,8 @@
         });
 
         ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset',
-         'use_gp','gp_per_dataset_log_amp','gp_per_dataset_log_scale'].forEach(function (id) {
+         'use_gp','gp_per_dataset_log_amp','gp_per_dataset_log_scale',
+         'plot_midtransit','plot_ingress_egress'].forEach(function (id) {
           var el = document.getElementById('opt-'+id);
           if (el && backup[id] !== undefined) el.checked = backup[id] === 'true';
         });
