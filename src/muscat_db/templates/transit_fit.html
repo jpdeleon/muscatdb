@@ -844,11 +844,19 @@
     else { err.classList.remove('visible'); err.textContent = ''; }
   }
 
-  function validatePlanetCard(card) {
+  // requireFilled (true at launch) makes blank required parameters invalid so a
+  // fit cannot start with missing planet priors. Live calls omit it, so typing
+  // an empty card does not flash "Required" on every field.
+  function validatePlanetCard(card, requireFilled) {
     function setValid(el, ok) {
       if (!el) return;
       if (el.value.trim() === '' || ok) el.classList.remove('is-invalid');
       else el.classList.add('is-invalid');
+    }
+    function markRequired(el, msg) {
+      if (!el) return;
+      el.classList.add('is-invalid');
+      setPlanetCardError(el.closest('.opt'), msg || 'Required');
     }
 
     // tc_pred is always centre ± width (two fields, no prior selector).
@@ -870,15 +878,23 @@
     var t0El = card.querySelector('.planet-t0');
     if (t0El) {
       if (t0El.value.trim() === '') {
-        t0El.classList.remove('is-invalid');
-        setPlanetCardError(t0El.closest('.opt'), '');
+        if (requireFilled) {
+          markRequired(t0El, 'Required: mid-transit epoch (mean,unc)');
+        } else {
+          t0El.classList.remove('is-invalid');
+          setPlanetCardError(t0El.closest('.opt'), '');
+        }
       } else {
         var t0p = splitPair(t0El.value);
         var t0m = Number(t0p[0]), t0u = Number(t0p[1]);
-        var t0MeanOk = t0p[0] === '' || (!isNaN(t0m) && t0m > 0);
-        var t0UncOk = t0p[1] === '' || (!isNaN(t0u) && t0u >= 0);
-        setValid(t0El, t0MeanOk && t0UncOk);
-        setPlanetCardError(t0El.closest('.opt'), (t0MeanOk && t0UncOk) ? '' : 'Invalid: mean>0, unc≥0');
+        if (requireFilled && t0p[0] === '') {
+          markRequired(t0El, 'Required: mid-transit epoch mean');
+        } else {
+          var t0MeanOk = t0p[0] === '' || (!isNaN(t0m) && t0m > 0);
+          var t0UncOk = t0p[1] === '' || (!isNaN(t0u) && t0u >= 0);
+          setValid(t0El, t0MeanOk && t0UncOk);
+          setPlanetCardError(t0El.closest('.opt'), (t0MeanOk && t0UncOk) ? '' : 'Invalid: mean>0, unc≥0');
+        }
       }
     }
 
@@ -894,10 +910,25 @@
       var fieldEl = card.querySelector(pp.field);
       var selEl = card.querySelector(pp.field + '-prior');
       if (!fieldEl) return;
-      if (fieldEl.value.trim() === '') { fieldEl.classList.remove('is-invalid'); setPlanetCardError(fieldEl.closest('.opt'), ''); return; }
+      if (fieldEl.value.trim() === '') {
+        if (requireFilled) {
+          var isUniform = selEl && selEl.value === 'uniform';
+          markRequired(fieldEl, 'Required ' + pp.label + ': ' + (isUniform ? 'low,high' : 'mean,unc'));
+        } else {
+          fieldEl.classList.remove('is-invalid');
+          setPlanetCardError(fieldEl.closest('.opt'), '');
+        }
+        return;
+      }
 
       var parts = splitPair(fieldEl.value);
       var aStr = parts[0], bStr = parts[1];
+      // The central value (mean for gaussian, low bound for uniform) must be
+      // present; only the second component may be blank (pipeline default).
+      if (requireFilled && aStr === '') {
+        markRequired(fieldEl, 'Required ' + pp.label + (selEl && selEl.value === 'uniform' ? ': low bound' : ': mean'));
+        return;
+      }
       var a = Number(aStr), b = Number(bStr);
       var aNum = aStr !== '' && !isNaN(a);
       var bNum = bStr !== '' && !isNaN(b);
@@ -1583,12 +1614,15 @@
 
   // ----- field validation -----
   var FIELD_RULES = [
-    { id: 'opt-teff',        type: 'number', min: 0, exclusiveMin: true, optional: true },
-    { id: 'opt-teff_unc',    type: 'number', min: 0, optional: true },
-    { id: 'opt-logg',        type: 'number', optional: true },
-    { id: 'opt-logg_unc',    type: 'number', min: 0, optional: true },
-    { id: 'opt-feh',         type: 'number', optional: true },
-    { id: 'opt-feh_unc',     type: 'number', min: 0, optional: true },
+    // Stellar parameters are required: a blank value silently falls back to
+    // solar defaults (teff=5778, logg=4.4, feh=0) in the backend, which would
+    // fit the wrong star. Force the user to supply real values + priors.
+    { id: 'opt-teff',        type: 'number', min: 0, exclusiveMin: true },
+    { id: 'opt-teff_unc',    type: 'number', min: 0, exclusiveMin: true },
+    { id: 'opt-logg',        type: 'number' },
+    { id: 'opt-logg_unc',    type: 'number', min: 0, exclusiveMin: true },
+    { id: 'opt-feh',         type: 'number' },
+    { id: 'opt-feh_unc',     type: 'number', min: 0, exclusiveMin: true },
     { id: 'opt-tune',        type: 'integer', min: 1 },
     { id: 'opt-draws',       type: 'integer', min: 1 },
     { id: 'opt-chains',      type: 'integer', min: 1 },
@@ -1667,8 +1701,10 @@
     FIELD_RULES.forEach(function (rule) {
       if (!validateField(rule.id, rule)) { ok = false; if (!firstErr) firstErr = document.getElementById(rule.id); }
     });
-    document.querySelectorAll('.planet-card').forEach(function (card) {
-      validatePlanetCard(card);
+    var planetCards = document.querySelectorAll('.planet-card');
+    if (planetCards.length === 0) { ok = false; }
+    planetCards.forEach(function (card) {
+      validatePlanetCard(card, true);
       var cardInvalid = card.querySelector('.is-invalid');
       if (cardInvalid) { ok = false; if (!firstErr) firstErr = cardInvalid; }
     });
