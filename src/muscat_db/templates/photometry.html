@@ -361,13 +361,13 @@
             </div>
             <div class="opt">
               <label for="opt-aper_radii">Aperture radii (MIN,MAX,DR) <span class="help-tooltip" title="Radius grid search parameters as MIN,MAX,DR (corresponds to --aper_radii). Required if annulus is set. Empty means use Gaia heuristic.">?</span></label>
-              <input type="text" id="opt-aper_radii" placeholder="Gaia heuristic" style="width: 100%;">
-              <span class="hint">blank → auto from Gaia</span>
+              <input type="text" id="opt-aper_radii" placeholder="e.g. 1.5,6.0,0.5" style="width: 100%;">
+              <span class="hint" id="hint-aper_radii">blank → auto from Gaia (in px)</span>
             </div>
             <div class="opt">
               <label for="opt-annulus">Sky annulus (RIN,ROUT) <span class="help-tooltip" title="Inner and outer radii of background sky subtraction annulus (corresponds to --annulus). Required if aperture radii is set.">?</span></label>
               <input type="text" id="opt-annulus" placeholder="e.g. 25,40" style="width: 100%;">
-              <span class="hint">required with aperture radii</span>
+              <span class="hint" id="hint-annulus">required with aperture radii (in px)</span>
             </div>
             <div class="opt">
               <label for="opt-cutout_size">Cutout size (px) <span class="help-tooltip" title="Postage stamp cutout size around each star (corresponds to --cutout_size).">?</span></label>
@@ -690,8 +690,36 @@
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.checked = saved[id];
     });
+  function updateApertureHints() {
+    var unit = val('opt-aper_unit');
+    var radiiEl = document.getElementById('opt-aper_radii');
+    var annulusEl = document.getElementById('opt-annulus');
+    var radiiHint = document.getElementById('hint-aper_radii');
+    var annulusHint = document.getElementById('hint-annulus');
+    if (unit === 'fwhm') {
+      if (radiiEl) radiiEl.placeholder = 'e.g. 0.5,3.0,0.5';
+      if (annulusEl) annulusEl.placeholder = 'e.g. 6,10';
+      if (radiiHint) radiiHint.textContent = 'blank → auto from Gaia (in FWHM)';
+      if (annulusHint) annulusHint.textContent = 'required with aperture radii (in FWHM)';
+    } else {
+      if (radiiEl) radiiEl.placeholder = 'e.g. 1.5,6.0,0.5';
+      if (annulusEl) annulusEl.placeholder = 'e.g. 25,40';
+      if (radiiHint) radiiHint.textContent = 'blank → auto from Gaia (in px)';
+      if (annulusHint) annulusHint.textContent = 'required with aperture radii (in px)';
+    }
   }
+
   restoreOptions();
+  updateApertureHints();
+
+  var aperUnitEl = document.getElementById('opt-aper_unit');
+  if (aperUnitEl) {
+    aperUnitEl.addEventListener('change', function () {
+      updateApertureHints();
+      saveOptions();
+      refreshCmd();
+    });
+  }
 
   var DEFAULTS = {{ run_defaults | tojson }};
   var defaultsBtn = document.getElementById('defaults-btn');
@@ -711,6 +739,7 @@
         if (el) el.checked = !!DEFAULTS[id];
       });
       saveOptions();
+      updateApertureHints();
       refreshCmd();
     });
   }
