@@ -881,6 +881,9 @@ def start_fit(
     # invalidation/replacement of its cached results.
     _write_fit_inputs(rdir, inst, date, csvs, options)
 
+    # Clear cached outputs so the next page load reads fresh results from disk.
+    _fit_outputs_cache.clear()
+
     key = fit_job_key(inst, date, target)
     run_type = "test" if test_run else "full"
 
@@ -1327,6 +1330,7 @@ def sync_jobs() -> None:
                     continue
                 rdir.mkdir(parents=True, exist_ok=True)
                 _write_fit_inputs(rdir, inst, date, get_csv_lightcurves(inst, date, target), opts)
+                _fit_outputs_cache.clear()
                 cmd = [*_timer_prefix(), "-v", str(rdir)]
                 if test_run:
                     cmd.append("--test_run")

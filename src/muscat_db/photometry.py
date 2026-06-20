@@ -76,6 +76,10 @@ RUN_DEFAULTS: dict = {
     "target_coord": "",        # "" -> resolve via MAST; "RA Dec" -> bypass name resolution
     "gif_stride": 100,
     "overwrite": True,
+    "sig_bkg": 5.0,
+    "sig_fwhm": 5.0,
+    "sig_dx": 5.0,
+    "sig_dy": 5.0,
 }
 
 # Narrow-band tokens, kept after the broadband four in the canonical order.
@@ -540,7 +544,7 @@ def normalize_run_options(raw: dict | None) -> dict:
             if iv is not None:
                 o[key] = iv
 
-    for key in ("min_star_separation", "bin_size_minutes"):
+    for key in ("min_star_separation", "bin_size_minutes", "sig_bkg", "sig_fwhm", "sig_dx", "sig_dy"):
         if str(raw.get(key, "")).strip() != "":
             fv = _to_float(raw[key])
             if fv is not None:
@@ -635,6 +639,10 @@ def build_command(
         ("--cutout_size", "cutout_size"),
         ("--bin_size_minutes", "bin_size_minutes"),
         ("--gif_stride", "gif_stride"),
+        ("--sig_bkg", "sig_bkg"),
+        ("--sig_fwhm", "sig_fwhm"),
+        ("--sig_dx", "sig_dx"),
+        ("--sig_dy", "sig_dy"),
     ):
         val = o.get(key)
         if val in (None, ""):

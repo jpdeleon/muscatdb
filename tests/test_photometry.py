@@ -568,7 +568,7 @@ class TestRoutes:
         assert 'id="run-test-btn"' in html
         assert 'id="run-full-btn"' in html
         assert 'id="cancel-btn"' in html
-        assert "Run full reduction" in html
+        assert "▶ Run Full Reduction (all frames)" in html
 
     def test_cancel_route_no_job(self, client):
         r = client.post("/photometry/cancel", json={
