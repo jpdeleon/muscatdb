@@ -649,6 +649,8 @@ def _write_fit_inputs(
     # "Overwrite" maps to timer's ``clobber``: when true, timer ignores any saved
     # *.pkl results and re-runs the fit from scratch. Default (unchecked) is false.
     fit_data["clobber"] = options.get("overwrite") == "true"
+    fit_data["plot_midtransit"] = options.get("plot_midtransit") == "true"
+    fit_data["plot_ingress_egress"] = options.get("plot_ingress_egress") == "true"
 
     # Sampler options (timer defaults: tune/draws 2000, chains/cores 2).
     fit_data["tune"] = _int_opt("tune", 2000)

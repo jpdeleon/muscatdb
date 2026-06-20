@@ -306,6 +306,14 @@
             <input type="checkbox" id="opt-overwrite">
             <label for="opt-overwrite">Overwrite <span class="help-tooltip" title="Re-run the fit from scratch, ignoring any saved results (sets clobber: true in fit.yaml). Unchecked reuses saved outputs.">?</span></label>
           </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-plot_midtransit">
+            <label for="opt-plot_midtransit">Plot midtransit <span class="help-tooltip" title="Plot a solid vertical line at the nearest midtransit time on data.png.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-plot_ingress_egress">
+            <label for="opt-plot_ingress_egress">Plot ing/egr <span class="help-tooltip" title="Plot dashed vertical lines at ingress and egress times on data.png.">?</span></label>
+          </div>
         </div>
 
         <div class="opt-section-title" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
@@ -705,6 +713,8 @@
       chromatic: chk('opt-chromatic') ? 'true' : 'false',
       trend: chk('opt-trend') ? 'true' : 'false',
       overwrite: chk('opt-overwrite') ? 'true' : 'false',
+      plot_midtransit: chk('opt-plot_midtransit') ? 'true' : 'false',
+      plot_ingress_egress: chk('opt-plot_ingress_egress') ? 'true' : 'false',
       tune: val('opt-tune'),
       draws: val('opt-draws'),
       chains: val('opt-chains'),
