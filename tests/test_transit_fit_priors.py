@@ -143,6 +143,30 @@ def test_invalid_prior_choice_rejected():
     assert "gaussian or uniform" in error
 
 
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"use_gp": "true", "gp_log_amp": "bad"}, "log_amp"),
+        ({"use_gp": "true", "gp_log_scale_prior": "lognormal"}, "gaussian or uniform"),
+        ({"use_gp": "true", "gp_log_amp_unc": "0"}, "greater than 0"),
+        (
+            {
+                "use_gp": "true",
+                "gp_log_scale_prior": "uniform",
+                "gp_log_scale": "2",
+                "gp_log_scale_unc": "1",
+            },
+            "low < high",
+        ),
+    ],
+)
+def test_invalid_gp_prior_rejected(options, message):
+    error = fit.validate_fit_options(options)
+
+    assert error is not None
+    assert message in error
+
+
 # --- fit.yaml construction -------------------------------------------------
 
 
@@ -197,6 +221,38 @@ def test_multi_planet_uniform_block_is_per_planet_bounds(tmp_path):
     assert len(bounds) == 2
     assert bounds[0][0] == pytest.approx(0.0) and bounds[0][1] == pytest.approx(0.5)
     assert bounds[1][0] == pytest.approx(0.0) and bounds[1][1] == pytest.approx(0.3)
+
+
+def test_multi_planet_fit_yaml_uses_timer_planet_sequence(tmp_path):
+    fit_yaml = _write(tmp_path, {"planets": "b,c"})
+
+    assert fit_yaml["planets"] == "bc"
+
+
+def test_explicit_empty_fixed_list_is_preserved(tmp_path):
+    fit_yaml = _write(tmp_path, {"planets": "b", "fixed": []})
+
+    assert fit_yaml["fixed"] == []
+
+
+def test_uniform_gp_bounds_are_encoded_as_center_and_width(tmp_path):
+    options = {
+        "planets": "b",
+        "use_gp": "true",
+        "gp_log_amp_prior": "uniform",
+        "gp_log_amp": "-5",
+        "gp_log_amp_unc": "-1",
+        "gp_log_scale_prior": "uniform",
+        "gp_log_scale": "-3",
+        "gp_log_scale_unc": "1",
+    }
+
+    assert fit.validate_fit_options(options) is None
+    gp = _write(tmp_path, options)["gp"]
+    assert gp["log_amp"] == pytest.approx(-3)
+    assert gp["log_amp_unc"] == pytest.approx(4)
+    assert gp["log_scale"] == pytest.approx(-1)
+    assert gp["log_scale_unc"] == pytest.approx(4)
 
 
 def test_fixed_param_never_enters_uniform_block(tmp_path):

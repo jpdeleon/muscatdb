@@ -920,7 +920,7 @@ class TestTransitFitOptions:
         # Load fit.yaml and verify
         with open(rdir / "fit.yaml") as f:
             fit_data = yaml.safe_load(f)
-        assert fit_data["planets"] == "b,c"
+        assert fit_data["planets"] == "bc"
         
         # Load sys.yaml and verify
         with open(rdir / "sys.yaml") as f:

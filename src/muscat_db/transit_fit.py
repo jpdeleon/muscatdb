@@ -427,6 +427,33 @@ def validate_fit_options(options: dict | None) -> str | None:
             if param == "b" and lo < 0:
                 return f"{param} uniform lower bound (planet {p}) must be 0 or greater"
 
+    if o.get("use_gp") == "true":
+        for param, value_default, unc_default in (
+            ("log_amp", -3.0, 2.0),
+            ("log_scale", -1.0, 2.0),
+        ):
+            prior = str(o.get(f"gp_{param}_prior") or "gaussian").strip().lower()
+            if prior not in _PRIOR_CHOICES:
+                return f"GP {param} prior must be gaussian or uniform"
+
+            values = []
+            for suffix, default in (("", value_default), ("_unc", unc_default)):
+                key = f"gp_{param}{suffix}"
+                raw = o.get(key)
+                if raw is None or str(raw).strip() == "":
+                    values.append(default)
+                    continue
+                value = _to_float(raw)
+                if value is None or not math.isfinite(value):
+                    return f"GP {param}{suffix} must be a number"
+                values.append(value)
+
+            first, second = values
+            if prior == "uniform" and not first < second:
+                return f"GP {param} uniform bounds must have low < high"
+            if prior == "gaussian" and second <= 0:
+                return f"GP {param} uncertainty must be greater than 0"
+
     return None
 
 
@@ -579,8 +606,8 @@ def _write_fit_inputs(
         }
 
     planets_str = (options.get("planets") or "b").strip()
-    fit_data["planets"] = planets_str
     planet_list = [p.strip() for p in planets_str.split(",") if p.strip()] or ["b"]
+    fit_data["planets"] = "".join(planet_list)
 
     # Per-planet predicted transit centers. timer fits a per-planet t0
     # (shape = nplanets) seeded by tc_pred: a scalar broadcasts to all planets,
@@ -636,13 +663,23 @@ def _write_fit_inputs(
     # would KeyError. Hyperparameters are log10-space (Matern-3/2 kernel).
     fit_data["use_gp"] = _bool_opt("use_gp", default=False)
     if fit_data["use_gp"]:
+        def _gp_values(param: str, value_default: float, unc_default: float) -> tuple[float, float]:
+            value = _float_opt(f"gp_{param}", value_default)
+            unc = _float_opt(f"gp_{param}_unc", unc_default)
+            prior = str(options.get(f"gp_{param}_prior") or "gaussian").strip().lower()
+            if prior == "uniform":
+                return (value + unc) / 2, unc - value
+            return value, unc
+
+        log_amp, log_amp_unc = _gp_values("log_amp", -3.0, 2.0)
+        log_scale, log_scale_unc = _gp_values("log_scale", -1.0, 2.0)
         gp_block: dict = {
-            "log_amp": _float_opt("gp_log_amp", -3.0),
-            "log_amp_unc": _float_opt("gp_log_amp_unc", 2.0),
-            "log_amp_prior": options.get("gp_log_amp_prior") or "gaussian",
-            "log_scale": _float_opt("gp_log_scale", -1.0),
-            "log_scale_unc": _float_opt("gp_log_scale_unc", 2.0),
-            "log_scale_prior": options.get("gp_log_scale_prior") or "gaussian",
+            "log_amp": log_amp,
+            "log_amp_unc": log_amp_unc,
+            "log_amp_prior": str(options.get("gp_log_amp_prior") or "gaussian").strip().lower(),
+            "log_scale": log_scale,
+            "log_scale_unc": log_scale_unc,
+            "log_scale_prior": str(options.get("gp_log_scale_prior") or "gaussian").strip().lower(),
         }
         per_dataset = [
             p for p, key in (("log_amp", "gp_per_dataset_log_amp"),
@@ -653,7 +690,8 @@ def _write_fit_inputs(
             gp_block["per_dataset"] = per_dataset
         fit_data["gp"] = gp_block
 
-    fit_data["fixed"] = options.get("fixed") or ["period", "u_star"]
+    fixed = options.get("fixed")
+    fit_data["fixed"] = ["period", "u_star"] if fixed is None else fixed
 
     # Prior shapes. The GUI sends each parameter as two keys (``ror`` /
     # ``ror_unc``); for Gaussian they are [value, unc] (written to sys.yaml), for
