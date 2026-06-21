@@ -515,6 +515,119 @@ class TestStartRun:
         assert state == "cancelled"
 
 
+class _FakeProc:
+    """Minimal stand-in for subprocess.Popen with a controllable poll()."""
+
+    def __init__(self, rc: int | None = None):
+        self._rc = rc
+        self.pid = os.getpid()
+
+    def poll(self):
+        return self._rc
+
+    def wait(self, timeout=None):
+        return self._rc
+
+
+class TestFinalizeGrace:
+    """The tracked parent process can exit while prose's multiprocessing workers
+    keep appending to the log. job_status must stay non-terminal (finalizing)
+    while the log grows, then go terminal once the log is quiescent — so the
+    photometry page's live log does not freeze at parent-exit."""
+
+    def _make_job(self, monkeypatch, tmp_path):
+        with phot._LOCK:
+            phot._JOBS.clear()
+        rdir = tmp_path / INST / DATE
+        rdir.mkdir(parents=True)
+        log = phot._run_log_path(rdir, INST, DATE, TARGET)
+        log.write_text("$ run_photometry\nINFO: started\n")
+        monkeypatch.setattr(phot, "results_dir", lambda inst, date: rdir)
+        proc = _FakeProc(rc=None)
+        key = phot.job_key(INST, DATE, TARGET)
+        job = phot.Job(
+            key=key, inst=INST, date=DATE, target=TARGET,
+            cmd=["x"], proc=proc, logf=open(log, "a"),
+            log_path=log, run_type="full",
+        )
+        with phot._LOCK:
+            phot._JOBS[key] = job
+        return job, proc, log
+
+    def test_stays_finalizing_while_log_grows_then_terminal(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr(phot, "_FINALIZE_GRACE_S", 1)  # speed up the window
+        _job, proc, log = self._make_job(monkeypatch, tmp_path)
+        try:
+            # Parent still alive -> running.
+            assert phot.job_status(INST, DATE, TARGET)["state"] == "running"
+
+            # Parent exits 0 but a worker just appended -> finalizing, not done,
+            # and the freshly written line is visible in the live log.
+            proc._rc = 0
+            with open(log, "a") as f:
+                f.write("INFO: wrote TOI-6715_apertures.png\n")
+            s = phot.job_status(INST, DATE, TARGET)
+            assert s["state"] == "finalizing"
+            assert "_apertures.png" in s["log"]
+
+            # A further worker line keeps it finalizing (log still growing).
+            with open(log, "a") as f:
+                f.write("INFO: wrote lightcurve.csv\n")
+            assert phot.job_status(INST, DATE, TARGET)["state"] == "finalizing"
+
+            # Log goes quiescent past the grace window -> terminal done, with the
+            # full trailing output preserved.
+            import time as _t
+            _t.sleep(1.2)
+            s = phot.job_status(INST, DATE, TARGET)
+            assert s["state"] == "done"
+            assert "lightcurve.csv" in s["log"]
+        finally:
+            with phot._LOCK:
+                phot._JOBS.clear()
+
+    def test_cancelled_job_finalizes_immediately(self, monkeypatch, tmp_path):
+        # A large grace window proves Cancel bypasses the finalize gate even
+        # while the log still looks fresh.
+        monkeypatch.setattr(phot, "_FINALIZE_GRACE_S", 600)
+        job, proc, log = self._make_job(monkeypatch, tmp_path)
+        try:
+            job.cancelled = True
+            proc._rc = -15
+            with open(log, "a") as f:
+                f.write("INFO: still writing during cancel\n")
+            assert phot.job_status(INST, DATE, TARGET)["state"] == "cancelled"
+        finally:
+            with phot._LOCK:
+                phot._JOBS.clear()
+
+    def test_sync_jobs_persists_finalizing_as_running(self, monkeypatch, tmp_path):
+        """While finalizing, sync_jobs must persist the DB row as 'running' so the
+        Jobs page (which reads state from the DB) stays consistent with the
+        photometry page instead of flipping to a terminal state early."""
+        monkeypatch.setattr(phot, "_FINALIZE_GRACE_S", 600)
+        _job, proc, log = self._make_job(monkeypatch, tmp_path)
+        proc._rc = 0
+        with open(log, "a") as f:
+            f.write("INFO: wrote something\n")  # fresh mtime -> finalizing
+        saved: list[dict] = []
+        monkeypatch.setattr("muscat_db.database.get_persisted_jobs", lambda: [])
+        monkeypatch.setattr(
+            "muscat_db.database.save_job", lambda **kw: saved.append(kw)
+        )
+        try:
+            phot.sync_jobs()
+            phot_saves = [s for s in saved if s.get("target") == TARGET]
+            assert phot_saves, "expected the finalizing job to be persisted"
+            assert phot_saves[-1]["state"] == "running"
+            assert phot_saves[-1]["returncode"] is None
+        finally:
+            with phot._LOCK:
+                phot._JOBS.clear()
+
+
 # ── routes (FastAPI TestClient) ──────────────────────────────────────────────
 
 class TestRoutes:
