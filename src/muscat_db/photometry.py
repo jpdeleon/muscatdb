@@ -915,6 +915,46 @@ def _terminal_job_state(
     return "done"
 
 
+# The pipeline is launched with start_new_session=True and prose spawns
+# multiprocessing workers (SequenceParallel) that keep appending to the log
+# *after* the tracked parent process returns. Declaring the job terminal at
+# parent-exit freezes the photometry page's live log mid-output while the Jobs
+# page (which reads the file directly) keeps advancing. Treat a finished parent
+# as still "finalizing" until its log has been quiescent for this grace window,
+# so the live view keeps streaming the trailing output. Env-tunable, in the
+# style of _STALL_LIMIT_S / _MAX_RUNTIME_S.
+_FINALIZE_GRACE_S = int(os.environ.get("MUSCAT_PHOT_FINALIZE_GRACE_S", 8))
+
+
+def _log_quiescent(log_path_: Path, now: float) -> bool:
+    """True when the log has not been written for at least the finalize grace
+    window. A missing/unreadable log means nothing more is coming, so it counts
+    as quiescent; each append by a still-running worker refreshes the mtime and
+    keeps the job finalizing."""
+    try:
+        mtime = log_path_.stat().st_mtime
+    except OSError:
+        return True
+    return (now - mtime) >= _FINALIZE_GRACE_S
+
+
+def _resolve_job_state(job: "Job", now: float | None = None) -> tuple[str, int | None, bool]:
+    """Resolve a tracked job's live state as ``(state, returncode, is_terminal)``.
+
+    While the parent process runs the job is ``running``/``cancelling``. Once it
+    exits, a non-cancelled job is reported as ``finalizing`` (non-terminal) until
+    its log goes quiescent, so the live view keeps streaming the output workers
+    emit after parent-exit. A cancelled job goes terminal immediately to keep the
+    Cancel flow responsive.
+    """
+    rc = job.proc.poll()
+    if rc is None:
+        return ("cancelling" if job.cancelled else "running"), None, False
+    if not job.cancelled and not _log_quiescent(job.log_path, now if now is not None else time.time()):
+        return "finalizing", rc, False
+    return _terminal_job_state(rc, job.cancelled, job.log_path), rc, True
+
+
 def _pending_status(inst: str, date: str, target: str) -> dict | None:
     """Return a queued-job status dict if a pending DB entry exists, else None.
 
@@ -1000,19 +1040,15 @@ def job_status(inst: str, date: str, target: str) -> dict:
             if persisted is not None:
                 return persisted
             return {"state": "none", "log": "", "returncode": None, "elapsed": 0}
-        rc = job.proc.poll()
-        if rc is None:
-            state = "cancelling" if job.cancelled else "running"
-        else:
-            state = _terminal_job_state(rc, job.cancelled, job.log_path)
-            if job.state in ("running",):
-                job.state = state
-                job.returncode = rc
-                job.elapsed = round(time.time() - job.started_at)
-                try:
-                    job.logf.close()
-                except OSError:
-                    pass
+        state, rc, is_terminal = _resolve_job_state(job)
+        if is_terminal and job.state == "running":
+            job.state = state
+            job.returncode = rc
+            job.elapsed = round(time.time() - job.started_at)
+            try:
+                job.logf.close()
+            except OSError:
+                pass
         log_path = job.log_path
         elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
     error_desc = ""
@@ -1034,20 +1070,16 @@ def get_all_jobs() -> list[dict]:
     with _LOCK:
         res = []
         for key, job in _JOBS.items():
-            rc = job.proc.poll()
-            if rc is None:
-                state = "cancelling" if job.cancelled else "running"
-            else:
-                state = _terminal_job_state(rc, job.cancelled, job.log_path)
-                if job.state in ("running",):
-                    job.state = state
-                    job.returncode = rc
-                    job.elapsed = round(time.time() - job.started_at)
-                    try:
-                        job.logf.close()
-                    except OSError:
-                        pass
-            
+            state, rc, is_terminal = _resolve_job_state(job)
+            if is_terminal and job.state == "running":
+                job.state = state
+                job.returncode = rc
+                job.elapsed = round(time.time() - job.started_at)
+                try:
+                    job.logf.close()
+                except OSError:
+                    pass
+
             elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
             res.append({
                 "key": job.key,
@@ -1228,34 +1260,36 @@ def sync_jobs() -> None:
         
         for key, job in _JOBS.items():
             db_key = f"photometry:{job.inst}/{job.date}/{job.target.replace(' ', '')}"
-            rc = job.proc.poll()
-            if rc is None:
-                state = "cancelling" if job.cancelled else "running"
-            else:
-                state = _terminal_job_state(rc, job.cancelled, job.log_path)
-                if job.state in ("running",):
-                    job.state = state
-                    job.returncode = rc
-                    job.elapsed = round(time.time() - job.started_at)
-                    try:
-                        job.logf.close()
-                    except OSError:
-                        pass
-            
+            state, rc, is_terminal = _resolve_job_state(job)
+            if is_terminal and job.state == "running":
+                job.state = state
+                job.returncode = rc
+                job.elapsed = round(time.time() - job.started_at)
+                try:
+                    job.logf.close()
+                except OSError:
+                    pass
+
+            # 'finalizing' is a live-view-only state; the DB tracks only
+            # running/terminal, so persist a finalizing job as still running.
+            # This keeps the Jobs page (which reads state from the DB) consistent
+            # with the photometry page until the log truly goes quiescent.
+            persist_state = "running" if state == "finalizing" else state
+            persist_rc = None if state == "finalizing" else rc
             elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
             error_desc = ""
-            if state == "error":
+            if persist_state == "error":
                 error_desc = _get_error_desc(job.log_path)
-            elif state == "cancelled":
+            elif persist_state == "cancelled":
                 error_desc = "Cancelled by user"
-            
+
             save_job(
                 type_="photometry",
                 inst=job.inst,
                 date=job.date,
                 target=job.target,
-                state=state,
-                returncode=rc,
+                state=persist_state,
+                returncode=persist_rc,
                 elapsed=round(elapsed),
                 started_at=job.started_at,
                 error_desc=error_desc
