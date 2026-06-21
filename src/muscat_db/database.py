@@ -398,37 +398,56 @@ def get_instruments(db_path: str) -> list[dict]:
     return result
 
 
-def get_instruments_summary(db_path: str) -> list[dict]:
+def get_instruments_summary(db_path: str, min_frames: int = 1000) -> list[dict]:
     """Return count of dates, frames, and targets for all instruments.
 
-    Uses a single GROUP BY query instead of one query per instrument.
+    Filters science targets to only count those with at least min_frames frames.
     """
     conn = sqlite3.connect(db_path)
     exact_clause = ", ".join(f"'{s}'" for s in _TARGET_EXCLUDE_EXACT)
-    # One pass: aggregate stats and a science-target flag together.
-    rows = conn.execute(
-        f"""SELECT
-              instrument,
-              COUNT(DISTINCT obsdate)                      AS n_dates,
-              SUM(nframes)                                 AS n_frames,
-              COUNT(DISTINCT CASE
-                WHEN object IS NOT NULL
-                 AND TRIM(object) <> ''
-                 AND LOWER(TRIM(object)) NOT IN ({exact_clause})
-                 AND LOWER(TRIM(object)) NOT LIKE '%flat%'
-                 AND LOWER(TRIM(object)) NOT LIKE 'dark%'
-                 AND LOWER(TRIM(object)) NOT LIKE 'bias%'
-                 AND LOWER(TRIM(object)) NOT LIKE '%test%'
-                 AND TRIM(object) NOT GLOB '*:*:*'
-                THEN object END)                          AS n_targets
+    
+    # Get total dates and frames per instrument
+    base_stats = conn.execute(
+        """SELECT instrument, COUNT(DISTINCT obsdate), SUM(nframes)
            FROM summaries
-           GROUP BY instrument
-           ORDER BY instrument"""
+           GROUP BY instrument"""
     ).fetchall()
+    stats_map = {r[0]: (r[1] or 0, r[2] or 0) for r in base_stats}
+    
+    # Get science targets with at least min_frames frames
+    target_stats = conn.execute(
+        f"""SELECT instrument, COUNT(DISTINCT object)
+            FROM (
+                SELECT instrument, object, SUM(nframes) AS target_frames
+                FROM summaries
+                WHERE object IS NOT NULL
+                  AND TRIM(object) <> ''
+                  AND LOWER(TRIM(object)) NOT IN ({exact_clause})
+                  AND LOWER(TRIM(object)) NOT LIKE '%flat%'
+                  AND LOWER(TRIM(object)) NOT LIKE 'dark%'
+                  AND LOWER(TRIM(object)) NOT LIKE 'bias%'
+                  AND LOWER(TRIM(object)) NOT LIKE '%test%'
+                  AND TRIM(object) NOT GLOB '*:*:*'
+                GROUP BY instrument, object
+                HAVING target_frames >= ?
+            )
+            GROUP BY instrument""",
+        (min_frames,)
+    ).fetchall()
+    target_map = {r[0]: r[1] for r in target_stats}
+    
     conn.close()
+    
+    # Ensure all instruments from INSTRUMENTS or base_stats are returned
+    names = sorted(list(set(INSTRUMENTS) | set(stats_map.keys())))
     return [
-        {"name": r[0], "n_dates": r[1] or 0, "n_frames": r[2] or 0, "n_targets": r[3] or 0}
-        for r in rows
+        {
+            "name": name,
+            "n_dates": stats_map.get(name, (0, 0))[0],
+            "n_frames": stats_map.get(name, (0, 0))[1],
+            "n_targets": target_map.get(name, 0)
+        }
+        for name in names
     ]
 
 
