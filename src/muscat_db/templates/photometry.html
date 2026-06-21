@@ -495,7 +495,7 @@
     if (inst && date && target) {
       var cqs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
       fetch('/photometry/status?' + cqs).then(function (r) { return r.json(); }).then(function (s) {
-        if (s.state === 'pending' || s.state === 'running' || s.state === 'cancelling') {
+        if (s.state === 'pending' || s.state === 'running' || s.state === 'cancelling' || s.state === 'finalizing') {
           saveJob();
           setRunning(true);
           if (logEl) logEl.style.display = 'block';
@@ -504,6 +504,12 @@
           }
           if (!polling) polling = setInterval(poll, 2000);
           poll();
+        } else {
+          // Terminal or no job: never leave the buttons stuck disabled from a
+          // previous run. Reconcile to the server's truth instead of trusting
+          // whatever (possibly cached) state the page loaded with.
+          setRunning(false);
+          clearJob();
         }
       }).catch(function () {});
     }
@@ -905,7 +911,10 @@
         logEl.scrollTop = logEl.scrollHeight;
         try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, s.log); } catch (e) {}
       }
-      if (s.state === 'running' || s.state === 'cancelling') {
+      if (s.state === 'running' || s.state === 'cancelling' || s.state === 'finalizing') {
+        // 'finalizing': parent exited but prose workers are still writing the
+        // log. Keep polling/streaming (no stopPolling here) so the live log
+        // keeps advancing until the server reports a terminal state.
         setRunning(true);
       }
       if (s.state === 'done') {
@@ -1015,6 +1024,13 @@
   // Restore running-job state (cancel button, log polling) now that all the
   // DOM refs and helpers above are defined.
   checkSavedJob();
+
+  // The script above does not re-run when the page is restored from the
+  // back/forward cache, which can leave the run buttons frozen disabled after
+  // a failed run. Re-sync button state to the live job state on bfcache restore.
+  window.addEventListener('pageshow', function (e) {
+    if (e.persisted) { setRunning(false); checkSavedJob(); }
+  });
 })();
 </script>
 <div style="text-align:center; margin:2em 0; display: flex; justify-content: center; gap: 1rem; align-items: center;">
