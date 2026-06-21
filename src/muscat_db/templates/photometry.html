@@ -801,6 +801,7 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
   })();
+  // ----- show error banner from a previous failed run -----
   (function restoreError() {
     var errEl = document.getElementById('run-error');
     if (!errEl) return;
@@ -810,7 +811,11 @@
       errEl.style.display = 'block';
       var label = (savedErr === 'Cancelled by user') ? 'Cancelled' : 'Pipeline failed';
       errEl.innerHTML = '✗ <strong>' + label + ':</strong> ' + escapeHtml(savedErr);
+      // Clear both the error message and the job key so a stale saved-job
+      // record cannot cause checkSavedJob() to call setRunning(true) on the
+      // next page visit, which would leave the Run buttons frozen.
       try { localStorage.removeItem('phot:err:' + inst + ':' + date + ':' + target); } catch (e) {}
+      try { localStorage.removeItem(JOB_KEY); } catch (e) {}
       errEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
   })();
