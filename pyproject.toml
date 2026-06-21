@@ -29,3 +29,9 @@ dev = [
     "pytest-mock>=3.15.1",
     "httpx>=0.28",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: heavyweight full pipeline runs against real data; run with -m slow",
+]
+addopts = "-m 'not slow'"
