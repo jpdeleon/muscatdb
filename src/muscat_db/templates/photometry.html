@@ -824,11 +824,39 @@
   var copyBtn = document.getElementById('copy-cmd');
   if (copyBtn) {
     copyBtn.addEventListener('click', function () {
-      navigator.clipboard.writeText(cmdEl.textContent).then(function () {
+      var text = cmdEl ? cmdEl.textContent : '';
+      if (!text) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () {
+          copyBtn.textContent = 'Copied';
+          setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1500);
+        }).catch(function () {
+          fallbackCopy(text);
+        });
+      } else {
+        fallbackCopy(text);
+      }
+    });
+  }
+
+  function fallbackCopy(text) {
+    var textArea = document.createElement("textarea");
+    textArea.value = text;
+    textArea.style.position = "fixed";
+    textArea.style.left = "-999999px";
+    textArea.style.top = "-999999px";
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    try {
+      if (document.execCommand('copy')) {
         copyBtn.textContent = 'Copied';
         setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1500);
-      });
-    });
+      }
+    } catch (err) {
+      console.error('Fallback copy failed', err);
+    }
+    document.body.removeChild(textArea);
   }
 
   // ----- launch / cancel a reduction with live log polling -----

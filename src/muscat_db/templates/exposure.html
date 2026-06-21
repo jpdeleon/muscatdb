@@ -539,10 +539,36 @@
 
   copyRec.addEventListener('click', function () {
     var v = (recVal.textContent || '').replace(/[^0-9.]/g, '');
-    navigator.clipboard && navigator.clipboard.writeText(v).then(function () {
-      var o = copyRec.textContent; copyRec.textContent = '✓ Copied'; setTimeout(function () { copyRec.textContent = o; }, 1200);
-    });
+    if (!v) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(v).then(function () {
+        var o = copyRec.textContent; copyRec.textContent = '✓ Copied'; setTimeout(function () { copyRec.textContent = o; }, 1200);
+      }).catch(function () {
+        fallbackCopyRec(v);
+      });
+    } else {
+      fallbackCopyRec(v);
+    }
   });
+
+  function fallbackCopyRec(text) {
+    var textArea = document.createElement("textarea");
+    textArea.value = text;
+    textArea.style.position = "fixed";
+    textArea.style.left = "-999999px";
+    textArea.style.top = "-999999px";
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    try {
+      if (document.execCommand('copy')) {
+        var o = copyRec.textContent; copyRec.textContent = '✓ Copied'; setTimeout(function () { copyRec.textContent = o; }, 1200);
+      }
+    } catch (err) {
+      console.error('Fallback copy failed', err);
+    }
+    document.body.removeChild(textArea);
+  }
 
   // ---- Instrument params + calibrated coeffs ----
   function renderInstParams(inst) {
