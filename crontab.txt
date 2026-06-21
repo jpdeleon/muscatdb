@@ -1,1 +1,1 @@
-30 17 * * * cd /ut2/jerome/github/research/project/muscat-db && uv run muscat-db build-db >> /ut2/jerome/github/research/project/muscat-db/logs/build-db.log 2>&1
+30 17 * * * cd /ut2/jerome/github/research/project/muscat-db && /ut2/jerome/.local/bin/uv run muscat-db build-db >> /ut2/jerome/github/research/project/muscat-db/logs/build-db.log 2>&1

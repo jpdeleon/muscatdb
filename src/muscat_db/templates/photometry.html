@@ -71,6 +71,22 @@
     font-size: 0.76rem; overflow-x: auto; white-space: pre;
   }
   #opt-error { color: var(--red); font-size: 0.8rem; min-height: 1rem; }
+
+  /* Collapsible option groups (Sigma Clipping), collapsed by default. */
+  .opt-collapse { grid-column: 1 / -1; margin-top: 1rem; }
+  .opt-collapse > summary {
+    font-size: 0.85rem; font-weight: 600; color: var(--accent2);
+    border-bottom: 1px solid var(--border); padding-bottom: 0.25rem;
+    cursor: pointer; user-select: none; list-style: none;
+    display: flex; align-items: center; gap: 0.4rem;
+  }
+  .opt-collapse > summary::-webkit-details-marker { display: none; }
+  .opt-collapse > summary::before {
+    content: '\25B8'; color: var(--text-dim); font-size: 0.8rem;
+    transition: transform 0.15s ease;
+  }
+  .opt-collapse[open] > summary::before { transform: rotate(90deg); }
+  .opt-collapse > *:not(summary) { margin-top: 0.7rem; }
 </style>
 
 <h1>Photometry</h1>
@@ -253,7 +269,7 @@
 
     <details class="adv" id="opt-panel">
       <summary>Pipeline options (all run_photometry arguments)</summary>
-      <div class="opt-grid">
+      <div class="opt-grid" style="margin-top: 0.5rem;">
         <div class="opt opt-span2">
           <label>Bands <span class="help-tooltip" title="Filter bands to reduce.">?</span></label>
           {% set narrow_bands = ['Na_D', 'g_narrow', 'i_narrow', 'z_narrow'] %}
@@ -261,92 +277,144 @@
              is empty (e.g. manually-typed / un-ingested target) fall back to the
              standard static list. Shared by the checkboxes and the ref_band select. #}
           {% set band_choices = available_bands if available_bands else ['gp', 'rp', 'ip', 'zs', 'Na_D', 'g_narrow', 'i_narrow', 'z_narrow'] %}
-          <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+          <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
             <div class="band-checks">
               {% for b in band_choices %}
               <label><input type="checkbox" name="band" value="{{ b }}" {% if available_bands or b in run_defaults.bands or (is_narrowband and b in narrow_bands) %}checked{% endif %}> {{ b }}</label>
               {% endfor %}
             </div>
-            <button class="btn" type="button" id="defaults-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2; flex-shrink: 0;">Use defaults</button>
+            <button class="btn" type="button" id="defaults-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2; flex-shrink: 0;">Use default settings</button>
           </div>
         </div>
 
-        <div class="opt">
-          <label for="opt-target_id">Target ID <span class="help-tooltip" title="Target index in Gaia catalog (corresponds to --tID). Empty means auto-detect target at center.">?</span></label>
-          <input type="text" id="opt-target_id" placeholder="auto" value="{{ run_defaults.target_id }}">
-          <span class="hint">--tID; empty → auto</span>
-        </div>
-        <div class="opt">
-          <label for="opt-comparison_ids">Comparison IDs <span class="help-tooltip" title="Indexes of reference/comparison stars (corresponds to --cID). Comma-separated (e.g. 1,2,3). Empty means auto-detect.">?</span></label>
-          <input type="text" id="opt-comparison_ids" placeholder="auto" value="{{ run_defaults.comparison_ids }}">
-          <span class="hint">--cID; comma-separated, empty → auto</span>
-        </div>
-        <div class="opt">
-          <label for="opt-avoid_comparison_ids">Avoid Comparison IDs <span class="help-tooltip" title="Star indices to exclude as comparisons (corresponds to --avoid_cids). Requires --ref_band; indices refer to that band's catalog. Comma-separated (e.g. 5,7,12). Empty means none excluded.">?</span></label>
-          <input type="text" id="opt-avoid_comparison_ids" placeholder="none" value="{{ run_defaults.avoid_comparison_ids }}" disabled>
-          <span class="hint">--avoid_cids; requires --ref_band; comma-separated, empty → none</span>
-        </div>
-        <div class="opt">
-          <label for="opt-target_coord">Target coordinates <span class="help-tooltip" title="Override target coordinates 'RA Dec' (e.g. '12:34:56.7 -45:32:10.0' or '187.5 -45.5'). When set, bypasses MAST name resolution (useful if astroquery fails).">?</span></label>
-          <input type="text" id="opt-target_coord" placeholder="MAST resolution" value="{{ run_defaults.target_coord }}">
-          <span class="hint">--target_coord; empty → resolve name via MAST</span>
-        </div>
-        <div class="opt">
-          <label for="opt-ref_band">Reference band <span class="help-tooltip" title="Band used as alignment reference across other bands (corresponds to --ref_band). Empty means per-band self-reference.">?</span></label>
-          <select id="opt-ref_band">
-            <option value="">per-band self-reference</option>
-            {% for b in band_choices %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
-          </select>
-        </div>
-        <div class="opt">
-          <label for="opt-refid">Reference frame index <span class="help-tooltip" title="Frame index to use as alignment reference (corresponds to --refid). Empty means auto (middle/best frame).">?</span></label>
-          <input type="number" id="opt-refid" placeholder="auto" min="0">
-        </div>
-        <div class="opt">
-          <label for="opt-aper_unit">Aperture unit <span class="help-tooltip" title="Units for aperture radii (pixels or FWHM) (corresponds to --aper_unit).">?</span></label>
-          <select id="opt-aper_unit">
-             <option value="pix" selected>pix</option>
-            <option value="fwhm">fwhm</option>
-          </select>
-        </div>
-        <div class="opt">
-          <label for="opt-max_num_stars">Max # stars (PSF) <span class="help-tooltip" title="Max number of stars to detect for PSF modeling or alignment (corresponds to --max_num_stars).">?</span></label>
-          <input type="number" id="opt-max_num_stars" value="{{ run_defaults.max_num_stars }}" min="1">
-        </div>
-        <div class="opt">
-          <label for="opt-annulus">Sky annulus (RIN,ROUT) <span class="help-tooltip" title="Inner and outer radii of background sky subtraction annulus (corresponds to --annulus). Required if aperture radii is set.">?</span></label>
-          <input type="text" id="opt-annulus" placeholder="e.g. 25,40">
-          <span class="hint">required with aperture radii</span>
-        </div>
-        <div class="opt">
-          <label for="opt-aper_radii">Aperture radii (MIN,MAX,DR) <span class="help-tooltip" title="Radius grid search parameters as MIN,MAX,DR (corresponds to --aper_radii). Required if annulus is set. Empty means use Gaia heuristic.">?</span></label>
-          <input type="text" id="opt-aper_radii" placeholder="Gaia heuristic">
-          <span class="hint">blank → auto from Gaia</span>
-        </div>
-        <div class="opt">
-          <label for="opt-n_stars_align"># stars for alignment <span class="help-tooltip" title="Number of stars to use for alignment (corresponds to --n_stars_align). Empty means same as Max # stars.">?</span></label>
-          <input type="number" id="opt-n_stars_align" placeholder="= max # stars" min="1">
-        </div>
-        <div class="opt">
-          <label for="opt-min_star_separation">Min star separation (px) <span class="help-tooltip" title="Minimum pixel separation between stars to avoid blended sources (corresponds to --min_star_separation).">?</span></label>
-          <input type="number" id="opt-min_star_separation" value="{{ run_defaults.min_star_separation }}" step="0.5" min="0">
-        </div>
-        <div class="opt">
-          <label for="opt-cutout_size">Cutout size (px) <span class="help-tooltip" title="Postage stamp cutout size around each star (corresponds to --cutout_size).">?</span></label>
-          <input type="number" id="opt-cutout_size" value="{{ run_defaults.cutout_size }}" min="1">
-        </div>
-        <div class="opt">
-          <label for="opt-ccd_trim">CCD trim (Y,X) <span class="help-tooltip" title="Number of pixels to trim from the borders of the image (corresponds to --ccd_trim).">?</span></label>
-          <input type="text" id="opt-ccd_trim" value="{{ run_defaults.ccd_trim }}">
-        </div>
-        <div class="opt">
-          <label for="opt-bin_size_minutes">Bin size (min) <span class="help-tooltip" title="Time binning interval in minutes for plotting light curves (corresponds to --bin_size_minutes).">?</span></label>
-          <input type="number" id="opt-bin_size_minutes" value="{{ run_defaults.bin_size_minutes }}" step="0.5" min="0">
-        </div>
-        <div class="opt">
-          <label for="opt-test_run_frames"># of test-run frames <span class="help-tooltip" title="Number of frames to process during a test-run reduction (corresponds to --test_run_frames).">?</span></label>
-          <input type="number" id="opt-test_run_frames" value="{{ run_defaults.test_run_frames }}" min="1">
-        </div>
+        <!-- Target & Star Selection -->
+        <details class="opt-collapse">
+          <summary>Target & Star Selection <span class="help-tooltip" title="Settings to identify target coordinate and comparison stars.">?</span></summary>
+          <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem;">
+            <div class="opt">
+              <label for="opt-target_id">Target ID <span class="help-tooltip" title="Target index in Gaia catalog (corresponds to --tID). Empty means auto-detect target at center.">?</span></label>
+              <input type="text" id="opt-target_id" placeholder="auto" value="{{ run_defaults.target_id }}" style="width: 100%;">
+              <span class="hint">--tID; empty → auto</span>
+            </div>
+            <div class="opt">
+              <label for="opt-target_coord">Target coordinates <span class="help-tooltip" title="Override target coordinates 'RA Dec' (e.g. '12:34:56.7 -45:32:10.0' or '187.5 -45.5'). When set, bypasses MAST name resolution (useful if astroquery fails).">?</span></label>
+              <input type="text" id="opt-target_coord" placeholder="MAST resolution" value="{{ run_defaults.target_coord }}" style="width: 100%;">
+              <span class="hint">--target_coord; empty → resolve name via MAST</span>
+            </div>
+            <div class="opt">
+              <label for="opt-comparison_ids">Comparison IDs <span class="help-tooltip" title="Indexes of reference/comparison stars (corresponds to --cID). Comma-separated (e.g. 1,2,3). Empty means auto-detect.">?</span></label>
+              <input type="text" id="opt-comparison_ids" placeholder="auto" value="{{ run_defaults.comparison_ids }}" style="width: 100%;">
+              <span class="hint">--cID; comma-separated, empty → auto</span>
+            </div>
+            <div class="opt">
+              <label for="opt-avoid_comparison_ids">Avoid Comparison IDs <span class="help-tooltip" title="Star indices to exclude as comparisons (corresponds to --avoid_cids). Requires --ref_band; indices refer to that band's catalog. Comma-separated (e.g. 5,7,12). Empty means none excluded.">?</span></label>
+              <input type="text" id="opt-avoid_comparison_ids" placeholder="none" value="{{ run_defaults.avoid_comparison_ids }}" disabled style="width: 100%;">
+              <span class="hint">--avoid_cids; requires --ref_band; comma-separated, empty → none</span>
+            </div>
+          </div>
+        </details>
+
+        <!-- Reference & Alignment -->
+        <details class="opt-collapse">
+          <summary>Reference & Alignment <span class="help-tooltip" title="Settings to establish the reference frame and coordinate source alignment.">?</span></summary>
+          <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem;">
+            <div class="opt">
+              <label for="opt-ref_band">Reference band <span class="help-tooltip" title="Band used as alignment reference across other bands (corresponds to --ref_band). Empty means per-band self-reference.">?</span></label>
+              <select id="opt-ref_band" style="width: 100%;">
+                <option value="">per-band self-reference</option>
+                {% for b in band_choices %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="opt">
+              <label for="opt-refid">Reference frame ID <span class="help-tooltip" title="FITS file frame number (4-digit suffix, e.g. 1480 for MCT20_1911191480). Empty means auto (middle/best frame).">?</span></label>
+              <input type="number" id="opt-refid" placeholder="auto" min="0" style="width: 100%;">
+            </div>
+            <div class="opt">
+              <label for="opt-max_num_stars">Max # stars for detection <span class="help-tooltip" title="Max number of stars to detect for PSF modeling or alignment (corresponds to --max_num_stars).">?</span></label>
+              <input type="number" id="opt-max_num_stars" value="{{ run_defaults.max_num_stars }}" min="1" style="width: 100%;">
+            </div>
+            <div class="opt">
+              <label for="opt-n_stars_align"># stars for alignment <span class="help-tooltip" title="Number of stars to use for alignment (corresponds to --n_stars_align). Empty means same as Max # stars.">?</span></label>
+              <input type="number" id="opt-n_stars_align" placeholder="= max # stars" min="1" style="width: 100%;">
+            </div>
+            <div class="opt">
+              <label for="opt-min_star_separation">Min star separation (px) <span class="help-tooltip" title="Minimum pixel separation between stars to avoid blended sources (corresponds to --min_star_separation).">?</span></label>
+              <input type="number" id="opt-min_star_separation" value="{{ run_defaults.min_star_separation }}" step="0.5" min="0" style="width: 100%;">
+            </div>
+            <div class="opt">
+              <label for="opt-min_star_area">Min star area (px) <span class="help-tooltip" title="Minimum pixel area for source detection (corresponds to --min_star_area).">?</span></label>
+              <input type="number" id="opt-min_star_area" value="{{ run_defaults.min_star_area }}" min="1" style="width: 100%;">
+            </div>
+          </div>
+        </details>
+
+        <!-- Aperture & Geometry -->
+        <details class="opt-collapse">
+          <summary>Aperture & Geometry <span class="help-tooltip" title="Settings defining photometry aperture radii, sky background annulus, and trimming.">?</span></summary>
+          <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem;">
+            <div class="opt">
+              <label for="opt-aper_unit">Aperture unit <span class="help-tooltip" title="Units for aperture radii (pixels or FWHM) (corresponds to --aper_unit).">?</span></label>
+              <select id="opt-aper_unit" style="width: 100%;">
+                <option value="pix" selected>pix</option>
+                <option value="fwhm">fwhm</option>
+              </select>
+            </div>
+            <div class="opt">
+              <label for="opt-aper_radii">Aperture radii (MIN,MAX,DR) <span class="help-tooltip" title="Radius grid search parameters as MIN,MAX,DR (corresponds to --aper_radii). Required if annulus is set. Empty means use Gaia heuristic.">?</span></label>
+              <input type="text" id="opt-aper_radii" placeholder="e.g. 1.5,6.0,0.5" style="width: 100%;">
+              <span class="hint" id="hint-aper_radii">blank → auto from Gaia (in px)</span>
+            </div>
+            <div class="opt">
+              <label for="opt-annulus">Sky annulus (RIN,ROUT) <span class="help-tooltip" title="Inner and outer radii of background sky subtraction annulus (corresponds to --annulus). Required if aperture radii is set.">?</span></label>
+              <input type="text" id="opt-annulus" placeholder="e.g. 25,40" style="width: 100%;">
+              <span class="hint" id="hint-annulus">required with aperture radii (in px)</span>
+            </div>
+            <div class="opt">
+              <label for="opt-cutout_size">Cutout size (px) <span class="help-tooltip" title="Postage stamp cutout size around each star (corresponds to --cutout_size).">?</span></label>
+              <input type="number" id="opt-cutout_size" value="{{ run_defaults.cutout_size }}" min="1" style="width: 100%;">
+            </div>
+            <div class="opt">
+              <label for="opt-ccd_trim">CCD trim (Y,X) <span class="help-tooltip" title="Number of pixels to trim from the borders of the image (corresponds to --ccd_trim).">?</span></label>
+              <input type="text" id="opt-ccd_trim" value="{{ run_defaults.ccd_trim }}" style="width: 100%;">
+            </div>
+          </div>
+        </details>
+
+        <!-- Reduction & Binning -->
+        <details class="opt-collapse">
+          <summary>Reduction & Binning <span class="help-tooltip" title="Reduction limits and plot plotting configuration.">?</span></summary>
+          <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem;">
+            <div class="opt">
+              <label for="opt-bin_size_minutes">Plot bin size (min) <span class="help-tooltip" title="Time binning interval in minutes for plotting light curves (corresponds to --bin_size_minutes).">?</span></label>
+              <input type="number" id="opt-bin_size_minutes" value="{{ run_defaults.bin_size_minutes }}" step="0.5" min="0" style="width: 100%;">
+            </div>
+            <div class="opt">
+              <label for="opt-test_run_frames"># of test-run frames <span class="help-tooltip" title="Number of frames to process during a test-run reduction (corresponds to --test_run_frames).">?</span></label>
+              <input type="number" id="opt-test_run_frames" value="{{ run_defaults.test_run_frames }}" min="1" style="width: 100%;">
+            </div>
+          </div>
+        </details>
+        <details class="opt-collapse">
+          <summary>Sigma Clipping <span class="help-tooltip" title="Sigma threshold parameters for sky background, FWHM, and X/Y target drift outlier clipping.">?</span></summary>
+          <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem;">
+            <div class="opt">
+              <label for="opt-sig_bkg">SIGMA_BKG <span class="help-tooltip" title="Sigma threshold for sky background outlier clipping (corresponds to --sig_bkg).">?</span></label>
+              <input type="number" id="opt-sig_bkg" value="{{ run_defaults.sig_bkg }}" step="0.1" min="0" style="width: 100%;">
+            </div>
+            <div class="opt">
+              <label for="opt-sig_fwhm">SIGMA_FWHM <span class="help-tooltip" title="Sigma threshold for FWHM outlier clipping (corresponds to --sig_fwhm).">?</span></label>
+              <input type="number" id="opt-sig_fwhm" value="{{ run_defaults.sig_fwhm }}" step="0.1" min="0" style="width: 100%;">
+            </div>
+            <div class="opt">
+              <label for="opt-sig_dx">SIGMA_DX <span class="help-tooltip" title="Sigma threshold for drift X outlier clipping (corresponds to --sig_dx).">?</span></label>
+              <input type="number" id="opt-sig_dx" value="{{ run_defaults.sig_dx }}" step="0.1" min="0" style="width: 100%;">
+            </div>
+            <div class="opt">
+              <label for="opt-sig_dy">SIGMA_DY <span class="help-tooltip" title="Sigma threshold for drift Y outlier clipping (corresponds to --sig_dy).">?</span></label>
+              <input type="number" id="opt-sig_dy" value="{{ run_defaults.sig_dy }}" step="0.1" min="0" style="width: 100%;">
+            </div>
+          </div>
+        </details>
       </div>
       <div class="opt-check-row">
         <label class="opt-check-item"><input type="checkbox" id="opt-make_gif" checked> Make GIF <span class="help-tooltip" title="Generate an animated GIF showing target/alignment field over time (corresponds to --gif).">?</span></label>
@@ -359,10 +427,10 @@
     <div id="opt-error"></div>
     <div class="run-actions">
       <button class="btn primary" type="button" id="run-test-btn" {% if raw_missing %}disabled{% endif %}>
-        ▶ Run test reduction (first {{ run_defaults.test_run_frames }} frames)
+        ▶ Run Test Reduction (first N frames)
       </button>
       <button class="btn primary" type="button" id="run-full-btn" {% if raw_missing %}disabled{% endif %}>
-        ▶ Run full reduction (all frames)
+        ▶ Run Full Reduction (all frames)
       </button>
       <button class="btn" type="button" id="cancel-btn" style="display:none;border-color:var(--red);color:var(--red);">
         ■ Cancel
@@ -378,6 +446,7 @@
       <button class="btn" type="button" id="copy-cmd">Copy</button>
     </div>
     <pre id="run-log"></pre>
+    <div id="run-error" style="display:none;margin-top:0.75rem;padding:0.6rem 0.8rem;background:var(--red-bg,#2d0a0a);border:1px solid var(--red,#e33);border-radius:6px;color:var(--red,#e33);font-size:0.85rem;"></div>
   </div>
 {% endif %}
 {% endblock %}
@@ -414,16 +483,35 @@
   // ----- persistent job: resume or show banner across page navigations -----
   function saveJob() { try { localStorage.setItem(JOB_KEY, JSON.stringify({ inst: inst, date: date, target: target })); } catch (e) {} }
   function clearJob() { try { localStorage.removeItem(JOB_KEY); } catch (e) {} }
-  (function checkSavedJob() {
+  // Defined here but invoked at the end of the script, after cancelBtn, logEl,
+  // runBtns, and polling are assigned. Calling it inline would run setRunning()
+  // while those vars are still undefined, so the cancel button would never show
+  // (and runBtns.forEach would throw) when returning to a page with a live job.
+  function checkSavedJob() {
+    // Always reflect the CURRENT target's real server-side state, even when
+    // localStorage has no record of it (e.g. a full run queued in a previous
+    // session or another tab). This keeps the Run buttons disabled and the
+    // Cancel button visible whenever the server reports an active/queued job.
+    if (inst && date && target) {
+      var cqs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
+      fetch('/photometry/status?' + cqs).then(function (r) { return r.json(); }).then(function (s) {
+        if (s.state === 'pending' || s.state === 'running' || s.state === 'cancelling') {
+          saveJob();
+          setRunning(true);
+          if (logEl) logEl.style.display = 'block';
+          if (s.state === 'pending' && !s.log && logEl) {
+            logEl.textContent = '⏳ Queued — waiting for the running full reduction to finish…';
+          }
+          if (!polling) polling = setInterval(poll, 2000);
+          poll();
+        }
+      }).catch(function () {});
+    }
+    // Cross-page banner for a DIFFERENT target that still has a saved job.
     var saved;
     try { saved = JSON.parse(localStorage.getItem(JOB_KEY) || 'null'); } catch (e) { saved = null; }
     if (!saved || !saved.inst) return;
-    if (saved.inst === inst && saved.date === date && saved.target === target) {
-      if (logEl) logEl.style.display = 'block';
-      if (!polling) polling = setInterval(poll, 2000);
-      poll();
-      return;
-    }
+    if (saved.inst === inst && saved.date === date && saved.target === target) return;
     var banner = document.getElementById('job-banner');
     var bannerMsg = document.getElementById('job-banner-msg');
     var bannerLink = document.getElementById('job-banner-link');
@@ -443,7 +531,7 @@
         setTimeout(pollBanner, 3000);
       }).catch(function () { setTimeout(pollBanner, 5000); });
     })();
-  })();
+  }
 
   // ----- cascading selectors: navigate on change -----
   var selInst   = document.getElementById('sel-inst');
@@ -594,7 +682,12 @@
       cutout_size: val('opt-cutout_size'),
       ccd_trim: val('opt-ccd_trim'),
       bin_size_minutes: val('opt-bin_size_minutes'),
-      overwrite: chk('opt-overwrite')
+      overwrite: chk('opt-overwrite'),
+      sig_bkg: val('opt-sig_bkg'),
+      sig_fwhm: val('opt-sig_fwhm'),
+      sig_dx: val('opt-sig_dx'),
+      sig_dy: val('opt-sig_dy'),
+      min_star_area: val('opt-min_star_area')
     };
   }
   function saveOptions() {
@@ -609,7 +702,7 @@
     });
     ['ref_band','refid','aper_unit','aper_radii','annulus',
      'target_id','comparison_ids','avoid_comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
-     'n_stars_align','cutout_size','ccd_trim','bin_size_minutes'].forEach(function (id) {
+     'n_stars_align','cutout_size','ccd_trim','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
     });
@@ -618,7 +711,36 @@
       if (el && saved[id] !== undefined) el.checked = saved[id];
     });
   }
+  function updateApertureHints() {
+    var unit = val('opt-aper_unit');
+    var radiiEl = document.getElementById('opt-aper_radii');
+    var annulusEl = document.getElementById('opt-annulus');
+    var radiiHint = document.getElementById('hint-aper_radii');
+    var annulusHint = document.getElementById('hint-annulus');
+    if (unit === 'fwhm') {
+      if (radiiEl) radiiEl.placeholder = 'e.g. 0.5,3.0,0.5';
+      if (annulusEl) annulusEl.placeholder = 'e.g. 6,10';
+      if (radiiHint) radiiHint.textContent = 'blank → auto from Gaia (in FWHM)';
+      if (annulusHint) annulusHint.textContent = 'required with aperture radii (in FWHM)';
+    } else {
+      if (radiiEl) radiiEl.placeholder = 'e.g. 1.5,6.0,0.5';
+      if (annulusEl) annulusEl.placeholder = 'e.g. 25,40';
+      if (radiiHint) radiiHint.textContent = 'blank → auto from Gaia (in px)';
+      if (annulusHint) annulusHint.textContent = 'required with aperture radii (in px)';
+    }
+  }
+
   restoreOptions();
+  updateApertureHints();
+
+  var aperUnitEl = document.getElementById('opt-aper_unit');
+  if (aperUnitEl) {
+    aperUnitEl.addEventListener('change', function () {
+      updateApertureHints();
+      saveOptions();
+      refreshCmd();
+    });
+  }
 
   var DEFAULTS = {{ run_defaults | tojson }};
   var defaultsBtn = document.getElementById('defaults-btn');
@@ -629,7 +751,7 @@
       });
       ['ref_band','refid','aper_unit','aper_radii','annulus',
        'target_id','comparison_ids','avoid_comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
-       'n_stars_align','cutout_size','ccd_trim','bin_size_minutes'].forEach(function (id) {
+       'n_stars_align','cutout_size','ccd_trim','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area'].forEach(function (id) {
         var el = document.getElementById('opt-'+id);
         if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';
       });
@@ -638,6 +760,7 @@
         if (el) el.checked = !!DEFAULTS[id];
       });
       saveOptions();
+      updateApertureHints();
       refreshCmd();
     });
   }
@@ -672,8 +795,23 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
   })();
+  // ----- show error banner from a previous failed run -----
+  (function restoreError() {
+    var errEl = document.getElementById('run-error');
+    if (!errEl) return;
+    var savedErr;
+    try { savedErr = localStorage.getItem('phot:err:' + inst + ':' + date + ':' + target); } catch (e) { savedErr = null; }
+    if (savedErr) {
+      errEl.style.display = 'block';
+      var label = (savedErr === 'Cancelled by user') ? 'Cancelled' : 'Pipeline failed';
+      errEl.innerHTML = '✗ <strong>' + label + ':</strong> ' + escapeHtml(savedErr);
+      try { localStorage.removeItem('phot:err:' + inst + ':' + date + ':' + target); } catch (e) {}
+      errEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  })();
   var hasOptError = false;
   var polling = null;
+  var jobActive = false;
 
   function debounce(fn, ms) {
     var t; return function () { clearTimeout(t); t = setTimeout(fn, ms); };
@@ -688,7 +826,7 @@
       if (d.command) cmdEl.textContent = d.command;
       if (errEl) errEl.textContent = d.error || '';
       hasOptError = !!d.error;
-      if (!polling) {
+      if (!jobActive) {
         runBtns.forEach(function (b) { b.disabled = hasOptError || rawMissing; });
       }
     }).catch(function () {});
@@ -716,15 +854,44 @@
   var copyBtn = document.getElementById('copy-cmd');
   if (copyBtn) {
     copyBtn.addEventListener('click', function () {
-      navigator.clipboard.writeText(cmdEl.textContent).then(function () {
+      var text = cmdEl ? cmdEl.textContent : '';
+      if (!text) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () {
+          copyBtn.textContent = 'Copied';
+          setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1500);
+        }).catch(function () {
+          fallbackCopy(text);
+        });
+      } else {
+        fallbackCopy(text);
+      }
+    });
+  }
+
+  function fallbackCopy(text) {
+    var textArea = document.createElement("textarea");
+    textArea.value = text;
+    textArea.style.position = "fixed";
+    textArea.style.left = "-999999px";
+    textArea.style.top = "-999999px";
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    try {
+      if (document.execCommand('copy')) {
         copyBtn.textContent = 'Copied';
         setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1500);
-      });
-    });
+      }
+    } catch (err) {
+      console.error('Fallback copy failed', err);
+    }
+    document.body.removeChild(textArea);
   }
 
   // ----- launch / cancel a reduction with live log polling -----
   function setRunning(on) {
+    jobActive = on;
     runBtns.forEach(function (b) { b.disabled = on || hasOptError || rawMissing; });
     if (cancelBtn) cancelBtn.style.display = on ? '' : 'none';
   }
@@ -738,9 +905,12 @@
         logEl.scrollTop = logEl.scrollHeight;
         try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, s.log); } catch (e) {}
       }
+      if (s.state === 'running' || s.state === 'cancelling') {
+        setRunning(true);
+      }
       if (s.state === 'done') {
         stopPolling(); clearJob();
-        logEl.textContent += '\n\n✓ done (' + s.elapsed + 's) — reloading…';
+        logEl.textContent = (s.log || '') + '\n\n✓ done (' + s.elapsed + 's) — reloading…';
         try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
         if (typeof window.showLoading === 'function') {
           window.showLoading('Reloading…');
@@ -748,40 +918,68 @@
         setTimeout(function () { window.location.reload(); }, 1200);
       } else if (s.state === 'error') {
         stopPolling(); setRunning(false); clearJob();
-        logEl.textContent += '\n\n✗ pipeline exited with code ' + s.returncode;
+        logEl.textContent = (s.log || '') + '\n\n✗ pipeline exited with code ' + s.returncode;
         try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+        try { localStorage.setItem('phot:err:' + inst + ':' + date + ':' + target, s.error_desc || 'Unknown error'); } catch (e) {}
+        if (typeof window.showLoading === 'function') {
+          window.showLoading('Reloading…');
+        }
+        setTimeout(function () { window.location.reload(); }, 1200);
       } else if (s.state === 'cancelled') {
         stopPolling(); setRunning(false); clearJob();
-        logEl.textContent += '\n\n■ cancelled';
+        logEl.textContent = (s.log || '') + '\n\n■ cancelled';
         try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+        try { localStorage.setItem('phot:err:' + inst + ':' + date + ':' + target, 'Cancelled by user'); } catch (e) {}
+        if (typeof window.showLoading === 'function') {
+          window.showLoading('Reloading…');
+        }
+        setTimeout(function () { window.location.reload(); }, 1200);
+      } else if (s.state === 'pending') {
+        setRunning(true);
+        if (!s.log) {
+          logEl.style.display = 'block';
+          logEl.textContent = '⏳ Queued — waiting for the running full reduction to finish…';
+        }
+      } else if (s.state === 'none') {
+        stopPolling(); setRunning(false); clearJob();
       }
     }).catch(function () {});
   }
 
   function launch(testRun) {
+    saveJob();
+    // Unhide this job on the Jobs page
+    try {
+      var h = JSON.parse(localStorage.getItem('jobs:hidden') || '[]');
+      var key = inst + '/' + date + '/' + target.replace(/ /g, '');
+      var jk = 'photometry:' + key;
+      var hi = h.indexOf(jk); if (hi !== -1) { h.splice(hi, 1); localStorage.setItem('jobs:hidden', JSON.stringify(h)); }
+    } catch (_) {}
+
     setRunning(true);
     logEl.style.display = 'block';
     logEl.textContent = 'Launching ' + (testRun ? 'test' : 'full') + ' reduction…';
     try { localStorage.removeItem('phot:log:' + inst + ':' + date + ':' + target); } catch (e) {}
+    try { localStorage.removeItem('phot:err:' + inst + ':' + date + ':' + target); } catch (e) {}
+    var errEl = document.getElementById('run-error');
+    if (errEl) errEl.style.display = 'none';
     fetch('/photometry/run', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inst: inst, date: date, target: target, test_run: testRun, options: collectOptions() })
     }).then(function (r) { return r.json(); }).then(function (res) {
       if (!res.ok) {
+        clearJob();
         setRunning(false);
         logEl.textContent = 'Error: ' + (res.error || 'failed to start');
         return;
       }
-      saveJob();
-      // Unhide this job on the Jobs page
-      try {
-        var h = JSON.parse(localStorage.getItem('jobs:hidden') || '[]');
-        var jk = 'photometry:' + res.key;
-        var hi = h.indexOf(jk); if (hi !== -1) { h.splice(hi, 1); localStorage.setItem('jobs:hidden', JSON.stringify(h)); }
-      } catch (_) {}
+      if (res.queued) {
+        logEl.textContent = '⏳ Queued — waiting for the running full reduction to finish…';
+      }
       if (!polling) polling = setInterval(poll, 2000);
       poll();
     }).catch(function (err) {
+      clearJob();
       setRunning(false);
       logEl.textContent = 'Error: ' + err.message;
     });
@@ -813,6 +1011,10 @@
 
   // initial command reflects default options
   refreshCmd();
+
+  // Restore running-job state (cancel button, log polling) now that all the
+  // DOM refs and helpers above are defined.
+  checkSavedJob();
 })();
 </script>
 <div style="text-align:center; margin:2em 0; display: flex; justify-content: center; gap: 1rem; align-items: center;">
