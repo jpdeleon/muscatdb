@@ -58,7 +58,9 @@ muscat-db serve --port 8080  # custom port
 
 ## Web Frontend
 
-Navigation: **Logs** → **Dates** → **CCD summaries** → **Per-frame table**
+The navigation bar links the observation log, photometry, transit fitting, job
+history, exposure calculator, and workflow diagram. Observation-log navigation
+is **Logs** → **Dates** → **CCD summaries** → **Per-frame table**.
 
 The home page shows:
 
@@ -70,9 +72,22 @@ The home page shows:
 - **Loading status bar** at the top of the page plus a bottom status line showing `Rendering N targets…` while the table lays out.
 - Inline SVG **favicon** (no extra HTTP request).
 
+Photometry and transit-fit runs execute in the background and remain recorded
+on the **Jobs** page. A photometry process that exits successfully but reports
+`photometry PARTIAL FAILURE` is shown as failed, because one or more requested
+bands did not complete. Hiding a job is local to the browser; starting that job
+again makes its row visible.
+
+Photometry run logs are isolated by instrument, date, and target. Transit-fit
+outputs are stored under `$MUSCAT_TIMER_DIR/<instrument>/<date>/<target>/`
+(default `$MUSCAT_TIMER_DIR` is `/ut2/jerome/ql/timer`). Spaces are removed from
+the target directory name; empty names and names containing `..`, `/`, or `\`
+are rejected.
+
 Calibration and engineering frames (`DARK*`, `FLAT*`, `BIAS*`, `MOVIE`, `FOCUS_ADJUST`, `FoV`, `Muscat commissioning *`, etc.) are excluded from the targets aggregation so the table only shows real science targets.
 
-All pages still render with zero external dependencies — fonts, icons, theme, and search are inlined.
+Fonts, icons, theme, and search are local or inlined. The **Workflow** page loads
+Mermaid from jsDelivr to render its pipeline diagrams.
 
 ## Cron (daily)
 
@@ -101,6 +116,18 @@ CLI (typer)
 | sinistro | 1 | `*` (any LCO 1m site) | `/data/Sinistro`  |
 
 Sinistro scans the reduced `*e91.fits` frames produced by LCO BANZAI, regardless of site prefix (`elp1m008-`, `coj1m003-`, `cpt1m013-`, …).
+
+The exposure calculator uses these instrument references when scaling its
+MuSCAT3 calibration. Full well is in electrons, gain in electrons/ADU, pixel
+scale in arcsec/pixel, and aperture in metres.
+
+| Instrument | Full well | Gain | Pixel scale | Aperture |
+|---|---:|---:|---:|---:|
+| muscat | 55,000 | 1.0 | 0.358 | 1.88 |
+| muscat2 | 62,000 | 1.0 | 0.44 | 1.52 |
+| muscat3 | 99,000 | 1.8 | 0.267 | 2.0 |
+| muscat4 | 99,000 | 1.8 | 0.267 | 2.0 |
+| sinistro | 100,000 | 1.5 | 0.39 | 1.0 |
 
 ### Migration from Perl
 

@@ -21,7 +21,14 @@
 {% endfor %}
 </div>
 
-<h2 style="margin-top: 2.5rem;">Data Summary</h2>
+<div style="display:flex; justify-content:space-between; align-items:center; margin-top:2.5rem; margin-bottom:1rem; flex-wrap:wrap; gap:1rem;">
+  <h2 style="margin:0;">Data Summary</h2>
+  <form method="get" action="/logs" style="display:flex; align-items:center; gap:0.5rem;">
+    <label for="min_frames" style="font-size:0.9rem; color:var(--text-dim);">Min frames per target:</label>
+    <input type="number" id="min_frames" name="min_frames" value="{{ min_frames }}" min="1" style="width:70px; background:var(--input-bg); color:var(--text); border:1px solid var(--border); border-radius:4px; padding:0.25rem 0.5rem; font-family:inherit; font-size:0.9rem;">
+    <button type="submit" class="btn" style="padding:0.25rem 0.75rem; font-size:0.9rem; border-radius:4px; cursor:pointer;">Filter</button>
+  </form>
+</div>
 <table>
   <thead>
     <tr>
