@@ -88,8 +88,8 @@ class TestListOutputs:
         out = phot.list_outputs(INST, DATE, TARGET)
         assert out["has_any"]
         assert set(out["summary"]) == {"lightcurves", "raw_flux", "covariates", "stacks"}
-        assert out["summary"]["lightcurves"] == f"{TARGET}_{INST}_{DATE}_lightcurves.png"
-        assert out["summary"]["raw_flux"] == f"{TARGET}_{INST}_{DATE}_raw_flux.png"
+        assert out["summary"]["lightcurves"]["file"] == f"{TARGET}_{INST}_{DATE}_lightcurves.png"
+        assert out["summary"]["raw_flux"]["file"] == f"{TARGET}_{INST}_{DATE}_raw_flux.png"
         assert out["npz"] == f"{TARGET}_{INST}_{DATE}.npz"
         assert out["log"].endswith(".log")
 
@@ -115,7 +115,7 @@ class TestListOutputs:
         assert list(out["bands"]) == BANDS  # canonical order gp, rp, ip, zs
         gp = out["bands"]["gp"]
         assert set(gp) == {"ref", "apertures", "alignment", "gif", "csv"}
-        assert gp["csv"] == f"{TARGET}_{INST}_gp_{DATE}.csv"
+        assert gp["csv"]["file"] == f"{TARGET}_{INST}_gp_{DATE}.csv"
 
     def test_missing_dir_returns_empty(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
@@ -346,6 +346,135 @@ class TestStartRun:
         s = phot.job_status(INST, "111111", "Nobody")
         assert s["state"] == "none"
 
+    def test_job_status_reports_persisted_error_when_job_gone(
+        self, monkeypatch, tmp_path
+    ):
+        """A run popped from _JOBS (watchdog kill, server restart) must still
+        report its persisted terminal state plus log tail, not a silent 'none'."""
+        with phot._LOCK:
+            phot._JOBS.clear()
+
+        rdir = tmp_path / INST / DATE
+        rdir.mkdir(parents=True)
+        phot._run_log_path(rdir, INST, DATE, TARGET).write_text(
+            "$ python -m prose.scripts.run_photometry\n"
+            "Traceback (most recent call last):\n"
+            "RuntimeError: pipeline blew up\n"
+        )
+        monkeypatch.setattr(phot, "results_dir", lambda inst, date: rdir)
+
+        jobs = [{
+            "key": f"photometry:{INST}/{DATE}/{TARGET}",
+            "type": "photometry",
+            "inst": INST,
+            "date": DATE,
+            "target": TARGET,
+            "state": "error",
+            "returncode": -1,
+            "elapsed": 12,
+            "started_at": 1.0,
+            "error_desc": "watchdog: no log output for 25m",
+            "run_type": "full",
+            "params": "",
+        }]
+        monkeypatch.setattr("muscat_db.database.get_persisted_jobs", lambda: jobs)
+
+        s = phot.job_status(INST, DATE, TARGET)
+        assert s["state"] == "error"
+        assert s["error_desc"] == "watchdog: no log output for 25m"
+        assert "pipeline blew up" in s["log"]
+
+    def test_terminal_state_treats_partial_failure_log_as_error(self, tmp_path):
+        log = tmp_path / "_webrun.log"
+        log.write_text(
+            "2026-06-18 15:06:36,352 - ERROR: photometry PARTIAL FAILURE: "
+            "2/4 bands reduced (156s elapsed); failed/skipped=['gp', 'rp']\n"
+        )
+
+        assert phot._terminal_job_state(0, False, log) == "error"
+
+    def test_sync_jobs_repairs_persisted_done_partial_failure(
+        self, monkeypatch, tmp_path
+    ):
+        with phot._LOCK:
+            phot._JOBS.clear()
+
+        rdir = tmp_path / INST / DATE
+        rdir.mkdir(parents=True)
+        phot._run_log_path(rdir, INST, DATE, TARGET).write_text(
+            "$ python -m prose.scripts.run_photometry\n"
+            "2026-06-18 15:06:36,352 - ERROR: photometry PARTIAL FAILURE: "
+            "2/4 bands reduced (156s elapsed); failed/skipped=['gp', 'rp']\n"
+        )
+        monkeypatch.setattr(phot, "results_dir", lambda inst, date: rdir)
+
+        jobs = [
+            {
+                "key": f"photometry:{INST}/{DATE}/{TARGET}",
+                "type": "photometry",
+                "inst": INST,
+                "date": DATE,
+                "target": TARGET,
+                "state": "done",
+                "returncode": 0,
+                "elapsed": 156,
+                "started_at": 1.0,
+                "error_desc": "",
+                "run_type": "test",
+                "params": "",
+            }
+        ]
+        saved = []
+
+        monkeypatch.setattr("muscat_db.database.get_persisted_jobs", lambda: jobs)
+        monkeypatch.setattr(
+            "muscat_db.database.save_job",
+            lambda **kwargs: saved.append(kwargs),
+        )
+
+        phot.sync_jobs()
+
+        assert saved
+        assert saved[0]["state"] == "error"
+        assert saved[0]["returncode"] == 0
+        assert "PARTIAL FAILURE" in saved[0]["error_desc"]
+
+    def test_sync_jobs_uses_target_specific_partial_failure_log(
+        self, monkeypatch, tmp_path
+    ):
+        with phot._LOCK:
+            phot._JOBS.clear()
+
+        rdir = tmp_path / INST / DATE
+        rdir.mkdir(parents=True)
+        phot._run_log_path(rdir, INST, DATE, "Other Target").write_text(
+            "ERROR: photometry PARTIAL FAILURE\n"
+        )
+        monkeypatch.setattr(phot, "results_dir", lambda inst, date: rdir)
+        jobs = [{
+            "key": f"photometry:{INST}/{DATE}/{TARGET}",
+            "type": "photometry",
+            "inst": INST,
+            "date": DATE,
+            "target": TARGET,
+            "state": "done",
+            "returncode": 0,
+            "elapsed": 10,
+            "started_at": 1.0,
+            "error_desc": "",
+            "run_type": "test",
+            "params": "",
+        }]
+        saved = []
+        monkeypatch.setattr("muscat_db.database.get_persisted_jobs", lambda: jobs)
+        monkeypatch.setattr(
+            "muscat_db.database.save_job", lambda **kwargs: saved.append(kwargs)
+        )
+
+        phot.sync_jobs()
+
+        assert saved == []
+
     def test_cancel_no_job(self):
         r = phot.cancel_run(INST, "222222", "Nobody")
         assert r["ok"] is False
@@ -477,7 +606,7 @@ class TestRoutes:
         assert 'id="run-test-btn"' in html
         assert 'id="run-full-btn"' in html
         assert 'id="cancel-btn"' in html
-        assert "Run full reduction" in html
+        assert "▶ Run Full Reduction (all frames)" in html
 
     def test_cancel_route_no_job(self, client):
         r = client.post("/photometry/cancel", json={
@@ -572,6 +701,10 @@ class TestRoutes:
     def test_transit_fit_file_rejects_bad_target(self, client):
         r = client.get("/transit-fit/file/muscat3/250717/evil..target/timer-fit.log")
         assert r.status_code == 400
+
+    def test_transit_fit_log_rejects_bad_target(self, client):
+        r = client.get("/jobs/log/transit_fit/muscat3/250717/evil..target")
+        assert r.status_code == 404
 
     def test_transit_fit_query_archive_success(self, client, mocker):
         mock_response = mocker.MagicMock()
@@ -692,9 +825,8 @@ class TestRoutes:
         r = client.get("/jobs")
         assert r.status_code == 200
         assert "Jobs" in r.text
-        assert "Photometry Jobs" in r.text
-        assert "Transit Fit Jobs" in r.text
-        assert "View reduction" not in r.text
+        assert 'data-type="photometry"' in r.text
+        assert 'data-type="transit_fit"' in r.text
         assert "cancelJob(this)" in r.text
         assert 'data-target="TOI-5684.01"' in r.text
         assert "TOI-5684.02" in r.text
@@ -704,6 +836,32 @@ class TestRoutes:
         assert r.status_code == 200
         assert "MuSCAT-db Pipeline Workflow" in r.text
         assert "mermaid" in r.text
+
+
+class TestTransitFitJobs:
+    def test_sync_jobs_marks_invalid_pending_target_error(self, monkeypatch):
+        from muscat_db import transit_fit as fit
+
+        pending_job = {
+            "key": "transit_fit:muscat3/250717/evil..target",
+            "type": "transit_fit",
+            "inst": "muscat3",
+            "date": "250717",
+            "target": "evil..target",
+            "state": "pending",
+            "started_at": 1.0,
+            "params": "{}",
+        }
+        saved = []
+        monkeypatch.setattr("muscat_db.database.get_persisted_jobs", lambda: [pending_job])
+        monkeypatch.setattr("muscat_db.database.save_job", lambda **kwargs: saved.append(kwargs))
+        monkeypatch.setattr(fit, "_FIT_JOBS", {})
+
+        fit.sync_jobs()
+
+        assert saved[-1]["state"] == "error"
+        assert saved[-1]["target"] == "evil..target"
+        assert saved[-1]["error_desc"] == "Invalid target"
 
 
 class TestTransitFitOptions:
@@ -800,7 +958,7 @@ class TestTransitFitOptions:
         # Load fit.yaml and verify
         with open(rdir / "fit.yaml") as f:
             fit_data = yaml.safe_load(f)
-        assert fit_data["planets"] == "b,c"
+        assert fit_data["planets"] == "bc"
         
         # Load sys.yaml and verify
         with open(rdir / "sys.yaml") as f:

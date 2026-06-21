@@ -29,7 +29,11 @@ _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent.resolve()
 
 
 def fit_output_dir(inst: str, date: str, target: str) -> pathlib.Path:
-    """Return the output directory for a transit fitting run."""
+    """Return a transit-fit output directory confined below the timer root.
+
+    Spaces are removed from the target directory component. ``ValueError`` is
+    raised for an empty target or one containing ``..``, ``/``, or ``\\``.
+    """
     base = pathlib.Path(os.environ.get("MUSCAT_TIMER_DIR", "/ut2/jerome/ql/timer")).expanduser().resolve(strict=False)
     target_dir = _target_dir_name(target)
     path = (base / inst / date / target_dir).resolve(strict=False)
@@ -54,7 +58,10 @@ def _target_dir_name(target: str) -> str:
 
 
 def log_path(inst: str, date: str, target: str) -> pathlib.Path | None:
-    rdir = fit_output_dir(inst, date, target)
+    try:
+        rdir = fit_output_dir(inst, date, target)
+    except ValueError:
+        return None
     p = rdir / "timer-fit.log"
     return p if p.is_file() else None
 
@@ -88,6 +95,7 @@ def _count_running_full() -> int:
 
 
 def fit_job_key(inst: str, date: str, target: str) -> str:
+    """Return a job key using the validated target directory name."""
     return f"{inst}/{date}/{_target_dir_name(target)}"
 
 
@@ -212,7 +220,7 @@ def get_target_parameters(target_name: str) -> dict:
 
 # Parameters the user may hold fixed during the fit (the "Fixed Parameters"
 # checkboxes in the fitting configuration form).
-_FIXABLE_PARAMS = {"period", "u_star", "b", "ror", "ecc", "omega"}
+_FIXABLE_PARAMS = {"t0", "period", "dur", "u_star", "b", "ror"}
 # A single planet designation token, e.g. "b" or "c".
 _PLANET_TOKEN_RE = re.compile(r"^[A-Za-z]$")
 
@@ -241,6 +249,55 @@ _FIT_NUMERIC_FIELDS: list[tuple[str, str, str]] = [
     ("b_unc",       "b uncertainty",        "pos"),
 ]
 
+# Per-planet fitting parameters whose prior shape is user-selectable.
+# timer applies a Gaussian prior (value ± uncertainty from sys.yaml) by default;
+# listing a parameter in fit.yaml's ``uniform`` block instead switches it to a
+# Uniform prior over [value - unc, value + unc]. timer fits t0 with a Uniform
+# prior unconditionally, so t0 is intentionally not selectable here.
+_PRIOR_PARAMS = ("period", "dur", "ror", "b")
+_PRIOR_CHOICES = {"gaussian", "uniform"}
+# Fallback [low, high] bounds for a Uniform parameter whose fields are left
+# blank. b and ror use their physical limits (matching the GUI auto-fill);
+# period and dur have no universal range, so fall back to a tight window around
+# the sys.yaml defaults. Normally the GUI fills these on selecting Uniform.
+_UNIFORM_DEFAULT_BOUNDS: dict[str, tuple[float, float]] = {
+    "period": (0.999, 1.001),
+    "dur":    (0.09, 0.11),
+    "ror":    (0.0, 0.5),
+    "b":      (0.0, 1.0),
+}
+
+
+def _prior_choice(options: dict, param: str, planet: str, first_planet: str) -> str:
+    """Return the prior shape ('gaussian'|'uniform') for *param* of *planet*.
+
+    Falls back to the unsuffixed key for the first planet (matching how the
+    numeric fields broadcast), then to 'gaussian'.
+    """
+    raw = options.get(f"{param}_prior_{planet}")
+    if raw is None and planet == first_planet:
+        raw = options.get(f"{param}_prior")
+    return str(raw or "gaussian").strip().lower()
+
+
+def _planet_value(options: dict, key: str, planet: str, first_planet: str):
+    """Return a planet's numeric field as float, or ``None`` when blank/invalid.
+
+    Mirrors the first-planet broadcast: the unsuffixed key (e.g. ``ror``) backs
+    the suffixed one (``ror_b``) only for the first planet.
+    """
+    raw = options.get(f"{key}_{planet}")
+    if raw is None and planet == first_planet:
+        raw = options.get(key)
+    return _to_float(raw)
+
+
+def _uniform_bounds(options: dict, param: str, planet: str, first_planet: str) -> list[float]:
+    lo_default, hi_default = _UNIFORM_DEFAULT_BOUNDS[param]
+    lo = _planet_value(options, param, planet, first_planet)
+    hi = _planet_value(options, f"{param}_unc", planet, first_planet)
+    return [lo if lo is not None else lo_default, hi if hi is not None else hi_default]
+
 
 def validate_fit_options(options: dict | None) -> str | None:
     """Return a user-facing error string for invalid fitting options, else ``None``.
@@ -257,6 +314,8 @@ def validate_fit_options(options: dict | None) -> str | None:
         return "planets is required (e.g. b or b,c)"
     if any(not _PLANET_TOKEN_RE.match(t) for t in tokens):
         return "planets must be single letters separated by commas (e.g. b or b,c)"
+    if len(tokens) != len(set(tokens)):
+        return "planet designations must be unique"
 
     # tc_pred is optional; validate only when provided.
     if str(o.get("tc_pred", "")).strip() and _to_float(o.get("tc_pred")) is None:
@@ -278,11 +337,17 @@ def validate_fit_options(options: dict | None) -> str | None:
         if rule == "nonneg" and val < 0:
             return f"{label} must be 0 or greater"
 
-    # Validate planetary parameters for each planet
+    # Validate planetary parameters for each planet. Parameters switched to a
+    # Uniform prior carry [low, high] bounds (not value ± unc) in these fields,
+    # so they are validated separately in the prior-shapes block below.
     for p in tokens:
         for key, label, rule in _FIT_NUMERIC_FIELDS:
             if key not in planet_keys:
                 continue
+            base = key[:-4] if key.endswith("_unc") else key
+            if base in _PRIOR_PARAMS and _prior_choice(o, base, p, tokens[0]) == "uniform":
+                continue
+
             pval = o.get(f"{key}_{p}")
             if pval is None and p == tokens[0]:
                 pval = o.get(key)
@@ -298,8 +363,11 @@ def validate_fit_options(options: dict | None) -> str | None:
             if rule == "nonneg" and val < 0:
                 return f"{label} (planet {p}) must be 0 or greater"
 
-    # Rp/R* is a radius ratio; reject obviously unphysical values.
+    # Rp/R* is a radius ratio; reject obviously unphysical values (Gaussian mean
+    # only; Uniform bounds are range-checked in the prior-shapes block).
     for p in tokens:
+        if _prior_choice(o, "ror", p, tokens[0]) == "uniform":
+            continue
         ror_val = o.get(f"ror_{p}")
         if ror_val is None and p == tokens[0]:
             ror_val = o.get("ror")
@@ -317,6 +385,76 @@ def validate_fit_options(options: dict | None) -> str | None:
         if unknown:
             allowed = ", ".join(sorted(_FIXABLE_PARAMS))
             return f"unknown fixed parameter(s): {', '.join(unknown)} (allowed: {allowed})"
+
+    # Prior shapes. timer applies one prior shape per parameter across all
+    # planets, so a parameter cannot mix Gaussian and Uniform between planets,
+    # and a Uniform parameter cannot also be held fixed.
+    fixed_set = {str(f) for f in (fixed or [])}
+    for param in _PRIOR_PARAMS:
+        choices = []
+        for p in tokens:
+            choice = _prior_choice(o, param, p, tokens[0])
+            if choice not in _PRIOR_CHOICES:
+                return f"{param} prior (planet {p}) must be gaussian or uniform"
+            choices.append(choice)
+        if "uniform" not in choices:
+            continue
+        if len(set(choices)) > 1:
+            return (
+                f"{param} prior must be the same for every planet "
+                "(timer applies one prior shape per parameter): set all "
+                "planets to gaussian or all to uniform"
+            )
+        if param in fixed_set:
+            return f"{param} cannot be both fixed and use a uniform prior"
+
+        # A Uniform parameter's two keys hold explicit [low, high] bounds.
+        for p in tokens:
+            for key, name in ((param, "low"), (f"{param}_unc", "high")):
+                raw = o.get(f"{key}_{p}")
+                if raw is None and p == tokens[0]:
+                    raw = o.get(key)
+                if raw is not None and str(raw).strip():
+                    value = _to_float(raw)
+                    if value is None or not math.isfinite(value):
+                        return f"{param} uniform {name} bound (planet {p}) must be a number"
+
+            lo, hi = _uniform_bounds(o, param, p, tokens[0])
+            if not lo < hi:
+                return f"{param} uniform bounds (planet {p}) must have low < high"
+            if param in {"period", "dur"} and (lo <= 0 or hi <= 0):
+                return f"{param} uniform bounds (planet {p}) must be greater than 0"
+            if param == "ror" and (lo < 0 or hi > 1):
+                return f"{param} uniform bounds (planet {p}) must stay within [0, 1]"
+            if param == "b" and lo < 0:
+                return f"{param} uniform lower bound (planet {p}) must be 0 or greater"
+
+    if o.get("use_gp") == "true":
+        for param, value_default, unc_default in (
+            ("log_amp", -3.0, 2.0),
+            ("log_scale", -1.0, 2.0),
+        ):
+            prior = str(o.get(f"gp_{param}_prior") or "gaussian").strip().lower()
+            if prior not in _PRIOR_CHOICES:
+                return f"GP {param} prior must be gaussian or uniform"
+
+            values = []
+            for suffix, default in (("", value_default), ("_unc", unc_default)):
+                key = f"gp_{param}{suffix}"
+                raw = o.get(key)
+                if raw is None or str(raw).strip() == "":
+                    values.append(default)
+                    continue
+                value = _to_float(raw)
+                if value is None or not math.isfinite(value):
+                    return f"GP {param}{suffix} must be a number"
+                values.append(value)
+
+            first, second = values
+            if prior == "uniform" and not first < second:
+                return f"GP {param} uniform bounds must have low < high"
+            if prior == "gaussian" and second <= 0:
+                return f"GP {param} uncertainty must be greater than 0"
 
     return None
 
@@ -380,6 +518,19 @@ def _normalize_band(raw: str) -> str:
     return f"{base}_narrow" if is_narrow else base
 
 
+def _band_sort_key(band: str) -> tuple:
+    """Sort key for band display order.
+
+    Broadband:  g → r → i → z
+    Narrowband: g_narrow → Na_D → i_narrow → z_narrow
+    """
+    order = {
+        "g": (0, 0), "r": (0, 1), "i": (0, 2), "z": (0, 3),
+        "g_narrow": (1, 0), "Na_D": (1, 1), "i_narrow": (1, 2), "z_narrow": (1, 3),
+    }
+    return order.get(band, (9, 9))
+
+
 def _write_fit_inputs(
     rdir: pathlib.Path,
     inst: str,
@@ -432,8 +583,15 @@ def _write_fit_inputs(
         "trim_end": _trim_opt("trim_end"),
     }
 
+    # Sort CSVs by canonical band order so chromatic plots always appear
+    # g→r→i→z (broadband) or g_narrow→Na_D→i_narrow→z_narrow (narrowband).
+    def _csv_band_key(c: pathlib.Path) -> tuple:
+        parts = c.name.split(f"_{inst}_")
+        raw_band = parts[1].split(f"_{date}")[0] if len(parts) > 1 else "gp"
+        return _band_sort_key(_normalize_band(raw_band))
+
     fit_data: dict = {"data": {}}
-    for c in csvs:
+    for c in sorted(csvs, key=_csv_band_key):
         fname = c.name
         parts = fname.split(f"_{inst}_")
         band = parts[1].split(f"_{date}")[0] if len(parts) > 1 else "gp"
@@ -450,8 +608,8 @@ def _write_fit_inputs(
         }
 
     planets_str = (options.get("planets") or "b").strip()
-    fit_data["planets"] = planets_str
     planet_list = [p.strip() for p in planets_str.split(",") if p.strip()] or ["b"]
+    fit_data["planets"] = "".join(planet_list)
 
     # Per-planet predicted transit centers. timer fits a per-planet t0
     # (shape = nplanets) seeded by tc_pred: a scalar broadcasts to all planets,
@@ -491,6 +649,8 @@ def _write_fit_inputs(
     # "Overwrite" maps to timer's ``clobber``: when true, timer ignores any saved
     # *.pkl results and re-runs the fit from scratch. Default (unchecked) is false.
     fit_data["clobber"] = options.get("overwrite") == "true"
+    fit_data["plot_midtransit"] = options.get("plot_midtransit") == "true"
+    fit_data["plot_ingress_egress"] = options.get("plot_ingress_egress") == "true"
 
     # Sampler options (timer defaults: tune/draws 2000, chains/cores 2).
     fit_data["tune"] = _int_opt("tune", 2000)
@@ -507,13 +667,23 @@ def _write_fit_inputs(
     # would KeyError. Hyperparameters are log10-space (Matern-3/2 kernel).
     fit_data["use_gp"] = _bool_opt("use_gp", default=False)
     if fit_data["use_gp"]:
+        def _gp_values(param: str, value_default: float, unc_default: float) -> tuple[float, float]:
+            value = _float_opt(f"gp_{param}", value_default)
+            unc = _float_opt(f"gp_{param}_unc", unc_default)
+            prior = str(options.get(f"gp_{param}_prior") or "gaussian").strip().lower()
+            if prior == "uniform":
+                return (value + unc) / 2, unc - value
+            return value, unc
+
+        log_amp, log_amp_unc = _gp_values("log_amp", -3.0, 2.0)
+        log_scale, log_scale_unc = _gp_values("log_scale", -1.0, 2.0)
         gp_block: dict = {
-            "log_amp": _float_opt("gp_log_amp", -3.0),
-            "log_amp_unc": _float_opt("gp_log_amp_unc", 2.0),
-            "log_amp_prior": options.get("gp_log_amp_prior") or "gaussian",
-            "log_scale": _float_opt("gp_log_scale", -1.0),
-            "log_scale_unc": _float_opt("gp_log_scale_unc", 2.0),
-            "log_scale_prior": options.get("gp_log_scale_prior") or "gaussian",
+            "log_amp": log_amp,
+            "log_amp_unc": log_amp_unc,
+            "log_amp_prior": str(options.get("gp_log_amp_prior") or "gaussian").strip().lower(),
+            "log_scale": log_scale,
+            "log_scale_unc": log_scale_unc,
+            "log_scale_prior": str(options.get("gp_log_scale_prior") or "gaussian").strip().lower(),
         }
         per_dataset = [
             p for p, key in (("log_amp", "gp_per_dataset_log_amp"),
@@ -524,10 +694,34 @@ def _write_fit_inputs(
             gp_block["per_dataset"] = per_dataset
         fit_data["gp"] = gp_block
 
-    fit_data["fixed"] = options.get("fixed") or ["period", "u_star"]
+    fixed = options.get("fixed")
+    fit_data["fixed"] = ["period", "u_star"] if fixed is None else fixed
+
+    # Prior shapes. The GUI sends each parameter as two keys (``ror`` /
+    # ``ror_unc``); for Gaussian they are [value, unc] (written to sys.yaml), for
+    # Uniform they are [low, high] bounds listed here so timer builds a uniform
+    # prior. A uniform prior over a held-fixed parameter is contradictory, so
+    # fixed wins.
+    first_planet = planet_list[0]
+
+    fixed_params = set(fit_data["fixed"])
+    uniform_block: dict = {}
+    for param in _PRIOR_PARAMS:
+        if param in fixed_params:
+            continue
+        if _prior_choice(options, param, first_planet, first_planet) != "uniform":
+            continue
+        bounds = [_uniform_bounds(options, param, p, first_planet) for p in planet_list]
+        # Single planet -> flat [low, high]; multiple -> per-planet [[low, high], ...].
+        uniform_block[param] = bounds[0] if len(planet_list) == 1 else bounds
+    if uniform_block:
+        fit_data["uniform"] = uniform_block
 
     with open(rdir / "fit.yaml", "w") as f:
-        yaml.safe_dump(fit_data, f, default_flow_style=False)
+        # sort_keys=False preserves the canonical band order built above
+        # (g_narrow before Na_D, etc.); safe_dump's default re-alphabetizes
+        # keys, which would float capital "Na_D" ahead of lowercase "g_narrow".
+        yaml.safe_dump(fit_data, f, default_flow_style=False, sort_keys=False)
 
     # sys.yaml
     sys_data: dict = {
@@ -542,12 +736,21 @@ def _write_fit_inputs(
         def get_val(key, default):
             return options.get(f"{key}_{p}") or options.get(key) or default
 
+        def planet_pair(param, val_default, unc_default):
+            # Uniform: derive a central [value, unc] from the [low, high] bounds
+            # so sys.yaml still seeds a sensible (in-bounds) initial value; timer
+            # reads the actual prior range from fit.yaml's uniform block.
+            if _prior_choice(options, param, p, first_planet) == "uniform":
+                lo, hi = _uniform_bounds(options, param, p, first_planet)
+                return [(lo + hi) / 2, (hi - lo) / 2]
+            return [float(get_val(param, val_default)), float(get_val(f"{param}_unc", unc_default))]
+
         sys_data["planets"][p] = {
-            "period": [float(get_val("period", 1.0)), float(get_val("period_unc", 0.001))],
+            "period": planet_pair("period", 1.0, 0.001),
             "t0": [float(get_val("t0", 2450000.0)), float(get_val("t0_unc", 0.01))],
-            "dur": [float(get_val("dur", 0.1)), float(get_val("dur_unc", 0.01))],
-            "ror": [float(get_val("ror", 0.05)), float(get_val("ror_unc", 0.005))],
-            "b": [float(get_val("b", 0.0)), float(get_val("b_unc", 0.1))],
+            "dur": planet_pair("dur", 0.1, 0.01),
+            "ror": planet_pair("ror", 0.05, 0.005),
+            "b": planet_pair("b", 0.0, 0.1),
         }
 
     with open(rdir / "sys.yaml", "w") as f:
@@ -673,17 +876,13 @@ def start_fit(
     # Working directory
     rdir.mkdir(parents=True, exist_ok=True)
 
-    # Clean old run files
-    for p in rdir.glob("*"):
-        if p.is_file() and p.name != "timer-fit.log":
-            try: p.unlink()
-            except OSError: pass
-        elif p.is_dir() and p.name == "out":
-            try: shutil.rmtree(p)
-            except OSError: pass
-
-    # Copy CSVs and write fit.yaml / sys.yaml from the form options.
+    # Preserve existing products so timer can reuse them when clobber is false.
+    # When overwrite is selected, fit.yaml sets clobber=true and timer owns the
+    # invalidation/replacement of its cached results.
     _write_fit_inputs(rdir, inst, date, csvs, options)
+
+    # Clear cached outputs so the next page load reads fresh results from disk.
+    _fit_outputs_cache.clear()
 
     key = fit_job_key(inst, date, target)
     run_type = "test" if test_run else "full"
@@ -1111,10 +1310,27 @@ def sync_jobs() -> None:
                 test_run = p.get("test_run", False)
                 selected_csvs = p.get("selected_csvs")
                 inst, date, target = entry["inst"], entry["date"], entry["target"]
-                key = fit_job_key(inst, date, target)
-                rdir = fit_output_dir(inst, date, target)
+                try:
+                    key = fit_job_key(inst, date, target)
+                    rdir = fit_output_dir(inst, date, target)
+                except ValueError:
+                    save_job(
+                        type_="transit_fit",
+                        inst=inst,
+                        date=date,
+                        target=target,
+                        state="error",
+                        returncode=-1,
+                        elapsed=0,
+                        started_at=entry["started_at"],
+                        error_desc="Invalid target",
+                        run_type=entry.get("run_type", ""),
+                        params=entry.get("params", ""),
+                    )
+                    continue
                 rdir.mkdir(parents=True, exist_ok=True)
                 _write_fit_inputs(rdir, inst, date, get_csv_lightcurves(inst, date, target), opts)
+                _fit_outputs_cache.clear()
                 cmd = [*_timer_prefix(), "-v", str(rdir)]
                 if test_run:
                     cmd.append("--test_run")

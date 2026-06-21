@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import csv as _csv
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -75,6 +76,11 @@ RUN_DEFAULTS: dict = {
     "target_coord": "",        # "" -> resolve via MAST; "RA Dec" -> bypass name resolution
     "gif_stride": 100,
     "overwrite": True,
+    "sig_bkg": None,           # None -> sigma clipping disabled for bkg axis
+    "sig_fwhm": None,          # None -> sigma clipping disabled for fwhm axis
+    "sig_dx": None,            # None -> sigma clipping disabled for dx axis
+    "sig_dy": None,            # None -> sigma clipping disabled for dy axis
+    "min_star_area": 10,
 }
 
 # Narrow-band tokens, kept after the broadband four in the canonical order.
@@ -122,7 +128,7 @@ def bands_from_filters(filters: list[str]) -> list[str]:
 
 
 ALLOWED_EXTS = {".png", ".gif", ".csv", ".npz", ".log"}
-_RUN_LOG_NAME = "_webrun.log"  # combined stdout/stderr of a web-launched run
+_RUN_LOG_NAME = "_webrun.log"
 _CONDA_ENV_DEFAULT = "prose"   # prose deps live in a conda env named "prose"
 _MODULE = "prose.scripts.run_photometry"
 
@@ -249,12 +255,18 @@ def output_dates(inst: str) -> list[str]:
 
 
 def discovered_targets(inst: str, date: str) -> list[str]:
-    """Target names inferred from product filenames already in the output dir."""
+    """Target names inferred from product filenames already in the output dir.
+
+    The pipeline embeds the date from the FITS header into each filename, which
+    may differ from the directory name (obs-night vs UT date). We therefore
+    match on the inst token only and accept any 6-digit date token.
+    """
     rdir = results_dir(inst, date)
     if not rdir.is_dir():
         return []
+    # Match: <target>_<inst>_[<band>_]<6digits>[._...]
     pat = re.compile(
-        rf"^(?P<t>.+?)_{re.escape(inst)}_(?:[A-Za-z0-9_]+_)?{re.escape(date)}(?:[._]|$)"
+        rf"^(?P<t>.+?)_{re.escape(inst)}_(?:[A-Za-z0-9_]+_)?\d{{6}}(?:[._]|$)"
     )
     found: set[str] = set()
     for p in rdir.iterdir():
@@ -272,6 +284,11 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
     Returns a dict with ``summary`` (key->filename), ``bands``
     (band->{ref,apertures,alignment,gif,csv}), ``npz``, ``log`` (newest), and
     ``has_any``. Only filenames are returned; serve them via the file route.
+
+    The date token embedded in filenames by the pipeline is taken from the FITS
+    header and may differ from the directory name (obs-night vs UT date). We
+    therefore build regexes that accept any 6-digit date token instead of
+    requiring an exact match against the passed-in ``date``.
     """
     out: dict = {
         "summary": {},
@@ -285,10 +302,18 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
     if not rdir.is_dir():
         return out
 
-    multi = _stem(target, inst, date)
+    t = target.replace(" ", "")
+    inst_esc = re.escape(inst)
+    t_esc = re.escape(t)
+
+    # Multi-band summary stem: <target>_<inst>_<date6>  (no band token)
+    # Allow any 6-digit date so obs-night and UT-date both match.
+    summary_re = re.compile(
+        rf"^{t_esc}_{inst_esc}_(?P<file_date>\d{{6}})(?P<rest>.*)$"
+    )
+    # Per-band stem: <target>_<inst>_<band>_<date6>
     band_re = re.compile(
-        rf"^{re.escape(multi.rsplit('_', 1)[0])}_"
-        rf"(?P<band>[A-Za-z0-9_]+)_{re.escape(date)}(?P<rest>.*)$"
+        rf"^{t_esc}_{inst_esc}_(?P<band>[A-Za-z0-9]+)_(?P<file_date>\d{{6}})(?P<rest>.*)$"
     )
     logs: list[Path] = []
 
@@ -300,34 +325,44 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
             logs.append(p)
             continue
 
-        for suf, key in _SUMMARY_SUFFIX.items():
-            if name == multi + suf:
-                try:
-                    mtime = p.stat().st_mtime
-                    created_at = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
-                except Exception:
-                    created_at = "Unknown"
-                out["summary"][key] = {"file": name, "created_at": created_at}
+        try:
+            mtime = p.stat().st_mtime
+            created_at = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
+        except Exception:
+            created_at = "Unknown"
+
+        # Try summary suffixes first (no band token between inst and date).
+        ms = summary_re.match(name)
+        if ms:
+            rest = ms.group("rest")
+            if rest == ".npz":
+                existing = out.get("npz")
+                if existing is None or mtime > out.get("_npz_mtime", 0):
+                    out["npz"] = name
+                    out["_npz_mtime"] = mtime
                 out["has_any"] = True
-                break
-        else:
-            if name == multi + ".npz":
-                out["npz"] = name
-                out["has_any"] = True
                 continue
-            m = band_re.match(name)
-            if not m:
+            key = _SUMMARY_SUFFIX.get(rest)
+            if key is not None:
+                existing = out["summary"].get(key)
+                if existing is None or mtime > existing.get("_mtime", 0):
+                    out["summary"][key] = {"file": name, "created_at": created_at, "_mtime": mtime}
+                    out["has_any"] = True
                 continue
-            rest = m.group("rest")
-            key = _BAND_SUFFIX.get(rest)
-            if key is None:
-                continue
-            try:
-                mtime = p.stat().st_mtime
-                created_at = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
-            except Exception:
-                created_at = "Unknown"
-            out["bands"].setdefault(m.group("band"), {})[key] = {"file": name, "created_at": created_at}
+            # If the summary regex matched but rest is unrecognised, fall
+            # through to the band regex (it is more specific).
+
+        mb = band_re.match(name)
+        if not mb:
+            continue
+        rest = mb.group("rest")
+        key = _BAND_SUFFIX.get(rest)
+        if key is None:
+            continue
+        band = mb.group("band")
+        existing = out["bands"].setdefault(band, {}).get(key)
+        if existing is None or mtime > existing.get("_mtime", 0):
+            out["bands"][band][key] = {"file": name, "created_at": created_at, "_mtime": mtime}
             out["has_any"] = True
 
     if inst in ("muscat", "muscat2"):
@@ -342,7 +377,13 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
     if logs:
         out["log"] = max(logs, key=lambda p: p.stat().st_mtime).name
 
-    # Order bands canonically (gp, rp, ip, zs) then any extras.
+    # Strip internal keys and order bands canonically (gp, rp, ip, zs)
+    for d in out["summary"].values():
+        d.pop("_mtime", None)
+    for band_d in out["bands"].values():
+        for d in band_d.values():
+            d.pop("_mtime", None)
+    out.pop("_npz_mtime", None)
     ordered = {b: out["bands"][b] for b in DEFAULT_BANDS if b in out["bands"]}
     for b, v in out["bands"].items():
         ordered.setdefault(b, v)
@@ -533,13 +574,13 @@ def normalize_run_options(raw: dict | None) -> dict:
             val = str(raw.get(key, "")).strip()
             o[key] = "" if val == "" else (_to_int(val) if _to_int(val) is not None else "")
 
-    for key in ("test_run_frames", "max_num_stars", "cutout_size", "gif_stride"):
+    for key in ("test_run_frames", "max_num_stars", "cutout_size", "gif_stride", "min_star_area"):
         if str(raw.get(key, "")).strip() != "":
             iv = _to_int(raw[key])
             if iv is not None:
                 o[key] = iv
 
-    for key in ("min_star_separation", "bin_size_minutes"):
+    for key in ("min_star_separation", "bin_size_minutes", "sig_bkg", "sig_fwhm", "sig_dx", "sig_dy"):
         if str(raw.get(key, "")).strip() != "":
             fv = _to_float(raw[key])
             if fv is not None:
@@ -628,17 +669,22 @@ def build_command(
 
     # Numeric overrides: only emit when the user changed them from the default.
     for flag, key in (
-        ("--test_run_frames", "test_run_frames"),
         ("--min_star_separation", "min_star_separation"),
         ("--max_num_stars", "max_num_stars"),
         ("--cutout_size", "cutout_size"),
         ("--bin_size_minutes", "bin_size_minutes"),
         ("--gif_stride", "gif_stride"),
+        ("--sig_bkg", "sig_bkg"),
+        ("--sig_fwhm", "sig_fwhm"),
+        ("--sig_dx", "sig_dx"),
+        ("--sig_dy", "sig_dy"),
+        ("--min_star_area", "min_star_area"),
     ):
         val = o.get(key)
         if val in (None, ""):
             continue
-        if float(val) != float(RUN_DEFAULTS[key]):
+        default = RUN_DEFAULTS.get(key)
+        if default is None or float(val) != float(default):
             args += [flag, str(val)]
     if o.get("n_stars_align") not in (None, ""):
         args += ["--n_stars_align", str(o["n_stars_align"])]
@@ -655,6 +701,9 @@ def build_command(
     args.append("--verbose")
     if test_run:
         args.append("--test_run")
+        v = o.get("test_run_frames")
+        if v not in (None, "") and v != RUN_DEFAULTS.get("test_run_frames"):
+            args += ["--test_run_frames", str(v)]
     if o.get("overwrite", True):
         args.append("--overwrite")
     return args
@@ -696,6 +745,12 @@ _JOBS: dict[str, Job] = {}
 _LOCK = threading.Lock()
 _MAX_FULL_JOBS = 1
 
+# Watchdog limits for hung reductions. A healthy run writes to its log
+# continuously, so a long silence means it has stalled; the absolute cap is a
+# backstop. Both are env-tunable. Observed legitimate full runs finish in <35 min.
+_STALL_LIMIT_S = int(os.environ.get("MUSCAT_PHOT_STALL_LIMIT_S", 25 * 60))
+_MAX_RUNTIME_S = int(os.environ.get("MUSCAT_PHOT_MAX_RUNTIME_S", 3 * 60 * 60))
+
 
 def _count_running_full() -> int:
     """Number of currently-running full (non-test) photometry jobs."""
@@ -706,11 +761,17 @@ def job_key(inst: str, date: str, target: str) -> str:
     return f"{inst}/{date}/{target.replace(' ', '')}"
 
 
+def _run_log_path(rdir: Path, inst: str, date: str, target: str) -> Path:
+    """Return a deterministic, target-specific web-run log path."""
+    digest = hashlib.sha256(job_key(inst, date, target).encode()).hexdigest()[:16]
+    return rdir / f"_webrun_{digest}.log"
+
+
 def log_path(inst: str, date: str, target: str) -> Path | None:
     rdir = results_dir(inst, date) if results_dir(inst, date) else None
     if rdir is None:
         return None
-    p = rdir / _RUN_LOG_NAME
+    p = _run_log_path(rdir, inst, date, target)
     return p if p.is_file() else None
 
 
@@ -766,11 +827,12 @@ def start_run(
         rdir = results_dir(inst, date)
         rdir.mkdir(parents=True, exist_ok=True)
         cmd = build_command(inst, date, target, opts, test_run=test_run)
-        log_path = rdir / _RUN_LOG_NAME
+        log_path = _run_log_path(rdir, inst, date, target)
         logf = open(log_path, "w")
         logf.write(f"$ {shlex.join(cmd)}\n\n")
         logf.flush()
         try:
+            env = {**os.environ, "PYTHONUNBUFFERED": "1"}
             proc = subprocess.Popen(
                 cmd,
                 cwd=str(prose_project_dir()),
@@ -780,6 +842,7 @@ def start_run(
                 # Own session/process group so Cancel can kill the whole tree
                 # (prose spawns multiprocessing workers via SequenceParallel).
                 start_new_session=True,
+                env=env,
             )
         except (FileNotFoundError, OSError) as exc:
             logf.write(f"\nfailed to launch pipeline: {exc}\n")
@@ -831,21 +894,117 @@ def _tail(path: Path, n: int = 200) -> str:
         return ""
 
 
+def _log_has_partial_failure(path: Path | None) -> bool:
+    if path is None or not path.is_file():
+        return False
+    return "photometry PARTIAL FAILURE" in _tail(path, n=1000)
+
+
+def _terminal_job_state(
+    returncode: int,
+    cancelled: bool,
+    log_path_: Path | None,
+) -> str:
+    """Map process completion to state, treating logged partial runs as errors."""
+    if cancelled:
+        return "cancelled"
+    if returncode != 0:
+        return "error"
+    if _log_has_partial_failure(log_path_):
+        return "error"
+    return "done"
+
+
+def _pending_status(inst: str, date: str, target: str) -> dict | None:
+    """Return a queued-job status dict if a pending DB entry exists, else None.
+
+    A full run launched while the single full-job slot is occupied is recorded
+    in the DB as ``pending`` but not added to ``_JOBS``; surface that here so the
+    photometry page can show a "queued" state instead of silently resetting.
+    """
+    from muscat_db.database import get_persisted_jobs
+
+    db_key = f"photometry:{job_key(inst, date, target)}"
+    try:
+        for entry in get_persisted_jobs():
+            if (
+                entry["key"] == db_key
+                and entry["type"] == "photometry"
+                and entry["state"] == "pending"
+            ):
+                started = entry.get("started_at") or time.time()
+                return {
+                    "state": "pending",
+                    "returncode": None,
+                    "log": "",
+                    "elapsed": round(time.time() - started),
+                }
+    except Exception:
+        pass
+    return None
+
+
+def _persisted_status(inst: str, date: str, target: str) -> dict | None:
+    """Return a terminal-state status dict from the DB for a job no longer in
+    ``_JOBS``.
+
+    A run can leave ``_JOBS`` while still ending in error/cancelled/done: the
+    watchdog kills hung runs and pops them, and a server restart loses the
+    in-memory job entirely. Without this fallback ``job_status`` returns
+    ``"none"``, and the page silently freezes the log instead of showing the
+    failure. Surface the persisted outcome (plus its log tail and error
+    description) so the final state is never lost.
+    """
+    from muscat_db.database import get_persisted_jobs
+
+    db_key = f"photometry:{job_key(inst, date, target)}"
+    try:
+        for entry in get_persisted_jobs():  # newest-first; one row per key
+            if entry["key"] != db_key or entry["type"] != "photometry":
+                continue
+            state = entry["state"]
+            if state not in ("done", "error", "cancelled"):
+                return None  # running/pending handled by the caller
+            lp = log_path(inst, date, target)
+            error_desc = entry.get("error_desc") or ""
+            if state == "error" and not error_desc and lp:
+                error_desc = _get_error_desc(lp)
+            elif state == "cancelled" and not error_desc:
+                error_desc = "Cancelled by user"
+            return {
+                "state": state,
+                "returncode": entry.get("returncode"),
+                "log": _tail(lp) if lp else "",
+                "elapsed": round(entry.get("elapsed") or 0),
+                "error_desc": error_desc,
+            }
+    except Exception:
+        pass
+    return None
+
+
 def job_status(inst: str, date: str, target: str) -> dict:
-    """Poll a launched job and return its state plus a tail of the run log."""
+    """Poll a job and return its state plus its target-specific log tail.
+
+    A zero exit status is still an error when the pipeline logged
+    ``photometry PARTIAL FAILURE``.
+    """
     key = job_key(inst, date, target)
     with _LOCK:
         job = _JOBS.get(key)
         if job is None:
+            pending = _pending_status(inst, date, target)
+            if pending is not None:
+                return pending
+            persisted = _persisted_status(inst, date, target)
+            if persisted is not None:
+                return persisted
             return {"state": "none", "log": "", "returncode": None, "elapsed": 0}
         rc = job.proc.poll()
         if rc is None:
             state = "cancelling" if job.cancelled else "running"
         else:
-            if job.cancelled:
-                state = "cancelled"
-            else:
-                state = "done" if rc == 0 else "error"
+            state = _terminal_job_state(rc, job.cancelled, job.log_path)
             if job.state in ("running",):
                 job.state = state
                 job.returncode = rc
@@ -856,11 +1015,17 @@ def job_status(inst: str, date: str, target: str) -> dict:
                     pass
         log_path = job.log_path
         elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
+    error_desc = ""
+    if state == "error" and log_path:
+        error_desc = _get_error_desc(log_path)
+    elif state == "cancelled":
+        error_desc = "Cancelled by user"
     return {
         "state": state,
         "returncode": rc,
         "log": _tail(log_path),
         "elapsed": round(elapsed),
+        "error_desc": error_desc,
     }
 
 
@@ -873,10 +1038,7 @@ def get_all_jobs() -> list[dict]:
             if rc is None:
                 state = "cancelling" if job.cancelled else "running"
             else:
-                if job.cancelled:
-                    state = "cancelled"
-                else:
-                    state = "done" if rc == 0 else "error"
+                state = _terminal_job_state(rc, job.cancelled, job.log_path)
                 if job.state in ("running",):
                     job.state = state
                     job.returncode = rc
@@ -914,6 +1076,32 @@ def _kill_after(proc: subprocess.Popen, grace: float = 6.0) -> None:
             proc.kill()
         except OSError:
             pass
+
+
+def _terminate_pg(proc: subprocess.Popen) -> None:
+    """SIGTERM a job's whole process group, escalating to SIGKILL in the background."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+    threading.Thread(target=_kill_after, args=(proc,), daemon=True).start()
+
+
+def _watchdog_breach(job: "Job", now: float) -> str | None:
+    """Return a kill reason if a running job looks hung, else None."""
+    if now - job.started_at > _MAX_RUNTIME_S:
+        return f"exceeded max runtime ({_MAX_RUNTIME_S // 3600}h)"
+    try:
+        mtime = job.log_path.stat().st_mtime
+    except OSError:
+        mtime = job.started_at
+    stall = now - mtime
+    if stall > _STALL_LIMIT_S:
+        return f"no log output for {int(stall // 60)} min"
+    return None
 
 
 def cancel_run(inst: str, date: str, target: str) -> dict:
@@ -991,7 +1179,51 @@ def _get_error_desc(log_path: Path) -> str:
 def sync_jobs() -> None:
     from muscat_db.database import save_job, get_persisted_jobs
     with _LOCK:
+        # Watchdog: kill runs that have hung (no log output, or past the absolute
+        # cap) and record them as errors. This frees the single full-job slot so the
+        # queue-drain below can promote a pending job in the same pass.
+        now = time.time()
+        for key in list(_JOBS.keys()):
+            job = _JOBS[key]
+            if job.cancelled or job.state != "running" or job.proc.poll() is not None:
+                continue
+            reason = _watchdog_breach(job, now)
+            if reason is None:
+                continue
+            _terminate_pg(job.proc)
+            try:
+                job.logf.close()
+            except OSError:
+                pass
+            save_job(
+                type_="photometry", inst=job.inst, date=job.date, target=job.target,
+                state="error", returncode=-1,
+                elapsed=round(now - job.started_at), started_at=job.started_at,
+                error_desc=f"watchdog: {reason}", run_type=job.run_type,
+            )
+            _JOBS.pop(key, None)
+
         db_jobs = get_persisted_jobs()
+        for entry in db_jobs:
+            if entry["type"] != "photometry" or entry["state"] != "done":
+                continue
+            entry_log_path = log_path(entry["inst"], entry["date"], entry["target"])
+            if not _log_has_partial_failure(entry_log_path):
+                continue
+            save_job(
+                type_="photometry",
+                inst=entry["inst"],
+                date=entry["date"],
+                target=entry["target"],
+                state="error",
+                returncode=entry.get("returncode"),
+                elapsed=entry.get("elapsed") or 0,
+                started_at=entry.get("started_at") or time.time(),
+                error_desc=_get_error_desc(entry_log_path) if entry_log_path else "Partial failure",
+                run_type=entry.get("run_type") or "",
+                params=entry.get("params") or "",
+            )
+
         running_keys = {j["key"] for j in db_jobs if j["state"] == "running" and j["type"] == "photometry"}
         
         for key, job in _JOBS.items():
@@ -1000,10 +1232,7 @@ def sync_jobs() -> None:
             if rc is None:
                 state = "cancelling" if job.cancelled else "running"
             else:
-                if job.cancelled:
-                    state = "cancelled"
-                else:
-                    state = "done" if rc == 0 else "error"
+                state = _terminal_job_state(rc, job.cancelled, job.log_path)
                 if job.state in ("running",):
                     job.state = state
                     job.returncode = rc
@@ -1077,19 +1306,20 @@ def sync_jobs() -> None:
                 cmd = build_command(inst, date, target, opts, test_run=test_run)
                 rdir = results_dir(inst, date)
                 rdir.mkdir(parents=True, exist_ok=True)
-                log_path = rdir / _RUN_LOG_NAME
+                pending_log_path = _run_log_path(rdir, inst, date, target)
                 try:
-                    logf = open(log_path, "w")
+                    logf = open(pending_log_path, "w")
                     logf.write(f"$ {shlex.join(cmd)}\n\n")
                     logf.flush()
-                    proc = subprocess.Popen(cmd, cwd=str(prose_project_dir()), stdout=logf, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+                    proc_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+                    proc = subprocess.Popen(cmd, cwd=str(prose_project_dir()), stdout=logf, stderr=subprocess.STDOUT, text=True, start_new_session=True, env=proc_env)
                 except (FileNotFoundError, OSError) as exc:
                     try: logf.close()
                     except OSError: pass
                     save_job(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}")
                     continue
                 run_type = "test" if test_run else "full"
-                _JOBS[key] = Job(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=log_path, run_type=run_type)
+                _JOBS[key] = Job(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=pending_log_path, run_type=run_type)
                 try:
                     save_job(type_="photometry", inst=inst, date=date, target=target, state="running", returncode=None, elapsed=0, started_at=_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""))
                 except sqlite3.OperationalError as exc:
@@ -1099,4 +1329,3 @@ def sync_jobs() -> None:
                     except OSError: pass
                     _JOBS.pop(key, None)
                     save_job(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Database not writable: {exc}")
-

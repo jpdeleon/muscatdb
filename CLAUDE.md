@@ -13,3 +13,7 @@ path: /ut2/jerome/miniconda3/envs/prose
 ## check background process
 report similar background processes related to muscat-db before running a new one
 report any idle processes
+
+## GUI Persistence
+Ensure all new inputs and checkboxes added to templates (e.g. photometry.html) are registered in the corresponding JavaScript helper arrays (collectOptions, restoreOptions, and the default settings listener) so they persist in localStorage across page navigation.
+

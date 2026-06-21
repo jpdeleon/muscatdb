@@ -70,6 +70,7 @@ jinja.globals["format_elapsed"] = format_elapsed
 
 
 def _adql_literal(value: str) -> str:
+    """Quote a string as an ADQL literal, escaping embedded apostrophes."""
     return "'" + value.replace("'", "''") + "'"
 
 
@@ -146,18 +147,19 @@ async def index():
 
 
 @app.get("/logs", response_class=HTMLResponse)
-async def logs_page():
+async def logs_page(min_frames: int = 1000):
     db = _db_path()
     with_data = {row["name"] for row in _get_instruments(db)}
     instruments = [
         {"name": name, "has_data": name in with_data}
         for name in INSTRUMENTS
     ]
-    summaries = _get_instruments_summary(db)
+    summaries = _get_instruments_summary(db, min_frames=min_frames)
     return _render(
         "logs.html",
         instruments=instruments,
         summaries=summaries,
+        min_frames=min_frames,
     )
 
 
@@ -723,10 +725,16 @@ def jobs_status():
                 "elapsed": j["elapsed"],
                 "error_desc": j.get("error_desc", "") or "",
                 "returncode": j.get("returncode"),
+                "started_at_str": _datetime_from_timestamp(int(j["started_at"])) if j.get("started_at") else "—",
             }
     _last_running = current_running
     running = [
-        {"key": j["key"], "state": j["state"], "elapsed": j["elapsed"]}
+        {
+            "key": j["key"],
+            "state": j["state"],
+            "elapsed": j["elapsed"],
+            "started_at_str": _datetime_from_timestamp(int(j["started_at"])) if j.get("started_at") else "—",
+        }
         for j in all_jobs if j["state"] in ("running", "cancelling")
     ]
     counts = {"running": 0, "done": 0, "error": 0, "cancelled": 0, "pending": 0}
@@ -813,6 +821,9 @@ def photometry_command(payload: dict = Body(...)):
 
 @app.get("/photometry/status")
 def photometry_status(inst: str, date: str, target: str):
+    # Drain the queue so a pending full job is promoted once the slot frees,
+    # even when only the photometry page (not the Jobs page) is polling.
+    phot.sync_jobs()
     return JSONResponse(phot.job_status(inst, date, target))
 
 
