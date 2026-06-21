@@ -336,13 +336,18 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
         if ms:
             rest = ms.group("rest")
             if rest == ".npz":
-                out["npz"] = name
+                existing = out.get("npz")
+                if existing is None or mtime > out.get("_npz_mtime", 0):
+                    out["npz"] = name
+                    out["_npz_mtime"] = mtime
                 out["has_any"] = True
                 continue
             key = _SUMMARY_SUFFIX.get(rest)
             if key is not None:
-                out["summary"][key] = {"file": name, "created_at": created_at}
-                out["has_any"] = True
+                existing = out["summary"].get(key)
+                if existing is None or mtime > existing.get("_mtime", 0):
+                    out["summary"][key] = {"file": name, "created_at": created_at, "_mtime": mtime}
+                    out["has_any"] = True
                 continue
             # If the summary regex matched but rest is unrecognised, fall
             # through to the band regex (it is more specific).
@@ -354,8 +359,11 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
         key = _BAND_SUFFIX.get(rest)
         if key is None:
             continue
-        out["bands"].setdefault(mb.group("band"), {})[key] = {"file": name, "created_at": created_at}
-        out["has_any"] = True
+        band = mb.group("band")
+        existing = out["bands"].setdefault(band, {}).get(key)
+        if existing is None or mtime > existing.get("_mtime", 0):
+            out["bands"][band][key] = {"file": name, "created_at": created_at, "_mtime": mtime}
+            out["has_any"] = True
 
     if inst in ("muscat", "muscat2"):
         try:
@@ -369,7 +377,13 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
     if logs:
         out["log"] = max(logs, key=lambda p: p.stat().st_mtime).name
 
-    # Order bands canonically (gp, rp, ip, zs) then any extras.
+    # Strip internal keys and order bands canonically (gp, rp, ip, zs)
+    for d in out["summary"].values():
+        d.pop("_mtime", None)
+    for band_d in out["bands"].values():
+        for d in band_d.values():
+            d.pop("_mtime", None)
+    out.pop("_npz_mtime", None)
     ordered = {b: out["bands"][b] for b in DEFAULT_BANDS if b in out["bands"]}
     for b, v in out["bands"].items():
         ordered.setdefault(b, v)
@@ -655,7 +669,6 @@ def build_command(
 
     # Numeric overrides: only emit when the user changed them from the default.
     for flag, key in (
-        ("--test_run_frames", "test_run_frames"),
         ("--min_star_separation", "min_star_separation"),
         ("--max_num_stars", "max_num_stars"),
         ("--cutout_size", "cutout_size"),
@@ -688,6 +701,9 @@ def build_command(
     args.append("--verbose")
     if test_run:
         args.append("--test_run")
+        v = o.get("test_run_frames")
+        if v not in (None, "") and v != RUN_DEFAULTS.get("test_run_frames"):
+            args += ["--test_run_frames", str(v)]
     if o.get("overwrite", True):
         args.append("--overwrite")
     return args
