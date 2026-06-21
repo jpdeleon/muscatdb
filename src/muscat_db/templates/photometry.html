@@ -511,7 +511,7 @@
           setRunning(false);
           clearJob();
         }
-      }).catch(function () {});
+      }).catch(function () { setRunning(false); });
     }
     // Cross-page banner for a DIFFERENT target that still has a saved job.
     var saved;
@@ -801,7 +801,6 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
   })();
-  // ----- show error banner from a previous failed run -----
   (function restoreError() {
     var errEl = document.getElementById('run-error');
     if (!errEl) return;
