@@ -76,10 +76,10 @@ RUN_DEFAULTS: dict = {
     "target_coord": "",        # "" -> resolve via MAST; "RA Dec" -> bypass name resolution
     "gif_stride": 100,
     "overwrite": True,
-    "sig_bkg": 5.0,
-    "sig_fwhm": 5.0,
-    "sig_dx": 5.0,
-    "sig_dy": 5.0,
+    "sig_bkg": None,           # None -> sigma clipping disabled for bkg axis
+    "sig_fwhm": None,          # None -> sigma clipping disabled for fwhm axis
+    "sig_dx": None,            # None -> sigma clipping disabled for dx axis
+    "sig_dy": None,            # None -> sigma clipping disabled for dy axis
     "min_star_area": 10,
 }
 
@@ -255,12 +255,18 @@ def output_dates(inst: str) -> list[str]:
 
 
 def discovered_targets(inst: str, date: str) -> list[str]:
-    """Target names inferred from product filenames already in the output dir."""
+    """Target names inferred from product filenames already in the output dir.
+
+    The pipeline embeds the date from the FITS header into each filename, which
+    may differ from the directory name (obs-night vs UT date). We therefore
+    match on the inst token only and accept any 6-digit date token.
+    """
     rdir = results_dir(inst, date)
     if not rdir.is_dir():
         return []
+    # Match: <target>_<inst>_[<band>_]<6digits>[._...]
     pat = re.compile(
-        rf"^(?P<t>.+?)_{re.escape(inst)}_(?:[A-Za-z0-9_]+_)?{re.escape(date)}(?:[._]|$)"
+        rf"^(?P<t>.+?)_{re.escape(inst)}_(?:[A-Za-z0-9_]+_)?\d{{6}}(?:[._]|$)"
     )
     found: set[str] = set()
     for p in rdir.iterdir():
@@ -278,6 +284,11 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
     Returns a dict with ``summary`` (key->filename), ``bands``
     (band->{ref,apertures,alignment,gif,csv}), ``npz``, ``log`` (newest), and
     ``has_any``. Only filenames are returned; serve them via the file route.
+
+    The date token embedded in filenames by the pipeline is taken from the FITS
+    header and may differ from the directory name (obs-night vs UT date). We
+    therefore build regexes that accept any 6-digit date token instead of
+    requiring an exact match against the passed-in ``date``.
     """
     out: dict = {
         "summary": {},
@@ -291,10 +302,18 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
     if not rdir.is_dir():
         return out
 
-    multi = _stem(target, inst, date)
+    t = target.replace(" ", "")
+    inst_esc = re.escape(inst)
+    t_esc = re.escape(t)
+
+    # Multi-band summary stem: <target>_<inst>_<date6>  (no band token)
+    # Allow any 6-digit date so obs-night and UT-date both match.
+    summary_re = re.compile(
+        rf"^{t_esc}_{inst_esc}_(?P<file_date>\d{{6}})(?P<rest>.*)$"
+    )
+    # Per-band stem: <target>_<inst>_<band>_<date6>
     band_re = re.compile(
-        rf"^{re.escape(multi.rsplit('_', 1)[0])}_"
-        rf"(?P<band>[A-Za-z0-9_]+)_{re.escape(date)}(?P<rest>.*)$"
+        rf"^{t_esc}_{inst_esc}_(?P<band>[A-Za-z0-9]+)_(?P<file_date>\d{{6}})(?P<rest>.*)$"
     )
     logs: list[Path] = []
 
@@ -306,35 +325,37 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
             logs.append(p)
             continue
 
-        for suf, key in _SUMMARY_SUFFIX.items():
-            if name == multi + suf:
-                try:
-                    mtime = p.stat().st_mtime
-                    created_at = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
-                except Exception:
-                    created_at = "Unknown"
-                out["summary"][key] = {"file": name, "created_at": created_at}
-                out["has_any"] = True
-                break
-        else:
-            if name == multi + ".npz":
+        try:
+            mtime = p.stat().st_mtime
+            created_at = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
+        except Exception:
+            created_at = "Unknown"
+
+        # Try summary suffixes first (no band token between inst and date).
+        ms = summary_re.match(name)
+        if ms:
+            rest = ms.group("rest")
+            if rest == ".npz":
                 out["npz"] = name
                 out["has_any"] = True
                 continue
-            m = band_re.match(name)
-            if not m:
+            key = _SUMMARY_SUFFIX.get(rest)
+            if key is not None:
+                out["summary"][key] = {"file": name, "created_at": created_at}
+                out["has_any"] = True
                 continue
-            rest = m.group("rest")
-            key = _BAND_SUFFIX.get(rest)
-            if key is None:
-                continue
-            try:
-                mtime = p.stat().st_mtime
-                created_at = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
-            except Exception:
-                created_at = "Unknown"
-            out["bands"].setdefault(m.group("band"), {})[key] = {"file": name, "created_at": created_at}
-            out["has_any"] = True
+            # If the summary regex matched but rest is unrecognised, fall
+            # through to the band regex (it is more specific).
+
+        mb = band_re.match(name)
+        if not mb:
+            continue
+        rest = mb.group("rest")
+        key = _BAND_SUFFIX.get(rest)
+        if key is None:
+            continue
+        out["bands"].setdefault(mb.group("band"), {})[key] = {"file": name, "created_at": created_at}
+        out["has_any"] = True
 
     if inst in ("muscat", "muscat2"):
         try:
@@ -649,7 +670,8 @@ def build_command(
         val = o.get(key)
         if val in (None, ""):
             continue
-        if float(val) != float(RUN_DEFAULTS[key]):
+        default = RUN_DEFAULTS.get(key)
+        if default is None or float(val) != float(default):
             args += [flag, str(val)]
     if o.get("n_stars_align") not in (None, ""):
         args += ["--n_stars_align", str(o["n_stars_align"])]
