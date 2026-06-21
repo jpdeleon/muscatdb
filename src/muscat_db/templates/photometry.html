@@ -495,7 +495,7 @@
     if (inst && date && target) {
       var cqs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
       fetch('/photometry/status?' + cqs).then(function (r) { return r.json(); }).then(function (s) {
-        if (s.state === 'pending' || s.state === 'running' || s.state === 'cancelling') {
+        if (s.state === 'pending' || s.state === 'running' || s.state === 'cancelling' || s.state === 'finalizing') {
           saveJob();
           setRunning(true);
           if (logEl) logEl.style.display = 'block';
@@ -905,7 +905,10 @@
         logEl.scrollTop = logEl.scrollHeight;
         try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, s.log); } catch (e) {}
       }
-      if (s.state === 'running' || s.state === 'cancelling') {
+      if (s.state === 'running' || s.state === 'cancelling' || s.state === 'finalizing') {
+        // 'finalizing': parent exited but prose workers are still writing the
+        // log. Keep polling/streaming (no stopPolling here) so the live log
+        // keeps advancing until the server reports a terminal state.
         setRunning(true);
       }
       if (s.state === 'done') {
