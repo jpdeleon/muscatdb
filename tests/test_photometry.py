@@ -346,6 +346,44 @@ class TestStartRun:
         s = phot.job_status(INST, "111111", "Nobody")
         assert s["state"] == "none"
 
+    def test_job_status_reports_persisted_error_when_job_gone(
+        self, monkeypatch, tmp_path
+    ):
+        """A run popped from _JOBS (watchdog kill, server restart) must still
+        report its persisted terminal state plus log tail, not a silent 'none'."""
+        with phot._LOCK:
+            phot._JOBS.clear()
+
+        rdir = tmp_path / INST / DATE
+        rdir.mkdir(parents=True)
+        phot._run_log_path(rdir, INST, DATE, TARGET).write_text(
+            "$ python -m prose.scripts.run_photometry\n"
+            "Traceback (most recent call last):\n"
+            "RuntimeError: pipeline blew up\n"
+        )
+        monkeypatch.setattr(phot, "results_dir", lambda inst, date: rdir)
+
+        jobs = [{
+            "key": f"photometry:{INST}/{DATE}/{TARGET}",
+            "type": "photometry",
+            "inst": INST,
+            "date": DATE,
+            "target": TARGET,
+            "state": "error",
+            "returncode": -1,
+            "elapsed": 12,
+            "started_at": 1.0,
+            "error_desc": "watchdog: no log output for 25m",
+            "run_type": "full",
+            "params": "",
+        }]
+        monkeypatch.setattr("muscat_db.database.get_persisted_jobs", lambda: jobs)
+
+        s = phot.job_status(INST, DATE, TARGET)
+        assert s["state"] == "error"
+        assert s["error_desc"] == "watchdog: no log output for 25m"
+        assert "pipeline blew up" in s["log"]
+
     def test_terminal_state_treats_partial_failure_log_as_error(self, tmp_path):
         log = tmp_path / "_webrun.log"
         log.write_text(
