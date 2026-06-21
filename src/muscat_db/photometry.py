@@ -832,6 +832,7 @@ def start_run(
         logf.write(f"$ {shlex.join(cmd)}\n\n")
         logf.flush()
         try:
+            env = {**os.environ, "PYTHONUNBUFFERED": "1"}
             proc = subprocess.Popen(
                 cmd,
                 cwd=str(prose_project_dir()),
@@ -841,6 +842,7 @@ def start_run(
                 # Own session/process group so Cancel can kill the whole tree
                 # (prose spawns multiprocessing workers via SequenceParallel).
                 start_new_session=True,
+                env=env,
             )
         except (FileNotFoundError, OSError) as exc:
             logf.write(f"\nfailed to launch pipeline: {exc}\n")
@@ -942,6 +944,45 @@ def _pending_status(inst: str, date: str, target: str) -> dict | None:
     return None
 
 
+def _persisted_status(inst: str, date: str, target: str) -> dict | None:
+    """Return a terminal-state status dict from the DB for a job no longer in
+    ``_JOBS``.
+
+    A run can leave ``_JOBS`` while still ending in error/cancelled/done: the
+    watchdog kills hung runs and pops them, and a server restart loses the
+    in-memory job entirely. Without this fallback ``job_status`` returns
+    ``"none"``, and the page silently freezes the log instead of showing the
+    failure. Surface the persisted outcome (plus its log tail and error
+    description) so the final state is never lost.
+    """
+    from muscat_db.database import get_persisted_jobs
+
+    db_key = f"photometry:{job_key(inst, date, target)}"
+    try:
+        for entry in get_persisted_jobs():  # newest-first; one row per key
+            if entry["key"] != db_key or entry["type"] != "photometry":
+                continue
+            state = entry["state"]
+            if state not in ("done", "error", "cancelled"):
+                return None  # running/pending handled by the caller
+            lp = log_path(inst, date, target)
+            error_desc = entry.get("error_desc") or ""
+            if state == "error" and not error_desc and lp:
+                error_desc = _get_error_desc(lp)
+            elif state == "cancelled" and not error_desc:
+                error_desc = "Cancelled by user"
+            return {
+                "state": state,
+                "returncode": entry.get("returncode"),
+                "log": _tail(lp) if lp else "",
+                "elapsed": round(entry.get("elapsed") or 0),
+                "error_desc": error_desc,
+            }
+    except Exception:
+        pass
+    return None
+
+
 def job_status(inst: str, date: str, target: str) -> dict:
     """Poll a job and return its state plus its target-specific log tail.
 
@@ -955,6 +996,9 @@ def job_status(inst: str, date: str, target: str) -> dict:
             pending = _pending_status(inst, date, target)
             if pending is not None:
                 return pending
+            persisted = _persisted_status(inst, date, target)
+            if persisted is not None:
+                return persisted
             return {"state": "none", "log": "", "returncode": None, "elapsed": 0}
         rc = job.proc.poll()
         if rc is None:
@@ -971,11 +1015,17 @@ def job_status(inst: str, date: str, target: str) -> dict:
                     pass
         log_path = job.log_path
         elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
+    error_desc = ""
+    if state == "error" and log_path:
+        error_desc = _get_error_desc(log_path)
+    elif state == "cancelled":
+        error_desc = "Cancelled by user"
     return {
         "state": state,
         "returncode": rc,
         "log": _tail(log_path),
         "elapsed": round(elapsed),
+        "error_desc": error_desc,
     }
 
 
@@ -1261,7 +1311,8 @@ def sync_jobs() -> None:
                     logf = open(pending_log_path, "w")
                     logf.write(f"$ {shlex.join(cmd)}\n\n")
                     logf.flush()
-                    proc = subprocess.Popen(cmd, cwd=str(prose_project_dir()), stdout=logf, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+                    proc_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+                    proc = subprocess.Popen(cmd, cwd=str(prose_project_dir()), stdout=logf, stderr=subprocess.STDOUT, text=True, start_new_session=True, env=proc_env)
                 except (FileNotFoundError, OSError) as exc:
                     try: logf.close()
                     except OSError: pass

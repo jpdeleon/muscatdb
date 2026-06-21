@@ -446,6 +446,7 @@
       <button class="btn" type="button" id="copy-cmd">Copy</button>
     </div>
     <pre id="run-log"></pre>
+    <div id="run-error" style="display:none;margin-top:0.75rem;padding:0.6rem 0.8rem;background:var(--red-bg,#2d0a0a);border:1px solid var(--red,#e33);border-radius:6px;color:var(--red,#e33);font-size:0.85rem;"></div>
   </div>
 {% endif %}
 {% endblock %}
@@ -487,16 +488,30 @@
   // while those vars are still undefined, so the cancel button would never show
   // (and runBtns.forEach would throw) when returning to a page with a live job.
   function checkSavedJob() {
+    // Always reflect the CURRENT target's real server-side state, even when
+    // localStorage has no record of it (e.g. a full run queued in a previous
+    // session or another tab). This keeps the Run buttons disabled and the
+    // Cancel button visible whenever the server reports an active/queued job.
+    if (inst && date && target) {
+      var cqs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
+      fetch('/photometry/status?' + cqs).then(function (r) { return r.json(); }).then(function (s) {
+        if (s.state === 'pending' || s.state === 'running' || s.state === 'cancelling') {
+          saveJob();
+          setRunning(true);
+          if (logEl) logEl.style.display = 'block';
+          if (s.state === 'pending' && !s.log && logEl) {
+            logEl.textContent = '⏳ Queued — waiting for the running full reduction to finish…';
+          }
+          if (!polling) polling = setInterval(poll, 2000);
+          poll();
+        }
+      }).catch(function () {});
+    }
+    // Cross-page banner for a DIFFERENT target that still has a saved job.
     var saved;
     try { saved = JSON.parse(localStorage.getItem(JOB_KEY) || 'null'); } catch (e) { saved = null; }
     if (!saved || !saved.inst) return;
-    if (saved.inst === inst && saved.date === date && saved.target === target) {
-      setRunning(true);
-      if (logEl) logEl.style.display = 'block';
-      if (!polling) polling = setInterval(poll, 2000);
-      poll();
-      return;
-    }
+    if (saved.inst === inst && saved.date === date && saved.target === target) return;
     var banner = document.getElementById('job-banner');
     var bannerMsg = document.getElementById('job-banner-msg');
     var bannerLink = document.getElementById('job-banner-link');
@@ -780,8 +795,23 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
   })();
+  // ----- show error banner from a previous failed run -----
+  (function restoreError() {
+    var errEl = document.getElementById('run-error');
+    if (!errEl) return;
+    var savedErr;
+    try { savedErr = localStorage.getItem('phot:err:' + inst + ':' + date + ':' + target); } catch (e) { savedErr = null; }
+    if (savedErr) {
+      errEl.style.display = 'block';
+      var label = (savedErr === 'Cancelled by user') ? 'Cancelled' : 'Pipeline failed';
+      errEl.innerHTML = '✗ <strong>' + label + ':</strong> ' + escapeHtml(savedErr);
+      try { localStorage.removeItem('phot:err:' + inst + ':' + date + ':' + target); } catch (e) {}
+      errEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  })();
   var hasOptError = false;
   var polling = null;
+  var jobActive = false;
 
   function debounce(fn, ms) {
     var t; return function () { clearTimeout(t); t = setTimeout(fn, ms); };
@@ -796,7 +826,7 @@
       if (d.command) cmdEl.textContent = d.command;
       if (errEl) errEl.textContent = d.error || '';
       hasOptError = !!d.error;
-      if (!polling) {
+      if (!jobActive) {
         runBtns.forEach(function (b) { b.disabled = hasOptError || rawMissing; });
       }
     }).catch(function () {});
@@ -861,6 +891,7 @@
 
   // ----- launch / cancel a reduction with live log polling -----
   function setRunning(on) {
+    jobActive = on;
     runBtns.forEach(function (b) { b.disabled = on || hasOptError || rawMissing; });
     if (cancelBtn) cancelBtn.style.display = on ? '' : 'none';
   }
@@ -874,9 +905,12 @@
         logEl.scrollTop = logEl.scrollHeight;
         try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, s.log); } catch (e) {}
       }
+      if (s.state === 'running' || s.state === 'cancelling') {
+        setRunning(true);
+      }
       if (s.state === 'done') {
         stopPolling(); clearJob();
-        logEl.textContent += '\n\n✓ done (' + s.elapsed + 's) — reloading…';
+        logEl.textContent = (s.log || '') + '\n\n✓ done (' + s.elapsed + 's) — reloading…';
         try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
         if (typeof window.showLoading === 'function') {
           window.showLoading('Reloading…');
@@ -884,12 +918,22 @@
         setTimeout(function () { window.location.reload(); }, 1200);
       } else if (s.state === 'error') {
         stopPolling(); setRunning(false); clearJob();
-        logEl.textContent += '\n\n✗ pipeline exited with code ' + s.returncode;
+        logEl.textContent = (s.log || '') + '\n\n✗ pipeline exited with code ' + s.returncode;
         try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+        try { localStorage.setItem('phot:err:' + inst + ':' + date + ':' + target, s.error_desc || 'Unknown error'); } catch (e) {}
+        if (typeof window.showLoading === 'function') {
+          window.showLoading('Reloading…');
+        }
+        setTimeout(function () { window.location.reload(); }, 1200);
       } else if (s.state === 'cancelled') {
         stopPolling(); setRunning(false); clearJob();
-        logEl.textContent += '\n\n■ cancelled';
+        logEl.textContent = (s.log || '') + '\n\n■ cancelled';
         try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+        try { localStorage.setItem('phot:err:' + inst + ':' + date + ':' + target, 'Cancelled by user'); } catch (e) {}
+        if (typeof window.showLoading === 'function') {
+          window.showLoading('Reloading…');
+        }
+        setTimeout(function () { window.location.reload(); }, 1200);
       } else if (s.state === 'pending') {
         setRunning(true);
         if (!s.log) {
@@ -916,6 +960,9 @@
     logEl.style.display = 'block';
     logEl.textContent = 'Launching ' + (testRun ? 'test' : 'full') + ' reduction…';
     try { localStorage.removeItem('phot:log:' + inst + ':' + date + ':' + target); } catch (e) {}
+    try { localStorage.removeItem('phot:err:' + inst + ':' + date + ':' + target); } catch (e) {}
+    var errEl = document.getElementById('run-error');
+    if (errEl) errEl.style.display = 'none';
     fetch('/photometry/run', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inst: inst, date: date, target: target, test_run: testRun, options: collectOptions() })
