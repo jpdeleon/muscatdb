@@ -4,7 +4,7 @@ import os
 import re
 import signal
 import time
-from datetime import date
+from datetime import date, datetime, timezone
 
 import click
 import typer
@@ -18,6 +18,7 @@ from rich.progress import (
 )
 from rich.table import Table
 
+from muscat_db import __version__
 from muscat_db.instruments import INSTRUMENTS, OBSLOG_BASE
 from muscat_db.scanner import scan_date, scan_missing_dates, scan_yesterday
 from muscat_db.summarizer import summarize_csv
@@ -55,6 +56,20 @@ app = typer.Typer(
 console = Console()
 
 _WORKER_OPTION = typer.Option(None, "--workers", "-w", help="Parallel worker count (default: cpu_count)")
+
+
+def _log_startup_banner(command: str) -> None:
+    """Print a versioned startup header so log files show exactly which build ran and when.
+
+    The banner is written to *stdout* so it is captured alongside the rest of
+    the command output when the caller redirects stdout (e.g. via cron >>=).
+    """
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    separator = "=" * 60
+    console.print(f"[bold]{separator}[/]")
+    console.print(f"[bold cyan]muscat-db v{__version__}[/]  |  [dim]{now}[/]")
+    console.print(f"[dim]command:[/] [green]{command}[/]")
+    console.print(f"[bold]{separator}[/]")
 
 
 def _complete_instrument() -> list[str]:
@@ -139,6 +154,7 @@ def scan_missing(
     ),
 ):
     """Scan all dates for an instrument that don't yet have an obslog (or all, with --force)."""
+    _log_startup_banner(f"scan-missing {instrument} {year}")
     with Progress(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
@@ -165,6 +181,7 @@ def scan_all(
     workers: int | None = _WORKER_OPTION,
 ):
     """Scan missing dates for all instruments."""
+    _log_startup_banner(f"scan-all {year}")
     from muscat_db.scanner import scan_all_instruments
     result = scan_all_instruments(year, max_workers=workers)
     total = sum(len(v) for v in result.values())
@@ -182,6 +199,7 @@ def scan_yesterday_cmd(
     workers: int | None = _WORKER_OPTION,
 ):
     """Scan yesterday's data for all instruments (cron-friendly)."""
+    _log_startup_banner("scan-yesterday")
     scanned = scan_yesterday(max_workers=workers)
     if scanned:
         console.print(f"[green]Scanned yesterday for: {', '.join(scanned)}[/]")
@@ -233,6 +251,7 @@ def build_db(
     db: str = typer.Option("muscat.db", "--db", help="SQLite database path"),
 ):
     """Build SQLite database from all CSV observation logs."""
+    _log_startup_banner(f"build-db --db {db}")
     from muscat_db.database import build_db as _build_db
     console.print("[cyan]Scanning observation logs...[/]")
     with Progress(

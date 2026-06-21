@@ -21,11 +21,27 @@ from dataclasses import dataclass, field
 from typing import IO
 import yaml
 
+from muscat_db import __version__
 from muscat_db.instruments import INSTRUMENTS
 from muscat_db.photometry import output_base, valid_date, _conda_env_python, _tail, _to_float
 from muscat_db.cache import register_cache
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent.resolve()
+
+
+def _write_log_banner(logf: IO, cmd: list[str]) -> None:
+    """Write a versioned startup header then the command line to *logf*.
+
+    This is the very first content written to every timer-fit.log so that
+    each run is clearly stamped with the muscat-db version and wall-clock time.
+    """
+    separator = "=" * 60
+    now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    logf.write(f"{separator}\n")
+    logf.write(f"muscat-db v{__version__}  |  {now_utc}\n")
+    logf.write(f"command: transit-fit\n")
+    logf.write(f"{separator}\n\n")
+    logf.write(f"$ {shlex.join(cmd)}\n\n")
 
 
 def fit_output_dir(inst: str, date: str, target: str) -> pathlib.Path:
@@ -911,7 +927,7 @@ def start_fit(
         cmd.append("--test_run")
     log_path = rdir / "timer-fit.log"
     logf = open(log_path, "w")
-    logf.write(f"$ {shlex.join(cmd)}\n\n")
+    _write_log_banner(logf, cmd)
     logf.flush()
 
     try:
@@ -1337,7 +1353,7 @@ def sync_jobs() -> None:
                 log_path = rdir / "timer-fit.log"
                 try:
                     logf = open(log_path, "w")
-                    logf.write(f"$ {shlex.join(cmd)}\n\n")
+                    _write_log_banner(logf, cmd)
                     logf.flush()
                     proc = subprocess.Popen(cmd, cwd=str(rdir), stdout=logf, stderr=subprocess.STDOUT, text=True, start_new_session=True)
                 except (FileNotFoundError, OSError) as exc:
