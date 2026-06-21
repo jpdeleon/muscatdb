@@ -257,7 +257,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
                     headers, rows = phot.csv_preview(rdir / csv_info["file"], n=8)
                     previews[band] = {"headers": headers, "rows": rows}
 
-    return _render(
+    resp = _render(
         "photometry.html",
         instruments=list(INSTRUMENTS),
         sel_inst=inst, sel_date=date, sel_target=target,
@@ -271,6 +271,12 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
         is_narrowband=is_narrowband,
         available_bands=available_bands,
     )
+    # The run buttons' enabled/disabled state is JavaScript-driven and reflects
+    # the live job state. A cached or back/forward-restored snapshot can show
+    # them stuck disabled after a failed run, so never let the browser reuse a
+    # stale copy of this page.
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @app.get("/transit-fit", response_class=HTMLResponse)
