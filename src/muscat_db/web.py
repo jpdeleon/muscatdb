@@ -60,7 +60,7 @@ async def _lifespan(app: FastAPI):
     if missing is not None:
         print(
             f"[startup] WARNING: {missing.name} is unset. "
-            "muscat/muscat2 calibration with --wcs_method nova will fail; "
+            "muscat/muscat2 calibration with --wcs_method astrometry.net will fail; "
             "use --wcs_method twirl (no API key) or export the key."
         )
     yield

@@ -49,8 +49,9 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar(
         "ASTROMETRY_NET_API_KEY",
         None,
-        "nova WCS solving for muscat/muscat2 calibration "
-        "(not needed with --wcs_method twirl, or for BANZAI muscat3/muscat4/sinistro)",
+        "nova.astrometry.net WCS solving for muscat/muscat2 calibration "
+        "(--wcs_method astrometry.net; not needed with --wcs_method twirl, "
+        "or for BANZAI muscat3/muscat4/sinistro)",
         secret=True,
     ),
 )
@@ -70,7 +71,7 @@ def config_status() -> list[tuple[str, str]]:
 
 
 def missing_required_secret() -> EnvVar | None:
-    """The astrometry key is only *conditionally* required (muscat/muscat2 + nova),
+    """The astrometry key is only *conditionally* required (muscat/muscat2 + astrometry.net),
     so this never hard-fails the app. prose2 enforces it at calibration time and
     points the user at ``--wcs_method twirl``. Returned here only for a warning."""
     for v in ENV_VARS:

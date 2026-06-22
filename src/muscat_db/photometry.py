@@ -93,7 +93,7 @@ RUN_DEFAULTS: dict = {
     "sig_dx": None,            # None -> sigma clipping disabled for dx axis
     "sig_dy": None,            # None -> sigma clipping disabled for dy axis
     "min_star_area": 10,
-    "wcs_method": "nova",
+    "wcs_method": "astrometry.net",
     "calib_dir": "",
 }
 
@@ -614,8 +614,8 @@ def validate_run_options(o: dict) -> str | None:
         return "CCD trim must be two integers Y,X (e.g. 10,10)"
     if o.get("aper_unit", "pix") not in ("pix", "fwhm"):
         return "aperture unit must be 'pix' or 'fwhm'"
-    if o.get("wcs_method") not in ("twirl", "nova"):
-        return "WCS method must be 'twirl' or 'nova'"
+    if o.get("wcs_method") not in ("twirl", "astrometry.net"):
+        return "WCS method must be 'twirl' or 'astrometry.net'"
     return None
 
 
@@ -693,7 +693,7 @@ def build_command(
     if (o.get("ccd_trim") or "").replace(" ", ""):
         args += ["--ccd_trim", o["ccd_trim"].replace(" ", "")]
 
-    if o.get("wcs_method", "nova") != "nova":
+    if o.get("wcs_method", "astrometry.net") != "astrometry.net":
         args += ["--wcs_method", o["wcs_method"]]
     if inst in ("muscat", "muscat2"):
         args += ["--calib_dir", o.get("calib_dir") or str(results_dir(inst, date)) + "_calibrated"]
