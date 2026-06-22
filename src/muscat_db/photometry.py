@@ -26,6 +26,7 @@ import csv as _csv
 import datetime
 import hashlib
 import json
+import logging
 import os
 import re
 import shlex
@@ -44,12 +45,18 @@ from muscat_db.instruments import INSTRUMENTS
 from muscat_db.cache import register_cache
 from muscat_db.band_utils import DEFAULT_BANDS, NARROW_BANDS, _FILTER_BAND_ALIAS, bands_from_filters  # noqa: F401
 
+logger = logging.getLogger(__name__)
+
 # --------------------------- configuration ---------------------------
 # All paths are env-overridable so the page works in dev and on the server.
 _HERE = Path(__file__).resolve().parent          # .../src/muscat_db
 _REPO_ROOT = _HERE.parent.parent                 # .../muscat-db
 _DEFAULT_PROSE_PROJECT = _REPO_ROOT.parent / "ext_tools" / "prose2"
 _DEFAULT_OUTPUT_BASE = "/ut2/jerome/ql/prose"
+# Temp dir for spawned pipeline jobs. The root filesystem holding /tmp is small
+# and prone to filling up (astropy's mmap probe and FITS I/O write ephemerals
+# there), so default to a roomy raid-backed location instead of user-space /tmp.
+_DEFAULT_TMPDIR = "/raid_ut2/home/jerome/tmp"
 
 # Default values for every optional run_photometry argument the form exposes.
 # Kept here so the template, normalizer, and command builder share one source.
@@ -81,6 +88,8 @@ RUN_DEFAULTS: dict = {
     "sig_dx": None,            # None -> sigma clipping disabled for dx axis
     "sig_dy": None,            # None -> sigma clipping disabled for dy axis
     "min_star_area": 10,
+    "wcs_method": "nova",
+    "calib_dir": "",
 }
 
 
@@ -117,6 +126,31 @@ def output_base() -> Path:
 
 def prose_project_dir() -> Path:
     return Path(os.environ.get("MUSCAT_PROSE_PROJECT", str(_DEFAULT_PROSE_PROJECT)))
+
+
+def prose_tmpdir() -> str:
+    """Temp dir handed to spawned pipeline jobs (overridable via MUSCAT_TMPDIR)."""
+    return os.environ.get("MUSCAT_TMPDIR", _DEFAULT_TMPDIR)
+
+
+def _job_env() -> dict[str, str]:
+    """Environment for spawned pipeline subprocesses.
+
+    Routes all ephemeral files (TMPDIR/TMP/TEMP) to a raid-backed directory so
+    jobs never trip over a full root ``/tmp``. The dir is created if missing;
+    if that fails we fall back to the inherited environment rather than block
+    the launch.
+    """
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    tmpdir = prose_tmpdir()
+    try:
+        Path(tmpdir).mkdir(parents=True, exist_ok=True)
+        env["TMPDIR"] = tmpdir
+        env["TMP"] = tmpdir
+        env["TEMP"] = tmpdir
+    except OSError as exc:
+        logger.warning("could not prepare TMPDIR %s (%s); using inherited temp", tmpdir, exc)
+    return env
 
 
 def prose_python() -> str | None:
@@ -522,7 +556,7 @@ def normalize_run_options(raw: dict | None) -> dict:
     if "bands" in raw:  # present-but-empty must surface as an error, not default
         o["bands"] = [str(b).strip() for b in (bands or []) if str(b).strip()]
 
-    for key in ("ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "target_coord"):
+    for key in ("ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "target_coord", "wcs_method", "calib_dir"):
         if raw.get(key) is not None:
             o[key] = str(raw[key]).strip()
 
@@ -571,6 +605,8 @@ def validate_run_options(o: dict) -> str | None:
         return "CCD trim must be two integers Y,X (e.g. 10,10)"
     if o.get("aper_unit", "pix") not in ("pix", "fwhm"):
         return "aperture unit must be 'pix' or 'fwhm'"
+    if o.get("wcs_method") not in ("twirl", "nova"):
+        return "WCS method must be 'twirl' or 'nova'"
     return None
 
 
@@ -648,6 +684,10 @@ def build_command(
     if (o.get("ccd_trim") or "").replace(" ", ""):
         args += ["--ccd_trim", o["ccd_trim"].replace(" ", "")]
 
+    if o.get("wcs_method", "nova") != "nova":
+        args += ["--wcs_method", o["wcs_method"]]
+    if inst in ("muscat", "muscat2"):
+        args += ["--calib_dir", o.get("calib_dir") or str(results_dir(inst, date)) + "_calibrated"]
     if o.get("make_gif", False):
         args.append("--gif")
     if o.get("plot_gaia_sources", True):
@@ -789,7 +829,7 @@ def start_run(
         logf.write(f"$ {shlex.join(cmd)}\n\n")
         logf.flush()
         try:
-            env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+            env = _job_env()
             proc = subprocess.Popen(
                 cmd,
                 cwd=str(prose_project_dir()),
@@ -1302,7 +1342,7 @@ def sync_jobs() -> None:
                     logf = open(pending_log_path, "w")
                     logf.write(f"$ {shlex.join(cmd)}\n\n")
                     logf.flush()
-                    proc_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+                    proc_env = _job_env()
                     proc = subprocess.Popen(cmd, cwd=str(prose_project_dir()), stdout=logf, stderr=subprocess.STDOUT, text=True, start_new_session=True, env=proc_env)
                 except (FileNotFoundError, OSError) as exc:
                     try: logf.close()
