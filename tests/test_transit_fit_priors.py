@@ -21,7 +21,7 @@ TARGET = "TOI-1234"
 
 
 def _write(tmp_path: Path, options: dict) -> dict:
-    fit._write_fit_inputs(tmp_path, INST, DATE, [], options)
+    fit._write_fit_inputs(tmp_path, INST, DATE, TARGET, [], options)
     return yaml.safe_load((tmp_path / "fit.yaml").read_text())
 
 
@@ -202,7 +202,7 @@ def test_uniform_param_sys_yaml_uses_bound_midpoint(tmp_path):
         "fixed": ["u_star"],
     }
 
-    fit._write_fit_inputs(tmp_path, INST, DATE, [], options)
+    fit._write_fit_inputs(tmp_path, INST, DATE, TARGET, [], options)
     sys_yaml = yaml.safe_load((tmp_path / "sys.yaml").read_text())
 
     # Uniform bounds [0, 0.5] -> sys.yaml seed [midpoint, half-width].
@@ -297,7 +297,7 @@ def test_fit_yaml_data_keys_in_canonical_band_order(tmp_path):
         p.write_text("time,flux\n")
         csvs.append(p)
 
-    fit._write_fit_inputs(tmp_path, inst, date, csvs, {"planets": "b"})
+    fit._write_fit_inputs(tmp_path, inst, date, target, csvs, {"planets": "b"})
     fit_yaml = yaml.safe_load((tmp_path / "fit.yaml").read_text())
 
     assert list(fit_yaml["data"].keys()) == [
