@@ -509,7 +509,7 @@ def calibration_status(instrument: str) -> dict:
 
 def _band_from_filter(filter_val: str) -> str | None:
     """Map raw FITS FILTER value to a canonical band name for the calculator."""
-    from muscat_db.photometry import _FILTER_BAND_ALIAS
+    from muscat_db.band_utils import _FILTER_BAND_ALIAS
     return _FILTER_BAND_ALIAS.get(filter_val)
 
 

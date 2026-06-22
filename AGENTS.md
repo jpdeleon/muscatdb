@@ -21,6 +21,7 @@
 * path: /ut2/jerome/miniconda3/envs/prose
 * photometry.py depends on run_photometry.py in /ut2/jerome/github/research/project/ext_tools/prose2
 * transit_fit.py depends on timer package in /ut2/jerome/github/research/project/ext_tools/timer
+* do not duplicate functions between muscat-db and prose2. all photometry functions should live in prose2.
 
 ## frontend and GUI
 * GUI settings should be consistent with the arguments in run_photometry.py
