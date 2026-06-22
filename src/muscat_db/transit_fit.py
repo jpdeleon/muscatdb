@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import IO
 import yaml
 
-from muscat_db import __version__
+from muscat_db import __meta__, __muscatdb_version__, __version__
 from muscat_db.instruments import INSTRUMENTS
 from muscat_db.photometry import output_base, valid_date, _conda_env_python, _tail, _to_float
 from muscat_db.cache import register_cache
@@ -29,8 +29,8 @@ from muscat_db.cache import register_cache
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent.resolve()
 
 
-def _write_log_banner(logf: IO, cmd: list[str]) -> None:
-    """Write a versioned startup header then the command line to *logf*.
+def _write_log_banner(logf: IO, cmd: list[str], options: dict | None = None) -> None:
+    """Write a versioned startup header then the command line and parsed args to *logf*.
 
     This is the very first content written to every timer-fit.log so that
     each run is clearly stamped with the muscat-db version and wall-clock time.
@@ -42,6 +42,12 @@ def _write_log_banner(logf: IO, cmd: list[str]) -> None:
     logf.write(f"command: transit-fit\n")
     logf.write(f"{separator}\n\n")
     logf.write(f"$ {shlex.join(cmd)}\n\n")
+
+    if options is not None:
+        logf.write("--- options ---\n")
+        for k, v in sorted(options.items()):
+            logf.write(f"  {k}: {v!r}\n")
+        logf.write("\n")
 
 
 def fit_output_dir(inst: str, date: str, target: str) -> pathlib.Path:
@@ -775,6 +781,19 @@ def _write_fit_inputs(
             default_flow_style=None, sort_keys=False,
         )
 
+    # meta.yaml
+    now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    meta_data = {
+        "__muscatdb_version__": __muscatdb_version__,
+        "__meta__": __meta__,
+        "created_at": now_utc,
+        "instrument": inst,
+        "date": date,
+        "target": target,
+    }
+    with open(rdir / "meta.yaml", "w") as f:
+        yaml.safe_dump(meta_data, f, default_flow_style=False, sort_keys=False)
+
 
 # Path to the standalone helper run inside the `timer` conda env.
 _LOGP_HELPER = pathlib.Path(__file__).parent / "_logp_helper.py"
@@ -927,7 +946,7 @@ def start_fit(
         cmd.append("--test_run")
     log_path = rdir / "timer-fit.log"
     logf = open(log_path, "w")
-    _write_log_banner(logf, cmd)
+    _write_log_banner(logf, cmd, options)
     logf.flush()
 
     try:
@@ -1121,6 +1140,7 @@ def get_fit_outputs(inst: str, date: str, target: str) -> dict:
         "has_log": False,
         "has_fit_yaml": False,
         "has_sys_yaml": False,
+        "has_meta_yaml": False,
         "extra_files": []
     }
 
@@ -1138,6 +1158,9 @@ def get_fit_outputs(inst: str, date: str, target: str) -> dict:
 
     if (rdir / "sys.yaml").is_file():
         outputs["has_sys_yaml"] = True
+
+    if (rdir / "meta.yaml").is_file():
+        outputs["has_meta_yaml"] = True
 
     if not out_dir.is_dir():
         return outputs
@@ -1353,7 +1376,7 @@ def sync_jobs() -> None:
                 log_path = rdir / "timer-fit.log"
                 try:
                     logf = open(log_path, "w")
-                    _write_log_banner(logf, cmd)
+                    _write_log_banner(logf, cmd, opts)
                     logf.flush()
                     proc = subprocess.Popen(cmd, cwd=str(rdir), stdout=logf, stderr=subprocess.STDOUT, text=True, start_new_session=True)
                 except (FileNotFoundError, OSError) as exc:
