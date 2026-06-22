@@ -55,8 +55,13 @@ _DEFAULT_PROSE_PROJECT = _REPO_ROOT.parent / "ext_tools" / "prose2"
 _DEFAULT_OUTPUT_BASE = "/ut2/jerome/ql/prose"
 # Temp dir for spawned pipeline jobs. The root filesystem holding /tmp is small
 # and prone to filling up (astropy's mmap probe and FITS I/O write ephemerals
-# there), so default to a roomy raid-backed location instead of user-space /tmp.
-_DEFAULT_TMPDIR = "/raid_ut2/home/jerome/tmp"
+# there), so default to a roomy home-backed location instead of user-space /tmp.
+# Derived from the home directory rather than a hardcoded user path so it is
+# portable across machines/users (planned celery/redis multi-server setup).
+# ``Path.home()`` resolves via the password database, so this still works when
+# ``$HOME`` is unset (cron/systemd workers) -- unlike a literal ``$HOME`` in .env.
+# Override with ``MUSCAT_TMPDIR`` when home is on a small/full filesystem.
+_DEFAULT_TMPDIR = str(Path.home() / ".muscatdb" / "tmp")
 
 # Default values for every optional run_photometry argument the form exposes.
 # Kept here so the template, normalizer, and command builder share one source.
@@ -121,7 +126,9 @@ _BAND_SUFFIX = {
 
 
 def output_base() -> Path:
-    return Path(os.environ.get("MUSCAT_PROSE_DIR", _DEFAULT_OUTPUT_BASE))
+    # ``.expanduser()`` for parity with the timer dir getter (transit_fit.py), so
+    # a ``~``-prefixed MUSCAT_PROSE_DIR resolves instead of creating a literal '~'.
+    return Path(os.environ.get("MUSCAT_PROSE_DIR", _DEFAULT_OUTPUT_BASE)).expanduser()
 
 
 def prose_project_dir() -> Path:
@@ -302,9 +309,11 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
     summary_re = re.compile(
         rf"^{t_esc}_{inst_esc}_(?P<file_date>\d{{6}})(?P<rest>.*)$"
     )
-    # Per-band stem: <target>_<inst>_<band>_<date6>
+    # Per-band stem: <target>_<inst>_<band>_<date6>. The band token may itself
+    # contain underscores (narrow-band/Johnson filters: g_narrow, Na_D, z_s), so
+    # allow ``_`` in the band and match it lazily up to the 6-digit date.
     band_re = re.compile(
-        rf"^{t_esc}_{inst_esc}_(?P<band>[A-Za-z0-9]+)_(?P<file_date>\d{{6}})(?P<rest>.*)$"
+        rf"^{t_esc}_{inst_esc}_(?P<band>[A-Za-z0-9_]+?)_(?P<file_date>\d{{6}})(?P<rest>.*)$"
     )
     logs: list[Path] = []
 
