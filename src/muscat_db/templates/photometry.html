@@ -346,9 +346,9 @@
               <input type="number" id="opt-min_star_area" value="{{ run_defaults.min_star_area }}" min="1" style="width: 100%;">
             </div>
             <div class="opt">
-              <label for="opt-wcs_method">WCS method <span class="help-tooltip" title="WCS solving method for muscat1/2 calibration: 'twirl' (twirl+Gaia, no API key) or 'nova' (requires ASTROMETRY_NET_API_KEY). Disabled for instruments with WCS in header.">?</span></label>
+              <label for="opt-wcs_method">WCS method <span class="help-tooltip" title="WCS solving method for muscat1/2 calibration: 'twirl' (twirl+Gaia, no API key) or 'astrometry.net' (nova.astrometry.net, requires ASTROMETRY_NET_API_KEY). Disabled for instruments with WCS in header.">?</span></label>
               <select id="opt-wcs_method" style="width: 100%;">
-                <option value="nova" {% if run_defaults.wcs_method == 'nova' %}selected{% endif %}>nova</option>
+                <option value="astrometry.net" {% if run_defaults.wcs_method == 'astrometry.net' %}selected{% endif %}>astrometry.net</option>
                 <option value="twirl" {% if run_defaults.wcs_method == 'twirl' %}selected{% endif %}>twirl</option>
               </select>
             </div>
@@ -710,6 +710,8 @@
     var saved;
     try { saved = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); } catch (e) { saved = null; }
     if (!saved) return;
+    // migrate legacy persisted value after the 'nova' -> 'astrometry.net' rename
+    if (saved.wcs_method === 'nova') saved.wcs_method = 'astrometry.net';
     document.querySelectorAll('input[name="band"]').forEach(function (c) {
       c.checked = saved.bands && saved.bands.indexOf(c.value) !== -1;
     });
