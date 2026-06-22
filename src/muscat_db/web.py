@@ -51,6 +51,18 @@ async def _lifespan(app: FastAPI):
     conn.executescript(SCHEMA)
     conn.close()
     print(f"[startup] database ready at {db}")
+
+    from muscat_db.config import config_status, missing_required_secret
+
+    summary = ", ".join(f"{name}={state}" for name, state in config_status())
+    print(f"[startup] env config: {summary}")
+    missing = missing_required_secret()
+    if missing is not None:
+        print(
+            f"[startup] WARNING: {missing.name} is unset. "
+            "muscat/muscat2 calibration with --wcs_method nova will fail; "
+            "use --wcs_method twirl (no API key) or export the key."
+        )
     yield
 
 

@@ -345,6 +345,13 @@
               <label for="opt-min_star_area">Min star area (px) <span class="help-tooltip" title="Minimum pixel area for source detection (corresponds to --min_star_area).">?</span></label>
               <input type="number" id="opt-min_star_area" value="{{ run_defaults.min_star_area }}" min="1" style="width: 100%;">
             </div>
+            <div class="opt">
+              <label for="opt-wcs_method">WCS method <span class="help-tooltip" title="WCS solving method for muscat1/2 calibration: 'twirl' (twirl+Gaia, no API key) or 'nova' (requires ASTROMETRY_NET_API_KEY). Disabled for instruments with WCS in header.">?</span></label>
+              <select id="opt-wcs_method" style="width: 100%;">
+                <option value="nova" {% if run_defaults.wcs_method == 'nova' %}selected{% endif %}>nova</option>
+                <option value="twirl" {% if run_defaults.wcs_method == 'twirl' %}selected{% endif %}>twirl</option>
+              </select>
+            </div>
           </div>
         </details>
 
@@ -692,7 +699,8 @@
       sig_fwhm: val('opt-sig_fwhm'),
       sig_dx: val('opt-sig_dx'),
       sig_dy: val('opt-sig_dy'),
-      min_star_area: val('opt-min_star_area')
+      min_star_area: val('opt-min_star_area'),
+      wcs_method: val('opt-wcs_method')
     };
   }
   function saveOptions() {
@@ -707,7 +715,7 @@
     });
     ['ref_band','refid','aper_unit','aper_radii','annulus',
      'target_id','comparison_ids','avoid_comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
-     'n_stars_align','cutout_size','ccd_trim','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area'].forEach(function (id) {
+       'n_stars_align','cutout_size','ccd_trim','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
     });
@@ -738,6 +746,20 @@
   restoreOptions();
   updateApertureHints();
 
+  function updateWcsMethod() {
+    var el = document.getElementById('opt-wcs_method');
+    if (!el) return;
+    var inst = selInst ? selInst.value : '';
+    var needsWcs = (inst === 'muscat' || inst === 'muscat2');
+    el.disabled = !needsWcs;
+    el.style.opacity = needsWcs ? '1' : '0.4';
+    el.title = needsWcs ? '' : 'WCS in header — method not configurable for this instrument';
+  }
+  updateWcsMethod();
+  if (selInst) {
+    selInst.addEventListener('change', updateWcsMethod);
+  }
+
   var aperUnitEl = document.getElementById('opt-aper_unit');
   if (aperUnitEl) {
     aperUnitEl.addEventListener('change', function () {
@@ -756,7 +778,7 @@
       });
       ['ref_band','refid','aper_unit','aper_radii','annulus',
        'target_id','comparison_ids','avoid_comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
-       'n_stars_align','cutout_size','ccd_trim','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area'].forEach(function (id) {
+     'n_stars_align','cutout_size','ccd_trim','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method'].forEach(function (id) {
         var el = document.getElementById('opt-'+id);
         if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';
       });

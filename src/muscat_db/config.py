@@ -1,0 +1,73 @@
+"""Single source of truth for environment configuration.
+
+Every environment variable the muscat-db + prose2 pipeline consults is listed in
+``ENV_VARS`` below, so there is one place to look when wiring up a new machine.
+The actual ``.env`` loading happens in ``muscat_db/__init__.py`` (early, before
+submodules read ``os.environ``); this module documents the variables and reports
+their status. See ``.env.example`` at the repo root for an annotated template.
+
+Note: the env *getters* with their defaults live next to the code that uses them
+(``photometry.py``, ``database.py``, ``transit_fit.py``). This registry mirrors
+those names/defaults for documentation and the startup status report; it does not
+replace them.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class EnvVar:
+    name: str
+    default: str | None
+    purpose: str
+    secret: bool = False
+
+
+# Canonical registry of every variable the pipeline reads. ``default=None`` means
+# the code has no fallback (the feature is unavailable / errors when it is needed).
+ENV_VARS: tuple[EnvVar, ...] = (
+    EnvVar("MUSCAT_DB_PATH", "muscat.db", "SQLite database path"),
+    EnvVar("MUSCAT_DATA_DIR", None, "Raw FITS data base directory"),
+    EnvVar("MUSCAT_PROSE_DIR", "/ut2/jerome/ql/prose", "Pipeline output base directory"),
+    EnvVar("MUSCAT_PROSE_PROJECT", "<repo>/../ext_tools/prose2", "prose2 repository path"),
+    EnvVar("MUSCAT_PROSE_PYTHON", None, "Explicit prose interpreter (highest priority)"),
+    EnvVar("MUSCAT_PROSE_CONDA_ENV", "prose", "Conda env supplying prose dependencies"),
+    EnvVar("MUSCAT_TIMER_DIR", "/ut2/jerome/ql/timer", "timer package output directory"),
+    EnvVar("MUSCAT_TMPDIR", "/raid_ut2/home/jerome/tmp", "Temp dir handed to spawned jobs"),
+    EnvVar("MUSCAT_PHOT_STALL_LIMIT_S", "1500", "Photometry job stall timeout (seconds)"),
+    EnvVar("MUSCAT_PHOT_MAX_RUNTIME_S", "10800", "Photometry job max runtime (seconds)"),
+    EnvVar("MUSCAT_PHOT_FINALIZE_GRACE_S", "8", "Log-quiescence grace window (seconds)"),
+    EnvVar(
+        "ASTROMETRY_NET_API_KEY",
+        None,
+        "nova WCS solving for muscat/muscat2 calibration "
+        "(not needed with --wcs_method twirl, or for BANZAI muscat3/muscat4/sinistro)",
+        secret=True,
+    ),
+)
+
+
+def status_of(var: EnvVar) -> str:
+    """Return 'set', 'default', or 'unset' for a single variable."""
+    raw = os.environ.get(var.name)
+    if raw not in (None, ""):
+        return "set"
+    return "default" if var.default is not None else "unset"
+
+
+def config_status() -> list[tuple[str, str]]:
+    """Return ``(name, status)`` for each known variable, registry order."""
+    return [(v.name, status_of(v)) for v in ENV_VARS]
+
+
+def missing_required_secret() -> EnvVar | None:
+    """The astrometry key is only *conditionally* required (muscat/muscat2 + nova),
+    so this never hard-fails the app. prose2 enforces it at calibration time and
+    points the user at ``--wcs_method twirl``. Returned here only for a warning."""
+    for v in ENV_VARS:
+        if v.name == "ASTROMETRY_NET_API_KEY" and status_of(v) == "unset":
+            return v
+    return None
