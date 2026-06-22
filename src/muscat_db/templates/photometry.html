@@ -384,6 +384,10 @@
               <label for="opt-ccd_trim">CCD trim (Y,X) <span class="help-tooltip" title="Number of pixels to trim from the borders of the image (corresponds to --ccd_trim).">?</span></label>
               <input type="text" id="opt-ccd_trim" value="{{ run_defaults.ccd_trim }}" style="width: 100%;">
             </div>
+            <div class="opt">
+              <label for="opt-edge_margin">Edge margin (px) <span class="help-tooltip" title="Exclude detected stars within this many pixels of any CCD edge from the comparison-star pool; the target is never excluded (corresponds to --edge_margin). Blank = auto (half the cutout size); 0 = disable.">?</span></label>
+              <input type="number" id="opt-edge_margin" value="{{ run_defaults.edge_margin }}" min="0" placeholder="auto" style="width: 100%;">
+            </div>
           </div>
         </details>
 
@@ -693,6 +697,7 @@
       n_stars_align: val('opt-n_stars_align'),
       cutout_size: val('opt-cutout_size'),
       ccd_trim: val('opt-ccd_trim'),
+      edge_margin: val('opt-edge_margin'),
       bin_size_minutes: val('opt-bin_size_minutes'),
       overwrite: chk('opt-overwrite'),
       sig_bkg: val('opt-sig_bkg'),
@@ -717,7 +722,7 @@
     });
     ['ref_band','refid','aper_unit','aper_radii','annulus',
      'target_id','comparison_ids','avoid_comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
-       'n_stars_align','cutout_size','ccd_trim','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method'].forEach(function (id) {
+       'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
     });
@@ -780,7 +785,7 @@
       });
       ['ref_band','refid','aper_unit','aper_radii','annulus',
        'target_id','comparison_ids','avoid_comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
-     'n_stars_align','cutout_size','ccd_trim','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method'].forEach(function (id) {
+     'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method'].forEach(function (id) {
         var el = document.getElementById('opt-'+id);
         if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';
       });

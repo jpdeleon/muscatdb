@@ -260,7 +260,7 @@ class TestRunOptions:
         cmd = phot.build_command(INST, DATE, TARGET, {}, test_run=False)
         # default numerics are NOT echoed
         for flag in ("--gif_stride", "--max_num_stars", "--cutout_size",
-                     "--ccd_trim", "--bin_size_minutes", "--ref_band",
+                     "--ccd_trim", "--edge_margin", "--bin_size_minutes", "--ref_band",
                      "--aper_radii", "--no_gif", "--use_barycorrpy"):
             assert flag not in cmd
         assert cmd[cmd.index("--bands") + 1:cmd.index("--bands") + 5] == BANDS
@@ -277,6 +277,7 @@ class TestRunOptions:
             "max_num_stars": "6",
             "min_star_separation": "12",
             "ccd_trim": "5,5",
+            "edge_margin": "20",
             "make_gif": False,
             "use_barycorrpy": True,
             "gif_stride": "50",
@@ -291,9 +292,17 @@ class TestRunOptions:
         assert "--aper_unit fwhm" in s
         assert "--max_num_stars 6" in s
         assert "--ccd_trim 5,5" in s
+        assert "--edge_margin 20" in s
         assert "--gif" not in cmd
         assert "--use_barycorrpy" in cmd
         assert "--gif_stride 50" in s
+
+    def test_edge_margin_zero_is_emitted_to_disable(self, monkeypatch, tmp_path):
+        # 0 is a meaningful value (disable edge exclusion), distinct from the
+        # blank auto default, so it must be passed through explicitly.
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        cmd = phot.build_command(INST, DATE, TARGET, {"edge_margin": "0"}, test_run=False)
+        assert "--edge_margin 0" in " ".join(cmd)
 
     def test_plot_gaia_sources_default_on(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))

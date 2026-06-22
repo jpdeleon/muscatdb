@@ -81,6 +81,7 @@ RUN_DEFAULTS: dict = {
     "n_stars_align": "",       # "" -> same as max_num_stars
     "cutout_size": 35,
     "ccd_trim": "",            # "Y,X"; "" -> no trim (pipeline default)
+    "edge_margin": "",         # px from CCD edge to exclude comps; "" -> auto (half cutout), 0 -> off
     "bin_size_minutes": 10.0,
     "target_id": "",           # "" -> auto
     "comparison_ids": "",      # "" -> auto, or "1,2,3"
@@ -574,7 +575,7 @@ def normalize_run_options(raw: dict | None) -> dict:
             val = str(raw.get(key, "")).strip()
             o[key] = "" if val == "" else (_to_int(val) if _to_int(val) is not None else "")
 
-    for key in ("test_run_frames", "max_num_stars", "cutout_size", "gif_stride", "min_star_area"):
+    for key in ("test_run_frames", "max_num_stars", "cutout_size", "gif_stride", "min_star_area", "edge_margin"):
         if str(raw.get(key, "")).strip() != "":
             iv = _to_int(raw[key])
             if iv is not None:
@@ -692,6 +693,9 @@ def build_command(
         args += ["--n_stars_align", str(o["n_stars_align"])]
     if (o.get("ccd_trim") or "").replace(" ", ""):
         args += ["--ccd_trim", o["ccd_trim"].replace(" ", "")]
+    # Empty -> auto (half cutout); explicit int (incl. 0 to disable) is emitted.
+    if str(o.get("edge_margin", "")).strip() != "":
+        args += ["--edge_margin", str(o["edge_margin"])]
 
     if o.get("wcs_method", "astrometry.net") != "astrometry.net":
         args += ["--wcs_method", o["wcs_method"]]
