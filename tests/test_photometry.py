@@ -1061,7 +1061,7 @@ class TestTransitFitOptions:
         rdir = tmp_path / "run_dir"
         rdir.mkdir()
         
-        _write_fit_inputs(rdir, "muscat3", "260613", [csv_file], options)
+        _write_fit_inputs(rdir, "muscat3", "260613", "target", [csv_file], options)
         
         # Verify files created
         assert (rdir / "fit.yaml").is_file()

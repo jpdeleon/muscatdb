@@ -28,6 +28,32 @@ from muscat_db.cache import register_cache
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent.resolve()
 
+_TIMER_VERSION: str | None = None
+_TIMER_VERSION_LOCK = threading.Lock()
+
+
+def _timer_version() -> str:
+    """Return the installed timer package version, cached after first lookup."""
+    global _TIMER_VERSION
+    if _TIMER_VERSION is not None:
+        return _TIMER_VERSION
+    with _TIMER_VERSION_LOCK:
+        if _TIMER_VERSION is not None:
+            return _TIMER_VERSION
+        timer_py = _conda_env_python("timer")
+        if timer_py is None:
+            _TIMER_VERSION = "unknown"
+        else:
+            try:
+                result = subprocess.run(
+                    [timer_py, "-c", "from importlib.metadata import version; print(version('timer'))"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                _TIMER_VERSION = result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else "unknown"
+            except Exception:
+                _TIMER_VERSION = "unknown"
+    return _TIMER_VERSION
+
 
 def _write_log_banner(logf: IO, cmd: list[str], options: dict | None = None) -> None:
     """Write a versioned startup header then the command line and parsed args to *logf*.
@@ -38,7 +64,7 @@ def _write_log_banner(logf: IO, cmd: list[str], options: dict | None = None) -> 
     separator = "=" * 60
     now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     logf.write(f"{separator}\n")
-    logf.write(f"muscat-db v{__version__}  |  {now_utc}\n")
+    logf.write(f"muscat-db v{__version__}  |  timer-fit v{_timer_version()}  |  {now_utc}\n")
     logf.write(f"command: transit-fit\n")
     logf.write(f"{separator}\n\n")
     logf.write(f"$ {shlex.join(cmd)}\n\n")
@@ -557,6 +583,7 @@ def _write_fit_inputs(
     rdir: pathlib.Path,
     inst: str,
     date: str,
+    target: str,
     csvs: list[pathlib.Path],
     options: dict,
 ) -> None:
@@ -786,6 +813,7 @@ def _write_fit_inputs(
     meta_data = {
         "__muscatdb_version__": __muscatdb_version__,
         "__meta__": __meta__,
+        "timer_version": _timer_version(),
         "created_at": now_utc,
         "instrument": inst,
         "date": date,
@@ -841,7 +869,7 @@ def compute_logp(inst: str, date: str, target: str, options: dict, selected_csvs
 
     tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="muscat_logp_"))
     try:
-        _write_fit_inputs(tmpdir, inst, date, csvs, options)
+        _write_fit_inputs(tmpdir, inst, date, target, csvs, options)
         try:
             proc = subprocess.run(
                 [timer_py, str(_LOGP_HELPER), str(tmpdir)],
@@ -914,7 +942,7 @@ def start_fit(
     # Preserve existing products so timer can reuse them when clobber is false.
     # When overwrite is selected, fit.yaml sets clobber=true and timer owns the
     # invalidation/replacement of its cached results.
-    _write_fit_inputs(rdir, inst, date, csvs, options)
+    _write_fit_inputs(rdir, inst, date, target, csvs, options)
 
     # Clear cached outputs so the next page load reads fresh results from disk.
     _fit_outputs_cache.clear()
@@ -1368,7 +1396,7 @@ def sync_jobs() -> None:
                     )
                     continue
                 rdir.mkdir(parents=True, exist_ok=True)
-                _write_fit_inputs(rdir, inst, date, get_csv_lightcurves(inst, date, target), opts)
+                _write_fit_inputs(rdir, inst, date, target, get_csv_lightcurves(inst, date, target), opts)
                 _fit_outputs_cache.clear()
                 cmd = [*_timer_prefix(), "-v", str(rdir)]
                 if test_run:
