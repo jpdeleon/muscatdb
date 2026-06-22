@@ -42,6 +42,7 @@ from typing import IO
 
 from muscat_db.instruments import INSTRUMENTS
 from muscat_db.cache import register_cache
+from muscat_db.band_utils import DEFAULT_BANDS, NARROW_BANDS, _FILTER_BAND_ALIAS, bands_from_filters  # noqa: F401
 
 # --------------------------- configuration ---------------------------
 # All paths are env-overridable so the page works in dev and on the server.
@@ -50,7 +51,6 @@ _REPO_ROOT = _HERE.parent.parent                 # .../muscat-db
 _DEFAULT_PROSE_PROJECT = _REPO_ROOT.parent / "ext_tools" / "prose2"
 _DEFAULT_OUTPUT_BASE = "/ut2/jerome/ql/prose"
 
-DEFAULT_BANDS = ["gp", "rp", "ip", "zs"]
 # Default values for every optional run_photometry argument the form exposes.
 # Kept here so the template, normalizer, and command builder share one source.
 RUN_DEFAULTS: dict = {
@@ -82,49 +82,6 @@ RUN_DEFAULTS: dict = {
     "sig_dy": None,            # None -> sigma clipping disabled for dy axis
     "min_star_area": 10,
 }
-
-# Narrow-band tokens, kept after the broadband four in the canonical order.
-NARROW_BANDS = ["g_narrow", "Na_D", "i_narrow", "z_narrow"]
-
-# Raw obslog FILTER value -> prose `--bands` token. Mirrors prose's
-# ``prose/utils.py:_FILTER_ALIASES`` (the source of truth); kept in sync here
-# because the web process cannot import prose (it runs only in the "prose"
-# conda env via subprocess). Unknown filters (e.g. Sinistro R/V/B) are not
-# listed and pass through unchanged — run_photometry's ``_resolve_band`` falls
-# back to the raw value, so ``--bands R V`` works for those frames.
-_FILTER_BAND_ALIAS = {
-    "gp": "gp", "g": "gp",
-    "rp": "rp", "r": "rp", "rp*diffuser": "rp",
-    "ip": "ip", "i": "ip",
-    "zs": "zs", "z": "zs", "zp": "zs", "z_s": "zs", "zp*diffuser": "zs",
-    "g_narrow": "g_narrow", "r_narrow": "r_narrow",
-    "i_narrow": "i_narrow", "z_narrow": "z_narrow",
-    "g_wide": "g_wide", "Na_D": "Na_D",
-}
-
-
-def bands_from_filters(filters: list[str]) -> list[str]:
-    """Map raw obslog FILTER values to ordered, de-duplicated ``--bands`` tokens.
-
-    Each raw filter is normalized via :data:`_FILTER_BAND_ALIAS`; unknown values
-    (e.g. Sinistro ``R``/``V``/``B``) pass through unchanged. The result is
-    ordered canonically — broadband (gp, rp, ip, zs), then narrowbands, then any
-    extras in first-seen order — so the UI shows a stable, familiar layout.
-    Returns ``[]`` for empty input.
-    """
-    seen: set[str] = set()
-    tokens: list[str] = []
-    for f in filters or []:
-        if not f:
-            continue
-        # Exact match only, like prose's _resolve_band: do NOT case-fold, or
-        # Johnson "R"/"V" would collapse into Sloan "rp"/etc.
-        token = _FILTER_BAND_ALIAS.get(f, f)
-        if token not in seen:
-            seen.add(token)
-            tokens.append(token)
-    order = {b: i for i, b in enumerate([*DEFAULT_BANDS, *NARROW_BANDS])}
-    return sorted(tokens, key=lambda b: (order.get(b, len(order)), tokens.index(b)))
 
 
 ALLOWED_EXTS = {".png", ".gif", ".csv", ".npz", ".log"}
