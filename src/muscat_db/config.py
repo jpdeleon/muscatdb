@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -31,12 +32,17 @@ class EnvVar:
 ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("MUSCAT_DB_PATH", "muscat.db", "SQLite database path"),
     EnvVar("MUSCAT_DATA_DIR", None, "Raw FITS data base directory"),
+    EnvVar("MUSCAT_OBSLOG_DIR", "/ut3/muscat/obslog", "Shared obslog CSV base (muscat-db + prose2)"),
     EnvVar("MUSCAT_PROSE_DIR", "/ut2/jerome/ql/prose", "Pipeline output base directory"),
     EnvVar("MUSCAT_PROSE_PROJECT", "<repo>/../ext_tools/prose2", "prose2 repository path"),
     EnvVar("MUSCAT_PROSE_PYTHON", None, "Explicit prose interpreter (highest priority)"),
     EnvVar("MUSCAT_PROSE_CONDA_ENV", "prose", "Conda env supplying prose dependencies"),
     EnvVar("MUSCAT_TIMER_DIR", "/ut2/jerome/ql/timer", "timer package output directory"),
-    EnvVar("MUSCAT_TMPDIR", "/raid_ut2/home/jerome/tmp", "Temp dir handed to spawned jobs"),
+    EnvVar(
+        "MUSCAT_TMPDIR",
+        str(Path.home() / ".muscatdb" / "tmp"),
+        "Temp dir handed to spawned jobs (must be on a non-full filesystem)",
+    ),
     EnvVar("MUSCAT_PHOT_STALL_LIMIT_S", "1500", "Photometry job stall timeout (seconds)"),
     EnvVar("MUSCAT_PHOT_MAX_RUNTIME_S", "10800", "Photometry job max runtime (seconds)"),
     EnvVar("MUSCAT_PHOT_FINALIZE_GRACE_S", "8", "Log-quiescence grace window (seconds)"),

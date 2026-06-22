@@ -117,6 +117,24 @@ class TestListOutputs:
         assert set(gp) == {"ref", "apertures", "alignment", "gif", "csv"}
         assert gp["csv"]["file"] == f"{TARGET}_{INST}_gp_{DATE}.csv"
 
+    def test_classifies_underscored_band_names(self, monkeypatch, tmp_path):
+        # Narrow-band / Johnson filters embed underscores in the band token
+        # (g_narrow, Na_D, z_s); discovery must not split them on the date.
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "muscat2" / "250424"
+        rdir.mkdir(parents=True)
+        for band in ("g_narrow", "Na_D", "z_s"):
+            bstem = f"TOI07147.01_muscat2_{band}_250424"
+            (rdir / (bstem + ".csv")).write_text("BJD_TDB,Flux\n1,1\n")
+            (rdir / (bstem + "_ref.png")).write_bytes(b"\x89PNG\r\n")
+        out = phot.list_outputs("muscat2", "250424", "TOI07147.01")
+        assert out["has_any"]
+        assert set(out["bands"]) == {"g_narrow", "Na_D", "z_s"}
+        assert set(out["bands"]["Na_D"]) == {"csv", "ref"}
+        assert phot.discovered_targets("muscat2", "250424") == ["TOI07147.01"]
+
     def test_missing_dir_returns_empty(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
         out = phot.list_outputs(INST, "999999", TARGET)
