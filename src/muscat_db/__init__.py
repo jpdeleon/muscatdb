@@ -7,3 +7,11 @@ except PackageNotFoundError:
 
 # Legacy alias kept for any code that imports VERSION directly
 VERSION = __version__
+
+__muscatdb_version__ = __version__
+
+__meta__ = {
+    "__muscatdb_version__": __muscatdb_version__,
+    "__version__": __version__,
+    "package": "muscat-db",
+}
