@@ -96,7 +96,13 @@ RUN_DEFAULTS: dict = {
     "min_star_area": 10,
     "wcs_method": "astrometry.net",
     "calib_dir": "",
+    "site": "",                # sinistro only: "" -> all sites; else one of SINISTRO_SITES
+    "mode": "",                # sinistro only: "" -> all modes; else one of SINISTRO_MODES
 }
+
+# Valid sinistro --site / --mode values, mirrored from prose2's run_photometry.py.
+SINISTRO_SITES = ("lsc", "cpt", "coj", "tfn", "elp")
+SINISTRO_MODES = ("central_2k_2x2", "full_frame")
 
 
 ALLOWED_EXTS = {".png", ".gif", ".csv", ".npz", ".log"}
@@ -277,12 +283,29 @@ def discovered_targets(inst: str, date: str) -> list[str]:
     return sorted(found)
 
 
-def list_outputs(inst: str, date: str, target: str) -> dict:
+def list_outputs(
+    inst: str,
+    date: str,
+    target: str,
+    site: str | None = None,
+    mode: str | None = None,
+) -> dict:
     """Classify the existing products for one (inst, date, target).
 
     Returns a dict with ``summary`` (key->filename), ``bands``
-    (band->{ref,apertures,alignment,gif,csv}), ``npz``, ``log`` (newest), and
-    ``has_any``. Only filenames are returned; serve them via the file route.
+    (band->{ref,apertures,alignment,gif,csv}), ``npz``, ``log`` (newest),
+    ``has_any``, ``sites``/``modes`` (distinct sinistro sites/readout modes
+    present, for the filter chips), and ``site``/``mode`` (the ones actually
+    shown). Only filenames are returned; serve them via the file route.
+
+    A single sinistro date+target can hold products from more than one LCO site
+    and more than one readout mode (identical bands per combination). To avoid
+    silently collapsing them via newest-wins, products are restricted to one
+    (site, mode) at a time: ``site``/``mode`` select them when given and present,
+    otherwise the newest reduction is shown by default. Mode is read from the
+    ``_full`` filename token prose appends for ``full_frame`` (``central_2k_2x2``
+    has no token). For non-sinistro instruments there is no site/mode dimension
+    and ``sites``/``modes`` stay empty.
 
     The date token embedded in filenames by the pipeline is taken from the FITS
     header and may differ from the directory name (obs-night vs UT date). We
@@ -296,6 +319,10 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
         "log": None,
         "has_any": False,
         "masters": [],
+        "sites": [],
+        "site": None,
+        "modes": [],
+        "mode": None,
     }
     rdir = results_dir(inst, date)
     if not rdir.is_dir():
@@ -305,17 +332,85 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
     inst_esc = re.escape(inst)
     t_esc = re.escape(t)
 
-    # Multi-band summary stem: <target>_<inst>_<date6>  (no band token)
+    # Sinistro filenames optionally carry a site token between inst and the
+    # band/date when reduced with ``--site`` (prose ``build_stem``):
+    #   <target>_sinistro_<site>_<date6>            (summary)
+    #   <target>_sinistro_<site>_<band>_<date6>     (per-band)
+    # Constrain the token to the known site codes so it can't be confused with a
+    # band name that itself contains underscores (e.g. g_narrow, Na_D). For all
+    # other instruments there is no site token and this slot is omitted.
+    site_opt = (
+        rf"(?:(?P<site>{'|'.join(SINISTRO_SITES)})_)?" if inst == "sinistro" else ""
+    )
+    # Prose appends ``_full`` after the date for full_frame; central_2k_2x2 has
+    # no token. Captured between the date and the product suffix (e.g.
+    # ..._250710_full_lightcurves.png, ..._250710_full.npz, ..._gp_250710_full.csv).
+    mode_opt = r"(?P<mode>_full)?" if inst == "sinistro" else ""
+
+    # Multi-band summary stem: <target>_<inst>_[<site>_]<date6>[_full]  (no band).
     # Allow any 6-digit date so obs-night and UT-date both match.
     summary_re = re.compile(
-        rf"^{t_esc}_{inst_esc}_(?P<file_date>\d{{6}})(?P<rest>.*)$"
+        rf"^{t_esc}_{inst_esc}_{site_opt}(?P<file_date>\d{{6}}){mode_opt}(?P<rest>.*)$"
     )
-    # Per-band stem: <target>_<inst>_<band>_<date6>. The band token may itself
-    # contain underscores (narrow-band/Johnson filters: g_narrow, Na_D, z_s), so
-    # allow ``_`` in the band and match it lazily up to the 6-digit date.
+    # Per-band stem: <target>_<inst>_[<site>_]<band>_<date6>[_full]. The band
+    # token may itself contain underscores (narrow-band/Johnson filters:
+    # g_narrow, Na_D, z_s), so allow ``_`` in the band and match it lazily up to
+    # the 6-digit date.
     band_re = re.compile(
-        rf"^{t_esc}_{inst_esc}_(?P<band>[A-Za-z0-9_]+?)_(?P<file_date>\d{{6}})(?P<rest>.*)$"
+        rf"^{t_esc}_{inst_esc}_{site_opt}(?P<band>[A-Za-z0-9_]+?)_(?P<file_date>\d{{6}}){mode_opt}(?P<rest>.*)$"
     )
+
+    def _mode_of(m: re.Match) -> str:
+        """Canonical readout mode for a matched product file."""
+        return "full_frame" if m.groupdict().get("mode") else "central_2k_2x2"
+
+    # First pass (sinistro only): discover which sites and readout modes are
+    # present so multi-site/multi-mode dates expose one chip per value and default
+    # to the most recently reduced combination rather than a newest-wins mix.
+    # Mode chips are scoped to the chosen site (each site may carry its own modes),
+    # so switching site never lands on an empty (site, mode) pairing by default.
+    effective_site: str | None = None
+    effective_mode: str | None = None
+    if inst == "sinistro":
+        # records: (site_or_None, canonical_mode, mtime)
+        records: list[tuple[str | None, str, float]] = []
+        for p in rdir.iterdir():
+            if not p.is_file() or p.suffix == ".log":
+                continue
+            m = summary_re.match(p.name) or band_re.match(p.name)
+            if not m:
+                continue
+            try:
+                mt = p.stat().st_mtime
+            except OSError:
+                mt = 0.0
+            records.append((m.groupdict().get("site"), _mode_of(m), mt))
+
+        site_mtime: dict[str, float] = {}
+        for s, _m, mt in records:
+            if s and mt > site_mtime.get(s, -1.0):
+                site_mtime[s] = mt
+        out["sites"] = sorted(site_mtime)
+        if site and site in site_mtime:
+            effective_site = site
+        elif site_mtime:
+            effective_site = max(site_mtime, key=site_mtime.get)  # newest wins
+        out["site"] = effective_site
+
+        # Modes available for the chosen site (or all records when no site token).
+        mode_mtime: dict[str, float] = {}
+        for s, md, mt in records:
+            if effective_site is not None and s != effective_site:
+                continue
+            if mt > mode_mtime.get(md, -1.0):
+                mode_mtime[md] = mt
+        out["modes"] = sorted(mode_mtime)
+        if mode and mode in mode_mtime:
+            effective_mode = mode
+        elif mode_mtime:
+            effective_mode = max(mode_mtime, key=mode_mtime.get)  # newest wins
+        out["mode"] = effective_mode
+
     logs: list[Path] = []
 
     for p in sorted(rdir.iterdir()):
@@ -335,6 +430,11 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
         # Try summary suffixes first (no band token between inst and date).
         ms = summary_re.match(name)
         if ms:
+            # When a site/mode is in force, only that combination is shown.
+            if effective_site is not None and ms.group("site") != effective_site:
+                continue
+            if effective_mode is not None and _mode_of(ms) != effective_mode:
+                continue
             rest = ms.group("rest")
             if rest == ".npz":
                 existing = out.get("npz")
@@ -355,6 +455,10 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
 
         mb = band_re.match(name)
         if not mb:
+            continue
+        if effective_site is not None and mb.group("site") != effective_site:
+            continue
+        if effective_mode is not None and _mode_of(mb) != effective_mode:
             continue
         rest = mb.group("rest")
         key = _BAND_SUFFIX.get(rest)
@@ -566,7 +670,7 @@ def normalize_run_options(raw: dict | None) -> dict:
     if "bands" in raw:  # present-but-empty must surface as an error, not default
         o["bands"] = [str(b).strip() for b in (bands or []) if str(b).strip()]
 
-    for key in ("ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "target_coord", "wcs_method", "calib_dir"):
+    for key in ("ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "target_coord", "wcs_method", "calib_dir", "site", "mode"):
         if raw.get(key) is not None:
             o[key] = str(raw[key]).strip()
 
@@ -617,6 +721,12 @@ def validate_run_options(o: dict) -> str | None:
         return "aperture unit must be 'pix' or 'fwhm'"
     if o.get("wcs_method") not in ("twirl", "astrometry.net"):
         return "WCS method must be 'twirl' or 'astrometry.net'"
+    site = (o.get("site") or "").strip().lower()
+    if site and site not in SINISTRO_SITES:
+        return f"site must be one of {', '.join(SINISTRO_SITES)}"
+    mode = (o.get("mode") or "").strip()
+    if mode and mode not in SINISTRO_MODES:
+        return f"mode must be one of {', '.join(SINISTRO_MODES)}"
     return None
 
 
@@ -699,6 +809,14 @@ def build_command(
 
     if o.get("wcs_method", "astrometry.net") != "astrometry.net":
         args += ["--wcs_method", o["wcs_method"]]
+    # --site / --mode are sinistro-only filters; ignore for other instruments.
+    if inst == "sinistro":
+        site = (o.get("site") or "").strip()
+        if site:
+            args += ["--site", site]
+        mode = (o.get("mode") or "").strip()
+        if mode:
+            args += ["--mode", mode]
     if inst in ("muscat", "muscat2"):
         args += ["--calib_dir", o.get("calib_dir") or str(results_dir(inst, date)) + "_calibrated"]
     if o.get("make_gif", False):

@@ -135,6 +135,158 @@ class TestListOutputs:
         assert set(out["bands"]["Na_D"]) == {"csv", "ref"}
         assert phot.discovered_targets("muscat2", "250424") == ["TOI07147.01"]
 
+    def test_classifies_sinistro_site_token(self, monkeypatch, tmp_path):
+        # Sinistro reduced with --site embeds the site between inst and the
+        # band/date: <target>_sinistro_<site>_<date> (summary) and
+        # <target>_sinistro_<site>_<band>_<date> (per-band). The site token must
+        # not be mistaken for a band, and summary plots/npz must still classify.
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "240101"
+        rdir.mkdir(parents=True)
+        sstem = "TOI-1234_sinistro_coj_240101"
+        for suf in ("_lightcurves.png", "_covariates.png", "_stacks.png"):
+            (rdir / (sstem + suf)).write_bytes(b"\x89PNG\r\n")
+        (rdir / (sstem + ".npz")).write_bytes(b"npz")
+        for band in ("R", "V", "B"):
+            bstem = f"TOI-1234_sinistro_coj_{band}_240101"
+            (rdir / (bstem + ".csv")).write_text("BJD_TDB,Flux\n1,1\n")
+            (rdir / (bstem + "_ref.png")).write_bytes(b"\x89PNG\r\n")
+
+        out = phot.list_outputs("sinistro", "240101", "TOI-1234")
+        assert out["has_any"]
+        assert set(out["summary"]) == {"lightcurves", "covariates", "stacks"}
+        assert out["summary"]["lightcurves"]["file"] == f"{sstem}_lightcurves.png"
+        assert out["npz"] == f"{sstem}.npz"
+        # Band token is just the filter, not "<site>_<band>".
+        assert set(out["bands"]) == {"R", "V", "B"}
+        assert out["bands"]["R"]["csv"]["file"] == "TOI-1234_sinistro_coj_R_240101.csv"
+        assert phot.discovered_targets("sinistro", "240101") == ["TOI-1234"]
+
+    def test_sinistro_without_site_still_classifies(self, monkeypatch, tmp_path):
+        # Legacy / unfiltered sinistro runs have no site token; the optional
+        # site slot must not break the older naming.
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "240101"
+        rdir.mkdir(parents=True)
+        (rdir / "TOI-1234_sinistro_240101_lightcurves.png").write_bytes(b"\x89PNG\r\n")
+        (rdir / "TOI-1234_sinistro_R_240101.csv").write_text("BJD_TDB,Flux\n1,1\n")
+
+        out = phot.list_outputs("sinistro", "240101", "TOI-1234")
+        assert set(out["summary"]) == {"lightcurves"}
+        assert set(out["bands"]) == {"R"}
+
+    def test_multi_site_detects_and_filters(self, monkeypatch, tmp_path):
+        # A single sinistro date+target can hold two sites with identical bands.
+        # list_outputs must surface both sites and show one at a time (not a
+        # newest-wins mix). Mirrors /ut2/jerome/ql/prose/sinistro/250710.
+        import os
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "250710"
+        rdir.mkdir(parents=True)
+        bands = ("gp", "zs")
+        # Write cpt first (older), then lsc (newer) so newest-wins would pick lsc.
+        for i, site in enumerate(("cpt", "lsc")):
+            sstem = f"HIP67522_sinistro_{site}_250710"
+            for suf in ("_lightcurves.png", "_covariates.png", "_stacks.png"):
+                (rdir / (sstem + suf)).write_bytes(b"\x89PNG\r\n")
+            (rdir / (sstem + ".npz")).write_bytes(b"npz")
+            for b in bands:
+                bstem = f"HIP67522_sinistro_{site}_{b}_250710"
+                (rdir / (bstem + ".csv")).write_text("BJD_TDB,Flux\n1,1\n")
+                (rdir / (bstem + "_ref.png")).write_bytes(b"\x89PNG\r\n")
+            # bump mtimes so lsc (i=1) is strictly newer than cpt (i=0)
+            for p in rdir.glob(f"HIP67522_sinistro_{site}_*"):
+                os.utime(p, (1_000_000 + i, 1_000_000 + i))
+
+        # Both sites detected; default view is the newest reduction (lsc).
+        out = phot.list_outputs("sinistro", "250710", "HIP67522")
+        assert out["sites"] == ["cpt", "lsc"]
+        assert out["site"] == "lsc"
+        assert out["npz"] == "HIP67522_sinistro_lsc_250710.npz"
+        assert set(out["bands"]) == {"gp", "zs"}
+        assert out["bands"]["gp"]["csv"]["file"] == "HIP67522_sinistro_lsc_gp_250710.csv"
+
+        # Explicit site selection shows only that site's products.
+        out_cpt = phot.list_outputs("sinistro", "250710", "HIP67522", site="cpt")
+        assert out_cpt["site"] == "cpt"
+        assert out_cpt["sites"] == ["cpt", "lsc"]
+        assert out_cpt["npz"] == "HIP67522_sinistro_cpt_250710.npz"
+        assert out_cpt["bands"]["zs"]["csv"]["file"] == "HIP67522_sinistro_cpt_zs_250710.csv"
+        assert phot.discovered_targets("sinistro", "250710") == ["HIP67522"]
+
+    def test_single_site_has_no_chips(self, monkeypatch, tmp_path):
+        # One site only -> sites has a single entry so the template shows no chips.
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "250710"
+        rdir.mkdir(parents=True)
+        sstem = "HIP67522_sinistro_lsc_250710"
+        (rdir / (sstem + "_lightcurves.png")).write_bytes(b"\x89PNG\r\n")
+        (rdir / "HIP67522_sinistro_lsc_gp_250710.csv").write_text("BJD_TDB,Flux\n1,1\n")
+        out = phot.list_outputs("sinistro", "250710", "HIP67522")
+        assert out["sites"] == ["lsc"]
+        assert set(out["bands"]) == {"gp"}
+
+    def test_multi_mode_detects_and_filters(self, monkeypatch, tmp_path):
+        # prose appends ``_full`` for full_frame; central_2k_2x2 has no token.
+        # Both modes on one site+date must surface as two modes and filter
+        # independently without mistaking ``_full`` for a band/suffix.
+        import os
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "250710"
+        rdir.mkdir(parents=True)
+        # token "" -> central_2k_2x2 (older); "_full" -> full_frame (newer)
+        for i, token in enumerate(("", "_full")):
+            sstem = f"HIP67522_sinistro_lsc_250710{token}"
+            bstem = f"HIP67522_sinistro_lsc_gp_250710{token}"
+            files = [
+                rdir / (sstem + "_lightcurves.png"),
+                rdir / (sstem + ".npz"),
+                rdir / (bstem + ".csv"),
+                rdir / (bstem + "_ref.png"),
+            ]
+            for f in files:
+                f.write_bytes(b"x")
+                os.utime(f, (1_000_000 + i, 1_000_000 + i))  # _full (i=1) newest
+
+        # Both modes detected; default view is the newest reduction (full_frame).
+        out = phot.list_outputs("sinistro", "250710", "HIP67522")
+        assert out["modes"] == ["central_2k_2x2", "full_frame"]
+        assert out["mode"] == "full_frame"
+        assert out["npz"] == "HIP67522_sinistro_lsc_250710_full.npz"
+        assert out["bands"]["gp"]["csv"]["file"] == "HIP67522_sinistro_lsc_gp_250710_full.csv"
+        assert out["bands"]["gp"]["csv"]["file"].count("full") == 1
+
+        # Explicit mode selection shows only that mode's products.
+        out_2x2 = phot.list_outputs("sinistro", "250710", "HIP67522", mode="central_2k_2x2")
+        assert out_2x2["mode"] == "central_2k_2x2"
+        assert out_2x2["npz"] == "HIP67522_sinistro_lsc_250710.npz"
+        assert out_2x2["bands"]["gp"]["csv"]["file"] == "HIP67522_sinistro_lsc_gp_250710.csv"
+        # central_2k_2x2 must not pick up the _full products.
+        assert "full" not in out_2x2["bands"]["gp"]["csv"]["file"]
+
+    def test_single_mode_has_no_chips(self, monkeypatch, tmp_path):
+        # Only 2x2 present -> modes has one entry so the template shows no chips.
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "250710"
+        rdir.mkdir(parents=True)
+        (rdir / "HIP67522_sinistro_lsc_250710_lightcurves.png").write_bytes(b"\x89PNG\r\n")
+        (rdir / "HIP67522_sinistro_lsc_gp_250710.csv").write_text("BJD_TDB,Flux\n1,1\n")
+        out = phot.list_outputs("sinistro", "250710", "HIP67522")
+        assert out["modes"] == ["central_2k_2x2"]
+        assert set(out["bands"]) == {"gp"}
+
     def test_missing_dir_returns_empty(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
         out = phot.list_outputs(INST, "999999", TARGET)
@@ -739,6 +891,27 @@ class TestRoutes:
         for token in ("opt-ref_band", "opt-aper_radii", "opt-max_num_stars",
                       "opt-use_barycorrpy", "Pipeline options"):
             assert token in r.text
+
+    def test_photometry_page_sinistro_dynamic_selectors(self, client, tmp_path):
+        import sqlite3
+        db = tmp_path / "muscat.db"
+        conn = sqlite3.connect(db)
+        conn.execute(
+            """INSERT INTO frames (instrument, obsdate, ccd, filename, object, read_mode)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("sinistro", "250710", 0, "cpt1m010-fa14-20250710-0082-e91", "HIP67522", "central_2k_2x2")
+        )
+        conn.commit()
+        conn.close()
+
+        r = client.get("/photometry?inst=sinistro&date=250710&target=HIP67522")
+        assert r.status_code == 200
+        html = r.text
+        assert 'value="cpt"' in html
+        assert 'value="central_2k_2x2"' in html
+        assert 'value="lsc"' not in html
+        assert 'value="coj"' not in html
+        assert 'value="full_frame"' not in html
 
     def test_page_has_run_and_cancel_buttons(self, client):
         r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")

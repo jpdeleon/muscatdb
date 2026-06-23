@@ -216,14 +216,25 @@ def export_targets_csv():
 
 
 @app.get("/photometry", response_class=HTMLResponse)
-def photometry_page(inst: str = "", date: str = "", target: str = ""):
+def photometry_page(inst: str = "", date: str = "", target: str = "", site: str = "", mode: str = ""):
     db = _db_path()
     inst = inst if inst in INSTRUMENTS else ""
     date = date if phot.valid_date(date) else ""
     target = (target or "").strip()
+    # Site/mode are sinistro-only view filters (which LCO site / readout mode's
+    # products to show). They are validated against the known sets here; whether
+    # they are actually present is decided by list_outputs from the filenames.
+    site = site.strip().lower()
+    if inst != "sinistro" or site not in phot.SINISTRO_SITES:
+        site = ""
+    mode = mode.strip().lower()
+    if inst != "sinistro" or mode not in phot.SINISTRO_MODES:
+        mode = ""
 
     dates: list[str] = []
     targets: list[str] = []
+    available_sites: list[str] = ["lsc", "cpt", "coj", "tfn", "elp"]
+    available_modes: list[str] = ["central_2k_2x2", "full_frame"]
     outputs = None
     previews: dict[str, dict] = {}
     command = ""
@@ -241,7 +252,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
     is_narrowband = False
     available_bands: list[str] = []
     if inst and date and target:
-        outputs = phot.list_outputs(inst, date, target)
+        outputs = phot.list_outputs(inst, date, target, site=site or None, mode=mode or None)
         command = phot.command_str(inst, date, target, test_run=False)
         raw_missing = not phot.raw_data_dir(inst, date).is_dir()
 
@@ -252,11 +263,41 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
                 (inst, date, target),
             )
             filters = [row[0] for row in cur.fetchall()]
-            conn.close()
             if filters:
                 is_narrowband = any("narrow" in f.lower() or f.lower() == "na_d" for f in filters)
                 obs_type = "(narrowband)" if is_narrowband else "(broadband)"
                 available_bands = phot.bands_from_filters(filters)
+
+            if inst == "sinistro":
+                # Restrict the site/mode run-option dropdowns to what the obslog
+                # actually holds for this target+date, so you can't launch a
+                # reduction for a site/mode with no frames. The LCO site is the
+                # 3-char filename prefix (e.g. "cpt1m010-..."); the mode is the
+                # read_mode (CONFMODE). Both are intersected with the known valid
+                # sets so a stray prefix or a non-canonical read_mode
+                # (MUSCAT_FAST/SLOW) can't leak in as an invalid choice.
+                cur = conn.execute(
+                    "SELECT DISTINCT substr(filename, 1, 3) FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND filename IS NOT NULL AND filename != ''",
+                    (inst, date, target),
+                )
+                db_sites = sorted(
+                    {row[0].lower() for row in cur.fetchall() if row[0]}
+                    & set(phot.SINISTRO_SITES)
+                )
+                if db_sites:
+                    available_sites = db_sites
+
+                cur = conn.execute(
+                    "SELECT DISTINCT read_mode FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND read_mode IS NOT NULL AND read_mode != ''",
+                    (inst, date, target),
+                )
+                db_modes = sorted(
+                    {row[0].lower() for row in cur.fetchall() if row[0]}
+                    & set(phot.SINISTRO_MODES)
+                )
+                if db_modes:
+                    available_modes = db_modes
+            conn.close()
         except Exception:
             pass
 
@@ -273,6 +314,8 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
         "photometry.html",
         instruments=list(INSTRUMENTS),
         sel_inst=inst, sel_date=date, sel_target=target,
+        sel_site=(outputs.get("site") if outputs else "") or "",
+        sel_mode=(outputs.get("mode") if outputs else "") or "",
         dates=dates, targets=targets,
         outputs=outputs, previews=previews,
         command=command, raw_missing=raw_missing,
@@ -282,6 +325,8 @@ def photometry_page(inst: str = "", date: str = "", target: str = ""):
         obs_type=obs_type,
         is_narrowband=is_narrowband,
         available_bands=available_bands,
+        available_sites=available_sites,
+        available_modes=available_modes,
     )
     # The run buttons' enabled/disabled state is JavaScript-driven and reflects
     # the live job state. A cached or back/forward-restored snapshot can show
