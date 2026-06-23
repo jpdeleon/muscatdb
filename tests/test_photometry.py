@@ -1111,6 +1111,41 @@ class TestRoutes:
         assert "dummy_muscat3_250717.csv" in r.text
         assert "Created:" in r.text
 
+    def test_transit_fit_sinistro_site_mode_chips(self, client, tmp_path, mocker):
+        import os
+        # two sites (cpt, lsc); lsc also has a full_frame variant. Controlled
+        # mtimes make lsc the newest so it is the default view.
+        specs = [
+            ("HIP67522_sinistro_cpt_gp_250710.csv", 100),
+            ("HIP67522_sinistro_lsc_gp_250710.csv", 200),
+            ("HIP67522_sinistro_lsc_gp_250710_full.csv", 300),
+        ]
+        paths = []
+        for name, t in specs:
+            p = tmp_path / name
+            p.write_text("BJD_TDB,Flux,Flux_Err\n1,1,0.1\n")
+            os.utime(p, (1_000_000 + t, 1_000_000 + t))
+            paths.append(p)
+        mocker.patch("muscat_db.transit_fit.get_csv_lightcurves", return_value=paths)
+        mocker.patch("muscat_db.transit_fit.get_fit_outputs", return_value=None)
+        mocker.patch("muscat_db.transit_fit.get_target_parameters", return_value={})
+        mocker.patch("muscat_db.web._get_dates", return_value=[])
+        mocker.patch("muscat_db.web._get_objects", return_value=[])
+        mocker.patch("muscat_db.photometry.discovered_targets", return_value=[])
+
+        # default: both site chips; lsc (newest) shown, scoped mode chips appear
+        r = client.get("/transit-fit?inst=sinistro&date=250710&target=HIP67522")
+        assert r.status_code == 200
+        assert "Site:" in r.text and ">cpt</a>" in r.text and ">lsc</a>" in r.text
+        assert "Mode:" in r.text and ">full_frame</a>" in r.text
+        assert "HIP67522_sinistro_lsc_gp_250710_full.csv" in r.text
+        assert "HIP67522_sinistro_cpt_gp_250710.csv" not in r.text  # other site hidden
+
+        # explicit site+mode narrows to that single lightcurve
+        r2 = client.get("/transit-fit?inst=sinistro&date=250710&target=HIP67522&site=lsc&mode=central_2k_2x2")
+        assert 'data-csv-name="HIP67522_sinistro_lsc_gp_250710.csv"' in r2.text
+        assert "HIP67522_sinistro_lsc_gp_250710_full.csv" not in r2.text
+
     def test_transit_fit_file_rejects_bad_target(self, client):
         r = client.get("/transit-fit/file/muscat3/250717/evil..target/timer-fit.log")
         assert r.status_code == 400

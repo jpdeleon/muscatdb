@@ -361,18 +361,45 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
     return resp
 
 
+def _csv_site_mode(name: str) -> tuple[str | None, str]:
+    """``(site, canonical_mode)`` parsed from a sinistro lightcurve CSV name.
+
+    Mirrors prose ``build_stem``: the LCO site is an ``_<site>_`` token and the
+    readout mode is the trailing ``_full`` token (``full_frame``; absence means
+    ``central_2k_2x2``). ``site`` is ``None`` when no site token is present.
+    """
+    stem = name[:-4] if name.lower().endswith(".csv") else name
+    mode = "central_2k_2x2"
+    if stem.endswith("_full"):
+        mode = "full_frame"
+        stem = stem[:-5]
+    site = next((t for t in stem.lower().split("_") if t in phot.SINISTRO_SITES), None)
+    return site, mode
+
+
 @app.get("/transit-fit", response_class=HTMLResponse)
-def transit_fit_page(inst: str = "", date: str = "", target: str = ""):
+def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str = "", mode: str = ""):
     db = _db_path()
     inst = inst if inst in INSTRUMENTS else ""
     date = date if phot.valid_date(date) else ""
     target = (target or "").strip()
+    # Sinistro-only view filters (which site / readout mode's lightcurves to list).
+    site = site.strip().lower()
+    if inst != "sinistro" or site not in phot.SINISTRO_SITES:
+        site = ""
+    mode = mode.strip().lower()
+    if inst != "sinistro" or mode not in phot.SINISTRO_MODES:
+        mode = ""
 
     dates: list[str] = []
     targets: list[str] = []
     outputs = None
     csvs = []
     target_params = {}
+    csv_sites: list[str] = []
+    csv_modes: list[str] = []
+    sel_site = ""
+    sel_mode = ""
 
     if inst:
         date_set = {d["obsdate"] for d in _get_dates(db, inst)}
@@ -384,18 +411,48 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = ""):
         targets = sorted(obj_set)
     if inst and date and target:
         import datetime
-        csvs = []
+        rows = []
         for c in fit.get_csv_lightcurves(inst, date, target):
             try:
                 mtime = c.stat().st_mtime
-                dt = datetime.datetime.fromtimestamp(mtime)
-                created_at = dt.strftime('%Y-%m-%d %H:%M:%S')
+                created_at = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
             except Exception:
-                created_at = "Unknown"
-            csvs.append({
-                "name": c.name,
-                "created_at": created_at
-            })
+                mtime, created_at = 0.0, "Unknown"
+            csite, cmode = _csv_site_mode(c.name) if inst == "sinistro" else (None, None)
+            rows.append({"name": c.name, "created_at": created_at,
+                         "_mtime": mtime, "_site": csite, "_mode": cmode})
+
+        if inst == "sinistro":
+            # A sinistro date+target can hold multiple sites / readout modes with
+            # identical bands. Show one (site, mode) at a time (newest by default)
+            # so a fit never silently mixes telescopes/configs; chips switch view.
+            site_mtime: dict[str, float] = {}
+            for r in rows:
+                if r["_site"]:
+                    site_mtime[r["_site"]] = max(site_mtime.get(r["_site"], -1.0), r["_mtime"])
+            csv_sites = sorted(site_mtime)
+            if site in site_mtime:
+                sel_site = site
+            elif site_mtime:
+                sel_site = max(site_mtime, key=site_mtime.get)
+
+            mode_mtime: dict[str, float] = {}
+            for r in rows:
+                if sel_site and r["_site"] != sel_site:
+                    continue
+                if r["_mode"]:
+                    mode_mtime[r["_mode"]] = max(mode_mtime.get(r["_mode"], -1.0), r["_mtime"])
+            csv_modes = sorted(mode_mtime)
+            if mode in mode_mtime:
+                sel_mode = mode
+            elif mode_mtime:
+                sel_mode = max(mode_mtime, key=mode_mtime.get)
+
+            rows = [r for r in rows
+                    if (not sel_site or r["_site"] == sel_site)
+                    and (not sel_mode or r["_mode"] == sel_mode)]
+
+        csvs = [{"name": r["name"], "created_at": r["created_at"]} for r in rows]
         outputs = fit.get_fit_outputs(inst, date, target)
         target_params = fit.get_target_parameters(target)
 
@@ -403,6 +460,8 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = ""):
         "transit_fit.html",
         instruments=list(INSTRUMENTS),
         sel_inst=inst, sel_date=date, sel_target=target,
+        sel_site=sel_site, sel_mode=sel_mode,
+        csv_sites=csv_sites, csv_modes=csv_modes,
         dates=dates, targets=targets,
         csvs=csvs, outputs=outputs,
         target_params=target_params,
