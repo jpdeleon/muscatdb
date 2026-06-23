@@ -924,6 +924,57 @@ class TestRoutes:
         assert 'id="opt-mode"' not in html
         assert 'value="full_frame"' not in html
 
+    def _insert_two_sites(self, tmp_path):
+        import sqlite3
+        conn = sqlite3.connect(tmp_path / "muscat.db")
+        conn.executemany(
+            """INSERT INTO frames (instrument, obsdate, ccd, filename, object, read_mode)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [
+                ("sinistro", "250710", 0, "cpt1m010-fa14-20250710-0082-e91", "HIP67522", "central_2k_2x2"),
+                ("sinistro", "250710", 0, "lsc1m009-fa15-20250710-0083-e91", "HIP67522", "central_2k_2x2"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+    def test_sinistro_run_blocked_without_site_when_multi_site(self, client, tmp_path):
+        # Two sites + no site chosen -> the run is refused (400) so prose never
+        # silently merges frames from different telescopes.
+        self._insert_two_sites(tmp_path)
+        r = client.post("/photometry/run", json={
+            "inst": "sinistro", "date": "250710", "target": "HIP67522",
+            "test_run": True, "options": {"bands": ["gp"]},
+        })
+        assert r.status_code == 400
+        assert "select a site" in r.json()["error"].lower()
+
+    def test_sinistro_command_blocks_then_allows_with_site(self, client, tmp_path):
+        # The command preview reports the block (which disables the run buttons)
+        # until a site is selected, then clears.
+        self._insert_two_sites(tmp_path)
+        body = {"inst": "sinistro", "date": "250710", "target": "HIP67522", "test_run": False}
+        r = client.post("/photometry/command", json={**body, "options": {"bands": ["gp"]}})
+        assert "select a site" in (r.json()["error"] or "").lower()
+        r = client.post("/photometry/command", json={**body, "options": {"bands": ["gp"], "site": "lsc"}})
+        assert r.json()["error"] is None
+
+    def test_sinistro_single_site_not_blocked(self, client, tmp_path):
+        import sqlite3
+        conn = sqlite3.connect(tmp_path / "muscat.db")
+        conn.execute(
+            """INSERT INTO frames (instrument, obsdate, ccd, filename, object, read_mode)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("sinistro", "250710", 0, "lsc1m009-fa15-20250710-0083-e91", "HIP67522", "central_2k_2x2"),
+        )
+        conn.commit()
+        conn.close()
+        r = client.post("/photometry/command", json={
+            "inst": "sinistro", "date": "250710", "target": "HIP67522",
+            "test_run": False, "options": {"bands": ["gp"]},
+        })
+        assert r.json()["error"] is None
+
     def test_page_has_run_and_cancel_buttons(self, client):
         r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
         html = r.text

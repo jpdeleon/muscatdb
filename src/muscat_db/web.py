@@ -215,6 +215,51 @@ def export_targets_csv():
     )
 
 
+def _sinistro_obslog_choices(db: str, inst: str, date: str, target: str) -> tuple[list[str], list[str]]:
+    """``(sites, modes)`` present in the obslog for a sinistro target+date.
+
+    The LCO site is the 3-char filename prefix (e.g. ``cpt1m010-...``); the mode
+    is ``read_mode`` (CONFMODE). Both are intersected with the known valid sets
+    so a stray prefix or non-canonical read_mode (MUSCAT_FAST/SLOW) can't leak
+    in. Empty lists for non-sinistro or on error.
+    """
+    if inst != "sinistro" or not (date and target):
+        return [], []
+    try:
+        conn = sqlite3.connect(db)
+        cur = conn.execute(
+            "SELECT DISTINCT substr(filename, 1, 3) FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND filename IS NOT NULL AND filename != ''",
+            (inst, date, target),
+        )
+        sites = sorted({row[0].lower() for row in cur.fetchall() if row[0]} & set(phot.SINISTRO_SITES))
+        cur = conn.execute(
+            "SELECT DISTINCT read_mode FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND read_mode IS NOT NULL AND read_mode != ''",
+            (inst, date, target),
+        )
+        modes = sorted({row[0].lower() for row in cur.fetchall() if row[0]} & set(phot.SINISTRO_MODES))
+        conn.close()
+        return sites, modes
+    except Exception:
+        return [], []
+
+
+def _site_required_error(db: str, inst: str, date: str, target: str, options: dict) -> str | None:
+    """Block a sinistro run that would silently merge multiple sites.
+
+    When the obslog holds more than one site for this target+date and no site is
+    chosen, prose would combine frames from different telescopes into one
+    mislabeled reduction (prose2 now aborts on this too). Require a choice.
+    """
+    if inst != "sinistro":
+        return None
+    if (options.get("site") or "").strip():
+        return None
+    sites, _modes = _sinistro_obslog_choices(db, inst, date, target)
+    if len(sites) > 1:
+        return f"select a site to run — {date} has {len(sites)} sites ({', '.join(sites)})"
+    return None
+
+
 @app.get("/photometry", response_class=HTMLResponse)
 def photometry_page(inst: str = "", date: str = "", target: str = "", site: str = "", mode: str = ""):
     db = _db_path()
@@ -268,38 +313,18 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
                 obs_type = "(narrowband)" if is_narrowband else "(broadband)"
                 available_bands = phot.bands_from_filters(filters)
 
-            if inst == "sinistro":
-                # Restrict the site/mode run-option dropdowns to what the obslog
-                # actually holds for this target+date, so you can't launch a
-                # reduction for a site/mode with no frames. The LCO site is the
-                # 3-char filename prefix (e.g. "cpt1m010-..."); the mode is the
-                # read_mode (CONFMODE). Both are intersected with the known valid
-                # sets so a stray prefix or a non-canonical read_mode
-                # (MUSCAT_FAST/SLOW) can't leak in as an invalid choice.
-                cur = conn.execute(
-                    "SELECT DISTINCT substr(filename, 1, 3) FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND filename IS NOT NULL AND filename != ''",
-                    (inst, date, target),
-                )
-                db_sites = sorted(
-                    {row[0].lower() for row in cur.fetchall() if row[0]}
-                    & set(phot.SINISTRO_SITES)
-                )
-                if db_sites:
-                    available_sites = db_sites
-
-                cur = conn.execute(
-                    "SELECT DISTINCT read_mode FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND read_mode IS NOT NULL AND read_mode != ''",
-                    (inst, date, target),
-                )
-                db_modes = sorted(
-                    {row[0].lower() for row in cur.fetchall() if row[0]}
-                    & set(phot.SINISTRO_MODES)
-                )
-                if db_modes:
-                    available_modes = db_modes
             conn.close()
         except Exception:
             pass
+
+        # Restrict the site/mode run-option dropdowns to what the obslog actually
+        # holds for this target+date, so you can't launch a reduction for a
+        # site/mode with no frames.
+        db_sites, db_modes = _sinistro_obslog_choices(db, inst, date, target)
+        if db_sites:
+            available_sites = db_sites
+        if db_modes:
+            available_modes = db_modes
 
         # fall through; previews computed below when outputs exist
         if outputs["has_any"]:
@@ -863,6 +888,10 @@ def photometry_run(payload: dict = Body(...)):
     target = (payload.get("target") or "").strip()
     options = payload.get("options") or {}
     test_run = bool(payload.get("test_run", True))
+    # Hard block: never launch a sinistro run that would merge multiple sites.
+    site_err = _site_required_error(_db_path(), inst, date, target, options)
+    if site_err:
+        return JSONResponse({"ok": False, "error": site_err}, status_code=400)
     result = phot.start_run(inst, date, target, options=options, test_run=test_run)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
@@ -878,6 +907,10 @@ def photometry_command(payload: dict = Body(...)):
     options = payload.get("options") or {}
     test_run = bool(payload.get("test_run", False))
     error = phot.validate_run_options(phot.normalize_run_options(options))
+    # Surface the multi-site block as a command error so the page disables the
+    # run buttons and shows why until a site is chosen.
+    if not error:
+        error = _site_required_error(_db_path(), inst, date, target, options)
     command = phot.command_str(inst, date, target, options=options, test_run=test_run)
     return JSONResponse({"command": command, "error": error})
 
