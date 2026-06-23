@@ -893,13 +893,21 @@ class TestRoutes:
             assert token in r.text
 
     def test_photometry_page_sinistro_dynamic_selectors(self, client, tmp_path):
+        # Site/mode run dropdowns are obslog-derived and shown only when the
+        # obslog offers more than one choice for that target+date. Here two sites
+        # share a single mode: the Site dropdown appears (cpt, lsc) while the
+        # single-choice Mode dropdown is hidden, and values absent from the
+        # obslog (other sites, full_frame) are never offered.
         import sqlite3
         db = tmp_path / "muscat.db"
         conn = sqlite3.connect(db)
-        conn.execute(
+        conn.executemany(
             """INSERT INTO frames (instrument, obsdate, ccd, filename, object, read_mode)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            ("sinistro", "250710", 0, "cpt1m010-fa14-20250710-0082-e91", "HIP67522", "central_2k_2x2")
+            [
+                ("sinistro", "250710", 0, "cpt1m010-fa14-20250710-0082-e91", "HIP67522", "central_2k_2x2"),
+                ("sinistro", "250710", 0, "lsc1m009-fa15-20250710-0083-e91", "HIP67522", "central_2k_2x2"),
+            ],
         )
         conn.commit()
         conn.close()
@@ -907,10 +915,13 @@ class TestRoutes:
         r = client.get("/photometry?inst=sinistro&date=250710&target=HIP67522")
         assert r.status_code == 200
         html = r.text
+        # two sites -> Site dropdown shown with exactly the obslog sites
+        assert 'id="opt-site"' in html
         assert 'value="cpt"' in html
-        assert 'value="central_2k_2x2"' in html
-        assert 'value="lsc"' not in html
+        assert 'value="lsc"' in html
         assert 'value="coj"' not in html
+        # one mode -> Mode dropdown hidden; full_frame never offered
+        assert 'id="opt-mode"' not in html
         assert 'value="full_frame"' not in html
 
     def test_page_has_run_and_cancel_buttons(self, client):
