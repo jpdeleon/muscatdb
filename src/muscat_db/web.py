@@ -361,24 +361,8 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
     return resp
 
 
-def _csv_site_mode(name: str) -> tuple[str | None, str]:
-    """``(site, canonical_mode)`` parsed from a sinistro lightcurve CSV name.
-
-    Mirrors prose ``build_stem``: the LCO site is an ``_<site>_`` token and the
-    readout mode is the trailing ``_full`` token (``full_frame``; absence means
-    ``central_2k_2x2``). ``site`` is ``None`` when no site token is present.
-    """
-    stem = name[:-4] if name.lower().endswith(".csv") else name
-    mode = "central_2k_2x2"
-    if stem.endswith("_full"):
-        mode = "full_frame"
-        stem = stem[:-5]
-    site = next((t for t in stem.lower().split("_") if t in phot.SINISTRO_SITES), None)
-    return site, mode
-
-
 @app.get("/transit-fit", response_class=HTMLResponse)
-def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str = "", mode: str = ""):
+def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str = "", mode: str = "", run: str = ""):
     db = _db_path()
     inst = inst if inst in INSTRUMENTS else ""
     date = date if phot.valid_date(date) else ""
@@ -391,6 +375,8 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
     if inst != "sinistro" or mode not in phot.SINISTRO_MODES:
         mode = ""
 
+    run = (run or "").strip()
+
     dates: list[str] = []
     targets: list[str] = []
     outputs = None
@@ -400,6 +386,8 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
     csv_modes: list[str] = []
     sel_site = ""
     sel_mode = ""
+    runs: list = []
+    sel_run = ""
 
     if inst:
         date_set = {d["obsdate"] for d in _get_dates(db, inst)}
@@ -418,42 +406,45 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
                 created_at = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
             except Exception:
                 mtime, created_at = 0.0, "Unknown"
-            csite, cmode = _csv_site_mode(c.name) if inst == "sinistro" else (None, None)
+            csite, cmode = fit.csv_site_mode(c.name) if inst == "sinistro" else (None, None)
             rows.append({"name": c.name, "created_at": created_at,
                          "_mtime": mtime, "_site": csite, "_mode": cmode})
 
         if inst == "sinistro":
             # A sinistro date+target can hold multiple sites / readout modes with
-            # identical bands. Show one (site, mode) at a time (newest by default)
-            # so a fit never silently mixes telescopes/configs; chips switch view.
-            site_mtime: dict[str, float] = {}
-            for r in rows:
-                if r["_site"]:
-                    site_mtime[r["_site"]] = max(site_mtime.get(r["_site"], -1.0), r["_mtime"])
-            csv_sites = sorted(site_mtime)
-            if site in site_mtime:
-                sel_site = site
-            elif site_mtime:
-                sel_site = max(site_mtime, key=site_mtime.get)
-
-            mode_mtime: dict[str, float] = {}
-            for r in rows:
-                if sel_site and r["_site"] != sel_site:
-                    continue
-                if r["_mode"]:
-                    mode_mtime[r["_mode"]] = max(mode_mtime.get(r["_mode"], -1.0), r["_mtime"])
-            csv_modes = sorted(mode_mtime)
-            if mode in mode_mtime:
-                sel_mode = mode
-            elif mode_mtime:
-                sel_mode = max(mode_mtime, key=mode_mtime.get)
-
+            # identical bands. The picker defaults to showing ALL lightcurves (so
+            # the user can fit one site or deliberately combine several); the
+            # Site/Mode chips optionally narrow the list. The run's identity is
+            # derived from whatever is actually selected at launch.
+            csv_sites = sorted({r["_site"] for r in rows if r["_site"]})
+            sel_site = site  # validated against SINISTRO_SITES above; "" == all
+            csv_modes = sorted({
+                r["_mode"] for r in rows
+                if r["_mode"] and (not sel_site or r["_site"] == sel_site)
+            })
+            sel_mode = mode  # "" == all
             rows = [r for r in rows
                     if (not sel_site or r["_site"] == sel_site)
                     and (not sel_mode or r["_mode"] == sel_mode)]
 
         csvs = [{"name": r["name"], "created_at": r["created_at"]} for r in rows]
-        outputs = fit.get_fit_outputs(inst, date, target)
+
+        # Existing runs (each isolated in its own dir); show one run's results at
+        # a time, defaulting to the newest, selectable via the results-run chips.
+        # ``run`` unspecified -> newest; ``__legacy__`` -> the legacy single-dir
+        # run (run_id ""); an explicit run_id -> that run.
+        runs = fit.list_fit_runs(inst, date, target)
+        run_ids = {r.run_id for r in runs}
+        newest = runs[0].run_id if runs else ""
+        if not run:
+            sel_run = newest
+        elif run == "__legacy__":
+            sel_run = ""
+        elif run in run_ids:
+            sel_run = run
+        else:
+            sel_run = newest
+        outputs = fit.get_fit_outputs(inst, date, target, run_id=sel_run or None)
         target_params = fit.get_target_parameters(target)
 
     return _render(
@@ -462,6 +453,7 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
         sel_inst=inst, sel_date=date, sel_target=target,
         sel_site=sel_site, sel_mode=sel_mode,
         csv_sites=csv_sites, csv_modes=csv_modes,
+        runs=runs, sel_run=sel_run,
         dates=dates, targets=targets,
         csvs=csvs, outputs=outputs,
         target_params=target_params,
@@ -640,8 +632,8 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
 
 
 @app.get("/transit-fit/status")
-def transit_fit_status(inst: str, date: str, target: str):
-    return JSONResponse(fit.job_status(inst, date, target))
+def transit_fit_status(inst: str, date: str, target: str, run: str = ""):
+    return JSONResponse(fit.job_status(inst, date, target, run_id=(run or "").strip()))
 
 
 @app.post("/transit-fit/run")
@@ -676,21 +668,23 @@ def transit_fit_cancel(payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
     target = (payload.get("target") or "").strip()
-    result = fit.cancel_fit(inst, date, target)
+    run_id = (payload.get("run_id") or payload.get("run") or "").strip()
+    result = fit.cancel_fit(inst, date, target, run_id=run_id)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
     return JSONResponse(result)
 
 
-@app.get("/transit-fit/file/{inst}/{date}/{target}/{name}")
-def transit_fit_file(inst: str, date: str, target: str, name: str):
+def _serve_transit_file(inst: str, date: str, target: str, name: str, run_id: str | None):
     if inst not in INSTRUMENTS or not phot.valid_date(date):
         raise HTTPException(404, "invalid parameters")
     if ".." in name or "/" in name:
         raise HTTPException(400, "invalid filename")
+    if run_id and (".." in run_id or "/" in run_id):
+        raise HTTPException(400, "invalid run id")
 
     try:
-        rdir = fit.fit_output_dir(inst, date, target)
+        rdir = fit.fit_output_dir(inst, date, target, run_id or None)
     except ValueError:
         raise HTTPException(400, "invalid target")
     out_dir = rdir / "out"
@@ -701,11 +695,20 @@ def transit_fit_file(inst: str, date: str, target: str, name: str):
     path = out_dir / name
     if not path.is_file():
         path = rdir / name
-
     if not path.is_file():
         raise HTTPException(404, "file not found")
-
     return FileResponse(str(path), headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
+
+
+@app.get("/transit-fit/file/{inst}/{date}/{target}/run/{run_id}/{name}")
+def transit_fit_file_run(inst: str, date: str, target: str, run_id: str, name: str):
+    return _serve_transit_file(inst, date, target, name, run_id)
+
+
+@app.get("/transit-fit/file/{inst}/{date}/{target}/{name}")
+def transit_fit_file(inst: str, date: str, target: str, name: str):
+    # Legacy single-dir fits (run_id="").
+    return _serve_transit_file(inst, date, target, name, None)
 
 
 # ---------------------------------------------------------------------------
@@ -893,11 +896,11 @@ def jobs_status():
 
 
 @app.get("/jobs/log/{type_}/{inst}/{date}/{target}")
-def job_log(type_: str, inst: str, date: str, target: str):
+def job_log(type_: str, inst: str, date: str, target: str, run: str = ""):
     if type_ == "photometry":
         path = phot.log_path(inst, date, target)
     elif type_ == "transit_fit":
-        path = fit.log_path(inst, date, target)
+        path = fit.log_path(inst, date, target, run_id=(run or "").strip())
     else:
         raise HTTPException(400, "unknown job type")
     if path is None:

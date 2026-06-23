@@ -1113,8 +1113,7 @@ class TestRoutes:
 
     def test_transit_fit_sinistro_site_mode_chips(self, client, tmp_path, mocker):
         import os
-        # two sites (cpt, lsc); lsc also has a full_frame variant. Controlled
-        # mtimes make lsc the newest so it is the default view.
+        # two sites (cpt, lsc); lsc also has a full_frame variant.
         specs = [
             ("HIP67522_sinistro_cpt_gp_250710.csv", 100),
             ("HIP67522_sinistro_lsc_gp_250710.csv", 200),
@@ -1128,23 +1127,26 @@ class TestRoutes:
             paths.append(p)
         mocker.patch("muscat_db.transit_fit.get_csv_lightcurves", return_value=paths)
         mocker.patch("muscat_db.transit_fit.get_fit_outputs", return_value=None)
+        mocker.patch("muscat_db.transit_fit.list_fit_runs", return_value=[])
         mocker.patch("muscat_db.transit_fit.get_target_parameters", return_value={})
         mocker.patch("muscat_db.web._get_dates", return_value=[])
         mocker.patch("muscat_db.web._get_objects", return_value=[])
         mocker.patch("muscat_db.photometry.discovered_targets", return_value=[])
 
-        # default: both site chips; lsc (newest) shown, scoped mode chips appear
+        # Default view is "all": both site chips with an All option, mixing the
+        # site/mode is allowed so every lightcurve is shown for selection.
         r = client.get("/transit-fit?inst=sinistro&date=250710&target=HIP67522")
         assert r.status_code == 200
-        assert "Site:" in r.text and ">cpt</a>" in r.text and ">lsc</a>" in r.text
+        assert "Site:" in r.text and ">all</a>" in r.text and ">cpt</a>" in r.text and ">lsc</a>" in r.text
         assert "Mode:" in r.text and ">full_frame</a>" in r.text
         assert "HIP67522_sinistro_lsc_gp_250710_full.csv" in r.text
-        assert "HIP67522_sinistro_cpt_gp_250710.csv" not in r.text  # other site hidden
+        assert "HIP67522_sinistro_cpt_gp_250710.csv" in r.text  # all sites shown by default
 
-        # explicit site+mode narrows to that single lightcurve
+        # explicit site+mode narrows the displayed lightcurves
         r2 = client.get("/transit-fit?inst=sinistro&date=250710&target=HIP67522&site=lsc&mode=central_2k_2x2")
         assert 'data-csv-name="HIP67522_sinistro_lsc_gp_250710.csv"' in r2.text
         assert "HIP67522_sinistro_lsc_gp_250710_full.csv" not in r2.text
+        assert "HIP67522_sinistro_cpt_gp_250710.csv" not in r2.text
 
     def test_transit_fit_file_rejects_bad_target(self, client):
         r = client.get("/transit-fit/file/muscat3/250717/evil..target/timer-fit.log")
