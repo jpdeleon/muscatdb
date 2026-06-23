@@ -105,7 +105,7 @@ SINISTRO_SITES = ("lsc", "cpt", "coj", "tfn", "elp")
 SINISTRO_MODES = ("central_2k_2x2", "full_frame")
 
 
-ALLOWED_EXTS = {".png", ".gif", ".csv", ".npz", ".log"}
+ALLOWED_EXTS = {".png", ".gif", ".csv", ".npz", ".log", ".txt"}
 _RUN_LOG_NAME = "_webrun.log"
 _CONDA_ENV_DEFAULT = "prose"   # prose deps live in a conda env named "prose"
 _MODULE = "prose.scripts.run_photometry"
@@ -295,8 +295,9 @@ def list_outputs(
     Returns a dict with ``summary`` (key->filename), ``bands``
     (band->{ref,apertures,alignment,gif,csv}), ``npz``, ``log`` (newest),
     ``has_any``, ``sites``/``modes`` (distinct sinistro sites/readout modes
-    present, for the filter chips), and ``site``/``mode`` (the ones actually
-    shown). Only filenames are returned; serve them via the file route.
+    present, for the filter chips), ``site``/``mode`` (the ones actually shown),
+    and ``ref_header`` (the reference-frame header sidecar, site/mode-scoped).
+    Only filenames are returned; serve them via the file route.
 
     A single sinistro date+target can hold products from more than one LCO site
     and more than one readout mode (identical bands per combination). To avoid
@@ -323,6 +324,7 @@ def list_outputs(
         "site": None,
         "modes": [],
         "mode": None,
+        "ref_header": None,
     }
     rdir = results_dir(inst, date)
     if not rdir.is_dir():
@@ -443,6 +445,12 @@ def list_outputs(
                     out["_npz_mtime"] = mtime
                 out["has_any"] = True
                 continue
+            if rest == "_ref_header.txt":
+                if out["ref_header"] is None or mtime > out.get("_ref_header_mtime", 0):
+                    out["ref_header"] = name
+                    out["_ref_header_mtime"] = mtime
+                out["has_any"] = True
+                continue
             key = _SUMMARY_SUFFIX.get(rest)
             if key is not None:
                 existing = out["summary"].get(key)
@@ -489,6 +497,7 @@ def list_outputs(
         for d in band_d.values():
             d.pop("_mtime", None)
     out.pop("_npz_mtime", None)
+    out.pop("_ref_header_mtime", None)
     ordered = {b: out["bands"][b] for b in DEFAULT_BANDS if b in out["bands"]}
     for b, v in out["bands"].items():
         ordered.setdefault(b, v)
