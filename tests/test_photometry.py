@@ -287,6 +287,30 @@ class TestListOutputs:
         assert out["modes"] == ["central_2k_2x2"]
         assert set(out["bands"]) == {"gp"}
 
+    def test_classifies_ref_header(self, prose_dir):
+        # prose writes the reference frame header as a <stem>_ref_header.txt
+        # sidecar; it is discovered for the "view ref header" link.
+        rdir = prose_dir / INST / DATE
+        (rdir / f"{TARGET}_{INST}_{DATE}_ref_header.txt").write_text("SIMPLE = T\nEXPTIME = 30.0\n")
+        out = phot.list_outputs(INST, DATE, TARGET)
+        assert out["ref_header"] == f"{TARGET}_{INST}_{DATE}_ref_header.txt"
+
+    def test_ref_header_follows_selected_site(self, monkeypatch, tmp_path):
+        # The ref header is per-reduction, so it must track the selected site.
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "250710"
+        rdir.mkdir(parents=True)
+        for site in ("cpt", "lsc"):
+            stem = f"HIP67522_sinistro_{site}_250710"
+            (rdir / (stem + "_ref_header.txt")).write_text(f"SITEID = {site}\n")
+            (rdir / f"HIP67522_sinistro_{site}_gp_250710.csv").write_text("BJD_TDB,Flux\n1,1\n")
+        assert phot.list_outputs("sinistro", "250710", "HIP67522", site="cpt")["ref_header"] \
+            == "HIP67522_sinistro_cpt_250710_ref_header.txt"
+        assert phot.list_outputs("sinistro", "250710", "HIP67522", site="lsc")["ref_header"] \
+            == "HIP67522_sinistro_lsc_250710_ref_header.txt"
+
     def test_missing_dir_returns_empty(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
         out = phot.list_outputs(INST, "999999", TARGET)
@@ -827,6 +851,20 @@ class TestRoutes:
         assert r.status_code == 200
         assert f"{TARGET}_{INST}_{DATE}_lightcurves.png" in r.text
         assert "Per-band products" in r.text
+
+    def test_ref_header_link_and_inline_serving(self, client, prose_dir):
+        # The "view ref header" link appears when the sidecar exists and the file
+        # route serves it inline as text (so target=_blank opens it in a tab).
+        name = f"{TARGET}_{INST}_{DATE}_ref_header.txt"
+        (prose_dir / INST / DATE / name).write_text("SIMPLE = T\nEXPTIME = 30.0\nFILTER = gp\n")
+        r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
+        assert "view ref header" in r.text
+        assert name in r.text
+        fr = client.get(f"/photometry/file/{INST}/{DATE}/{name}")
+        assert fr.status_code == 200
+        assert fr.headers["content-type"].startswith("text/plain")
+        assert "attachment" not in (fr.headers.get("content-disposition") or "")
+        assert "EXPTIME" in fr.text
 
     def test_photometry_page_empty_selectors(self, client):
         r = client.get("/photometry")
