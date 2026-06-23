@@ -215,6 +215,8 @@
     {% if csv_sites | length > 1 %}
     <div class="site-chips">
       <span class="site-label">Site:</span>
+      <a class="site-chip {% if not sel_site %}active{% endif %}"
+         href="{{ base_qs ~ ('&mode=' ~ sel_mode if sel_mode else '') }}">all</a>
       {% for s in csv_sites %}
       <a class="site-chip {% if s == sel_site %}active{% endif %}"
          href="{{ base_qs ~ '&site=' ~ s ~ ('&mode=' ~ sel_mode if sel_mode else '') }}">{{ s }}</a>
@@ -224,6 +226,8 @@
     {% if csv_modes | length > 1 %}
     <div class="site-chips">
       <span class="site-label">Mode:</span>
+      <a class="site-chip {% if not sel_mode %}active{% endif %}"
+         href="{{ base_qs ~ ('&site=' ~ sel_site if sel_site else '') }}">all</a>
       {% for m in csv_modes %}
       <a class="site-chip {% if m == sel_mode %}active{% endif %}"
          href="{{ base_qs ~ ('&site=' ~ sel_site if sel_site else '') ~ '&mode=' ~ m }}">{{ m }}</a>
@@ -246,19 +250,34 @@
     </div>
   </div>
 
+  <!-- Results-run selector: pick which stored run's results to view -->
+  {% if runs and runs | length > 1 %}
+  <div class="phot-section" style="padding-bottom:0;">
+    <div class="site-chips">
+      <span class="site-label">Run:</span>
+      {% for r in runs %}
+      <a class="site-chip {% if r.run_id == sel_run %}active{% endif %}"
+         href="{{ base_qs ~ '&run=' ~ (r.run_id or '__legacy__') }}">{{ r.run_name or 'legacy' }}</a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   <!-- Transit Fit Results Section -->
   {% if outputs and outputs.has_any %}
+  {# Result files live under the per-run dir when a run is selected. #}
+  {% set file_base = '/transit-fit/file/' ~ sel_inst ~ '/' ~ sel_date ~ '/' ~ sel_target ~ ('/run/' ~ sel_run if sel_run else '') %}
   <div class="phot-section">
-    <h2>Transit Fit Results</h2>
-    
+    <h2>Transit Fit Results{% if sel_run %} <span style="font-size:0.8rem;color:var(--text-dim);font-weight:400;">— {{ sel_run }}</span>{% endif %}</h2>
+
     <div class="fig-grid">
       {% for p in outputs.plots %}
       <figure class="fig">
         <figcaption class="cap">
           <span>{{ p.file | replace('.png', '') }} (Created: {{ p.created_at }})</span>
         </figcaption>
-        <a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/{{ p.file }}" target="_blank">
-          <img draggable="false" loading="lazy" src="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/{{ p.file }}" alt="{{ p.file }}">
+        <a href="{{ file_base }}/{{ p.file }}" target="_blank">
+          <img draggable="false" loading="lazy" src="{{ file_base }}/{{ p.file }}" alt="{{ p.file }}">
         </a>
       </figure>
       {% endfor %}
@@ -291,11 +310,11 @@
     {% endif %}
 
     <div class="dl-row">
-      {% if outputs.has_log %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/timer-fit.log" target="_blank">📄 fit run log</a>{% endif %}
-      {% if outputs.has_fit_yaml %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/fit.yaml" target="_blank">⚙ fit.yaml</a>{% endif %}
-      {% if outputs.has_sys_yaml %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/sys.yaml" target="_blank">🪐 sys.yaml</a>{% endif %}
-      {% if outputs.summary %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/summary.csv" download>⬇ download summary (.csv)</a>{% endif %}
-      {% for f in outputs.extra_files %}<a href="/transit-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/{{ f }}" download>⬇ {{ f }}</a>{% endfor %}
+      {% if outputs.has_log %}<a href="{{ file_base }}/timer-fit.log" target="_blank">📄 fit run log</a>{% endif %}
+      {% if outputs.has_fit_yaml %}<a href="{{ file_base }}/fit.yaml" target="_blank">⚙ fit.yaml</a>{% endif %}
+      {% if outputs.has_sys_yaml %}<a href="{{ file_base }}/sys.yaml" target="_blank">🪐 sys.yaml</a>{% endif %}
+      {% if outputs.summary %}<a href="{{ file_base }}/summary.csv" download>⬇ download summary (.csv)</a>{% endif %}
+      {% for f in outputs.extra_files %}<a href="{{ file_base }}/{{ f }}" download>⬇ {{ f }}</a>{% endfor %}
     </div>
   </div>
   {% endif %}
@@ -523,7 +542,15 @@
     </details>
 
     <div id="opt-error" style="color: var(--red); font-size: 0.85rem; margin-top: 0.5rem;"></div>
-    
+
+    <div style="display:flex; align-items:center; gap:0.5rem; margin:0.5rem 0;">
+      <label for="opt-run_name" style="font-size:0.85rem; color:var(--text-dim);">Run name
+        <span class="help-tooltip" title="Optional label for this run (e.g. uniform_priors, gaussian_priors). Distinct runs are stored separately; site/mode of the selected lightcurves are prepended automatically. Empty = 'default'.">?</span>
+      </label>
+      <input type="text" id="opt-run_name" placeholder="default"
+             style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.6rem; font-size: 0.85rem;">
+    </div>
+
     <div class="run-actions">
       <button class="btn" type="button" id="calc-logp-btn">
         ∑ Calculate logP
@@ -564,6 +591,10 @@
   var inst   = {{ sel_inst|tojson }};
   var date   = {{ sel_date|tojson }};
   var target = {{ sel_target|tojson }};
+  // run_id of the run being viewed / launched; set from the /run response so
+  // polling, the live-log key, and cancellation all target the right run.
+  var runId  = {{ sel_run|tojson }};
+  function logKey() { return logKey() + (runId ? ':' + runId : ''); }
 
   var SEL_KEY = 'fit:last';
   var OPT_KEY = 'fit:options:' + inst + ':' + date + ':' + target;
@@ -744,6 +775,7 @@
     var gpLogScalePair = splitPair(val('opt-gp_log_scale'));
     var opts = {
       planets: planetsListStr,
+      run_name: val('opt-run_name'),
       chromatic: chk('opt-chromatic') ? 'true' : 'false',
       trend: chk('opt-trend') ? 'true' : 'false',
       overwrite: chk('opt-overwrite') ? 'true' : 'false',
@@ -1373,7 +1405,7 @@
       return;
     }
 
-    ['teff','teff_unc','logg','logg_unc','feh','feh_unc',
+    ['run_name','teff','teff_unc','logg','logg_unc','feh','feh_unc',
      'tune','draws','chains','cores','spline_knots','clip_nsig','chunk_thresh','trim_beg','trim_end',
      'gp_log_amp_prior','gp_log_scale_prior'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
@@ -1789,7 +1821,7 @@
   (function restoreLog() {
     if (!logEl) return;
     var savedLog;
-    try { savedLog = localStorage.getItem('fit:log:' + inst + ':' + date + ':' + target); } catch (e) { savedLog = null; }
+    try { savedLog = localStorage.getItem(logKey()); } catch (e) { savedLog = null; }
     if (savedLog) {
       logEl.style.display = 'block';
       logEl.textContent = savedLog;
@@ -1918,21 +1950,22 @@
     if (cancelBtn) cancelBtn.style.display = on ? '' : 'none';
   }
   function stopPolling() { if (polling) { clearInterval(polling); polling = null; } }
-  function saveJob() { try { localStorage.setItem(JOB_KEY, JSON.stringify({ inst: inst, date: date, target: target })); } catch (e) {} }
+  function saveJob() { try { localStorage.setItem(JOB_KEY, JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })); } catch (e) {} }
   function clearJob() { try { localStorage.removeItem(JOB_KEY); } catch (e) {} }
 
   function poll() {
     var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
+    if (runId) qs += '&run=' + encodeURIComponent(runId);
     fetch('/transit-fit/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
       if (s.log) {
         logEl.textContent = s.log;
         logEl.scrollTop = logEl.scrollHeight;
-        try { localStorage.setItem('fit:log:' + inst + ':' + date + ':' + target, s.log); } catch (e) {}
+        try { localStorage.setItem(logKey(), s.log); } catch (e) {}
       }
       if (s.state === 'done') {
         stopPolling(); clearJob();
         logEl.textContent += '\n\n✓ done — reloading…';
-        try { localStorage.setItem('fit:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
         if (typeof window.showLoading === 'function') {
           window.showLoading('Reloading…');
         }
@@ -1940,11 +1973,11 @@
       } else if (s.state === 'error') {
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent += '\n\n✗ fit run exited with code ' + s.returncode;
-        try { localStorage.setItem('fit:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
       } else if (s.state === 'cancelled') {
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent += '\n\n■ cancelled';
-        try { localStorage.setItem('fit:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
       } else if (s.state === 'none') {
         stopPolling(); setRunning(false); clearJob();
       }
@@ -1966,7 +1999,7 @@
     if (errEl) errEl.textContent = '';
     logEl.style.display = 'block';
     logEl.textContent = 'Launching transit fitting run…';
-    try { localStorage.removeItem('fit:log:' + inst + ':' + date + ':' + target); } catch (e) {}
+    try { localStorage.removeItem(logKey()); } catch (e) {}
 
     fetch('/transit-fit/run', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1978,6 +2011,10 @@
         logEl.textContent = 'Error: ' + (res.error || 'failed to start');
         return;
       }
+      // Track the launched run so polling/log/cancel target it.
+      runId = res.run_id || '';
+      saveJob();
+      try { localStorage.removeItem(logKey()); } catch (e) {}
       if (!polling) polling = setInterval(poll, 2000);
       poll();
     }).catch(function (err) {
@@ -2023,10 +2060,10 @@
   if (cancelBtn) cancelBtn.addEventListener('click', function () {
     cancelBtn.disabled = true;
     logEl.textContent += '\n\n■ cancelling…';
-    try { localStorage.setItem('fit:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+    try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
     fetch('/transit-fit/cancel', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ inst: inst, date: date, target: target })
+      body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })
     }).then(function (r) { return r.json(); }).then(function () {
       cancelBtn.disabled = false;
       if (!polling) { polling = setInterval(poll, 2000); poll(); }
@@ -2039,6 +2076,8 @@
     try { saved = JSON.parse(localStorage.getItem(JOB_KEY) || 'null'); } catch (e) { saved = null; }
     if (!saved || !saved.inst) return;
     if (saved.inst === inst && saved.date === date && saved.target === target) {
+      // Resume polling the run that was launched (may differ from the viewed run).
+      if (saved.run_id !== undefined) runId = saved.run_id;
       setRunning(true);
       if (logEl) logEl.style.display = 'block';
       if (!polling) polling = setInterval(poll, 2000);

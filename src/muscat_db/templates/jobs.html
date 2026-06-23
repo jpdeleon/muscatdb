@@ -49,7 +49,7 @@
   {% for j in jobs %}
     {% set link_url -%}
       {%- if j.type == 'photometry' -%}/photometry?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}
-      {%- else -%}/transit-fit?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}
+      {%- else -%}/transit-fit?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}{% if j.run_id %}&run={{ j.run_id }}{% endif %}
       {%- endif -%}
     {%- endset %}
     <tr class="job-row" data-key="{{ j.key }}" data-status="{{ j.state }}" data-type="{{ j.type }}"
@@ -97,6 +97,7 @@
                   data-inst="{{ j.inst }}"
                   data-date="{{ j.date }}"
                   data-target="{{ j.target }}"
+                  data-run="{{ j.run_id }}"
                   onclick="cancelJob(this)">Cancel</button>
         {% elif j.state == 'cancelling' %}
           <button class="btn sm" disabled="">Cancelling…</button>
@@ -107,11 +108,12 @@
                   data-inst="{{ j.inst }}"
                   data-date="{{ j.date }}"
                   data-target="{{ j.target }}"
+                  data-run="{{ j.run_id }}"
                   onclick="cancelJob(this)">Cancel</button>
         {% else %}
           <button class="btn sm" onclick="reRunJob(this, '{{ j.key }}')" title="Re-run this job">⟳ Re-run</button>
         {% endif %}
-        <button class="btn sm log-btn" onclick="viewLog(this, '{{ j.type }}', '{{ j.inst }}', '{{ j.date }}', '{{ j.target }}')" title="View log" style="margin-left:0.25rem;">📄 Log</button>
+        <button class="btn sm log-btn" onclick="viewLog(this, '{{ j.type }}', '{{ j.inst }}', '{{ j.date }}', '{{ j.target }}', '{{ j.run_id }}')" title="View log" style="margin-left:0.25rem;">📄 Log</button>
         <button class="btn sm hide-btn" onclick="hideRow(this, '{{ j.key }}')" title="Hide this row" style="margin-left:0.25rem;">✕</button>
       </td>
     </tr>
@@ -226,20 +228,22 @@
     td.innerHTML = html;
   }
 
-  function replaceActions(row, state, key, type, inst, date, target) {
+  function replaceActions(row, state, key, type, inst, date, target, runId) {
     var td = row.querySelector('td.job-actions');
     if (!td) return;
+    runId = runId || '';
+    var cancelAttrs = 'data-key="' + key + '" data-type="' + type + '" data-inst="' + inst + '" data-date="' + date + '" data-target="' + target + '" data-run="' + runId + '"';
     var html = '';
     if (state === 'running') {
-      html = '<button class="btn sm danger" data-key="' + key + '" data-type="' + type + '" data-inst="' + inst + '" data-date="' + date + '" data-target="' + target + '" onclick="cancelJob(this)">Cancel</button>';
+      html = '<button class="btn sm danger" ' + cancelAttrs + ' onclick="cancelJob(this)">Cancel</button>';
     } else if (state === 'cancelling') {
       html = '<button class="btn sm" disabled="">Cancelling…</button>';
     } else if (state === 'pending') {
-      html = '<button class="btn sm danger" data-key="' + key + '" data-type="' + type + '" data-inst="' + inst + '" data-date="' + date + '" data-target="' + target + '" onclick="cancelJob(this)">Cancel</button>';
+      html = '<button class="btn sm danger" ' + cancelAttrs + ' onclick="cancelJob(this)">Cancel</button>';
     } else {
       html = '<button class="btn sm" onclick="reRunJob(this, \'' + key + '\')" title="Re-run this job">⟳ Re-run</button>';
     }
-    html += '<button class="btn sm log-btn" onclick="viewLog(this, \'' + type + '\', \'' + inst + '\', \'' + date + '\', \'' + target + '\')" title="View log" style="margin-left:0.25rem;">📄 Log</button>';
+    html += '<button class="btn sm log-btn" onclick="viewLog(this, \'' + type + '\', \'' + inst + '\', \'' + date + '\', \'' + target + '\', \'' + runId + '\')" title="View log" style="margin-left:0.25rem;">📄 Log</button>';
     html += '<button class="btn sm hide-btn" onclick="hideRow(this, \'' + key + '\')" title="Hide this row" style="margin-left:0.25rem;">✕</button>';
     td.innerHTML = html;
   }
@@ -340,6 +344,7 @@
     var inst   = btn.getAttribute('data-inst');
     var date   = btn.getAttribute('data-date');
     var target = btn.getAttribute('data-target');
+    var runId  = btn.getAttribute('data-run') || '';
     var url    = type === 'transit_fit' ? '/transit-fit/cancel' : '/photometry/cancel';
 
     btn.disabled = true;
@@ -348,7 +353,7 @@
     fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ inst: inst, date: date, target: target })
+      body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })
     })
     .then(function(r) { if (!r.ok) return r.json().then(function(e) { throw new Error(e.error || 'Failed'); }); return r.json(); })
     .then(function() {
@@ -392,7 +397,7 @@
   };
 
   // ── View log (inline expand) ────────────────────────────────────────────
-  window.viewLog = function(btn, type, inst, date, target) {
+  window.viewLog = function(btn, type, inst, date, target, runId) {
     var row = btn.closest('tr');
     var logRow = row.nextElementSibling;
     if (!logRow || !logRow.classList.contains('log-row')) return;
@@ -404,6 +409,7 @@
     logRow.style.display = '';
     pre.textContent = 'Loading…';
     var url = '/jobs/log/' + encodeURIComponent(type) + '/' + encodeURIComponent(inst) + '/' + encodeURIComponent(date) + '/' + encodeURIComponent(target);
+    if (runId) url += '?run=' + encodeURIComponent(runId);
     fetch(url)
       .then(function(r) { if (!r.ok) throw new Error('Log not found'); return r.text(); })
       .then(function(text) { pre.textContent = text; })
@@ -464,7 +470,7 @@
           }
           var type = parts[0] || row.getAttribute('data-type') || '';
           type = type === 'transit_fit' ? 'transit_fit' : 'photometry';
-          replaceActions(row, f.state, key, type, parts[1] || '', parts[2] || '', parts[3] || '');
+          replaceActions(row, f.state, key, type, parts[1] || '', parts[2] || '', parts[3] || '', parts[4] || '');
           applyFilters();
         }
 
