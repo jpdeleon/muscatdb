@@ -134,6 +134,8 @@
     </select>
   </div>
   {% if sel_inst == 'sinistro' %}
+  {# Only expose a filter when the obslog offers a real choice (>1 value). #}
+  {% if available_sites | length > 1 %}
   <div class="field">
     <label for="opt-site">Site <span class="help-tooltip" title="Only reduce frames from this LCO site (corresponds to --site; sinistro only). Empty = all sites.">?</span></label>
     <select id="opt-site" title="--site; empty → all sites">
@@ -143,6 +145,8 @@
       {% endfor %}
     </select>
   </div>
+  {% endif %}
+  {% if available_modes | length > 1 %}
   <div class="field">
     <label for="opt-mode">Mode <span class="help-tooltip" title="Only reduce frames in this readout mode (corresponds to --mode; sinistro only). Empty = all modes.">?</span></label>
     <select id="opt-mode" title="--mode; empty → all modes">
@@ -152,6 +156,7 @@
       {% endfor %}
     </select>
   </div>
+  {% endif %}
   {% endif %}
   <noscript><button class="btn" type="submit">View</button></noscript>
 </form>
