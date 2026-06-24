@@ -120,6 +120,7 @@
   (function () {
     function initTable(table) {
       if (table.dataset.resizableInit === '1') return;
+      if (table.offsetParent === null) return; // Skip if table is currently hidden
       table.dataset.resizableInit = '1';
       const headRow = table.tHead && table.tHead.rows[0];
       if (!headRow) return;
@@ -129,7 +130,10 @@
       // dragging one column doesn't shove the others around.
       const measured = ths.map(function (th, i) {
         const stored = localStorage.getItem('colw:' + tableId + ':' + i);
-        if (stored) return parseFloat(stored);
+        if (stored) {
+          const w = parseFloat(stored);
+          if (w > 30) return w;
+        }
         return th.getBoundingClientRect().width;
       });
       let hasStored = false;

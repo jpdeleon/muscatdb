@@ -1374,13 +1374,62 @@ class TestRoutes:
         r = client.get("/api/ephemeris/target-info")
         assert r.status_code == 422
         
+        # Test fallback for a dummy target
         r2 = client.get("/api/ephemeris/target-info?target=test_star")
         assert r2.status_code == 200
         res = r2.json()
         assert res["ok"] is True
         assert "planets" in res
         assert "reference_ephemeris" in res
+        assert "nasa_ephemeris" in res
+        assert "toi_ephemeris" in res
         assert "datasets" in res
+        assert res["reference_ephemeris"] == {"b": {"t0": 2450000.0, "period": 1.0}}
+        assert res["nasa_ephemeris"] == {"b": {"t0": 2450000.0, "period": 1.0}}
+        assert res["toi_ephemeris"] == {"b": {"t0": 2450000.0, "period": 1.0}}
+
+        # Test local confirmed planet query (TOI-1136)
+        r3 = client.get("/api/ephemeris/target-info?target=TOI-1136")
+        assert r3.status_code == 200
+        res3 = r3.json()
+        assert res3["ok"] is True
+        ref_ephem3 = res3["reference_ephemeris"]
+        nasa_ephem3 = res3["nasa_ephemeris"]
+        assert "b" in ref_ephem3
+        assert "c" in ref_ephem3
+        assert "g" in ref_ephem3
+        assert "b" in nasa_ephem3
+        assert abs(nasa_ephem3["b"]["t0"] - 2458684.7) < 1e-3
+        assert abs(nasa_ephem3["b"]["period"] - 4.1727) < 1e-3
+        
+        # Test local TOI candidate query (TOI-736)
+        r4 = client.get("/api/ephemeris/target-info?target=TOI-736")
+        assert r4.status_code == 200
+        res4 = r4.json()
+        assert res4["ok"] is True
+        ref_ephem4 = res4["reference_ephemeris"]
+        toi_ephem4 = res4["toi_ephemeris"]
+        assert "b" in ref_ephem4
+        assert "c" in ref_ephem4
+        assert "b" in toi_ephem4
+        assert abs(toi_ephem4["b"]["t0"] - 2458546.508066) < 1e-3
+        assert abs(toi_ephem4["b"]["period"] - 4.9899175) < 1e-3
+
+        # Test local TOI candidate query by TIC ID (TIC 181804752, resolved to confirmed LP 791-18)
+        r5 = client.get("/api/ephemeris/target-info?target=TIC+181804752")
+        assert r5.status_code == 200
+        res5 = r5.json()
+        assert res5["ok"] is True
+        ref_ephem5 = res5["reference_ephemeris"]
+        nasa_ephem5 = res5["nasa_ephemeris"]
+        assert "b" in ref_ephem5
+        assert "c" in ref_ephem5
+        assert "d" in ref_ephem5
+        assert "b" in nasa_ephem5
+        assert abs(nasa_ephem5["b"]["t0"] - 2458774.86973) < 1e-3
+        assert abs(nasa_ephem5["b"]["period"] - 0.9479981) < 1e-3
+        assert abs(nasa_ephem5["c"]["t0"] - 2458546.50923) < 1e-3
+        assert abs(nasa_ephem5["c"]["period"] - 4.98991) < 1e-3
 
     def test_api_ephemeris_calculate(self, client):
         r = client.post("/api/ephemeris/calculate", json={})
@@ -1400,6 +1449,21 @@ class TestRoutes:
         assert "results" in res
         assert "b" in res["results"]
         assert res["results"]["b"]["was_fit"] is False
+
+        # Test calculation with multiple targets (list)
+        payload_list = {
+            "target": ["test_star", "test_star_2"],
+            "planets_ephem": {
+                "b": {"t0": 2459000.1, "period": 3.5}
+            },
+            "datasets": [
+                {"target": "test_star", "instrument": "muscat", "date": "240624", "run_id": "default", "checked": True}
+            ]
+        }
+        r3 = client.post("/api/ephemeris/calculate", json=payload_list)
+        assert r3.status_code == 200
+        res3 = r3.json()
+        assert res3["ok"] is True
 
     def test_target_name_normalization(self):
         from muscat_db.web import _normalize_target_name
