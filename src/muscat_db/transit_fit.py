@@ -1170,6 +1170,41 @@ def _pending_status(inst: str, date: str, target: str, run_id: str = "") -> dict
     return None
 
 
+def _running_status(inst: str, date: str, target: str, run_id: str = "") -> dict | None:
+    """Return an active running-job status dict if a running DB entry exists, else None.
+
+    A full run launched while the single full-job slot is occupied is recorded
+    in the DB as ``running``; surface that here if the process is active but not in ``_FIT_JOBS``.
+    """
+    from muscat_db.database import get_persisted_jobs
+    try:
+        db_key = f"transit_fit:{fit_job_key(inst, date, target, run_id)}"
+    except ValueError:
+        return None
+    try:
+        for entry in get_persisted_jobs():
+            if (
+                entry["key"] == db_key
+                and entry["type"] == "transit_fit"
+                and entry["state"] == "running"
+            ):
+                try:
+                    rdir = fit_output_dir(inst, date, target, run_id or None)
+                    lp = rdir / "timer-fit.log"
+                except ValueError:
+                    lp = None
+                started = entry.get("started_at") or time.time()
+                return {
+                    "state": "running",
+                    "returncode": None,
+                    "log": _tail(lp) if (lp and lp.is_file()) else "",
+                    "elapsed": round(time.time() - started),
+                }
+    except Exception:
+        pass
+    return None
+
+
 def _persisted_status(inst: str, date: str, target: str, run_id: str = "") -> dict | None:
     """Return a terminal-state status dict from the DB for a job no longer in ``_FIT_JOBS``."""
     from muscat_db.database import get_persisted_jobs
@@ -1214,6 +1249,9 @@ def job_status(inst: str, date: str, target: str, run_id: str = "") -> dict:
             pending = _pending_status(inst, date, target, run_id)
             if pending is not None:
                 return pending
+            running = _running_status(inst, date, target, run_id)
+            if running is not None:
+                return running
             persisted = _persisted_status(inst, date, target, run_id)
             if persisted is not None:
                 return persisted
