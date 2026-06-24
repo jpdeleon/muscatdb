@@ -675,6 +675,13 @@
       
       const detailsUrl = `/transit-fit?inst=${d.instrument}&date=${d.date}&target=${encodeURIComponent(d.target)}&run=${d.run_id}`;
 
+      let runTypeBadge = '';
+      if (d.run_type === 'test') {
+        runTypeBadge = `<span class="badge badge-amber" style="font-size: 0.7rem; margin-left: 0.5rem; text-transform: lowercase;">test</span>`;
+      } else if (d.run_type === 'full') {
+        runTypeBadge = `<span class="badge badge-blue" style="font-size: 0.7rem; margin-left: 0.5rem; text-transform: lowercase;">full</span>`;
+      }
+
       tr.innerHTML = `
         <td style="text-align: center;">
           <input type="checkbox" class="dataset-checkbox" data-index="${idx}" ${isChecked ? 'checked' : ''} onchange="onDatasetCheckboxChange(this, ${idx})">
@@ -683,6 +690,7 @@
           <a href="${detailsUrl}" target="_blank" style="font-weight: 600; color: var(--text);" title="Click to view transit fit">
             ${d.instrument.toUpperCase()} (${d.date}) — ${d.run_name} ↗
           </a>
+          ${runTypeBadge}
           <span class="badge" style="background: var(--surface); color: var(--text-dim); margin-left: 0.5rem; font-size: 0.8rem; border: 1px solid var(--border);">${d.target}</span>
         </td>
         <td class="mono">${d.planets_fitted}</td>
