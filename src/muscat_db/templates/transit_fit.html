@@ -199,10 +199,6 @@
     <a href="/photometry?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary">Go to Photometry Page</a>
   </div>
 {% else %}
-  <div style="margin-bottom: 1.5rem;">
-    <a href="https://exoplanetarchive.ipac.caltech.edu/overview/{{ sel_target }}" target="_blank" style="font-size: 0.9rem; color: var(--accent); text-decoration: none; font-weight: 500;">View NASA Exoplanet Archive ↗</a>
-  </div>
-
   <!-- Discovered light curves section -->
   <div class="phot-section">
     <h2>Discovered Lightcurves</h2>
@@ -305,7 +301,6 @@
             {% endfor %}
           </tbody>
         </table>
-      </div>
     </div>
     {% endif %}
 
@@ -322,7 +317,10 @@
   <!-- Configure Panel -->
   <div class="phot-section run-panel">
     <h2>Configure &amp; Run Transit Fitting</h2>
-    
+    <div style="margin-bottom: 1rem;">
+      <a href="https://exoplanetarchive.ipac.caltech.edu/overview/{{ sel_target }}" target="_blank" style="font-size: 0.9rem; color: var(--accent); text-decoration: none; font-weight: 500;">View NASA Exoplanet Archive ↗</a>
+    </div>
+
     <details class="adv" id="opt-panel">
       <summary>Fitting Configurations &amp; Parameters</summary>
       <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; gap: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.75rem;">
@@ -553,7 +551,7 @@
 
     <div class="run-actions">
       <button class="btn" type="button" id="calc-logp-btn">
-        ∑ Calculate logP
+        ∑ Calculate logprob
       </button>
       <span id="logp-result" style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: var(--accent2);"></span>
       <button class="btn primary" type="button" id="run-test-btn">
@@ -565,6 +563,11 @@
       <button class="btn" type="button" id="cancel-btn" style="display:none;border-color:var(--red);color:var(--red);">
         ■ Cancel
       </button>
+      {% if outputs and outputs.has_any %}
+      <button class="btn" type="button" id="delete-btn" style="border-color:var(--red);color:var(--red);margin-left:auto;">
+        🗑 Delete Fit Results
+      </button>
+      {% endif %}
       <span class="hint" style="color: var(--text-dim); font-size: 0.8rem;">
         Runs the fitting script over the copied CSV curves. Test runs a quick fit; Full runs standard MCMC chains.
       </span>
@@ -573,6 +576,17 @@
     <pre id="run-log"></pre>
   </div>
 {% endif %}
+
+<div id="delete-confirm-overlay">
+  <div class="modal-box">
+    <p style="margin-bottom:0.75rem;font-size:0.95rem;font-weight:600;">Delete fit results</p>
+    <p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:1.5rem;line-height:1.5;">Delete fit results for <strong>{{ sel_target }}</strong> ({{ sel_inst }}/{{ sel_date }}){% if sel_run %} — run <strong>{{ sel_run }}</strong>{% endif %}? This cannot be undone.</p>
+    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+      <button class="btn" id="delete-cancel-btn">Cancel</button>
+      <button class="btn" id="delete-confirm-btn" style="border-color:var(--red);color:var(--red);">Delete</button>
+    </div>
+  </div>
+</div>
 
 <div id="message-modal">
   <div class="modal-box">
@@ -2068,6 +2082,39 @@
       cancelBtn.disabled = false;
       if (!polling) { polling = setInterval(poll, 2000); poll(); }
     }).catch(function () { cancelBtn.disabled = false; });
+  });
+
+  var deleteBtn = document.getElementById('delete-btn');
+  var deleteOverlay = document.getElementById('delete-confirm-overlay');
+  var deleteConfirmBtn = document.getElementById('delete-confirm-btn');
+  if (deleteConfirmBtn) deleteConfirmBtn.addEventListener('click', function () {
+    deleteOverlay.classList.remove('visible');
+    deleteBtn.disabled = true;
+    deleteBtn.textContent = 'Deleting…';
+    fetch('/transit-fit/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (res.ok) {
+        if (typeof window.showLoading === 'function') window.showLoading('Reloading…');
+        setTimeout(function () { window.location.reload(); }, 800);
+      } else {
+        alert('Delete failed: ' + (res.error || 'unknown error'));
+        deleteBtn.disabled = false;
+        deleteBtn.textContent = '🗑 Delete Fit Results';
+      }
+    }).catch(function (err) {
+      alert('Delete failed: ' + err.message);
+      deleteBtn.disabled = false;
+      deleteBtn.textContent = '🗑 Delete Fit Results';
+    });
+  });
+  var deleteCancelBtn = document.getElementById('delete-cancel-btn');
+  if (deleteCancelBtn) deleteCancelBtn.addEventListener('click', function () {
+    deleteOverlay.classList.remove('visible');
+  });
+  if (deleteBtn) deleteBtn.addEventListener('click', function () {
+    deleteOverlay.classList.add('visible');
   });
 
   // Check saved job on page load
