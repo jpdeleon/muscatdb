@@ -37,6 +37,7 @@ def _make_outputs(base: Path) -> Path:
         bstem = f"{TARGET}_{INST}_{b}_{DATE}"
         (rdir / (bstem + "_ref.png")).write_bytes(b"\x89PNG\r\n")
         (rdir / (bstem + "_apertures.png")).write_bytes(b"\x89PNG\r\n")
+        (rdir / (bstem + "_cutouts.png")).write_bytes(b"\x89PNG\r\n")
         (rdir / (bstem + "_alignment.png")).write_bytes(b"\x89PNG\r\n")
         (rdir / (bstem + ".gif")).write_bytes(b"GIF89a")
         (rdir / (bstem + ".csv")).write_text(
@@ -114,7 +115,7 @@ class TestListOutputs:
         out = phot.list_outputs(INST, DATE, TARGET)
         assert list(out["bands"]) == BANDS  # canonical order gp, rp, ip, zs
         gp = out["bands"]["gp"]
-        assert set(gp) == {"ref", "apertures", "alignment", "gif", "csv"}
+        assert set(gp) == {"ref", "apertures", "cutouts", "alignment", "gif", "csv"}
         assert gp["csv"]["file"] == f"{TARGET}_{INST}_gp_{DATE}.csv"
 
     def test_classifies_underscored_band_names(self, monkeypatch, tmp_path):
@@ -791,6 +792,55 @@ class TestFinalizeGrace:
             with phot._LOCK:
                 phot._JOBS.clear()
 
+    def test_terminal_marker_shortens_finalize_window(self, monkeypatch, tmp_path):
+        """Once prose logs a terminal result line, the finalize window shrinks to
+        the short terminal grace even when the default is large — so a successful
+        short run reloads quickly instead of waiting out the conservative window."""
+        monkeypatch.setattr(phot, "_FINALIZE_GRACE_S", 600)  # huge default
+        monkeypatch.setattr(phot, "_FINALIZE_GRACE_TERMINAL_S", 1)
+        _job, proc, log = self._make_job(monkeypatch, tmp_path)
+        try:
+            proc._rc = 0
+            # A non-terminal worker line + huge default -> still finalizing.
+            with open(log, "a") as f:
+                f.write("INFO: wrote apertures.png\n")
+            assert phot.job_status(INST, DATE, TARGET)["state"] == "finalizing"
+
+            # The terminal result line shrinks the window; freshly written so
+            # still finalizing for now.
+            with open(log, "a") as f:
+                f.write("INFO: photometry SUCCEEDED: 1/1 bands (9s elapsed)\n")
+            assert phot.job_status(INST, DATE, TARGET)["state"] == "finalizing"
+
+            # Past the short terminal window -> terminal done despite the 600s
+            # default that would otherwise still hold.
+            import time as _t
+            _t.sleep(1.2)
+            assert phot.job_status(INST, DATE, TARGET)["state"] == "done"
+        finally:
+            with phot._LOCK:
+                phot._JOBS.clear()
+
+    def test_partial_failure_marker_shortens_finalize_window(
+        self, monkeypatch, tmp_path
+    ):
+        """A PARTIAL FAILURE result line is equally terminal and must shorten the
+        window too; the run then resolves to 'error' (partial run)."""
+        monkeypatch.setattr(phot, "_FINALIZE_GRACE_S", 600)
+        monkeypatch.setattr(phot, "_FINALIZE_GRACE_TERMINAL_S", 1)
+        _job, proc, log = self._make_job(monkeypatch, tmp_path)
+        try:
+            proc._rc = 0
+            with open(log, "a") as f:
+                f.write("WARNING: photometry PARTIAL FAILURE: 1/2 bands reduced\n")
+            assert phot.job_status(INST, DATE, TARGET)["state"] == "finalizing"
+            import time as _t
+            _t.sleep(1.2)
+            assert phot.job_status(INST, DATE, TARGET)["state"] == "error"
+        finally:
+            with phot._LOCK:
+                phot._JOBS.clear()
+
     def test_cancelled_job_finalizes_immediately(self, monkeypatch, tmp_path):
         # A large grace window proves Cancel bypasses the finalize gate even
         # while the log still looks fresh.
@@ -1286,6 +1336,12 @@ class TestRoutes:
         assert r.status_code == 200
         assert "MuSCAT-db Pipeline Workflow" in r.text
         assert "mermaid" in r.text
+
+    def test_ephemeris_route(self, client):
+        r = client.get("/ephemeris")
+        assert r.status_code == 200
+        assert "Ephemeris" in r.text
+        assert "under construction" in r.text.lower()
 
 
 class TestTransitFitJobs:

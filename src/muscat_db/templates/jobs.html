@@ -268,14 +268,12 @@
     if (activeStatus === status) {
       activeStatus = null;
       document.querySelectorAll('.job-count').forEach(function(e) { e.classList.remove('active'); });
-      document.getElementById('clear-filter').style.display = 'none';
     } else {
       activeStatus = status;
       document.querySelectorAll('.job-count').forEach(function(e) { e.classList.remove('active'); });
       el.classList.add('active');
-      document.getElementById('clear-filter').style.display = '';
     }
-    applyFilters(); saveFilters();
+    applyFilters(); showClearFilter(); saveFilters();
   };
 
   window.clearFilter = function() {
@@ -283,9 +281,14 @@
     activeType = '';
     activeInst = '';
     document.querySelectorAll('.job-count').forEach(function(e) { e.classList.remove('active'); });
-    document.getElementById('clear-filter').style.display = 'none';
-    applyFilters(); saveFilters();
+    applyFilters(); showClearFilter(); saveFilters();
   };
+
+  function showClearFilter() {
+    var el = document.getElementById('clear-filter');
+    if (!el) return;
+    el.style.display = (activeStatus || activeType || activeInst) ? '' : 'none';
+  }
 
   // ── Search ───────────────────────────────────────────────────────────────
   function applyFilters() {
@@ -501,26 +504,75 @@
   // ── Initialise ──────────────────────────────────────────────────────────
   if (searchStatus) searchStatus.textContent = total + ' jobs';
 
-  // Restore / save filter state
-  try {
-    var saved = localStorage.getItem('jobs:activeStatus');
-    if (saved) {
-      var el = document.querySelector('.job-count[data-status="' + saved + '"]');
-      if (el) { toggleStatus(el, saved); }
+  // Read all saved values first and apply them without intermediate saves.
+  // This avoids a race where toggleType/toggleStatus call saveFilters() before
+  // all dimensions have been restored, overwriting values yet to be read.
+  (function() {
+    var savedStatus, savedSearch, savedType, savedInst;
+    try { savedStatus = localStorage.getItem('jobs:activeStatus'); } catch (_) {}
+    try { savedSearch = localStorage.getItem('jobs:search'); } catch (_) {}
+    try { savedType = localStorage.getItem('jobs:typeFilter'); } catch (_) {}
+    try { savedInst = localStorage.getItem('jobs:instFilter'); } catch (_) {}
+
+    if (savedStatus) {
+      try {
+        var el = document.querySelector('.job-count[data-status="' + savedStatus + '"]');
+        if (el) { toggleStatus(el, savedStatus); }
+      } catch (_) {}
     }
-    var savedSearch = localStorage.getItem('jobs:search');
-    if (savedSearch && searchInput) { searchInput.value = savedSearch; applyFilters(); }
-    var savedType = localStorage.getItem('jobs:typeFilter');
+    if (savedSearch && searchInput) { searchInput.value = savedSearch; }
     if (savedType) {
-      var tel = document.querySelector('#type-summary .job-count[data-type="' + savedType + '"]');
-      if (tel) { toggleType(tel, savedType); }
+      try {
+        var tel = document.querySelector('#type-summary .job-count[data-type="' + savedType + '"]');
+        if (tel) { toggleType(tel, savedType); }
+      } catch (_) {}
     }
-    var savedInst = localStorage.getItem('jobs:instFilter');
     if (savedInst) {
-      var iel = document.querySelector('#inst-summary .job-count[data-inst="' + savedInst + '"]');
-      if (iel) { toggleInst(iel, savedInst); }
+      try {
+        var iel = document.querySelector('#inst-summary .job-count[data-inst="' + savedInst + '"]');
+        if (iel) { toggleInst(iel, savedInst); }
+      } catch (_) {}
     }
-  } catch (_) {}
+    // Save final consolidated state after all restores are done
+    saveFilters();
+    showClearFilter();
+  })();
+  applyFilters();        // ensure table reflects state (even when nothing was restored)
+  showClearFilter();
+  window.addEventListener('pageshow', function(ev) {
+    if (ev.persisted) {
+      // On bfcache restore the JS context is preserved, so activeType/activeInst
+      // still hold the old values. Directly set, don't toggle, to avoid toggling off.
+      try {
+        var s = localStorage.getItem('jobs:activeStatus');
+        if (s && activeStatus !== s) {
+          var el = document.querySelector('.job-count[data-status="' + s + '"]');
+          if (el) toggleStatus(el, s);
+        }
+      } catch (_) {}
+      try {
+        var sq = localStorage.getItem('jobs:search');
+        if (sq && searchInput) searchInput.value = sq;
+      } catch (_) {}
+      try {
+        var st = localStorage.getItem('jobs:typeFilter');
+        if (st && activeType !== st) {
+          var tel = document.querySelector('#type-summary .job-count[data-type="' + st + '"]');
+          if (tel) toggleType(tel, st);
+        }
+      } catch (_) {}
+      try {
+        var si = localStorage.getItem('jobs:instFilter');
+        if (si && activeInst !== si) {
+          var iel = document.querySelector('#inst-summary .job-count[data-inst="' + si + '"]');
+          if (iel) toggleInst(iel, si);
+        }
+      } catch (_) {}
+      applyFilters();
+      showClearFilter();
+      saveFilters();
+    }
+  });
 
   function saveFilters() {
     try {
@@ -530,8 +582,6 @@
       localStorage.setItem('jobs:instFilter', activeInst || '');
     } catch (_) {}
   }
-
-  applyFilters();
 
   // ── Sort persistence ────────────────────────────────────────────────────
   function saveSort(colIdx, dir) {
