@@ -216,6 +216,7 @@
     {% endif %}
   </div>
 
+  <div id="output-area">
   {% if outputs and outputs.has_any %}
     {% if outputs.summary %}
     <details class="phot-section phot-fold" open>
@@ -313,6 +314,7 @@
       <p style="color: var(--text-dim);">No prose outputs yet for this target — configure options below and run.</p>
     </div>
   {% endif %}
+  </div>
 
   {% if outputs.masters %}
   <div class="phot-section">
@@ -1024,6 +1026,8 @@
     jobActive = on;
     runBtns.forEach(function (b) { b.disabled = on || hasOptError || rawMissing; });
     if (cancelBtn) cancelBtn.style.display = on ? '' : 'none';
+    var oa = document.getElementById('output-area');
+    if (oa) oa.style.display = on ? 'none' : '';
   }
   function stopPolling() { if (polling) { clearInterval(polling); polling = null; } }
 

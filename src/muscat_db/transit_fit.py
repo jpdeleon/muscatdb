@@ -1054,6 +1054,11 @@ def start_fit(
     # Preserve existing products so timer can reuse them when clobber is false.
     # When overwrite is selected, fit.yaml sets clobber=true and timer owns the
     # invalidation/replacement of its cached results.
+    # Full fits always clobber — otherwise timer reuses the cached test-run
+    # trace (20 draws) and exits immediately, misleading the user into thinking
+    # their full-fit request was silently ignored.
+    if not test_run:
+        options = {**options, "overwrite": "true"}
     _write_fit_inputs(rdir, inst, date, target, csvs, options,
                       site=site, mode=mode, run_name=run_name, run_id=run_id)
 
@@ -1703,6 +1708,8 @@ def sync_jobs() -> None:
                 if selected_csvs is not None:
                     selected = set(selected_csvs)
                     csvs = [c for c in csvs if c.name in selected]
+                if not test_run:
+                    opts = {**opts, "overwrite": "true"}
                 _write_fit_inputs(rdir, inst, date, target, csvs, opts,
                                   site=site, mode=mode, run_name=run_name, run_id=run_id)
                 _fit_outputs_cache.clear()
