@@ -1139,6 +1139,69 @@ def start_fit(
     return {"ok": True, "key": key, "run_id": run_id}
 
 
+def _pending_status(inst: str, date: str, target: str, run_id: str = "") -> dict | None:
+    """Return a queued-job status dict if a pending DB entry exists, else None.
+
+    A full run launched while the single full-job slot is occupied is recorded
+    in the DB as ``pending`` but not added to ``_FIT_JOBS``; surface that here so the
+    transit fitting page can show a "queued" state instead of silently resetting.
+    """
+    from muscat_db.database import get_persisted_jobs
+    try:
+        db_key = f"transit_fit:{fit_job_key(inst, date, target, run_id)}"
+    except ValueError:
+        return None
+    try:
+        for entry in get_persisted_jobs():
+            if (
+                entry["key"] == db_key
+                and entry["type"] == "transit_fit"
+                and entry["state"] == "pending"
+            ):
+                started = entry.get("started_at") or time.time()
+                return {
+                    "state": "pending",
+                    "returncode": None,
+                    "log": "",
+                    "elapsed": round(time.time() - started),
+                }
+    except Exception:
+        pass
+    return None
+
+
+def _persisted_status(inst: str, date: str, target: str, run_id: str = "") -> dict | None:
+    """Return a terminal-state status dict from the DB for a job no longer in ``_FIT_JOBS``."""
+    from muscat_db.database import get_persisted_jobs
+    try:
+        db_key = f"transit_fit:{fit_job_key(inst, date, target, run_id)}"
+    except ValueError:
+        return None
+    try:
+        for entry in get_persisted_jobs():  # newest-first; one row per key
+            if entry["key"] != db_key or entry["type"] != "transit_fit":
+                continue
+            state = entry["state"]
+            if state not in ("done", "error", "cancelled"):
+                return None  # running/pending handled by the caller
+            
+            try:
+                rdir = fit_output_dir(inst, date, target, run_id or None)
+                lp = rdir / "timer-fit.log"
+            except ValueError:
+                lp = None
+            
+            return {
+                "state": state,
+                "returncode": entry.get("returncode"),
+                "log": _tail(lp) if (lp and lp.is_file()) else "",
+                "elapsed": round(entry.get("elapsed") or 0),
+            }
+    except Exception:
+        pass
+    return None
+
+
 def job_status(inst: str, date: str, target: str, run_id: str = "") -> dict:
     """Retrieve logs and status of an active transit fitting job."""
     try:
@@ -1148,12 +1211,21 @@ def job_status(inst: str, date: str, target: str, run_id: str = "") -> dict:
     with _FIT_LOCK:
         job = _FIT_JOBS.get(key)
         if job is None:
+            pending = _pending_status(inst, date, target, run_id)
+            if pending is not None:
+                return pending
+            persisted = _persisted_status(inst, date, target, run_id)
+            if persisted is not None:
+                return persisted
             # Check if output exists on disk
-            rdir = fit_output_dir(inst, date, target, run_id or None)
-            log_path = rdir / "timer-fit.log"
-            if log_path.is_file():
-                # Read completed job log
-                return {"state": "done", "log": _tail(log_path), "returncode": 0, "elapsed": 0}
+            try:
+                rdir = fit_output_dir(inst, date, target, run_id or None)
+                log_path = rdir / "timer-fit.log"
+                if log_path.is_file():
+                    # Read completed job log
+                    return {"state": "done", "log": _tail(log_path), "returncode": 0, "elapsed": 0}
+            except ValueError:
+                pass
             return {"state": "none", "log": "", "returncode": None, "elapsed": 0}
         
         rc = job.proc.poll()

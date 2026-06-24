@@ -160,3 +160,56 @@ class TestRunFileRoute:
         c, _ = client
         r = c.get("/transit-fit/file/sinistro/250710/HIP67522/run/..%2Fevil/summary.csv")
         assert r.status_code in (400, 404)
+
+
+# ── job status DB prioritization ───────────────────────────────────────────
+
+class TestTransitFitJobStatus:
+    def test_job_status_prioritizes_db_state(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_DB_PATH", str(tmp_path / "muscat.db"))
+        monkeypatch.setenv("MUSCAT_TIMER_DIR", str(tmp_path / "timer"))
+        from muscat_db.database import save_job
+        
+        inst = "muscat4"
+        date = "260127"
+        target = "HIP67522"
+        run_id = "default"
+        
+        # 1. Create a log file on disk to simulate a legacy/prior run log.
+        rdir = fit.fit_output_dir(inst, date, target, run_id)
+        rdir.mkdir(parents=True, exist_ok=True)
+        log_path = rdir / "timer-fit.log"
+        log_path.write_text("prior run completed log content")
+        
+        # Without any database state (and no job in-memory), it fallback to disk status "done"
+        status = fit.job_status(inst, date, target, run_id)
+        assert status["state"] == "done"
+        assert "prior run completed" in status["log"]
+        
+        # 2. Queue a job in the database with status "pending".
+        # It should now return "pending" instead of reading the finished disk log.
+        save_job(
+            type_="transit_fit",
+            inst=inst, date=date, target=target, run_id=run_id,
+            state="pending",
+            returncode=None, elapsed=0,
+            started_at=time.time(),
+            run_type="full"
+        )
+        status = fit.job_status(inst, date, target, run_id)
+        assert status["state"] == "pending"
+        assert status["log"] == ""
+        
+        # 3. Simulate a terminal state in the database like "cancelled".
+        # It should return "cancelled" and read the log from disk.
+        save_job(
+            type_="transit_fit",
+            inst=inst, date=date, target=target, run_id=run_id,
+            state="cancelled",
+            returncode=-1, elapsed=10,
+            started_at=time.time(),
+            run_type="full"
+        )
+        status = fit.job_status(inst, date, target, run_id)
+        assert status["state"] == "cancelled"
+        assert "prior run completed" in status["log"]
