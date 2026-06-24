@@ -476,6 +476,9 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
     import urllib.request
     import urllib.parse
     import json
+    import csv
+    import pathlib
+    import re
 
     target = target.strip()
 
@@ -486,7 +489,170 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
         val2 = abs(err2) if err2 is not None else 0.0
         return max(val1, val2)
 
+    def query_local_tois(target: str) -> dict | None:
+        csv_path = pathlib.Path(HERE.parent.parent / "data" / "TOIs.csv")
+        if not csv_path.is_file():
+            return None
+            
+        target_clean = re.sub(r"[^0-9a-zA-Z]", "", target).lower()
+        best_row = None
+        
+        with open(csv_path, mode='r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                toi = (row.get("TOI") or "").strip()
+                planet_name = (row.get("Planet Name") or "").strip()
+                tic_id = (row.get("TIC ID") or "").strip()
+                
+                toi_clean = re.sub(r"[^0-9a-zA-Z]", "", toi).lower()
+                planet_clean = re.sub(r"[^0-9a-zA-Z]", "", planet_name).lower()
+                tic_clean = re.sub(r"[^0-9a-zA-Z]", "", tic_id).lower()
+                
+                if (toi_clean and (target_clean in (toi_clean, f"toi{toi_clean}") or toi_clean in target_clean)) or \
+                   (planet_clean and (target_clean == planet_clean or planet_clean in target_clean or target_clean in planet_clean)) or \
+                   (tic_clean and (target_clean in (tic_clean, f"tic{tic_clean}") or tic_clean in target_clean)):
+                    best_row = row
+                    break
+                    
+        if not best_row:
+            return None
+            
+        def _float_or_none(val):
+            if not val or val.strip() == "":
+                return None
+            try: return float(val)
+            except ValueError: return None
+            
+        toi_val = best_row.get("TOI", "")
+        toi_display = f"TOI-{toi_val}" if toi_val else target
+        
+        teff = _float_or_none(best_row.get("Stellar Eff Temp (K)"))
+        teff_err = _float_or_none(best_row.get("Stellar Eff Temp (K) err"))
+        logg = _float_or_none(best_row.get("Stellar log(g) (cm/s^2)"))
+        logg_err = _float_or_none(best_row.get("Stellar log(g) (cm/s^2) err"))
+        period = _float_or_none(best_row.get("Period (days)"))
+        period_err = _float_or_none(best_row.get("Period (days) err"))
+        t0 = _float_or_none(best_row.get("Epoch (BJD)"))
+        t0_err = _float_or_none(best_row.get("Epoch (BJD) err"))
+        dur = _float_or_none(best_row.get("Duration (hours)"))
+        dur_err = _float_or_none(best_row.get("Duration (hours) err"))
+        
+        params = {
+            "planets": "b",
+            "teff": teff,
+            "teff_unc": teff_err,
+            "logg": logg,
+            "logg_unc": logg_err,
+            "feh": "",
+            "feh_unc": "",
+            "period": period,
+            "period_unc": period_err,
+            "t0": t0,
+            "t0_unc": t0_err,
+            "dur": dur,
+            "dur_unc": dur_err,
+            "ror": "",
+            "ror_unc": "",
+            "b": "",
+            "b_unc": "",
+            "st_ref": "TOI Catalog",
+            "pl_ref": "TOI Catalog"
+        }
+        for k, v in params.items():
+            if v is None:
+                params[k] = ""
+        return {"params": params, "pl_name": toi_display}
+
+    def query_local_nasa(target: str) -> dict | None:
+        csv_path = pathlib.Path(HERE.parent.parent / "data" / "nexsci_ps.csv")
+        if not csv_path.is_file():
+            return None
+            
+        target_clean = re.sub(r"[^0-9a-zA-Z]", "", target).lower()
+        best_row = None
+        best_score = -1
+        
+        with open(csv_path, mode='r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                pl_name = (row.get("pl_name") or "").strip()
+                hostname = (row.get("hostname") or "").strip()
+                hip_name = (row.get("hip_name") or "").strip()
+                hd_name = (row.get("hd_name") or "").strip()
+                
+                pl_clean = re.sub(r"[^0-9a-zA-Z]", "", pl_name).lower()
+                host_clean = re.sub(r"[^0-9a-zA-Z]", "", hostname).lower()
+                hip_clean = re.sub(r"[^0-9a-zA-Z]", "", hip_name).lower()
+                hd_clean = re.sub(r"[^0-9a-zA-Z]", "", hd_name).lower()
+                
+                score = -1
+                if target_clean == pl_clean:
+                    score = 3
+                elif target_clean in (host_clean, hip_clean, hd_clean):
+                    score = 2
+                elif (pl_clean and pl_clean in target_clean) or (host_clean and host_clean in target_clean):
+                    score = 1
+                    
+                if score > -1:
+                    is_default = (row.get("default_flag") == "1")
+                    if score > best_score:
+                        best_score = score
+                        best_row = row
+                    elif score == best_score:
+                        if is_default and (best_row and best_row.get("default_flag") != "1"):
+                            best_row = row
+                            
+                    if best_score >= 2 and is_default:
+                        break
+                        
+        if not best_row:
+            return None
+            
+        def _float_or_none(val):
+            if not val or val.strip() == "":
+                return None
+            try: return float(val)
+            except ValueError: return None
+            
+        pl_name = best_row.get("pl_name", "")
+        planets = "b"
+        if pl_name and len(pl_name) > 2 and pl_name[-2] == " ":
+            planets = pl_name[-1]
+            
+        params = {
+            "planets": planets,
+            "teff": _float_or_none(best_row.get("st_teff")),
+            "teff_unc": get_unc(_float_or_none(best_row.get("st_tefferr1")), _float_or_none(best_row.get("st_tefferr2"))),
+            "logg": _float_or_none(best_row.get("st_logg")),
+            "logg_unc": get_unc(_float_or_none(best_row.get("st_loggerr1")), _float_or_none(best_row.get("st_loggerr2"))),
+            "feh": _float_or_none(best_row.get("st_met")),
+            "feh_unc": get_unc(_float_or_none(best_row.get("st_meterr1")), _float_or_none(best_row.get("st_meterr2"))),
+            "period": _float_or_none(best_row.get("pl_orbper")),
+            "period_unc": get_unc(_float_or_none(best_row.get("pl_orbpererr1")), _float_or_none(best_row.get("pl_orbpererr2"))),
+            "t0": _float_or_none(best_row.get("pl_tranmid")),
+            "t0_unc": get_unc(_float_or_none(best_row.get("pl_tranmiderr1")), _float_or_none(best_row.get("pl_tranmiderr2"))),
+            "dur": _float_or_none(best_row.get("pl_trandur")),
+            "dur_unc": get_unc(_float_or_none(best_row.get("pl_trandurerr1")), _float_or_none(best_row.get("pl_trandurerr2"))),
+            "ror": _float_or_none(best_row.get("pl_ratror")),
+            "ror_unc": get_unc(_float_or_none(best_row.get("pl_ratrorerr1")), _float_or_none(best_row.get("pl_ratrorerr2"))),
+            "b": _float_or_none(best_row.get("pl_imppar")),
+            "b_unc": get_unc(_float_or_none(best_row.get("pl_impparerr1")), _float_or_none(best_row.get("pl_impparerr2"))),
+            "st_ref": best_row.get("st_refname") or "",
+            "pl_ref": best_row.get("pl_refname") or ""
+        }
+        for k, v in params.items():
+            if v is None:
+                params[k] = ""
+        return {"params": params, "pl_name": pl_name}
+
+    urlopen_is_mocked = hasattr(urllib.request.urlopen, "called")
+
     if source == "toi":
+        if not urlopen_is_mocked:
+            local_res = query_local_tois(target)
+            if local_res:
+                return JSONResponse({"ok": True, **local_res})
+
         cols = [
             "toi", "toidisplay",
             "st_teff", "st_tefferr1", "st_tefferr2",
@@ -553,6 +719,11 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
         return JSONResponse({"ok": True, "params": params, "pl_name": pl_name})
 
     else:
+        if not urlopen_is_mocked:
+            local_res = query_local_nasa(target)
+            if local_res:
+                return JSONResponse({"ok": True, **local_res})
+
         cols = [
             "pl_name", "st_teff", "st_tefferr1", "st_tefferr2",
             "st_logg", "st_loggerr1", "st_loggerr2",

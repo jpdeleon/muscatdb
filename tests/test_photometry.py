@@ -1292,6 +1292,26 @@ class TestRoutes:
         assert len(norm_queries) >= 1, \
             f"Should have queried with space-normalized target, got: {seen_urls}"
 
+    def test_transit_fit_query_archive_local_csv(self, client):
+        # 1. Test local NASA Exoplanet Archive CSV query
+        r = client.get("/transit-fit/query-archive?target=HIP67522")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert data["pl_name"] == "HIP 67522 b"
+        assert data["params"]["teff"] == 5675.0
+        assert data["params"]["period"] == 6.9594731
+        assert data["params"]["st_ref"] != ""
+
+        # 2. Test local TOI Catalog CSV query
+        r2 = client.get("/transit-fit/query-archive?target=TOI-101.01&source=toi")
+        assert r2.status_code == 200
+        data2 = r2.json()
+        assert data2["ok"] is True
+        assert "TOI-101.01" in data2["pl_name"]
+        assert data2["params"]["teff"] == 5600.0
+        assert data2["params"]["period"] == 1.43036994965074
+
     def test_jobs_page(self, client, monkeypatch):
         mock_jobs = [
             {
