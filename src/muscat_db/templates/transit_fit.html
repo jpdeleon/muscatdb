@@ -1784,6 +1784,10 @@
       var cardInvalid = card.querySelector('.is-invalid');
       if (cardInvalid) { ok = false; if (!firstErr) firstErr = cardInvalid; }
     });
+    if (!ok) {
+      var panel = document.getElementById('opt-panel');
+      if (panel && !panel.open) panel.open = true;
+    }
     if (firstErr) {
       if (typeof firstErr.scrollIntoView === 'function') firstErr.scrollIntoView({ behavior: 'smooth', block: 'center' });
       firstErr.focus();
@@ -1999,7 +2003,10 @@
   }
 
   function launch(testRun) {
-    if (!validateAllFields()) { return; }
+    if (!validateAllFields()) {
+      if (errEl) errEl.textContent = 'Please fill in all required fields marked in red above.';
+      return;
+    }
     saveJob();
     // Unhide this job on the Jobs page
     try {
@@ -2038,8 +2045,14 @@
     });
   }
 
-  if (runBtn) runBtn.addEventListener('click', function () { launch(false); });
-  if (runTestBtn) runTestBtn.addEventListener('click', function () { launch(true); });
+  if (runBtn) runBtn.addEventListener('click', function () {
+    if (errEl) errEl.textContent = '';
+    launch(false);
+  });
+  if (runTestBtn) runTestBtn.addEventListener('click', function () {
+    if (errEl) errEl.textContent = '';
+    launch(true);
+  });
 
   // Calculate logP: build the model from the current parameters and evaluate
   // model.logp() at the priors, without launching a full fit.
@@ -2117,18 +2130,26 @@
     deleteOverlay.classList.add('visible');
   });
 
-  // Check saved job on page load
+  // Check saved job on page load — validate server state first so we don't
+  // flash a Cancel button for a run that already completed.
   (function checkSavedJob() {
     var saved;
     try { saved = JSON.parse(localStorage.getItem(JOB_KEY) || 'null'); } catch (e) { saved = null; }
     if (!saved || !saved.inst) return;
     if (saved.inst === inst && saved.date === date && saved.target === target) {
-      // Resume polling the run that was launched (may differ from the viewed run).
-      if (saved.run_id !== undefined) runId = saved.run_id;
-      setRunning(true);
-      if (logEl) logEl.style.display = 'block';
-      if (!polling) polling = setInterval(poll, 2000);
-      poll();
+      var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
+      if (saved.run_id) qs += '&run=' + encodeURIComponent(saved.run_id);
+      fetch('/transit-fit/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
+        if (s.state === 'running' || s.state === 'cancelling' || s.state === 'pending') {
+          if (saved.run_id !== undefined) runId = saved.run_id;
+          setRunning(true);
+          if (logEl) logEl.style.display = 'block';
+          if (!polling) polling = setInterval(poll, 2000);
+          poll();
+        } else {
+          clearJob();
+        }
+      }).catch(function () { clearJob(); });
     }
   })();
 

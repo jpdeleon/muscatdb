@@ -1046,7 +1046,7 @@
         setRunning(true);
       }
       if (s.state === 'done') {
-        stopPolling(); clearJob();
+        stopPolling(); setRunning(false); clearJob();
         logEl.textContent = (s.log || '') + '\n\n✓ done (' + s.elapsed + 's) — reloading…';
         try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
         if (typeof window.showLoading === 'function') {
@@ -1076,7 +1076,13 @@
           logEl.textContent = '⏳ Queued — waiting for the running full reduction to finish…';
         }
       } else if (s.state === 'none') {
-        stopPolling(); setRunning(false); clearJob();
+        stopPolling();
+        var wasRunning = jobActive;
+        setRunning(false);
+        clearJob();
+        if (wasRunning) {
+          window.location.reload();
+        }
       }
     }).catch(function () {});
   }
@@ -1091,6 +1097,7 @@
       var hi = h.indexOf(jk); if (hi !== -1) { h.splice(hi, 1); localStorage.setItem('jobs:hidden', JSON.stringify(h)); }
     } catch (_) {}
 
+    stopPolling();
     setRunning(true);
     logEl.style.display = 'block';
     logEl.textContent = 'Launching ' + (testRun ? 'test' : 'full') + ' reduction…';
