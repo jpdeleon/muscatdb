@@ -640,6 +640,7 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
 
 @app.get("/transit-fit/status")
 def transit_fit_status(inst: str, date: str, target: str, run: str = ""):
+    fit.sync_jobs()
     return JSONResponse(fit.job_status(inst, date, target, run_id=(run or "").strip()))
 
 
