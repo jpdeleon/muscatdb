@@ -1112,6 +1112,11 @@ def start_fit(
             text=True,
             start_new_session=True,
         )
+        try:
+            with open(rdir / "timer-fit.pid", "w") as pidf:
+                pidf.write(str(proc.pid))
+        except Exception:
+            pass
     except (FileNotFoundError, OSError) as exc:
         logf.write(f"\nfailed to launch fitting: {exc}\n")
         logf.close()
@@ -1735,6 +1740,25 @@ def _discover_orphan_fits(existing: set[str]) -> list[dict]:
                     })
     return orphans
 
+def _is_pid_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _detect_process_running(rdir: pathlib.Path) -> bool:
+    pid_file = rdir / "timer-fit.pid"
+    if pid_file.is_file():
+        try:
+            with open(pid_file) as f:
+                pid = int(f.read().strip())
+            return _is_pid_running(pid)
+        except Exception:
+            pass
+    return False
+
 
 def sync_jobs() -> None:
     from muscat_db.database import save_job, get_persisted_jobs
@@ -1788,18 +1812,54 @@ def sync_jobs() -> None:
             row = next((j for j in db_jobs if j["key"] == db_key), None)
             if row is None:
                 continue
-            save_job(
-                type_="transit_fit",
-                inst=row["inst"],
-                date=row["date"],
-                target=row["target"],
-                run_id=row.get("run_id", ""),
-                state="error",
-                returncode=-1,
-                elapsed=row["elapsed"],
-                started_at=row["started_at"],
-                error_desc="Process lost (server restart)"
-            )
+            inst = row["inst"]
+            date = row["date"]
+            target = row["target"]
+            run_id = row.get("run_id", "")
+            
+            # Check if outputs exist on disk (meaning the process finished successfully in the background)
+            completed_ok = False
+            try:
+                rdir = fit_output_dir(inst, date, target, run_id or None)
+                if _run_has_outputs(rdir):
+                    log_path = rdir / "timer-fit.log"
+                    if log_path.is_file():
+                        with open(log_path, errors="replace") as lf:
+                            log_content = lf.read()
+                            if "Timer-fit completed successfully" in log_content:
+                                completed_ok = True
+            except Exception:
+                pass
+                
+            if completed_ok:
+                save_job(
+                    type_="transit_fit",
+                    inst=inst,
+                    date=date,
+                    target=target,
+                    run_id=run_id,
+                    state="done",
+                    returncode=0,
+                    elapsed=row["elapsed"],
+                    started_at=row["started_at"],
+                    error_desc=""
+                )
+            elif _detect_process_running(rdir):
+                # Process is still running on the system, leave state as "running"
+                continue
+            else:
+                save_job(
+                    type_="transit_fit",
+                    inst=inst,
+                    date=date,
+                    target=target,
+                    run_id=run_id,
+                    state="error",
+                    returncode=-1,
+                    elapsed=row["elapsed"],
+                    started_at=row["started_at"],
+                    error_desc="Process lost (server restart)"
+                )
 
         # Launch pending full jobs if capacity allows
         if _count_running_full() < _MAX_FULL_JOBS:
@@ -1863,6 +1923,11 @@ def sync_jobs() -> None:
                     _write_log_banner(logf, cmd, opts)
                     logf.flush()
                     proc = subprocess.Popen(cmd, cwd=str(rdir), stdout=logf, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+                    try:
+                        with open(rdir / "timer-fit.pid", "w") as pidf:
+                            pidf.write(str(proc.pid))
+                    except Exception:
+                        pass
                 except (FileNotFoundError, OSError) as exc:
                     try: logf.close()
                     except OSError: pass
