@@ -5,6 +5,10 @@ import os
 import pathlib
 import re
 import sqlite3
+import threading
+
+_DB_LOCK = threading.Lock()
+_CATALOG_CACHE: dict = {}
 
 import csv
 import io
@@ -1045,57 +1049,135 @@ def _normalize_target_name(t: str) -> str:
     return s
 
 
-# Helper to query all planet ephemerides for a target from catalogs
-def _query_target_planets_catalog(target: str) -> dict:
+def _query_target_planets_nasa(target: str) -> dict:
     import urllib.request
     import urllib.parse
     import json
     
+    target_clean = target.strip().upper()
+    cache_key = "nasa_" + target_clean
+    if cache_key in _CATALOG_CACHE:
+        return _CATALOG_CACHE[cache_key]
+        
     results = {}
-    # 1. Local fallback from muscatdb_targets_old.csv
+    target_norm = _normalize_target_name(target)
+    
+    # 1. Local database search (nexsci_pscomppars.csv)
     try:
-        local_params = fit.get_target_parameters(target)
-        if local_params and local_params.get("period"):
-            results["b"] = {
-                "t0": float(local_params.get("t0", 2450000.0)),
-                "period": float(local_params.get("period", 1.0))
-            }
+        csv_path = pathlib.Path(HERE).parent.parent / "data" / "nexsci_pscomppars.csv"
+        if csv_path.exists():
+            with open(csv_path, errors="replace") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    h_name = row.get("hostname", "")
+                    p_name = row.get("pl_name", "")
+                    tic = row.get("tic_id", "")
+                    if (h_name and _normalize_target_name(h_name) == target_norm) or \
+                       (p_name and _normalize_target_name(p_name) == target_norm) or \
+                       (tic and _normalize_target_name(tic) == target_norm):
+                        pl_letter = row.get("pl_letter", "").strip().lower()
+                        t0 = row.get("pl_tranmid")
+                        per = row.get("pl_orbper")
+                        if pl_letter and t0 is not None and per is not None:
+                            try:
+                                results[pl_letter] = {"t0": float(t0), "period": float(per)}
+                            except ValueError:
+                                pass
     except Exception:
         pass
 
-    # Clean target to find host name. E.g. "TOI 4600 b" -> "TOI 4600"
-    host = target.strip()
-    if len(host) > 2 and host[-2] == " " and host[-1].lower() in "bcdefgh":
-        host = host[:-2].strip()
-
-    # 2. Try querying NASA Exoplanet Archive for host planets
-    cols = ["pl_name", "pl_tranmid", "pl_orbper"]
-    col_str = ", ".join(cols)
-    q = f"SELECT {col_str} FROM pscomppars WHERE hostname = {_adql_literal(host)} OR hostname LIKE {_adql_literal(host + '%')}"
-    url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    try:
-        with urllib.request.urlopen(req, timeout=4) as response:
-            data = json.loads(response.read().decode())
-            for row in data:
-                pl_name = row.get("pl_name", "")
-                if pl_name and len(pl_name) > 2 and pl_name[-2] == " ":
-                    letter = pl_name[-1].lower()
-                    t0 = row.get("pl_tranmid")
-                    per = row.get("pl_orbper")
-                    if letter and t0 is not None and per is not None:
-                        results[letter] = {"t0": float(t0), "period": float(per)}
-    except Exception:
-        pass
-
-    # 3. Try TOI catalog if empty
+    # 2. Online search
     if not results:
+        # Clean target to find host name. E.g. "TOI 4600 b" -> "TOI 4600"
+        host = target.strip()
+        if len(host) > 2 and host[-2] == " " and host[-1].lower() in "bcdefgh":
+            host = host[:-2].strip()
+            
+        cols = ["pl_name", "pl_tranmid", "pl_orbper"]
+        col_str = ", ".join(cols)
+        q = f"SELECT {col_str} FROM pscomppars WHERE hostname = {_adql_literal(host)} OR hostname LIKE {_adql_literal(host + '%')}"
+        url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        try:
+            with urllib.request.urlopen(req, timeout=1.0) as response:
+                data = json.loads(response.read().decode())
+                for row in data:
+                    pl_name = row.get("pl_name", "")
+                    if pl_name and len(pl_name) > 2 and pl_name[-2] == " ":
+                        letter = pl_name[-1].lower()
+                        t0 = row.get("pl_tranmid")
+                        per = row.get("pl_orbper")
+                        if letter and t0 is not None and per is not None:
+                            results[letter] = {"t0": float(t0), "period": float(per)}
+        except Exception:
+            pass
+
+    _CATALOG_CACHE[cache_key] = results
+    return results
+
+
+def _query_target_planets_toi(target: str) -> dict:
+    import urllib.request
+    import urllib.parse
+    import json
+    
+    target_clean = target.strip().upper()
+    cache_key = "toi_" + target_clean
+    if cache_key in _CATALOG_CACHE:
+        return _CATALOG_CACHE[cache_key]
+        
+    results = {}
+    target_norm = _normalize_target_name(target)
+    
+    # 1. Local database search (TOIs.csv)
+    try:
+        csv_path = pathlib.Path(HERE).parent.parent / "data" / "TOIs.csv"
+        if csv_path.exists():
+            with open(csv_path, errors="replace") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    toi_val = row.get("TOI", "")
+                    tic_val = row.get("TIC ID", "")
+                    match = False
+                    if toi_val and _normalize_target_name("TOI" + toi_val) == target_norm:
+                        match = True
+                    elif tic_val and (
+                        _normalize_target_name(tic_val) == target_norm or
+                        _normalize_target_name("TIC" + tic_val) == target_norm
+                    ):
+                        match = True
+                    
+                    if match:
+                        try:
+                            parts = toi_val.split(".")
+                            if len(parts) == 2:
+                                candidate_num = int(parts[1])
+                                letter = chr(ord('b') + candidate_num - 1)
+                            else:
+                                letter = "b"
+                        except Exception:
+                            letter = "b"
+                        t0 = row.get("Epoch (BJD)")
+                        per = row.get("Period (days)")
+                        if t0 is not None and per is not None:
+                            try:
+                                results[letter] = {"t0": float(t0), "period": float(per)}
+                            except ValueError:
+                                pass
+    except Exception:
+        pass
+
+    # 2. Online search
+    if not results:
+        host = target.strip()
+        if len(host) > 2 and host[-2] == " " and host[-1].lower() in "bcdefgh":
+            host = host[:-2].strip()
         clean_target = host.replace("TOI", "").replace("toi", "").replace("-", "").replace(" ", "").lstrip("0").split(".")[0].strip()
         q = f"SELECT toidisplay, pl_tranmid, pl_orbper FROM toi WHERE toidisplay LIKE {_adql_literal(host + '%')}"
         url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         try:
-            with urllib.request.urlopen(req, timeout=4) as response:
+            with urllib.request.urlopen(req, timeout=1.0) as response:
                 data = json.loads(response.read().decode())
                 for row in data:
                     toidisplay = row.get("toidisplay", "")
@@ -1113,10 +1195,61 @@ def _query_target_planets_catalog(target: str) -> dict:
         except Exception:
             pass
 
+    _CATALOG_CACHE[cache_key] = results
+    return results
+
+
+# Helper to query all planet ephemerides for a target from catalogs
+def _query_target_planets_catalog(target: str) -> dict:
+    target_clean = target.strip().upper()
+    if target_clean in _CATALOG_CACHE:
+        return _CATALOG_CACHE[target_clean]
+        
+    results = dict(_query_target_planets_nasa(target))
+    if not results:
+        results = dict(_query_target_planets_toi(target))
+        
+    # Check local muscatdb_targets_old.csv if still empty and file exists
+    if not results:
+        target_norm = _normalize_target_name(target)
+        try:
+            csv_path = pathlib.Path(HERE).parent.parent / "data" / "muscatdb_targets_old.csv"
+            if csv_path.exists():
+                with open(csv_path, errors="replace") as f:
+                    reader = csv.DictReader(f, delimiter=";")
+                    for row in reader:
+                        name_val = (row.get("name") or "").strip()
+                        if name_val and _normalize_target_name(name_val) == target_norm:
+                            # Parse planet period
+                            period_val = 1.0
+                            if row.get("period"):
+                                try: period_val = float(row["period"])
+                                except ValueError: pass
+                            elif row.get("period_sg1"):
+                                try: period_val = float(row["period_sg1"])
+                                except ValueError: pass
+                            
+                            t0_val = 2450000.0
+                            if row.get("t0"):
+                                try: t0_val = float(row["t0"])
+                                except ValueError: pass
+                            elif row.get("t0_sg1"):
+                                try: t0_val = float(row["t0_sg1"])
+                                except ValueError: pass
+                            
+                            results["b"] = {
+                                "t0": t0_val,
+                                "period": period_val
+                            }
+                            break
+        except Exception:
+            pass
+
     # Final fallback if absolutely nothing was found
     if not results:
         results["b"] = {"t0": 2450000.0, "period": 1.0}
         
+    _CATALOG_CACHE[target_clean] = results
     return results
 
 
@@ -1183,13 +1316,14 @@ def _get_run_transit_centers(inst: str, date: str, target: str, run_id: str | No
 
 @app.get("/api/ephemeris/targets", response_class=JSONResponse)
 def api_ephemeris_targets():
-    fit.sync_jobs()
-    all_jobs = get_persisted_jobs()
-    existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
-    orphan_fits = fit._discover_orphan_fits(existing_keys)
-    all_jobs.extend(orphan_fits)
-    completed = [j for j in all_jobs if j["type"] == "transit_fit" and j["state"] == "done"]
-    targets = sorted(list(set(j["target"] for j in completed)))
+    with _DB_LOCK:
+        fit.sync_jobs()
+        all_jobs = get_persisted_jobs()
+        existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
+        orphan_fits = fit._discover_orphan_fits(existing_keys)
+        all_jobs.extend(orphan_fits)
+        completed = [j for j in all_jobs if j["type"] == "transit_fit" and j["state"] == "done"]
+        targets = sorted(list(set(j["target"] for j in completed)))
     return JSONResponse({"ok": True, "targets": targets})
 
 
@@ -1199,16 +1333,19 @@ def api_ephemeris_target_info(target: str):
     if not target:
         return JSONResponse({"ok": False, "error": "Target is required"}, status_code=400)
     
-    fit.sync_jobs()
-    all_jobs = get_persisted_jobs()
-    existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
-    orphan_fits = fit._discover_orphan_fits(existing_keys)
-    all_jobs.extend(orphan_fits)
-    
-    norm_t = _normalize_target_name(target)
-    completed = [j for j in all_jobs if j["type"] == "transit_fit" and j["state"] == "done" and _normalize_target_name(j["target"]) == norm_t]
+    with _DB_LOCK:
+        fit.sync_jobs()
+        all_jobs = get_persisted_jobs()
+        existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
+        orphan_fits = fit._discover_orphan_fits(existing_keys)
+        all_jobs.extend(orphan_fits)
+        
+        norm_t = _normalize_target_name(target)
+        completed = [j for j in all_jobs if j["type"] == "transit_fit" and j["state"] == "done" and _normalize_target_name(j["target"]) == norm_t]
     
     # 1. Query all planets from catalog
+    nasa_ephem = _query_target_planets_nasa(target)
+    toi_ephem = _query_target_planets_toi(target)
     ref_ephem = _query_target_planets_catalog(target)
     
     # 2. Get datasets and unique planets in them
@@ -1221,10 +1358,23 @@ def api_ephemeris_target_info(target: str):
         date = j["obsdate"]
         run_id = j.get("run_id") or ""
         
-        # Discover planets fitted
+        # Discover planets fitted and their periods/t0 in dataset
         planets_fitted = "b"
+        planets_ephem = {}
         try:
             rdir = fit.fit_output_dir(inst, date, j["target"], run_id or None)
+            sys_yaml = rdir / "sys.yaml"
+            if sys_yaml.is_file():
+                with open(sys_yaml) as f:
+                    sys_cfg = yaml.safe_load(f) or {}
+                    planets_data = sys_cfg.get("planets", {})
+                    for pl, pl_params in planets_data.items():
+                        t0_val = pl_params.get("t0", [2450000.0, 0.0])[0]
+                        period_val = pl_params.get("period", [1.0, 0.0])[0]
+                        planets_ephem[pl] = {
+                            "t0": float(t0_val),
+                            "period": float(period_val)
+                        }
             fit_yaml = rdir / "fit.yaml"
             if fit_yaml.is_file():
                 with open(fit_yaml) as f:
@@ -1235,22 +1385,34 @@ def api_ephemeris_target_info(target: str):
         
         for pl in planets_fitted:
             seen_planets.add(pl)
+            if pl not in planets_ephem:
+                planets_ephem[pl] = {"t0": 2450000.0, "period": 1.0}
             
         tcs = _get_run_transit_centers(inst, date, j["target"], run_id)
+        # Override planets_ephem t0 with fitted tc if available
+        for pl in planets_fitted:
+            if pl in tcs and tcs[pl].get("tc") is not None:
+                planets_ephem[pl]["t0"] = float(tcs[pl]["tc"])
         
         datasets_list.append({
             "instrument": inst,
             "date": date,
             "run_id": run_id,
             "run_name": j.get("run_name") or (run_id if run_id else "legacy"),
+            "target": j["target"],
             "planets_fitted": planets_fitted,
-            "fitted_tcs": tcs
+            "fitted_tcs": tcs,
+            "planets_ephem": planets_ephem
         })
         
-    # Ensure all seen planets are initialized in ref_ephem
+    # Ensure all seen planets are initialized in all ephemerides
     for pl in seen_planets:
         if pl not in ref_ephem:
             ref_ephem[pl] = {"t0": 2450000.0, "period": 1.0}
+        if pl not in nasa_ephem:
+            nasa_ephem[pl] = {"t0": 2450000.0, "period": 1.0}
+        if pl not in toi_ephem:
+            toi_ephem[pl] = {"t0": 2450000.0, "period": 1.0}
             
     planets_sorted = sorted(list(seen_planets))
     
@@ -1259,34 +1421,54 @@ def api_ephemeris_target_info(target: str):
         "target": target,
         "planets": planets_sorted,
         "reference_ephemeris": ref_ephem,
+        "nasa_ephemeris": nasa_ephem,
+        "toi_ephemeris": toi_ephem,
         "datasets": datasets_list
     })
 
 
 @app.post("/api/ephemeris/calculate", response_class=JSONResponse)
 def api_ephemeris_calculate(payload: dict = Body(...)):
-    target = (payload.get("target") or "").strip()
+    target_param = payload.get("target")
+    if isinstance(target_param, list):
+        targets = [str(t).strip() for t in target_param if t]
+    elif isinstance(target_param, str):
+        targets = [target_param.strip()]
+    else:
+        targets = []
+        
+    targets = [t for t in targets if t]
+    if not targets:
+        return JSONResponse({"ok": False, "error": "Target is required"}, status_code=400)
+        
     planets_ephem = payload.get("planets_ephem") or {}
     req_datasets = payload.get("datasets") or []
     
-    if not target:
-        return JSONResponse({"ok": False, "error": "Target is required"}, status_code=400)
-        
-    # Build checked lookup: (inst, date, run_id) -> checked_bool
+    # Build checked lookup: (target_normalized, inst, date, run_id) -> checked_bool
     checked_lookup = {}
     for d in req_datasets:
-        key = (d.get("instrument"), d.get("date"), d.get("run_id") or "")
+        tgt = d.get("target")
+        norm_t = _normalize_target_name(tgt) if tgt else None
+        key = (norm_t, d.get("instrument"), d.get("date"), d.get("run_id") or "")
         checked_lookup[key] = bool(d.get("checked"))
         
-    # Get all completed runs for this target
-    fit.sync_jobs()
-    all_jobs = get_persisted_jobs()
-    existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
-    orphan_fits = fit._discover_orphan_fits(existing_keys)
-    all_jobs.extend(orphan_fits)
-    
-    norm_t = _normalize_target_name(target)
-    completed = [j for j in all_jobs if j["type"] == "transit_fit" and j["state"] == "done" and _normalize_target_name(j["target"]) == norm_t]
+    # Get all completed runs for all requested targets
+    with _DB_LOCK:
+        fit.sync_jobs()
+        all_jobs = get_persisted_jobs()
+        existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
+        orphan_fits = fit._discover_orphan_fits(existing_keys)
+        all_jobs.extend(orphan_fits)
+        
+        completed = []
+        seen_keys = set()
+        for target in targets:
+            norm_t = _normalize_target_name(target)
+            for j in all_jobs:
+                if j["type"] == "transit_fit" and j["state"] == "done" and _normalize_target_name(j["target"]) == norm_t:
+                    if j["key"] not in seen_keys:
+                        seen_keys.add(j["key"])
+                        completed.append(j)
     
     # Map run parameters
     results = {}
@@ -1308,8 +1490,19 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
                 val = tcs[pl]["tc"]
                 unc = tcs[pl]["unc"]
                 
-                # Check status
-                is_checked = checked_lookup.get((inst, date, run_id), True)
+                # Check status: target-specific lookup first, fallback to targetless
+                norm_tgt = _normalize_target_name(j["target"])
+                is_checked = checked_lookup.get((norm_tgt, inst, date, run_id))
+                if is_checked is None:
+                    is_checked = checked_lookup.get((None, inst, date, run_id))
+                if is_checked is None:
+                    for (k_tgt, k_inst, k_date, k_run_id), val_cb in checked_lookup.items():
+                        if k_inst == inst and k_date == date and k_run_id == run_id:
+                            is_checked = val_cb
+                            break
+                if is_checked is None:
+                    is_checked = True
+                    
                 epoch = int(round((val - T0) / P))
                 
                 points.append({
@@ -1317,6 +1510,7 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
                     "date": date,
                     "run_id": run_id,
                     "run_name": j.get("run_name") or (run_id if run_id else "legacy"),
+                    "target": j["target"],
                     "epoch": epoch,
                     "tc": val,
                     "unc": unc,
@@ -1331,22 +1525,62 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
         t0_fit_unc = 0.0
         period_fit_unc = 0.0
         
+        # Center epoch
+        E_center = 0
+        t0_centered = T0
+        t0_centered_unc = 0.0
+        fit_method = payload.get("fit_method", "unweighted")
+        
         if len(fit_points) >= 2:
+            epochs_checked = [p["epoch"] for p in fit_points]
+            E_min = min(epochs_checked)
+            E_max = max(epochs_checked)
+            E_center = E_min + int((E_max - E_min) // 2)
+            
             Sw = Swx = Swy = Swxx = Swxy = 0.0
             for p in fit_points:
-                w = 1.0 / (p["unc"] ** 2)
+                x = p["epoch"] - E_center
+                y = p["tc"]
+                if fit_method == "weighted":
+                    w = 1.0 / (p["unc"] ** 2)
+                else:
+                    w = 1.0
                 Sw += w
-                Swx += w * p["epoch"]
-                Swy += w * p["tc"]
-                Swxx += w * (p["epoch"] ** 2)
-                Swxy += w * p["epoch"] * p["tc"]
+                Swx += w * x
+                Swy += w * y
+                Swxx += w * (x ** 2)
+                Swxy += w * x * y
                 
             delta = Sw * Swxx - (Swx ** 2)
             if delta > 0.0:
-                t0_fit = (Swxx * Swy - Swx * Swxy) / delta
+                t0_centered = (Swxx * Swy - Swx * Swxy) / delta
                 period_fit = (Sw * Swxy - Swx * Swy) / delta
-                t0_fit_unc = (Swxx / delta) ** 0.5
-                period_fit_unc = (Sw / delta) ** 0.5
+                
+                # Calculate uncertainties
+                if fit_method == "weighted":
+                    t0_centered_unc = (Swxx / delta) ** 0.5
+                    period_fit_unc = (Sw / delta) ** 0.5
+                else:
+                    # Unweighted fit uncertainty needs residual variance estimation
+                    residuals_sum_sq = sum(
+                        (p["tc"] - (t0_centered + (p["epoch"] - E_center) * period_fit)) ** 2
+                        for p in fit_points
+                    )
+                    dof = len(fit_points) - 2
+                    sigma_sq = residuals_sum_sq / dof if dof > 0 else 0.0
+                    t0_centered_unc = (sigma_sq * Swxx / delta) ** 0.5
+                    period_fit_unc = (sigma_sq * Sw / delta) ** 0.5
+                
+                # Extrapolate back to the catalog epoch (E = 0)
+                t0_fit = t0_centered - E_center * period_fit
+                
+                # Extrapolated uncertainty: Var(t0_fit) = Var(t0_centered) + E_center^2 * Var(P) - 2 * E_center * Cov(t0_centered, P)
+                var_t0_factor = Swxx + (E_center ** 2) * Sw + 2.0 * E_center * Swx
+                if fit_method == "weighted":
+                    t0_fit_unc = (var_t0_factor / delta) ** 0.5
+                else:
+                    t0_fit_unc = (sigma_sq * var_t0_factor / delta) ** 0.5
+                    
                 was_fit = True
                 
         # Calculate O-C values
@@ -1362,6 +1596,7 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
                 "date": p["date"],
                 "run_id": p["run_id"],
                 "run_name": p["run_name"],
+                "target": p["target"],
                 "epoch": p["epoch"],
                 "bjd": p["tc"],
                 "oc_min": round(oc_min, 4),
@@ -1371,12 +1606,16 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
             
         results[pl] = {
             "was_fit": was_fit,
+            "fit_method": fit_method if was_fit else "none",
             "t0_ref": T0,
             "period_ref": P,
             "t0_fit": round(t0_fit, 6),
             "t0_fit_unc": round(t0_fit_unc, 6),
             "period_fit": round(period_fit, 8),
             "period_fit_unc": round(period_fit_unc, 8),
+            "t0_fit_centered": round(t0_centered, 6) if was_fit else round(T0, 6),
+            "t0_fit_centered_unc": round(t0_centered_unc, 6) if was_fit else 0.0,
+            "E_center": E_center,
             "points": points_data
         }
         
