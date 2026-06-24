@@ -1402,7 +1402,8 @@ def api_ephemeris_target_info(target: str):
             "target": j["target"],
             "planets_fitted": planets_fitted,
             "fitted_tcs": tcs,
-            "planets_ephem": planets_ephem
+            "planets_ephem": planets_ephem,
+            "run_type": j.get("run_type") or ""
         })
         
     # Ensure all seen planets are initialized in all ephemerides

@@ -682,6 +682,7 @@ def _write_fit_inputs(
     mode: str = "",
     run_name: str = "",
     run_id: str = "",
+    run_type: str = "",
 ) -> None:
     """Copy light-curve CSVs into ``rdir`` and write fit.yaml / sys.yaml.
 
@@ -919,6 +920,7 @@ def _write_fit_inputs(
         "mode": mode or "",
         "run_name": run_name or "",
         "run_id": run_id or "",
+        "run_type": run_type or "",
     }
     with open(rdir / "meta.yaml", "w") as f:
         yaml.safe_dump(meta_data, f, default_flow_style=False, sort_keys=False)
@@ -1057,16 +1059,17 @@ def start_fit(
     # Full fits always clobber — otherwise timer reuses the cached test-run
     # trace (20 draws) and exits immediately, misleading the user into thinking
     # their full-fit request was silently ignored.
+    run_type = "test" if test_run else "full"
     if not test_run:
         options = {**options, "overwrite": "true"}
     _write_fit_inputs(rdir, inst, date, target, csvs, options,
-                      site=site, mode=mode, run_name=run_name, run_id=run_id)
+                      site=site, mode=mode, run_name=run_name, run_id=run_id,
+                      run_type=run_type)
 
     # Clear cached outputs so the next page load reads fresh results from disk.
     _fit_outputs_cache.clear()
 
     key = fit_job_key(inst, date, target, run_id)
-    run_type = "test" if test_run else "full"
     params_json = json.dumps(
         {"test_run": test_run, "options": options, "selected_csvs": selected_csvs,
          "run_id": run_id, "site": site, "mode": mode, "run_name": run_name},
@@ -1643,6 +1646,33 @@ def list_fit_runs(inst: str, date: str, target: str) -> list[RunDescriptor]:
     return runs
 
 
+def _detect_run_type(rdir: pathlib.Path) -> str:
+    # 1. Try reading meta.yaml
+    try:
+        with open(rdir / "meta.yaml") as f:
+            meta = yaml.safe_load(f) or {}
+            if "run_type" in meta and meta["run_type"]:
+                return str(meta["run_type"])
+    except Exception:
+        pass
+
+    # 2. Try reading timer-fit.log to see if "--test_run" was used
+    try:
+        log_file = rdir / "timer-fit.log"
+        if log_file.is_file():
+            with open(log_file) as lf:
+                for _ in range(30):
+                    line = lf.readline()
+                    if not line:
+                        break
+                    if line.startswith("$ ") and "--test_run" in line:
+                        return "test"
+    except Exception:
+        pass
+
+    return "full"
+
+
 def _discover_orphan_fits(existing: set[str]) -> list[dict]:
     """Scan disk for completed fits not yet in the jobs table.
 
@@ -1697,7 +1727,7 @@ def _discover_orphan_fits(existing: set[str]) -> list[dict]:
                         "elapsed": 0,
                         "started_at": out_dir.stat().st_mtime,
                         "error_desc": None,
-                        "run_type": "",
+                        "run_type": _detect_run_type(rdir),
                         "run_id": run_id,
                         "run_name": str(meta.get("run_name") or ""),
                         "inst": inst,
@@ -1821,7 +1851,8 @@ def sync_jobs() -> None:
                 if not test_run:
                     opts = {**opts, "overwrite": "true"}
                 _write_fit_inputs(rdir, inst, date, target, csvs, opts,
-                                  site=site, mode=mode, run_name=run_name, run_id=run_id)
+                                  site=site, mode=mode, run_name=run_name, run_id=run_id,
+                                  run_type=run_type)
                 _fit_outputs_cache.clear()
                 cmd = [*_timer_prefix(), "-v", str(rdir)]
                 if test_run:
