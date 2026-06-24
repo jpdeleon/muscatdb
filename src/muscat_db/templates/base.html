@@ -85,6 +85,7 @@
       status.classList.add('visible');
     }
     window.showLoading = showLoading;
+    window.done = done;
 
     if (document.readyState === 'complete') {
       done();
@@ -226,6 +227,7 @@
     function initAll() {
       document.querySelectorAll('table').forEach(initTable);
     }
+    window.initTable = initTable;
 
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', initAll);

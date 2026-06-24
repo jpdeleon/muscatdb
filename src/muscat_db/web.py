@@ -1036,6 +1036,353 @@ def ephemeris_page():
     return _render("ephemeris.html")
 
 
+# Helper to normalize target names for comparison
+def _normalize_target_name(t: str) -> str:
+    s = t.strip().upper().replace(" ", "").replace("-", "").replace("_", "")
+    s = re.sub(r"\.\d+$", "", s)
+    if len(s) > 2 and s[-1] in "BCDEFGH":
+        return s[:-1]
+    return s
+
+
+# Helper to query all planet ephemerides for a target from catalogs
+def _query_target_planets_catalog(target: str) -> dict:
+    import urllib.request
+    import urllib.parse
+    import json
+    
+    results = {}
+    # 1. Local fallback from muscatdb_targets_old.csv
+    try:
+        local_params = fit.get_target_parameters(target)
+        if local_params and local_params.get("period"):
+            results["b"] = {
+                "t0": float(local_params.get("t0", 2450000.0)),
+                "period": float(local_params.get("period", 1.0))
+            }
+    except Exception:
+        pass
+
+    # Clean target to find host name. E.g. "TOI 4600 b" -> "TOI 4600"
+    host = target.strip()
+    if len(host) > 2 and host[-2] == " " and host[-1].lower() in "bcdefgh":
+        host = host[:-2].strip()
+
+    # 2. Try querying NASA Exoplanet Archive for host planets
+    cols = ["pl_name", "pl_tranmid", "pl_orbper"]
+    col_str = ", ".join(cols)
+    q = f"SELECT {col_str} FROM pscomppars WHERE hostname = {_adql_literal(host)} OR hostname LIKE {_adql_literal(host + '%')}"
+    url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    try:
+        with urllib.request.urlopen(req, timeout=4) as response:
+            data = json.loads(response.read().decode())
+            for row in data:
+                pl_name = row.get("pl_name", "")
+                if pl_name and len(pl_name) > 2 and pl_name[-2] == " ":
+                    letter = pl_name[-1].lower()
+                    t0 = row.get("pl_tranmid")
+                    per = row.get("pl_orbper")
+                    if letter and t0 is not None and per is not None:
+                        results[letter] = {"t0": float(t0), "period": float(per)}
+    except Exception:
+        pass
+
+    # 3. Try TOI catalog if empty
+    if not results:
+        clean_target = host.replace("TOI", "").replace("toi", "").replace("-", "").replace(" ", "").lstrip("0").split(".")[0].strip()
+        q = f"SELECT toidisplay, pl_tranmid, pl_orbper FROM toi WHERE toidisplay LIKE {_adql_literal(host + '%')}"
+        url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        try:
+            with urllib.request.urlopen(req, timeout=4) as response:
+                data = json.loads(response.read().decode())
+                for row in data:
+                    toidisplay = row.get("toidisplay", "")
+                    t0 = row.get("pl_tranmid")
+                    per = row.get("pl_orbper")
+                    if toidisplay and t0 is not None and per is not None:
+                        parts = toidisplay.split(".")
+                        if len(parts) == 2:
+                            try:
+                                candidate_num = int(parts[1])
+                                letter = chr(ord('b') + candidate_num - 1)
+                                results[letter] = {"t0": float(t0), "period": float(per)}
+                            except Exception:
+                                pass
+        except Exception:
+            pass
+
+    # Final fallback if absolutely nothing was found
+    if not results:
+        results["b"] = {"t0": 2450000.0, "period": 1.0}
+        
+    return results
+
+
+# Helper to fetch fitted transit centers for a run
+def _get_run_transit_centers(inst: str, date: str, target: str, run_id: str | None) -> dict:
+    import yaml
+    fitted_tcs = {}
+    try:
+        rdir = fit.fit_output_dir(inst, date, target, run_id or None)
+        tc_txt = rdir / "out" / "tc.txt"
+        if tc_txt.is_file():
+            with open(tc_txt) as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 3:
+                        pl = parts[0]
+                        kepler_val = float(parts[1])
+                        unc = float(parts[2])
+                        bjd_val = kepler_val + 2454833.0
+                        fitted_tcs[pl] = {"tc": bjd_val, "unc": unc}
+        else:
+            summary_csv = rdir / "out" / "summary.csv"
+            if summary_csv.is_file():
+                fit_yaml = rdir / "fit.yaml"
+                planets_fitted = "b"
+                if fit_yaml.is_file():
+                    with open(fit_yaml) as f:
+                        cfg = yaml.safe_load(f) or {}
+                        planets_fitted = str(cfg.get("planets", "b"))
+                
+                ref_time = None
+                log_file = rdir / "timer-fit.log"
+                if log_file.is_file():
+                    with open(log_file) as lf:
+                        for line in lf:
+                            if "ref. time:" in line:
+                                ref_time = int(line.split("ref. time:")[-1].strip())
+                                break
+                
+                if ref_time is not None:
+                    import csv
+                    with open(summary_csv) as f:
+                        reader = csv.reader(f)
+                        headers = next(reader)
+                        headers[0] = "parameter"
+                        for row in reader:
+                            if row:
+                                row_dict = dict(zip(headers, row))
+                                param = row_dict["parameter"]
+                                if param.startswith("t0[") and param.endswith("]"):
+                                    try:
+                                        idx = int(param[3:-1])
+                                        if idx < len(planets_fitted):
+                                            pl = planets_fitted[idx]
+                                            val = float(row_dict["mean"]) + ref_time
+                                            unc = float(row_dict["sd"])
+                                            fitted_tcs[pl] = {"tc": val, "unc": unc}
+                                    except Exception:
+                                        pass
+    except Exception:
+        pass
+    return fitted_tcs
+
+
+@app.get("/api/ephemeris/targets", response_class=JSONResponse)
+def api_ephemeris_targets():
+    fit.sync_jobs()
+    all_jobs = get_persisted_jobs()
+    existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
+    orphan_fits = fit._discover_orphan_fits(existing_keys)
+    all_jobs.extend(orphan_fits)
+    completed = [j for j in all_jobs if j["type"] == "transit_fit" and j["state"] == "done"]
+    targets = sorted(list(set(j["target"] for j in completed)))
+    return JSONResponse({"ok": True, "targets": targets})
+
+
+@app.get("/api/ephemeris/target-info", response_class=JSONResponse)
+def api_ephemeris_target_info(target: str):
+    target = (target or "").strip()
+    if not target:
+        return JSONResponse({"ok": False, "error": "Target is required"}, status_code=400)
+    
+    fit.sync_jobs()
+    all_jobs = get_persisted_jobs()
+    existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
+    orphan_fits = fit._discover_orphan_fits(existing_keys)
+    all_jobs.extend(orphan_fits)
+    
+    norm_t = _normalize_target_name(target)
+    completed = [j for j in all_jobs if j["type"] == "transit_fit" and j["state"] == "done" and _normalize_target_name(j["target"]) == norm_t]
+    
+    # 1. Query all planets from catalog
+    ref_ephem = _query_target_planets_catalog(target)
+    
+    # 2. Get datasets and unique planets in them
+    datasets_list = []
+    seen_planets = set(ref_ephem.keys())
+    
+    import yaml
+    for j in completed:
+        inst = j["instrument"]
+        date = j["obsdate"]
+        run_id = j.get("run_id") or ""
+        
+        # Discover planets fitted
+        planets_fitted = "b"
+        try:
+            rdir = fit.fit_output_dir(inst, date, j["target"], run_id or None)
+            fit_yaml = rdir / "fit.yaml"
+            if fit_yaml.is_file():
+                with open(fit_yaml) as f:
+                    cfg = yaml.safe_load(f) or {}
+                    planets_fitted = str(cfg.get("planets", "b"))
+        except Exception:
+            pass
+        
+        for pl in planets_fitted:
+            seen_planets.add(pl)
+            
+        tcs = _get_run_transit_centers(inst, date, j["target"], run_id)
+        
+        datasets_list.append({
+            "instrument": inst,
+            "date": date,
+            "run_id": run_id,
+            "run_name": j.get("run_name") or (run_id if run_id else "legacy"),
+            "planets_fitted": planets_fitted,
+            "fitted_tcs": tcs
+        })
+        
+    # Ensure all seen planets are initialized in ref_ephem
+    for pl in seen_planets:
+        if pl not in ref_ephem:
+            ref_ephem[pl] = {"t0": 2450000.0, "period": 1.0}
+            
+    planets_sorted = sorted(list(seen_planets))
+    
+    return JSONResponse({
+        "ok": True,
+        "target": target,
+        "planets": planets_sorted,
+        "reference_ephemeris": ref_ephem,
+        "datasets": datasets_list
+    })
+
+
+@app.post("/api/ephemeris/calculate", response_class=JSONResponse)
+def api_ephemeris_calculate(payload: dict = Body(...)):
+    target = (payload.get("target") or "").strip()
+    planets_ephem = payload.get("planets_ephem") or {}
+    req_datasets = payload.get("datasets") or []
+    
+    if not target:
+        return JSONResponse({"ok": False, "error": "Target is required"}, status_code=400)
+        
+    # Build checked lookup: (inst, date, run_id) -> checked_bool
+    checked_lookup = {}
+    for d in req_datasets:
+        key = (d.get("instrument"), d.get("date"), d.get("run_id") or "")
+        checked_lookup[key] = bool(d.get("checked"))
+        
+    # Get all completed runs for this target
+    fit.sync_jobs()
+    all_jobs = get_persisted_jobs()
+    existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
+    orphan_fits = fit._discover_orphan_fits(existing_keys)
+    all_jobs.extend(orphan_fits)
+    
+    norm_t = _normalize_target_name(target)
+    completed = [j for j in all_jobs if j["type"] == "transit_fit" and j["state"] == "done" and _normalize_target_name(j["target"]) == norm_t]
+    
+    # Map run parameters
+    results = {}
+    
+    for pl, ephem in planets_ephem.items():
+        T0 = float(ephem.get("t0", 2450000.0))
+        P = float(ephem.get("period", 1.0))
+        
+        # Collect data points for this planet
+        points = []
+        for j in completed:
+            inst = j["instrument"]
+            date = j["obsdate"]
+            run_id = j.get("run_id") or ""
+            
+            # Fetch transit centers
+            tcs = _get_run_transit_centers(inst, date, j["target"], run_id)
+            if pl in tcs:
+                val = tcs[pl]["tc"]
+                unc = tcs[pl]["unc"]
+                
+                # Check status
+                is_checked = checked_lookup.get((inst, date, run_id), True)
+                epoch = int(round((val - T0) / P))
+                
+                points.append({
+                    "instrument": inst,
+                    "date": date,
+                    "run_id": run_id,
+                    "run_name": j.get("run_name") or (run_id if run_id else "legacy"),
+                    "epoch": epoch,
+                    "tc": val,
+                    "unc": unc,
+                    "checked": is_checked
+                })
+                
+        # Perform straight line fit if possible
+        fit_points = [p for p in points if p["checked"] and p["unc"] > 0]
+        was_fit = False
+        t0_fit = T0
+        period_fit = P
+        t0_fit_unc = 0.0
+        period_fit_unc = 0.0
+        
+        if len(fit_points) >= 2:
+            Sw = Swx = Swy = Swxx = Swxy = 0.0
+            for p in fit_points:
+                w = 1.0 / (p["unc"] ** 2)
+                Sw += w
+                Swx += w * p["epoch"]
+                Swy += w * p["tc"]
+                Swxx += w * (p["epoch"] ** 2)
+                Swxy += w * p["epoch"] * p["tc"]
+                
+            delta = Sw * Swxx - (Swx ** 2)
+            if delta > 0.0:
+                t0_fit = (Swxx * Swy - Swx * Swxy) / delta
+                period_fit = (Sw * Swxy - Swx * Swy) / delta
+                t0_fit_unc = (Swxx / delta) ** 0.5
+                period_fit_unc = (Sw / delta) ** 0.5
+                was_fit = True
+                
+        # Calculate O-C values
+        points_data = []
+        for p in points:
+            t_calc = t0_fit + p["epoch"] * period_fit
+            oc_days = p["tc"] - t_calc
+            oc_min = oc_days * 1440.0
+            oc_err_min = p["unc"] * 1440.0
+            
+            points_data.append({
+                "instrument": p["instrument"],
+                "date": p["date"],
+                "run_id": p["run_id"],
+                "run_name": p["run_name"],
+                "epoch": p["epoch"],
+                "bjd": p["tc"],
+                "oc_min": round(oc_min, 4),
+                "oc_err_min": round(oc_err_min, 4),
+                "checked": p["checked"]
+            })
+            
+        results[pl] = {
+            "was_fit": was_fit,
+            "t0_ref": T0,
+            "period_ref": P,
+            "t0_fit": round(t0_fit, 6),
+            "t0_fit_unc": round(t0_fit_unc, 6),
+            "period_fit": round(period_fit, 8),
+            "period_fit_unc": round(period_fit_unc, 8),
+            "points": points_data
+        }
+        
+    return JSONResponse({"ok": True, "results": results})
+
+
 @app.get("/jobs", response_class=HTMLResponse)
 def jobs_page():
     phot.sync_jobs()

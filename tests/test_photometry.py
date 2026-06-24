@@ -1361,7 +1361,54 @@ class TestRoutes:
         r = client.get("/ephemeris")
         assert r.status_code == 200
         assert "Ephemeris" in r.text
-        assert "under construction" in r.text.lower()
+        assert "transit timing variation" in r.text.lower()
+
+    def test_api_ephemeris_targets(self, client):
+        r = client.get("/api/ephemeris/targets")
+        assert r.status_code == 200
+        res = r.json()
+        assert res["ok"] is True
+        assert isinstance(res["targets"], list)
+
+    def test_api_ephemeris_target_info(self, client):
+        r = client.get("/api/ephemeris/target-info")
+        assert r.status_code == 422
+        
+        r2 = client.get("/api/ephemeris/target-info?target=test_star")
+        assert r2.status_code == 200
+        res = r2.json()
+        assert res["ok"] is True
+        assert "planets" in res
+        assert "reference_ephemeris" in res
+        assert "datasets" in res
+
+    def test_api_ephemeris_calculate(self, client):
+        r = client.post("/api/ephemeris/calculate", json={})
+        assert r.status_code == 400
+        
+        payload = {
+            "target": "test_star",
+            "planets_ephem": {
+                "b": {"t0": 2459000.1, "period": 3.5}
+            },
+            "datasets": []
+        }
+        r2 = client.post("/api/ephemeris/calculate", json=payload)
+        assert r2.status_code == 200
+        res = r2.json()
+        assert res["ok"] is True
+        assert "results" in res
+        assert "b" in res["results"]
+        assert res["results"]["b"]["was_fit"] is False
+
+    def test_target_name_normalization(self):
+        from muscat_db.web import _normalize_target_name
+        assert _normalize_target_name("V1298Tau") == "V1298TAU"
+        assert _normalize_target_name("V1298Tau_b") == "V1298TAU"
+        assert _normalize_target_name("V1298Tauc") == "V1298TAU"
+        assert _normalize_target_name("TOI02016.03") == "TOI02016"
+        assert _normalize_target_name("TOI-4600") == "TOI4600"
+        assert _normalize_target_name("HIP 67522") == "HIP67522"
 
 
 class TestTransitFitJobs:

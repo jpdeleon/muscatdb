@@ -199,6 +199,20 @@ class TestTransitFitJobStatus:
         status = fit.job_status(inst, date, target, run_id)
         assert status["state"] == "pending"
         assert status["log"] == ""
+
+        # 2.5. Queue a job in the database with status "running".
+        # It should now return "running" instead of reading the finished disk log as completed.
+        save_job(
+            type_="transit_fit",
+            inst=inst, date=date, target=target, run_id=run_id,
+            state="running",
+            returncode=None, elapsed=5,
+            started_at=time.time() - 5,
+            run_type="full"
+        )
+        status = fit.job_status(inst, date, target, run_id)
+        assert status["state"] == "running"
+        assert "prior run completed" in status["log"]
         
         # 3. Simulate a terminal state in the database like "cancelled".
         # It should return "cancelled" and read the log from disk.
