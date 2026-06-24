@@ -1189,6 +1189,80 @@ def _kill_after(proc: subprocess.Popen, grace: float = 6.0) -> None:
         except OSError: pass
 
 
+def delete_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
+    """Delete the selected run's fit results for (inst, date, target) from disk and DB.
+
+    When *run_id* is empty (legacy single-dir run), removes the run's output
+    files from the base target directory without touching named-run
+    subdirectories. When *run_id* names a specific run, removes that
+    subdirectory entirely. Only the matching DB job record and in-memory
+    entry are cleared; other runs for the same target are preserved.
+    """
+    try:
+        if run_id:
+            rdir = fit_output_dir(inst, date, target, run_id)
+        else:
+            rdir = fit_output_dir(inst, date, target)
+    except ValueError:
+        return {"ok": False, "error": "invalid target"}
+
+    removed = 0
+    if run_id:
+        # Named run subdirectory — remove the whole thing.
+        if rdir.is_dir():
+            try:
+                shutil.rmtree(rdir)
+                removed += 1
+            except OSError:
+                pass
+    else:
+        # Legacy single-dir run — remove output files from the base target
+        # directory without removing the directory itself or named-run
+        # subdirectories beneath it.
+        if rdir.is_dir():
+            legacy_targets = [
+                rdir / "out",
+                rdir / "timer-fit.log",
+                rdir / "fit.yaml",
+                rdir / "sys.yaml",
+                rdir / "meta.yaml",
+            ]
+            for p in legacy_targets:
+                try:
+                    if p.is_dir():
+                        shutil.rmtree(p)
+                        removed += 1
+                    elif p.is_file():
+                        p.unlink()
+                        removed += 1
+                except OSError:
+                    pass
+
+    from muscat_db.database import db_path, clear_all_caches
+    import sqlite3
+    try:
+        conn = sqlite3.connect(db_path())
+        db_key = f"transit_fit:{inst}/{date}/{_target_dir_name(target)}"
+        if run_id:
+            db_key = f"{db_key}/{_run_dir_name(run_id)}"
+        conn.execute("DELETE FROM jobs WHERE key = ?", (db_key,))
+        conn.commit()
+        conn.close()
+        clear_all_caches()
+    except Exception:
+        pass
+
+    job_key = f"{inst}/{date}/{_target_dir_name(target)}"
+    if run_id:
+        job_key = f"{job_key}/{_run_dir_name(run_id)}"
+    with _FIT_LOCK:
+        _FIT_JOBS.pop(job_key, None)
+
+    _fit_outputs_cache.clear()
+
+    return {"ok": True, "count": removed}
+
+
 def cancel_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
     """Terminate the running or pending fitting process."""
     try:

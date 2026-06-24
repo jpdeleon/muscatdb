@@ -290,9 +290,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         date_set.update(phot.output_dates(inst))
         dates = sorted(date_set, reverse=True)
     if inst and date:
-        obj_set = set(_get_objects(db, inst, date))
-        obj_set.update(phot.discovered_targets(inst, date))
-        targets = sorted(obj_set)
+        targets = sorted(_get_objects(db, inst, date))
     obs_type = ""
     is_narrowband = False
     available_bands: list[str] = []
@@ -681,6 +679,22 @@ def transit_fit_cancel(payload: dict = Body(...)):
     result = fit.cancel_fit(inst, date, target, run_id=run_id)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
+    return JSONResponse(result)
+
+
+@app.post("/transit-fit/delete")
+def transit_fit_delete(payload: dict = Body(...)):
+    inst = (payload.get("inst") or "").strip()
+    date = (payload.get("date") or "").strip()
+    target = (payload.get("target") or "").strip()
+    run_id = (payload.get("run_id") or "").strip()
+    if inst not in INSTRUMENTS:
+        return JSONResponse({"ok": False, "error": "unknown instrument"}, status_code=400)
+    if not phot.valid_date(date):
+        return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
+    if not (target or "").strip():
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    result = fit.delete_fit(inst, date, target, run_id=run_id)
     return JSONResponse(result)
 
 

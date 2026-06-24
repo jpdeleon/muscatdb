@@ -516,6 +516,22 @@ graph TD
 
         <div class="faq-item">
           <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How are comparison stars determined and how is it related to max_num_stars?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The comparison stars used to compute the differential lightcurve of the target are determined as follows:</p>
+            <ul>
+              <li><strong>max_num_stars Relation</strong> — During source detection, the pipeline is configured to detect and track exactly up to <code>max_num_stars</code> (default 10) of the brightest point sources across all frames. All comparison star candidates are chosen from this subset of tracked stars.</li>
+              <li><strong>Manual Selection</strong> — If explicit comparison star indices (<code>--cID</code>) are provided by the user, the pipeline validates that they are in-range and do not belong to the avoided/excluded list before using them directly.</li>
+              <li><strong>Automatic Selection (Broeg et al. 2005)</strong> — If no explicit IDs are provided, the pipeline executes the <code>autodiff()</code> algorithm. This algorithm dynamically determines and weights comparison stars from the candidate pool (excluding the target and any avoided stars) to minimize the scatter in the target's differential lightcurve.</li>
+              <li><strong>Avoided Stars</strong> — Stars can be manually excluded via <code>--avoid_cids</code>. Additionally, the pipeline automatically detects stars near the CCD edge (<code>edge_cids</code>) and adds them to the avoid pool to prevent edge-effect systematics from contaminating the comparison pool.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
             <span>What is the difference between a test run and a full run?</span>
             <span class="faq-icon">+</span>
           </div>
