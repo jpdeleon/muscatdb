@@ -358,11 +358,11 @@
             <label for="opt-overwrite">Overwrite <span class="help-tooltip" title="Re-run the fit from scratch, ignoring any saved results (sets clobber: true in fit.yaml). Unchecked reuses saved outputs.">?</span></label>
           </div>
           <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-plot_midtransit">
+            <input type="checkbox" id="opt-plot_midtransit" checked>
             <label for="opt-plot_midtransit">Plot midtransit <span class="help-tooltip" title="Plot a solid vertical line at the nearest midtransit time on data.png.">?</span></label>
           </div>
           <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-plot_ingress_egress">
+            <input type="checkbox" id="opt-plot_ingress_egress" checked>
             <label for="opt-plot_ingress_egress">Plot ing/egr <span class="help-tooltip" title="Plot dashed vertical lines at ingress and egress times on data.png.">?</span></label>
           </div>
         </div>
@@ -608,7 +608,7 @@
   // run_id of the run being viewed / launched; set from the /run response so
   // polling, the live-log key, and cancellation all target the right run.
   var runId  = {{ sel_run|tojson }};
-  function logKey() { return logKey() + (runId ? ':' + runId : ''); }
+  function logKey() { return 'fit:log' + (runId ? ':' + runId : ''); }
 
   var SEL_KEY = 'fit:last';
   var OPT_KEY = 'fit:options:' + inst + ':' + date + ':' + target;
@@ -1508,7 +1508,7 @@
       var checkDefaults = {'opt-include_mean':true,'opt-use_custom_optimizer':true,'opt-spline':false,
                            'opt-add_bias':false,'opt-quadratic':false,'opt-clip':false,'opt-chunk_offset':false,
                            'opt-use_gp':false,'opt-gp_per_dataset_log_amp':false,'opt-gp_per_dataset_log_scale':false,
-                           'opt-plot_midtransit':false,'opt-plot_ingress_egress':false};
+                           'opt-plot_midtransit':true,'opt-plot_ingress_egress':true};
       Object.keys(checkDefaults).forEach(function (id) { var el = document.getElementById(id); if (el) el.checked = checkDefaults[id]; });
       refreshGpPriorControls();
       updateDependentFields();
