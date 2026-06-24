@@ -7,6 +7,7 @@ per instrument/date under ``$MUSCAT_PROSE_DIR/<inst>/<date>/`` with filenames
 
     {target}_{inst}_{band}_{date}_ref.png        # per-band reference image
     {target}_{inst}_{band}_{date}_apertures.png  # per-band aperture overlay
+    {target}_{inst}_{band}_{date}_cutouts.png    # per-band star cutout montage
     {target}_{inst}_{band}_{date}_alignment.png  # per-band alignment diagnostic
     {target}_{inst}_{band}_{date}.gif            # per-band animation
     {target}_{inst}_{band}_{date}.csv            # per-band light curve
@@ -74,6 +75,7 @@ RUN_DEFAULTS: dict = {
     "aper_unit": "pix",        # pix | fwhm (only applies with aper_radii)
     "make_gif": True,
     "plot_gaia_sources": True,
+    "cmap": "gray",            # colormap for image-display plots (--cmap)
     "use_barycorrpy": False,
     "test_run_frames": 10,
     "min_star_separation": 10.0,
@@ -104,6 +106,15 @@ RUN_DEFAULTS: dict = {
 SINISTRO_SITES = ("lsc", "cpt", "coj", "tfn", "elp")
 SINISTRO_MODES = ("central_2k_2x2", "full_frame")
 
+# Colormaps offered for image-display plots (--cmap). run_photometry.py accepts
+# any matplotlib name, so this curated set is the GUI/validation allowlist and
+# must stay in sync with the <select> options in templates/photometry.html.
+CMAP_CHOICES = (
+    "gray", "gray_r",
+    "coolwarm", "RdBu", "RdGy", "PiYG", "PRGn", "BrBG", "PuOr",
+    "RdYlBu", "RdYlGn", "Spectral",
+)
+
 
 ALLOWED_EXTS = {".png", ".gif", ".csv", ".npz", ".log", ".txt"}
 _RUN_LOG_NAME = "_webrun.log"
@@ -126,6 +137,7 @@ _SUMMARY_SUFFIX = {
 _BAND_SUFFIX = {
     "_ref.png": "ref",
     "_apertures.png": "apertures",
+    "_cutouts.png": "cutouts",
     "_alignment.png": "alignment",
     ".gif": "gif",
     ".csv": "csv",
@@ -679,7 +691,7 @@ def normalize_run_options(raw: dict | None) -> dict:
     if "bands" in raw:  # present-but-empty must surface as an error, not default
         o["bands"] = [str(b).strip() for b in (bands or []) if str(b).strip()]
 
-    for key in ("ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "target_coord", "wcs_method", "calib_dir", "site", "mode"):
+    for key in ("ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "target_coord", "wcs_method", "calib_dir", "site", "mode", "cmap"):
         if raw.get(key) is not None:
             o[key] = str(raw[key]).strip()
 
@@ -730,6 +742,8 @@ def validate_run_options(o: dict) -> str | None:
         return "aperture unit must be 'pix' or 'fwhm'"
     if o.get("wcs_method") not in ("twirl", "astrometry.net"):
         return "WCS method must be 'twirl' or 'astrometry.net'"
+    if (o.get("cmap") or "Greys_r") not in CMAP_CHOICES:
+        return f"colormap must be one of {', '.join(CMAP_CHOICES)}"
     site = (o.get("site") or "").strip().lower()
     if site and site not in SINISTRO_SITES:
         return f"site must be one of {', '.join(SINISTRO_SITES)}"
@@ -832,6 +846,9 @@ def build_command(
         args.append("--gif")
     if o.get("plot_gaia_sources", True):
         args.append("--plot_gaia_sources")
+    cmap = (o.get("cmap") or "").strip()
+    if cmap and cmap != RUN_DEFAULTS["cmap"]:
+        args += ["--cmap", cmap]
     if o.get("use_barycorrpy"):
         args.append("--use_barycorrpy")
 
@@ -1062,17 +1079,55 @@ def _terminal_job_state(
 # style of _STALL_LIMIT_S / _MAX_RUNTIME_S.
 _FINALIZE_GRACE_S = int(os.environ.get("MUSCAT_PHOT_FINALIZE_GRACE_S", 8))
 
+# Once prose logs a terminal result line (SUCCEEDED / PARTIAL FAILURE / FAILED),
+# its main work is done and the only remaining writes are worker teardown, so a
+# much shorter quiescence window is enough to declare the job terminal. Before
+# that line appears we keep the conservative default above so the live log never
+# freezes mid-run. This lets a successful short run reload promptly instead of
+# always waiting out the full window.
+_FINALIZE_GRACE_TERMINAL_S = int(
+    os.environ.get("MUSCAT_PHOT_FINALIZE_GRACE_TERMINAL_S", 2)
+)
+
+# Result lines emitted by prose's run_photometry once a run is decided. Any of
+# these marks the end of the pipeline's own output (see run_photometry.py).
+_TERMINAL_LOG_MARKERS = (
+    "photometry SUCCEEDED",
+    "photometry PARTIAL FAILURE",
+    "photometry FAILED",
+)
+
+
+def _log_has_terminal_marker(path: Path | None) -> bool:
+    """True once prose has logged a final result line. After this, remaining log
+    writes are worker teardown, so the finalize window can be shortened."""
+    if path is None or not path.is_file():
+        return False
+    tail = _tail(path, n=1000)
+    return any(marker in tail for marker in _TERMINAL_LOG_MARKERS)
+
+
+def _finalize_grace_s(log_path_: Path | None) -> int:
+    """Effective finalize quiescence window for a log: the short terminal window
+    once a result line is logged, else the conservative default. The ``min``
+    guards against a default set below the terminal window — there is never a
+    reason to wait longer after the result line than before it."""
+    if _log_has_terminal_marker(log_path_):
+        return min(_FINALIZE_GRACE_TERMINAL_S, _FINALIZE_GRACE_S)
+    return _FINALIZE_GRACE_S
+
 
 def _log_quiescent(log_path_: Path, now: float) -> bool:
     """True when the log has not been written for at least the finalize grace
-    window. A missing/unreadable log means nothing more is coming, so it counts
-    as quiescent; each append by a still-running worker refreshes the mtime and
-    keeps the job finalizing."""
+    window. The window shrinks once prose logs a terminal result line (trailing
+    output by then is just worker teardown). A missing/unreadable log means
+    nothing more is coming, so it counts as quiescent; each append by a
+    still-running worker refreshes the mtime and keeps the job finalizing."""
     try:
         mtime = log_path_.stat().st_mtime
     except OSError:
         return True
-    return (now - mtime) >= _FINALIZE_GRACE_S
+    return (now - mtime) >= _finalize_grace_s(log_path_)
 
 
 def _resolve_job_state(job: "Job", now: float | None = None) -> tuple[str, int | None, bool]:
@@ -1271,6 +1326,51 @@ def _watchdog_breach(job: "Job", now: float) -> str | None:
     if stall > _STALL_LIMIT_S:
         return f"no log output for {int(stall // 60)} min"
     return None
+
+
+def delete_reduction(inst: str, date: str, target: str) -> dict:
+    """Delete all reduction products for one (inst, date, target) from disk.
+
+    Removes files matching the target's stem in the results directory, plus
+    the web-run log. Also clears the persisted job record so the Jobs page
+    no longer shows a stale entry. Never touches other targets.
+    """
+    rdir = results_dir(inst, date)
+    if not rdir.is_dir():
+        return {"ok": True, "count": 0}
+    t = target.replace(" ", "")
+    stem = f"{t}_{inst}"
+    web_log = _run_log_path(rdir, inst, date, target)
+    removed = 0
+    for p in list(rdir.iterdir()):
+        if not p.is_file():
+            continue
+        if p.name.startswith(stem):
+            try:
+                p.unlink()
+                removed += 1
+            except OSError:
+                pass
+    if web_log.is_file():
+        try:
+            web_log.unlink()
+            removed += 1
+        except OSError:
+            pass
+    from muscat_db.database import db_path, clear_all_caches
+    try:
+        conn = sqlite3.connect(db_path())
+        conn.execute("DELETE FROM jobs WHERE key = ?", (f"photometry:{job_key(inst, date, target)}",))
+        conn.commit()
+        conn.close()
+        clear_all_caches()
+    except Exception:
+        pass
+    try:
+        del _JOBS[job_key(inst, date, target)]
+    except KeyError:
+        pass
+    return {"ok": True, "count": removed}
 
 
 def cancel_run(inst: str, date: str, target: str) -> dict:

@@ -676,7 +676,8 @@ th.drag-over-right {
 
 #message-modal,
 #hide-confirm-overlay,
-#move-confirm-overlay {
+#move-confirm-overlay,
+#delete-confirm-overlay {
   display: none;
   position: fixed;
   inset: 0;
@@ -687,7 +688,8 @@ th.drag-over-right {
 }
 #message-modal.visible,
 #hide-confirm-overlay.visible,
-#move-confirm-overlay.visible {
+#move-confirm-overlay.visible,
+#delete-confirm-overlay.visible {
   display: flex;
 }
 .modal-box {

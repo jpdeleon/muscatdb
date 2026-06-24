@@ -313,6 +313,14 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
                 obs_type = "(narrowband)" if is_narrowband else "(broadband)"
                 available_bands = phot.bands_from_filters(filters)
 
+            cur = conn.execute(
+                "SELECT COUNT(*) FROM frames WHERE instrument = ? AND obsdate = ? AND object = ?",
+                (inst, date, target),
+            )
+            total_frames = cur.fetchone()[0]
+            if obs_type and total_frames < 100:
+                obs_type += " (test)"
+
             conn.close()
         except Exception:
             pass
@@ -346,6 +354,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         command=command, raw_missing=raw_missing,
         default_bands=phot.DEFAULT_BANDS,
         run_defaults=phot.RUN_DEFAULTS,
+        cmap_choices=phot.CMAP_CHOICES,
         wiki_url=_wiki_url(inst, target),
         obs_type=obs_type,
         is_narrowband=is_narrowband,
@@ -836,6 +845,11 @@ def exposure_coeffs(instrument: str):
     return JSONResponse({"ok": True, "instrument": instrument, "coeffs": rows})
 
 
+@app.get("/ephemeris", response_class=HTMLResponse)
+def ephemeris_page():
+    return _render("ephemeris.html")
+
+
 @app.get("/jobs", response_class=HTMLResponse)
 def jobs_page():
     phot.sync_jobs()
@@ -993,6 +1007,21 @@ def photometry_cancel(payload: dict = Body(...)):
     result = phot.cancel_run(inst, date, target)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
+    return JSONResponse(result)
+
+
+@app.post("/photometry/delete")
+def photometry_delete(payload: dict = Body(...)):
+    inst = (payload.get("inst") or "").strip()
+    date = (payload.get("date") or "").strip()
+    target = (payload.get("target") or "").strip()
+    if inst not in INSTRUMENTS:
+        return JSONResponse({"ok": False, "error": "unknown instrument"}, status_code=400)
+    if not phot.valid_date(date):
+        return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
+    if not (target or "").strip():
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    result = phot.delete_reduction(inst, date, target)
     return JSONResponse(result)
 
 
