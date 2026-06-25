@@ -1636,6 +1636,7 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
                 "target": p["target"],
                 "epoch": p["epoch"],
                 "bjd": p["tc"],
+                "tc_unc": p["unc"],
                 "oc_min": round(oc_min, 4),
                 "oc_err_min": round(oc_err_min, 4),
                 "checked": p["checked"]
