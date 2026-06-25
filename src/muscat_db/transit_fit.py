@@ -75,12 +75,13 @@ def _write_log_banner(logf: IO, cmd: list[str], options: dict | None = None) -> 
     if options is not None:
         logf.write("--- options ---\n")
         for k, v in sorted(options.items()):
-            if k in ("stellar_ref", "pl_ref") and isinstance(v, str) and v:
+            if (k == "stellar_ref" or k.startswith("pl_ref")) and isinstance(v, str) and v:
                 val = re.sub(
                     r'<a\b[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
                     lambda m: f"{re.sub(r'<[^>]+>', '', m.group(2))} ({m.group(1)})",
                     v
                 )
+                val = re.sub(r'<[^>]+>', '', val)
                 logf.write(f"  {k}: {val!r}\n")
             else:
                 logf.write(f"  {k}: {v!r}\n")

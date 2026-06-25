@@ -334,3 +334,22 @@ def test_fit_yaml_normalizes_sinistro_site_bands(tmp_path):
     assert fit_yaml["data"]["lsc_gp"]["band"] == "g"
     assert fit_yaml["data"]["lsc_zs"]["band"] == "z"
 
+
+def test_write_log_banner_cleans_html_refs():
+    import io
+    options = {
+        "stellar_ref": 'Source: <a refstr="REF" href="http://url">Stellar Author</a>',
+        "pl_ref": 'Source: <a refstr="REF" href="http://url">Planet Author</a>',
+        "pl_ref_b": 'Source: <a refstr="REF" href="http://url">Planet B Author</a>',
+        "pl_ref_c": 'Source: <span>Some text</span> with <a href="http://url">Planet C Author</a>',
+    }
+    logf = io.StringIO()
+    fit._write_log_banner(logf, ["cmd"], options)
+    log_text = logf.getvalue()
+
+    assert "  stellar_ref: 'Source: Stellar Author (http://url)'" in log_text
+    assert "  pl_ref: 'Source: Planet Author (http://url)'" in log_text
+    assert "  pl_ref_b: 'Source: Planet B Author (http://url)'" in log_text
+    assert "  pl_ref_c: 'Source: Some text with Planet C Author (http://url)'" in log_text
+
+
