@@ -132,7 +132,10 @@
         const stored = localStorage.getItem('colw:' + tableId + ':' + i);
         if (stored) {
           const w = parseFloat(stored);
-          if (w > 30) return w;
+          if (w > 30) {
+            th.style.maxWidth = 'none';
+            return w;
+          }
         }
         return th.getBoundingClientRect().width;
       });
@@ -145,31 +148,19 @@
       }
       if (!hasStored) {
         const containerW = table.parentElement.clientWidth;
-        // Keep the last column (e.g. Move/Action button) at its narrow natural width.
-        const lastIdx = ths.length - 1;
-        let remainingW = containerW;
-        let totalMeasuredOthers = 0;
-        measured.forEach(function (w, i) {
-          if (i === lastIdx) {
-            remainingW -= w;
+        let totalMeasured = 0;
+        measured.forEach(function (w) {
+          totalMeasured += w;
+        });
+        const extraW = containerW - totalMeasured;
+        ths.forEach(function (th, i) {
+          if (i === 0 && extraW > 0) {
+            th.style.width = (measured[i] + extraW) + 'px';
+            th.style.maxWidth = 'none';
           } else {
-            totalMeasuredOthers += w;
+            th.style.width = measured[i] + 'px';
           }
         });
-        if (totalMeasuredOthers > 0 && remainingW > 0) {
-          const scale = remainingW / totalMeasuredOthers;
-          ths.forEach(function (th, i) {
-            if (i === lastIdx) {
-              th.style.width = measured[i] + 'px';
-            } else {
-              th.style.width = (measured[i] * scale) + 'px';
-            }
-          });
-        } else {
-          ths.forEach(function (th, i) {
-            th.style.width = measured[i] + 'px';
-          });
-        }
       } else {
         ths.forEach(function (th, i) {
           th.style.width = measured[i] + 'px';
@@ -190,6 +181,7 @@
         handle.addEventListener('dblclick', function () {
           // Double-click resets this column to auto-fit content.
           th.style.width = '';
+          th.style.maxWidth = '';
           const currentIdx = th.cellIndex;
           localStorage.removeItem('colw:' + tableId + ':' + currentIdx);
           th.style.width = th.getBoundingClientRect().width + 'px';
@@ -207,6 +199,7 @@
       const handle = e.currentTarget;
       handle.classList.add('resizing');
       th.classList.add('resizing');
+      th.style.maxWidth = 'none';
       document.body.style.cursor = 'col-resize';
       function onMove(ev) {
         const minW = th.dataset.sortAttr === 'filters' ? 15 : 40;

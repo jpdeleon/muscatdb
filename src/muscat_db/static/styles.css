@@ -100,6 +100,7 @@ th {
   position: relative;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: max-content;
 }
 td {
   padding: 0.5rem 0.75rem;
@@ -107,6 +108,7 @@ td {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: max-content;
 }
 th .col-resizer {
   position: absolute;
