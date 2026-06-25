@@ -1465,6 +1465,41 @@ class TestRoutes:
         res3 = r3.json()
         assert res3["ok"] is True
 
+    def test_api_ephemeris_view_save_and_load(self, client):
+        state = {
+            "targets": ["TOI-736", "WASP-104"],
+            "checked_datasets": {
+                "TOI-736|muscat4|250501|run_a": True,
+                "WASP-104|muscat3|240122|run_b": False,
+            },
+            "fit_method": "weighted",
+            "x_axis": "bjd",
+            "show_excluded": True,
+            "show_utc": True,
+            "plot_title": "TOI-736 + WASP-104",
+        }
+
+        r = client.post("/api/ephemeris/view", json={"state": state})
+        assert r.status_code == 200
+        res = r.json()
+        assert res["ok"] is True
+        assert isinstance(res["slug"], str)
+        assert len(res["slug"]) >= 8
+
+        r_repeat = client.post("/api/ephemeris/view", json={"state": state})
+        assert r_repeat.status_code == 200
+        assert r_repeat.json()["slug"] == res["slug"]
+
+        r_load = client.get(f"/api/ephemeris/view/{res['slug']}")
+        assert r_load.status_code == 200
+        loaded = r_load.json()
+        assert loaded["ok"] is True
+        assert loaded["slug"] == res["slug"]
+        assert loaded["state"] == state
+
+        r_missing = client.get("/api/ephemeris/view/not_found")
+        assert r_missing.status_code == 404
+
     def test_target_name_normalization(self):
         from muscat_db.web import _normalize_target_name
         assert _normalize_target_name("V1298Tau") == "V1298TAU"
