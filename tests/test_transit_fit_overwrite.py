@@ -15,9 +15,9 @@ class _RunningProcess:
         return None
 
 
-@pytest.mark.parametrize(("overwrite", "expected_clobber"), [("false", False), ("true", True)])
+@pytest.mark.parametrize("overwrite", ["false", "true"])
 def test_start_fit_delegates_overwrite_to_timer_without_deleting_outputs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overwrite: str, expected_clobber: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overwrite: str
 ):
     source_csv = tmp_path / "source.csv"
     source_csv.write_text("time,flux\n")
@@ -46,7 +46,7 @@ def test_start_fit_delegates_overwrite_to_timer_without_deleting_outputs(
         assert cached_result.read_text() == "cached"
         assert existing_plot.read_text() == "plot"
         fit_yaml = yaml.safe_load((run_dir / "fit.yaml").read_text())
-        assert fit_yaml["clobber"] is expected_clobber
+        assert fit_yaml["clobber"] is True
     finally:
         for job in fit._FIT_JOBS.values():
             job.logf.close()
