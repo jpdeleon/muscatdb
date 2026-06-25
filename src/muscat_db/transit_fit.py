@@ -657,6 +657,12 @@ def _normalize_band(raw: str) -> str:
     and dropped the narrow bands from chromatic plots.
     """
     low = raw.strip().lower()
+    # Strip site code prefix if present (e.g. cpt_, lsc_ for Sinistro site codes)
+    # so that the actual filter name is extracted and normalized correctly.
+    for site in SINISTRO_SITES:
+        if low.startswith(f"{site}_"):
+            low = low[len(site) + 1:]
+            break
     # Sodium D: real tokens start with "na" (Na_D, NaD, Na). Narrow Sloan tokens
     # start with their filter letter (e.g. "i_narrow"), so this is unambiguous.
     if low.startswith("na"):
@@ -664,6 +670,7 @@ def _normalize_band(raw: str) -> str:
     is_narrow = "narrow" in low or low.endswith("_nb")
     base = low[0] if low[:1] in "griz" else "g"
     return f"{base}_narrow" if is_narrow else base
+
 
 
 def _band_sort_key(band: str) -> tuple:
