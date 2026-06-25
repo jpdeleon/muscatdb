@@ -1076,8 +1076,10 @@ def start_fit(
     # trace (20 draws) and exits immediately, misleading the user into thinking
     # their full-fit request was silently ignored.
     run_type = "test" if test_run else "full"
-    if not test_run:
-        options = {**options, "overwrite": "true"}
+    # Both full fits and test fits always clobber. This avoids reusing short test
+    # traces for full fits, and prevents test fits from crashing on incompatible
+    # cached pickle files or reusing stale results.
+    options = {**options, "overwrite": "true"}
     _write_fit_inputs(rdir, inst, date, target, csvs, options,
                       site=site, mode=mode, run_name=run_name, run_id=run_id,
                       run_type=run_type)
