@@ -1076,10 +1076,6 @@ def start_fit(
     # trace (20 draws) and exits immediately, misleading the user into thinking
     # their full-fit request was silently ignored.
     run_type = "test" if test_run else "full"
-    # Both full fits and test fits always clobber. This avoids reusing short test
-    # traces for full fits, and prevents test fits from crashing on incompatible
-    # cached pickle files or reusing stale results.
-    options = {**options, "overwrite": "true"}
     _write_fit_inputs(rdir, inst, date, target, csvs, options,
                       site=site, mode=mode, run_name=run_name, run_id=run_id,
                       run_type=run_type)
@@ -1896,6 +1892,7 @@ def sync_jobs() -> None:
                     p = {}
                 opts = p.get("options", {})
                 test_run = p.get("test_run", False)
+                run_type = "test" if test_run else "full"
                 selected_csvs = p.get("selected_csvs")
                 run_id = p.get("run_id") or entry.get("run_id", "")
                 site = p.get("site", "")
@@ -1926,8 +1923,6 @@ def sync_jobs() -> None:
                 if selected_csvs is not None:
                     selected = set(selected_csvs)
                     csvs = [c for c in csvs if c.name in selected]
-                if not test_run:
-                    opts = {**opts, "overwrite": "true"}
                 _write_fit_inputs(rdir, inst, date, target, csvs, opts,
                                   site=site, mode=mode, run_name=run_name, run_id=run_id,
                                   run_type=run_type)
