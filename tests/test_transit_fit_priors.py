@@ -303,3 +303,34 @@ def test_fit_yaml_data_keys_in_canonical_band_order(tmp_path):
     assert list(fit_yaml["data"].keys()) == [
         "g_narrow", "Na_D", "i_narrow", "z_narrow",
     ]
+
+
+def test_fit_yaml_normalizes_sinistro_site_bands(tmp_path):
+    inst, date, target = "sinistro", "250710", "HIP67522"
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    # Create CSVs with Sinistro site-prefixed bands:
+    # cpt_gp, cpt_zs, lsc_gp, lsc_zs
+    raw_files = [
+        "HIP67522_sinistro_cpt_gp_250710.csv",
+        "HIP67522_sinistro_cpt_zs_250710.csv",
+        "HIP67522_sinistro_lsc_gp_250710.csv",
+        "HIP67522_sinistro_lsc_zs_250710.csv",
+    ]
+    csvs = []
+    for fn in raw_files:
+        p = src_dir / fn
+        p.write_text("time,flux\n")
+        csvs.append(p)
+
+    fit._write_fit_inputs(tmp_path, inst, date, target, csvs, {"planets": "b"})
+    fit_yaml = yaml.safe_load((tmp_path / "fit.yaml").read_text())
+
+    # The keys in 'data' should match the extracted raw bands (e.g. cpt_gp, cpt_zs)
+    # but the nested 'band' fields must be mapped to their normalized equivalents:
+    # cpt_gp -> g, cpt_zs -> z, lsc_gp -> g, lsc_zs -> z
+    assert fit_yaml["data"]["cpt_gp"]["band"] == "g"
+    assert fit_yaml["data"]["cpt_zs"]["band"] == "z"
+    assert fit_yaml["data"]["lsc_gp"]["band"] == "g"
+    assert fit_yaml["data"]["lsc_zs"]["band"] == "z"
+
