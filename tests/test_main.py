@@ -561,6 +561,41 @@ class TestDatabase:
         finally:
             os.unlink(db_path)
 
+    def test_build_db_preserves_ephemeris_views(self):
+        from muscat_db.database import SCHEMA, build_db
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.executescript(SCHEMA)
+            conn.execute(
+                """INSERT INTO ephemeris_views
+                   (slug, state_hash, state_json, targets_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    "abc123view",
+                    "hash",
+                    '{"targets":["TOI-736"]}',
+                    '["TOI-736"]',
+                    "2026-06-25T00:00:00",
+                    "2026-06-25T00:00:00",
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            build_db(db_path)
+
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                "SELECT state_json FROM ephemeris_views WHERE slug = ?",
+                ("abc123view",),
+            ).fetchone()
+            conn.close()
+            assert row == ('{"targets":["TOI-736"]}',)
+        finally:
+            os.unlink(db_path)
+
 
 # ── Tests: CLI ───────────────────────────────────────────────────────────────
 

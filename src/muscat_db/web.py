@@ -37,6 +37,8 @@ from muscat_db.database import (
     get_identified_overrides as _get_identified_overrides,
     set_identified as _set_identified,
     set_note as _set_note,
+    save_ephemeris_view,
+    get_ephemeris_view,
     get_persisted_jobs,
     get_last_build_date,
 )
@@ -1050,6 +1052,28 @@ def exposure_coeffs(instrument: str):
 @app.get("/ephemeris", response_class=HTMLResponse)
 def ephemeris_page():
     return _render("ephemeris.html")
+
+
+@app.post("/api/ephemeris/view", response_class=JSONResponse)
+def api_ephemeris_view_save(payload: dict = Body(...)):
+    state = payload.get("state") if isinstance(payload, dict) else None
+    if not isinstance(state, dict):
+        return JSONResponse({"ok": False, "error": "State is required"}, status_code=400)
+    targets = state.get("targets")
+    if not isinstance(targets, list) or not [t for t in targets if str(t).strip()]:
+        return JSONResponse({"ok": False, "error": "At least one target is required"}, status_code=400)
+    saved = save_ephemeris_view(state)
+    return JSONResponse({"ok": True, **saved})
+
+
+@app.get("/api/ephemeris/view/{slug}", response_class=JSONResponse)
+def api_ephemeris_view_get(slug: str):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", slug or ""):
+        return JSONResponse({"ok": False, "error": "Invalid view slug"}, status_code=400)
+    view = get_ephemeris_view(slug)
+    if view is None:
+        return JSONResponse({"ok": False, "error": "View not found"}, status_code=404)
+    return JSONResponse({"ok": True, **view})
 
 
 # Helper to normalize target names for comparison

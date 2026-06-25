@@ -5,7 +5,7 @@
 
 <div class="card" style="margin-top: 2rem; padding: 2rem;">
   <h1 style="margin-top: 0; color: var(--accent); display: flex; align-items: center; gap: 0.5rem;">
-    Transit Timing Variation (O-C) Plotter
+    Ephemerides
   </h1>
   <p style="color: var(--text-dim); margin-bottom: 1.5rem; font-size: 0.95rem;">
     Analyze Transit Timing Variations (TTVs) across multiple instruments and dates. Click on any data point in the plot to navigate directly to the transit fit page it is based on.
@@ -83,7 +83,7 @@
 
 <!-- Interactive Plot Area -->
 <div id="plot-card" class="card" style="margin-top: 1.5rem; display: none; padding: 1.5rem; min-height: 520px;">
-  <h2 style="margin-top: 0; margin-bottom: 0.5rem; color: var(--text);">Observed minus Calculated (O-C) Plot</h2>
+  <h2 style="margin-top: 0; margin-bottom: 0.5rem; color: var(--text);">O-C Plot</h2>
   <div id="oc-plot"></div>
   <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.75rem; gap: 1.5rem; flex-wrap: wrap;">
     <div style="display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; flex-grow: 1;">
@@ -227,12 +227,157 @@
   let combinedToiEphem = {};
   let combinedDatasets = [];
   let fitResults = null;
+  let pendingViewState = null;
+  let viewSaveTimer = null;
+  let lastSavedViewJson = '';
+
+  function parseUrlTargets() {
+    const raw = window.location.search.replace(/^\?/, '').split('&').find(part => part.split('=')[0] === 'targets');
+    if (!raw) return [];
+    const value = raw.slice(raw.indexOf('=') + 1);
+    return value.split(/[+,]/).map(t => decodeURIComponent(t).trim()).filter(Boolean);
+  }
+
+  function currentViewSlug() {
+    return new URLSearchParams(window.location.search).get('view') || '';
+  }
+
+  function datasetStateKey(d) {
+    return [d.target || '', d.instrument || '', d.date || '', d.run_id || ''].join('|');
+  }
+
+  function legacyDatasetStateKey(d) {
+    return `${d.target}-${d.instrument}-${d.date}-${d.run_id}`;
+  }
+
+  function applyViewStateToStorage(state, combinedKey) {
+    if (!state || !combinedKey) return;
+
+    if (state.fit_method) {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'fit-method-type', state.fit_method);
+      const radio = document.querySelector(`input[name="fit-method-type"][value="${state.fit_method}"]`);
+      if (radio) radio.checked = true;
+    }
+    if (state.x_axis) {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'x-axis-type', state.x_axis);
+      const radio = document.querySelector(`input[name="x-axis-type"][value="${state.x_axis}"]`);
+      if (radio) radio.checked = true;
+    }
+    if (typeof state.show_excluded === 'boolean') {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-excluded', String(state.show_excluded));
+      const cb = document.getElementById('show-excluded-checkbox');
+      if (cb) cb.checked = state.show_excluded;
+    }
+    if (typeof state.show_utc === 'boolean') {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-twin', String(state.show_utc));
+      const cb = document.getElementById('show-twin-checkbox');
+      if (cb) cb.checked = state.show_utc;
+    }
+    if (typeof state.plot_title === 'string') {
+      const input = document.getElementById('plot-suptitle-input');
+      if (input) {
+        input.value = state.plot_title;
+        input.dataset.lastAutoTarget = loadedTargets.slice().sort().join(' + ');
+      }
+    }
+
+    if (state.checked_datasets && typeof state.checked_datasets === 'object') {
+      localStorage.setItem(
+        STORAGE_OPTS_PREFIX + combinedKey + '-checked',
+        JSON.stringify(state.checked_datasets)
+      );
+    }
+    if (state.planet_options && typeof state.planet_options === 'object') {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + combinedKey, JSON.stringify(state.planet_options));
+    }
+    if (state.planet_plot_settings && typeof state.planet_plot_settings === 'object') {
+      localStorage.setItem(
+        STORAGE_OPTS_PREFIX + combinedKey + '-planet-plot-settings',
+        JSON.stringify(state.planet_plot_settings)
+      );
+      Object.keys(planetPlotSettings).forEach(k => delete planetPlotSettings[k]);
+    }
+  }
+
+  function collectEphemerisViewState() {
+    const checkedDatasets = {};
+    document.querySelectorAll('.dataset-checkbox').forEach(box => {
+      const index = parseInt(box.getAttribute('data-index'));
+      const d = combinedDatasets[index];
+      if (d) checkedDatasets[datasetStateKey(d)] = box.checked;
+    });
+
+    const planetOptions = {};
+    document.querySelectorAll('#planet-cards-container .planet-card').forEach(card => {
+      const pl = card.getAttribute('data-planet');
+      planetOptions[pl + '_t0'] = card.querySelector('.planet-t0')?.value || '';
+      planetOptions[pl + '_period'] = card.querySelector('.planet-period')?.value || '';
+      const selectEl = card.querySelector('.planet-source-select');
+      if (selectEl) planetOptions[pl + '_source'] = selectEl.value;
+    });
+
+    const fitMethod = document.querySelector('input[name="fit-method-type"]:checked')?.value || 'unweighted';
+    const xAxis = document.querySelector('input[name="x-axis-type"]:checked')?.value || 'bjd';
+    const plotTitle = document.getElementById('plot-suptitle-input')?.value || '';
+    const currentPlanetPlotSettings = {};
+    combinedPlanets.forEach(pl => {
+      if (planetPlotSettings[pl]) currentPlanetPlotSettings[pl] = planetPlotSettings[pl];
+    });
+
+    return {
+      targets: loadedTargets.slice().sort(),
+      checked_datasets: checkedDatasets,
+      fit_method: fitMethod,
+      planet_options: planetOptions,
+      planet_plot_settings: currentPlanetPlotSettings,
+      x_axis: xAxis,
+      show_excluded: Boolean(document.getElementById('show-excluded-checkbox')?.checked),
+      show_utc: Boolean(document.getElementById('show-twin-checkbox')?.checked),
+      plot_title: plotTitle
+    };
+  }
+
+  function updateViewUrl(slug) {
+    if (!slug || loadedTargets.length === 0) return;
+    const targetsParam = loadedTargets.slice().sort().map(encodeURIComponent).join('+');
+    const url = `${window.location.pathname}?targets=${targetsParam}&view=${encodeURIComponent(slug)}`;
+    window.history.replaceState(null, '', url);
+  }
+
+  function scheduleSaveView(delay = 600) {
+    if (loadedTargets.length === 0 || combinedDatasets.length === 0) return;
+    if (viewSaveTimer) clearTimeout(viewSaveTimer);
+    viewSaveTimer = setTimeout(() => {
+      viewSaveTimer = null;
+      const state = collectEphemerisViewState();
+      const stateJson = JSON.stringify(state);
+      if (stateJson === lastSavedViewJson) return;
+      fetch('/api/ephemeris/view', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state })
+      })
+      .then(r => r.json())
+      .then(res => {
+        if (!res.ok) {
+          console.warn('Failed to save ephemeris view:', res.error || res);
+          return;
+        }
+        lastSavedViewJson = stateJson;
+        updateViewUrl(res.slug);
+      })
+      .catch(e => console.warn('Failed to save ephemeris view:', e));
+    }, delay);
+  }
 
   // 1. Initial Page Load Setup
   document.addEventListener('DOMContentLoaded', function() {
-    // Restore targets immediately for fast loading
-    const savedTargetVal = localStorage.getItem(STORAGE_TARGET_KEY);
-    if (savedTargetVal) {
+    const urlTargets = parseUrlTargets();
+    const viewSlug = currentViewSlug();
+
+    function restoreTargetsFromLocalStorage() {
+      const savedTargetVal = localStorage.getItem(STORAGE_TARGET_KEY);
+      if (!savedTargetVal) return;
       let targetsToLoad = [];
       try {
         const parsed = JSON.parse(savedTargetVal);
@@ -252,6 +397,32 @@
       }
     }
 
+    if (viewSlug) {
+      fetch('/api/ephemeris/view/' + encodeURIComponent(viewSlug))
+        .then(r => r.json())
+        .then(res => {
+          if (!res.ok) {
+            console.warn('Failed to load ephemeris view:', res.error || res);
+            if (urlTargets.length > 0) loadMultipleTargets(urlTargets);
+            else restoreTargetsFromLocalStorage();
+            return;
+          }
+          pendingViewState = res.state || null;
+          const stateTargets = Array.isArray(pendingViewState?.targets) ? pendingViewState.targets : [];
+          const targetsToLoad = urlTargets.length > 0 ? urlTargets : stateTargets;
+          if (targetsToLoad.length > 0) loadMultipleTargets(targetsToLoad);
+        })
+        .catch(e => {
+          console.warn('Failed to load ephemeris view:', e);
+          if (urlTargets.length > 0) loadMultipleTargets(urlTargets);
+          else restoreTargetsFromLocalStorage();
+        });
+    } else if (urlTargets.length > 0) {
+      loadMultipleTargets(urlTargets);
+    } else {
+      restoreTargetsFromLocalStorage();
+    }
+
     loadTargetsDropdown();
     
     // Wire load target button and input interactions
@@ -265,6 +436,7 @@
       if (fitResults) {
         drawPlot();
       }
+      scheduleSaveView();
     });
     
     // Restore X axis type preference
@@ -281,6 +453,7 @@
         if (fitResults) {
           drawPlot();
         }
+        scheduleSaveView();
       });
     });
 
@@ -297,6 +470,7 @@
       if (fitResults) {
         drawPlot();
       }
+      scheduleSaveView();
     });
 
     // Restore show-twin checkbox preference
@@ -312,6 +486,7 @@
       if (fitResults) {
         drawPlot();
       }
+      scheduleSaveView();
     });
 
     // Restore fit method preference
@@ -326,6 +501,7 @@
       radio.addEventListener('change', function() {
         localStorage.setItem(STORAGE_OPTS_PREFIX + 'fit-method-type', this.value);
         scheduleComputeFit(0);
+        scheduleSaveView();
       });
     });
 
@@ -561,6 +737,10 @@
     }
     
     const combinedKey = getCombinedStorageKey();
+    if (pendingViewState) {
+      applyViewStateToStorage(pendingViewState, combinedKey);
+      pendingViewState = null;
+    }
     
     document.getElementById('results-card').style.display = 'none';
     document.getElementById('plot-card').style.display = 'none';
@@ -591,6 +771,7 @@
       drawPlot();
     }
     scheduleComputeFit(0);
+    scheduleSaveView(1200);
   }
 
   // Render planet parameters inputs
@@ -688,6 +869,7 @@
     
     saveTargetOpts();
     scheduleComputeFit();
+    scheduleSaveView();
   };
 
   // Save planet input overrides to localStorage
@@ -705,6 +887,7 @@
       }
     });
     localStorage.setItem(STORAGE_OPTS_PREFIX + combinedKey, JSON.stringify(opts));
+    scheduleSaveView();
   }
 
   // Render planet customizer settings (color & marker type) at the bottom of the plot card
@@ -792,6 +975,7 @@
     if (fitResults) {
       drawPlot();
     }
+    scheduleSaveView();
   };
 
   // Render datasets rows
@@ -813,8 +997,9 @@
 
     datasets.forEach((d, idx) => {
       const tr = document.createElement('tr');
-      const key = `${d.target}-${d.instrument}-${d.date}-${d.run_id}`;
-      const isChecked = checkedMap[key] !== undefined ? checkedMap[key] : true;
+      const key = datasetStateKey(d);
+      const legacyKey = legacyDatasetStateKey(d);
+      const isChecked = checkedMap[key] !== undefined ? checkedMap[key] : (checkedMap[legacyKey] !== undefined ? checkedMap[legacyKey] : true);
       if (isChecked) tr.classList.add('selected-row');
 
       // Create label summary of transits in this dataset
@@ -891,12 +1076,13 @@
       document.querySelectorAll('.dataset-checkbox').forEach(box => {
         const index = parseInt(box.getAttribute('data-index'));
         const d = combinedDatasets[index];
-        const key = `${d.target}-${d.instrument}-${d.date}-${d.run_id}`;
+        const key = datasetStateKey(d);
         checkedMap[key] = box.checked;
       });
       localStorage.setItem(STORAGE_OPTS_PREFIX + combinedKey + '-checked', JSON.stringify(checkedMap));
     }
     scheduleComputeFit();
+    scheduleSaveView();
   }
 
   function toggleAllDatasets(checked) {
@@ -913,12 +1099,13 @@
       document.querySelectorAll('.dataset-checkbox').forEach(box => {
         const index = parseInt(box.getAttribute('data-index'));
         const d = combinedDatasets[index];
-        const key = `${d.target}-${d.instrument}-${d.date}-${d.run_id}`;
+        const key = datasetStateKey(d);
         checkedMap[key] = box.checked;
       });
       localStorage.setItem(STORAGE_OPTS_PREFIX + combinedKey + '-checked', JSON.stringify(checkedMap));
     }
     scheduleComputeFit();
+    scheduleSaveView();
   }
 
   // 2. Linear Regression & Plotting
