@@ -49,3 +49,7 @@ __*.array
 # Local IDE/agent environments
 .claude/
 temp.txt
+
+# Local environment config (keep .env.example tracked)
+.env
+!.env.example

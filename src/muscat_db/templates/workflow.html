@@ -206,6 +206,7 @@
         <li><a href="#muscat-card" class="toc-link">MuSCAT-db Pipeline</a></li>
         <li><a href="#prose-card" class="toc-link">prose Photometry</a></li>
         <li><a href="#timer-card" class="toc-link">timer Transit Fitting</a></li>
+        <li><a href="#ephemeris-card" class="toc-link">Ephemeris O-C Plotter</a></li>
         <li><a href="#execution-details" class="toc-link">Execution Details</a></li>
         <li><a href="#faq-card" class="toc-link">FAQs</a></li>
       </ul>
@@ -248,6 +249,8 @@ graph TD
     D -->|5. Configure and Launch| H
     H -->|Runs timer-fit sampler| I["Transit Fitting"]:::default
     I -->|Outputs corner and fit plots| J["Transit Fit Results\n(results/transit_fit/)"]:::default
+    J -->|Transit centers Tc| L["Ephemeris O-C Plotter"]:::pipeline
+    L -->|Updates interactively| M["O-C Plot and Best-Fit Ephemeris"]:::default
 
     %% Jobs monitoring
     F -->|Track execution| K["Jobs Page"]:::default
@@ -256,6 +259,7 @@ graph TD
     %% Results loop
     G -->|Display preview and plots| D
     J -->|Display parameters and plots| D
+    M -->|Inspect TTVs and update selections| D
           </pre>
         </div>
       </div>
@@ -346,6 +350,98 @@ graph TD
       </div>
     </div>
 
+    <div class="workflow-card collapsible" id="ephemeris-card">
+      <div class="card-header-toggle" onclick="toggleCard('ephemeris-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Ephemeris O-C Plotter Workflow
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Interactive observed-minus-calculated analysis built from completed transit-fit runs and catalog reference ephemerides.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% Target discovery
+    A["Completed Transit Fit Jobs\n(persisted jobs + orphan fit discovery)"]:::db --> B["Target List\n/api/ephemeris/targets"]:::default
+    B --> C["Select One or More Targets\n(ephemeris.html)"]:::default
+
+    %% Dataset assembly
+    C --> D["Load Target Info\n/api/ephemeris/target-info"]:::pipeline
+    D --> E["Completed Run Datasets\ninstrument, date, run_id, run_type"]:::default
+    D --> F["Fitted Transit Centers\nTc and uncertainty per planet"]:::default
+    D --> G["Reference Ephemerides\nNASA, TOI, catalog fallback"]:::default
+    D --> H["Planet Cards\nT0, period, source override"]:::default
+
+    %% Interactive calculation
+    E --> I["Dataset Include Checkboxes"]:::default
+    F --> J["Automatic Recalculate\n/api/ephemeris/calculate"]:::pipeline
+    G --> J
+    H --> J
+    I --> J
+    K["Fitting Method\nUnweighted or weighted"]:::default --> J
+
+    %% Fit math
+    J --> L["Epoch Assignment\nround((Tc - T0) / P)"]:::default
+    L --> M["Linear Ephemeris Fit\nTcalc = T0fit + E * Pfit"]:::default
+    M --> N["O-C Values\n(Tc - Tcalc) in minutes"]:::default
+
+    %% Output
+    N --> O["Observed minus Calculated Plot\nBJD or epoch x-axis"]:::default
+    M --> P["Best-Fit Ephemeris Summary\ncentered T0, period, uncertainties"]:::default
+    O --> Q["Interactive Controls\ndate twin axis, excluded points, planet styles, PNG export"]:::default
+          </pre>
+        </div>
+
+        <div class="workflow-grid" style="margin-top: 1.5rem;">
+          <div class="workflow-stage">
+            <div class="workflow-header">
+              <span class="workflow-badge">A</span>
+              <span class="workflow-title">Data Source</span>
+            </div>
+            <div class="workflow-desc">
+              The page only lists targets with completed transit-fit jobs. It also discovers orphan fit outputs so legacy results remain available.
+            </div>
+          </div>
+
+          <div class="workflow-stage">
+            <div class="workflow-header">
+              <span class="workflow-badge">B</span>
+              <span class="workflow-title">Reference Ephemerides</span>
+            </div>
+            <div class="workflow-desc">
+              Planet cards are initialized from NASA, TOI, or catalog fallback values, and can be overridden from a fitted dataset source.
+            </div>
+          </div>
+
+          <div class="workflow-stage stage-phot">
+            <div class="workflow-header">
+              <span class="workflow-badge">C</span>
+              <span class="workflow-title">Automatic Updates</span>
+            </div>
+            <div class="workflow-desc">
+              Dataset checkboxes, fitting method, and T0/period edits trigger a debounced calculate request so the plot reflects the current selection.
+            </div>
+          </div>
+
+          <div class="workflow-stage stage-phot">
+            <div class="workflow-header">
+              <span class="workflow-badge">D</span>
+              <span class="workflow-title">O-C Outputs</span>
+            </div>
+            <div class="workflow-desc">
+              The result includes used/excluded points, per-planet O-C panels, an optional UTC date twin axis, and best-fit ephemeris parameters.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="workflow-card" id="execution-details">
     <h2 style="margin-bottom: 1rem; color: var(--text);">Pipeline Execution Details</h2>
     <div class="workflow-grid">
@@ -416,6 +512,17 @@ graph TD
         </div>
         <div class="workflow-desc">
           Tracks active, pending, or completed photometry and transit fitting background processes. Shows logs and error tracebacks.
+        </div>
+      </div>
+
+      <!-- Stage 7 -->
+      <div class="workflow-stage stage-phot">
+        <div class="workflow-header">
+          <span class="workflow-badge">7</span>
+          <span class="workflow-title">Ephemeris O-C Analysis</span>
+        </div>
+        <div class="workflow-desc">
+          Combines completed transit-fit midpoint measurements across datasets, fits a linear ephemeris, and renders an interactive O-C plot for timing-variation inspection.
         </div>
       </div>
 
@@ -511,6 +618,22 @@ graph TD
               <li><strong>Convergence</strong> — the iteration continues until the target lightcurve stabilizes, typically within a few iterations</li>
             </ol>
             <p>The key advantage is that no manual selection of comparison stars is needed — the algorithm handles both the choice and the relative weighting, and it can exclude bad comparison stars that would otherwise introduce noise.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How are comparison stars determined and how is it related to max_num_stars?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The comparison stars used to compute the differential lightcurve of the target are determined as follows:</p>
+            <ul>
+              <li><strong>max_num_stars Relation</strong> — During source detection, the pipeline is configured to detect and track exactly up to <code>max_num_stars</code> (default 10) of the brightest point sources across all frames. All comparison star candidates are chosen from this subset of tracked stars.</li>
+              <li><strong>Manual Selection</strong> — If explicit comparison star indices (<code>--cID</code>) are provided by the user, the pipeline validates that they are in-range and do not belong to the avoided/excluded list before using them directly.</li>
+              <li><strong>Automatic Selection (Broeg et al. 2005)</strong> — If no explicit IDs are provided, the pipeline executes the <code>autodiff()</code> algorithm. This algorithm dynamically determines and weights comparison stars from the candidate pool (excluding the target and any avoided stars) to minimize the scatter in the target's differential lightcurve.</li>
+              <li><strong>Avoided Stars</strong> — Stars can be manually excluded via <code>--avoid_cids</code>. Additionally, the pipeline automatically detects stars near the CCD edge (<code>edge_cids</code>) and adds them to the avoid pool to prevent edge-effect systematics from contaminating the comparison pool.</li>
+            </ul>
           </div>
         </div>
 

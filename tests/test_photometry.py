@@ -37,6 +37,7 @@ def _make_outputs(base: Path) -> Path:
         bstem = f"{TARGET}_{INST}_{b}_{DATE}"
         (rdir / (bstem + "_ref.png")).write_bytes(b"\x89PNG\r\n")
         (rdir / (bstem + "_apertures.png")).write_bytes(b"\x89PNG\r\n")
+        (rdir / (bstem + "_cutouts.png")).write_bytes(b"\x89PNG\r\n")
         (rdir / (bstem + "_alignment.png")).write_bytes(b"\x89PNG\r\n")
         (rdir / (bstem + ".gif")).write_bytes(b"GIF89a")
         (rdir / (bstem + ".csv")).write_text(
@@ -114,8 +115,202 @@ class TestListOutputs:
         out = phot.list_outputs(INST, DATE, TARGET)
         assert list(out["bands"]) == BANDS  # canonical order gp, rp, ip, zs
         gp = out["bands"]["gp"]
-        assert set(gp) == {"ref", "apertures", "alignment", "gif", "csv"}
+        assert set(gp) == {"ref", "apertures", "cutouts", "alignment", "gif", "csv"}
         assert gp["csv"]["file"] == f"{TARGET}_{INST}_gp_{DATE}.csv"
+
+    def test_classifies_underscored_band_names(self, monkeypatch, tmp_path):
+        # Narrow-band / Johnson filters embed underscores in the band token
+        # (g_narrow, Na_D, z_s); discovery must not split them on the date.
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "muscat2" / "250424"
+        rdir.mkdir(parents=True)
+        for band in ("g_narrow", "Na_D", "z_s"):
+            bstem = f"TOI07147.01_muscat2_{band}_250424"
+            (rdir / (bstem + ".csv")).write_text("BJD_TDB,Flux\n1,1\n")
+            (rdir / (bstem + "_ref.png")).write_bytes(b"\x89PNG\r\n")
+        out = phot.list_outputs("muscat2", "250424", "TOI07147.01")
+        assert out["has_any"]
+        assert set(out["bands"]) == {"g_narrow", "Na_D", "z_s"}
+        assert set(out["bands"]["Na_D"]) == {"csv", "ref"}
+        assert phot.discovered_targets("muscat2", "250424") == ["TOI07147.01"]
+
+    def test_classifies_sinistro_site_token(self, monkeypatch, tmp_path):
+        # Sinistro reduced with --site embeds the site between inst and the
+        # band/date: <target>_sinistro_<site>_<date> (summary) and
+        # <target>_sinistro_<site>_<band>_<date> (per-band). The site token must
+        # not be mistaken for a band, and summary plots/npz must still classify.
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "240101"
+        rdir.mkdir(parents=True)
+        sstem = "TOI-1234_sinistro_coj_240101"
+        for suf in ("_lightcurves.png", "_covariates.png", "_stacks.png"):
+            (rdir / (sstem + suf)).write_bytes(b"\x89PNG\r\n")
+        (rdir / (sstem + ".npz")).write_bytes(b"npz")
+        for band in ("R", "V", "B"):
+            bstem = f"TOI-1234_sinistro_coj_{band}_240101"
+            (rdir / (bstem + ".csv")).write_text("BJD_TDB,Flux\n1,1\n")
+            (rdir / (bstem + "_ref.png")).write_bytes(b"\x89PNG\r\n")
+
+        out = phot.list_outputs("sinistro", "240101", "TOI-1234")
+        assert out["has_any"]
+        assert set(out["summary"]) == {"lightcurves", "covariates", "stacks"}
+        assert out["summary"]["lightcurves"]["file"] == f"{sstem}_lightcurves.png"
+        assert out["npz"] == f"{sstem}.npz"
+        # Band token is just the filter, not "<site>_<band>".
+        assert set(out["bands"]) == {"R", "V", "B"}
+        assert out["bands"]["R"]["csv"]["file"] == "TOI-1234_sinistro_coj_R_240101.csv"
+        assert phot.discovered_targets("sinistro", "240101") == ["TOI-1234"]
+
+    def test_sinistro_without_site_still_classifies(self, monkeypatch, tmp_path):
+        # Legacy / unfiltered sinistro runs have no site token; the optional
+        # site slot must not break the older naming.
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "240101"
+        rdir.mkdir(parents=True)
+        (rdir / "TOI-1234_sinistro_240101_lightcurves.png").write_bytes(b"\x89PNG\r\n")
+        (rdir / "TOI-1234_sinistro_R_240101.csv").write_text("BJD_TDB,Flux\n1,1\n")
+
+        out = phot.list_outputs("sinistro", "240101", "TOI-1234")
+        assert set(out["summary"]) == {"lightcurves"}
+        assert set(out["bands"]) == {"R"}
+
+    def test_multi_site_detects_and_filters(self, monkeypatch, tmp_path):
+        # A single sinistro date+target can hold two sites with identical bands.
+        # list_outputs must surface both sites and show one at a time (not a
+        # newest-wins mix). Mirrors /ut2/jerome/ql/prose/sinistro/250710.
+        import os
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "250710"
+        rdir.mkdir(parents=True)
+        bands = ("gp", "zs")
+        # Write cpt first (older), then lsc (newer) so newest-wins would pick lsc.
+        for i, site in enumerate(("cpt", "lsc")):
+            sstem = f"HIP67522_sinistro_{site}_250710"
+            for suf in ("_lightcurves.png", "_covariates.png", "_stacks.png"):
+                (rdir / (sstem + suf)).write_bytes(b"\x89PNG\r\n")
+            (rdir / (sstem + ".npz")).write_bytes(b"npz")
+            for b in bands:
+                bstem = f"HIP67522_sinistro_{site}_{b}_250710"
+                (rdir / (bstem + ".csv")).write_text("BJD_TDB,Flux\n1,1\n")
+                (rdir / (bstem + "_ref.png")).write_bytes(b"\x89PNG\r\n")
+            # bump mtimes so lsc (i=1) is strictly newer than cpt (i=0)
+            for p in rdir.glob(f"HIP67522_sinistro_{site}_*"):
+                os.utime(p, (1_000_000 + i, 1_000_000 + i))
+
+        # Both sites detected; default view is the newest reduction (lsc).
+        out = phot.list_outputs("sinistro", "250710", "HIP67522")
+        assert out["sites"] == ["cpt", "lsc"]
+        assert out["site"] == "lsc"
+        assert out["npz"] == "HIP67522_sinistro_lsc_250710.npz"
+        assert set(out["bands"]) == {"gp", "zs"}
+        assert out["bands"]["gp"]["csv"]["file"] == "HIP67522_sinistro_lsc_gp_250710.csv"
+
+        # Explicit site selection shows only that site's products.
+        out_cpt = phot.list_outputs("sinistro", "250710", "HIP67522", site="cpt")
+        assert out_cpt["site"] == "cpt"
+        assert out_cpt["sites"] == ["cpt", "lsc"]
+        assert out_cpt["npz"] == "HIP67522_sinistro_cpt_250710.npz"
+        assert out_cpt["bands"]["zs"]["csv"]["file"] == "HIP67522_sinistro_cpt_zs_250710.csv"
+        assert phot.discovered_targets("sinistro", "250710") == ["HIP67522"]
+
+    def test_single_site_has_no_chips(self, monkeypatch, tmp_path):
+        # One site only -> sites has a single entry so the template shows no chips.
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "250710"
+        rdir.mkdir(parents=True)
+        sstem = "HIP67522_sinistro_lsc_250710"
+        (rdir / (sstem + "_lightcurves.png")).write_bytes(b"\x89PNG\r\n")
+        (rdir / "HIP67522_sinistro_lsc_gp_250710.csv").write_text("BJD_TDB,Flux\n1,1\n")
+        out = phot.list_outputs("sinistro", "250710", "HIP67522")
+        assert out["sites"] == ["lsc"]
+        assert set(out["bands"]) == {"gp"}
+
+    def test_multi_mode_detects_and_filters(self, monkeypatch, tmp_path):
+        # prose appends ``_full`` for full_frame; central_2k_2x2 has no token.
+        # Both modes on one site+date must surface as two modes and filter
+        # independently without mistaking ``_full`` for a band/suffix.
+        import os
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "250710"
+        rdir.mkdir(parents=True)
+        # token "" -> central_2k_2x2 (older); "_full" -> full_frame (newer)
+        for i, token in enumerate(("", "_full")):
+            sstem = f"HIP67522_sinistro_lsc_250710{token}"
+            bstem = f"HIP67522_sinistro_lsc_gp_250710{token}"
+            files = [
+                rdir / (sstem + "_lightcurves.png"),
+                rdir / (sstem + ".npz"),
+                rdir / (bstem + ".csv"),
+                rdir / (bstem + "_ref.png"),
+            ]
+            for f in files:
+                f.write_bytes(b"x")
+                os.utime(f, (1_000_000 + i, 1_000_000 + i))  # _full (i=1) newest
+
+        # Both modes detected; default view is the newest reduction (full_frame).
+        out = phot.list_outputs("sinistro", "250710", "HIP67522")
+        assert out["modes"] == ["central_2k_2x2", "full_frame"]
+        assert out["mode"] == "full_frame"
+        assert out["npz"] == "HIP67522_sinistro_lsc_250710_full.npz"
+        assert out["bands"]["gp"]["csv"]["file"] == "HIP67522_sinistro_lsc_gp_250710_full.csv"
+        assert out["bands"]["gp"]["csv"]["file"].count("full") == 1
+
+        # Explicit mode selection shows only that mode's products.
+        out_2x2 = phot.list_outputs("sinistro", "250710", "HIP67522", mode="central_2k_2x2")
+        assert out_2x2["mode"] == "central_2k_2x2"
+        assert out_2x2["npz"] == "HIP67522_sinistro_lsc_250710.npz"
+        assert out_2x2["bands"]["gp"]["csv"]["file"] == "HIP67522_sinistro_lsc_gp_250710.csv"
+        # central_2k_2x2 must not pick up the _full products.
+        assert "full" not in out_2x2["bands"]["gp"]["csv"]["file"]
+
+    def test_single_mode_has_no_chips(self, monkeypatch, tmp_path):
+        # Only 2x2 present -> modes has one entry so the template shows no chips.
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "250710"
+        rdir.mkdir(parents=True)
+        (rdir / "HIP67522_sinistro_lsc_250710_lightcurves.png").write_bytes(b"\x89PNG\r\n")
+        (rdir / "HIP67522_sinistro_lsc_gp_250710.csv").write_text("BJD_TDB,Flux\n1,1\n")
+        out = phot.list_outputs("sinistro", "250710", "HIP67522")
+        assert out["modes"] == ["central_2k_2x2"]
+        assert set(out["bands"]) == {"gp"}
+
+    def test_classifies_ref_header(self, prose_dir):
+        # prose writes the reference frame header as a <stem>_ref_header.txt
+        # sidecar; it is discovered for the "view ref header" link.
+        rdir = prose_dir / INST / DATE
+        (rdir / f"{TARGET}_{INST}_{DATE}_ref_header.txt").write_text("SIMPLE = T\nEXPTIME = 30.0\n")
+        out = phot.list_outputs(INST, DATE, TARGET)
+        assert out["ref_header"] == f"{TARGET}_{INST}_{DATE}_ref_header.txt"
+
+    def test_ref_header_follows_selected_site(self, monkeypatch, tmp_path):
+        # The ref header is per-reduction, so it must track the selected site.
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "250710"
+        rdir.mkdir(parents=True)
+        for site in ("cpt", "lsc"):
+            stem = f"HIP67522_sinistro_{site}_250710"
+            (rdir / (stem + "_ref_header.txt")).write_text(f"SITEID = {site}\n")
+            (rdir / f"HIP67522_sinistro_{site}_gp_250710.csv").write_text("BJD_TDB,Flux\n1,1\n")
+        assert phot.list_outputs("sinistro", "250710", "HIP67522", site="cpt")["ref_header"] \
+            == "HIP67522_sinistro_cpt_250710_ref_header.txt"
+        assert phot.list_outputs("sinistro", "250710", "HIP67522", site="lsc")["ref_header"] \
+            == "HIP67522_sinistro_lsc_250710_ref_header.txt"
 
     def test_missing_dir_returns_empty(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
@@ -242,7 +437,7 @@ class TestRunOptions:
         cmd = phot.build_command(INST, DATE, TARGET, {}, test_run=False)
         # default numerics are NOT echoed
         for flag in ("--gif_stride", "--max_num_stars", "--cutout_size",
-                     "--ccd_trim", "--bin_size_minutes", "--ref_band",
+                     "--ccd_trim", "--edge_margin", "--bin_size_minutes", "--ref_band",
                      "--aper_radii", "--no_gif", "--use_barycorrpy"):
             assert flag not in cmd
         assert cmd[cmd.index("--bands") + 1:cmd.index("--bands") + 5] == BANDS
@@ -259,6 +454,7 @@ class TestRunOptions:
             "max_num_stars": "6",
             "min_star_separation": "12",
             "ccd_trim": "5,5",
+            "edge_margin": "20",
             "make_gif": False,
             "use_barycorrpy": True,
             "gif_stride": "50",
@@ -273,9 +469,17 @@ class TestRunOptions:
         assert "--aper_unit fwhm" in s
         assert "--max_num_stars 6" in s
         assert "--ccd_trim 5,5" in s
+        assert "--edge_margin 20" in s
         assert "--gif" not in cmd
         assert "--use_barycorrpy" in cmd
         assert "--gif_stride 50" in s
+
+    def test_edge_margin_zero_is_emitted_to_disable(self, monkeypatch, tmp_path):
+        # 0 is a meaningful value (disable edge exclusion), distinct from the
+        # blank auto default, so it must be passed through explicitly.
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        cmd = phot.build_command(INST, DATE, TARGET, {"edge_margin": "0"}, test_run=False)
+        assert "--edge_margin 0" in " ".join(cmd)
 
     def test_plot_gaia_sources_default_on(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
@@ -588,6 +792,55 @@ class TestFinalizeGrace:
             with phot._LOCK:
                 phot._JOBS.clear()
 
+    def test_terminal_marker_shortens_finalize_window(self, monkeypatch, tmp_path):
+        """Once prose logs a terminal result line, the finalize window shrinks to
+        the short terminal grace even when the default is large — so a successful
+        short run reloads quickly instead of waiting out the conservative window."""
+        monkeypatch.setattr(phot, "_FINALIZE_GRACE_S", 600)  # huge default
+        monkeypatch.setattr(phot, "_FINALIZE_GRACE_TERMINAL_S", 1)
+        _job, proc, log = self._make_job(monkeypatch, tmp_path)
+        try:
+            proc._rc = 0
+            # A non-terminal worker line + huge default -> still finalizing.
+            with open(log, "a") as f:
+                f.write("INFO: wrote apertures.png\n")
+            assert phot.job_status(INST, DATE, TARGET)["state"] == "finalizing"
+
+            # The terminal result line shrinks the window; freshly written so
+            # still finalizing for now.
+            with open(log, "a") as f:
+                f.write("INFO: photometry SUCCEEDED: 1/1 bands (9s elapsed)\n")
+            assert phot.job_status(INST, DATE, TARGET)["state"] == "finalizing"
+
+            # Past the short terminal window -> terminal done despite the 600s
+            # default that would otherwise still hold.
+            import time as _t
+            _t.sleep(1.2)
+            assert phot.job_status(INST, DATE, TARGET)["state"] == "done"
+        finally:
+            with phot._LOCK:
+                phot._JOBS.clear()
+
+    def test_partial_failure_marker_shortens_finalize_window(
+        self, monkeypatch, tmp_path
+    ):
+        """A PARTIAL FAILURE result line is equally terminal and must shorten the
+        window too; the run then resolves to 'error' (partial run)."""
+        monkeypatch.setattr(phot, "_FINALIZE_GRACE_S", 600)
+        monkeypatch.setattr(phot, "_FINALIZE_GRACE_TERMINAL_S", 1)
+        _job, proc, log = self._make_job(monkeypatch, tmp_path)
+        try:
+            proc._rc = 0
+            with open(log, "a") as f:
+                f.write("WARNING: photometry PARTIAL FAILURE: 1/2 bands reduced\n")
+            assert phot.job_status(INST, DATE, TARGET)["state"] == "finalizing"
+            import time as _t
+            _t.sleep(1.2)
+            assert phot.job_status(INST, DATE, TARGET)["state"] == "error"
+        finally:
+            with phot._LOCK:
+                phot._JOBS.clear()
+
     def test_cancelled_job_finalizes_immediately(self, monkeypatch, tmp_path):
         # A large grace window proves Cancel bypasses the finalize gate even
         # while the log still looks fresh.
@@ -648,6 +901,20 @@ class TestRoutes:
         assert r.status_code == 200
         assert f"{TARGET}_{INST}_{DATE}_lightcurves.png" in r.text
         assert "Per-band products" in r.text
+
+    def test_ref_header_link_and_inline_serving(self, client, prose_dir):
+        # The "view ref header" link appears when the sidecar exists and the file
+        # route serves it inline as text (so target=_blank opens it in a tab).
+        name = f"{TARGET}_{INST}_{DATE}_ref_header.txt"
+        (prose_dir / INST / DATE / name).write_text("SIMPLE = T\nEXPTIME = 30.0\nFILTER = gp\n")
+        r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
+        assert "view ref header" in r.text
+        assert name in r.text
+        fr = client.get(f"/photometry/file/{INST}/{DATE}/{name}")
+        assert fr.status_code == 200
+        assert fr.headers["content-type"].startswith("text/plain")
+        assert "attachment" not in (fr.headers.get("content-disposition") or "")
+        assert "EXPTIME" in fr.text
 
     def test_photometry_page_empty_selectors(self, client):
         r = client.get("/photometry")
@@ -712,6 +979,89 @@ class TestRoutes:
         for token in ("opt-ref_band", "opt-aper_radii", "opt-max_num_stars",
                       "opt-use_barycorrpy", "Pipeline options"):
             assert token in r.text
+
+    def test_photometry_page_sinistro_dynamic_selectors(self, client, tmp_path):
+        # Site/mode run dropdowns are obslog-derived and shown only when the
+        # obslog offers more than one choice for that target+date. Here two sites
+        # share a single mode: the Site dropdown appears (cpt, lsc) while the
+        # single-choice Mode dropdown is hidden, and values absent from the
+        # obslog (other sites, full_frame) are never offered.
+        import sqlite3
+        db = tmp_path / "muscat.db"
+        conn = sqlite3.connect(db)
+        conn.executemany(
+            """INSERT INTO frames (instrument, obsdate, ccd, filename, object, read_mode)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [
+                ("sinistro", "250710", 0, "cpt1m010-fa14-20250710-0082-e91", "HIP67522", "central_2k_2x2"),
+                ("sinistro", "250710", 0, "lsc1m009-fa15-20250710-0083-e91", "HIP67522", "central_2k_2x2"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        r = client.get("/photometry?inst=sinistro&date=250710&target=HIP67522")
+        assert r.status_code == 200
+        html = r.text
+        # two sites -> Site dropdown shown with exactly the obslog sites
+        assert 'id="opt-site"' in html
+        assert 'value="cpt"' in html
+        assert 'value="lsc"' in html
+        assert 'value="coj"' not in html
+        # one mode -> Mode dropdown hidden; full_frame never offered
+        assert 'id="opt-mode"' not in html
+        assert 'value="full_frame"' not in html
+
+    def _insert_two_sites(self, tmp_path):
+        import sqlite3
+        conn = sqlite3.connect(tmp_path / "muscat.db")
+        conn.executemany(
+            """INSERT INTO frames (instrument, obsdate, ccd, filename, object, read_mode)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [
+                ("sinistro", "250710", 0, "cpt1m010-fa14-20250710-0082-e91", "HIP67522", "central_2k_2x2"),
+                ("sinistro", "250710", 0, "lsc1m009-fa15-20250710-0083-e91", "HIP67522", "central_2k_2x2"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+    def test_sinistro_run_blocked_without_site_when_multi_site(self, client, tmp_path):
+        # Two sites + no site chosen -> the run is refused (400) so prose never
+        # silently merges frames from different telescopes.
+        self._insert_two_sites(tmp_path)
+        r = client.post("/photometry/run", json={
+            "inst": "sinistro", "date": "250710", "target": "HIP67522",
+            "test_run": True, "options": {"bands": ["gp"]},
+        })
+        assert r.status_code == 400
+        assert "select a site" in r.json()["error"].lower()
+
+    def test_sinistro_command_blocks_then_allows_with_site(self, client, tmp_path):
+        # The command preview reports the block (which disables the run buttons)
+        # until a site is selected, then clears.
+        self._insert_two_sites(tmp_path)
+        body = {"inst": "sinistro", "date": "250710", "target": "HIP67522", "test_run": False}
+        r = client.post("/photometry/command", json={**body, "options": {"bands": ["gp"]}})
+        assert "select a site" in (r.json()["error"] or "").lower()
+        r = client.post("/photometry/command", json={**body, "options": {"bands": ["gp"], "site": "lsc"}})
+        assert r.json()["error"] is None
+
+    def test_sinistro_single_site_not_blocked(self, client, tmp_path):
+        import sqlite3
+        conn = sqlite3.connect(tmp_path / "muscat.db")
+        conn.execute(
+            """INSERT INTO frames (instrument, obsdate, ccd, filename, object, read_mode)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            ("sinistro", "250710", 0, "lsc1m009-fa15-20250710-0083-e91", "HIP67522", "central_2k_2x2"),
+        )
+        conn.commit()
+        conn.close()
+        r = client.post("/photometry/command", json={
+            "inst": "sinistro", "date": "250710", "target": "HIP67522",
+            "test_run": False, "options": {"bands": ["gp"]},
+        })
+        assert r.json()["error"] is None
 
     def test_page_has_run_and_cancel_buttons(self, client):
         r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
@@ -811,6 +1161,43 @@ class TestRoutes:
         assert "dummy_muscat3_250717.csv" in r.text
         assert "Created:" in r.text
 
+    def test_transit_fit_sinistro_site_mode_chips(self, client, tmp_path, mocker):
+        import os
+        # two sites (cpt, lsc); lsc also has a full_frame variant.
+        specs = [
+            ("HIP67522_sinistro_cpt_gp_250710.csv", 100),
+            ("HIP67522_sinistro_lsc_gp_250710.csv", 200),
+            ("HIP67522_sinistro_lsc_gp_250710_full.csv", 300),
+        ]
+        paths = []
+        for name, t in specs:
+            p = tmp_path / name
+            p.write_text("BJD_TDB,Flux,Flux_Err\n1,1,0.1\n")
+            os.utime(p, (1_000_000 + t, 1_000_000 + t))
+            paths.append(p)
+        mocker.patch("muscat_db.transit_fit.get_csv_lightcurves", return_value=paths)
+        mocker.patch("muscat_db.transit_fit.get_fit_outputs", return_value=None)
+        mocker.patch("muscat_db.transit_fit.list_fit_runs", return_value=[])
+        mocker.patch("muscat_db.transit_fit.get_target_parameters", return_value={})
+        mocker.patch("muscat_db.web._get_dates", return_value=[])
+        mocker.patch("muscat_db.web._get_objects", return_value=[])
+        mocker.patch("muscat_db.photometry.discovered_targets", return_value=[])
+
+        # Default view is "all": both site chips with an All option, mixing the
+        # site/mode is allowed so every lightcurve is shown for selection.
+        r = client.get("/transit-fit?inst=sinistro&date=250710&target=HIP67522")
+        assert r.status_code == 200
+        assert "Site:" in r.text and ">all</a>" in r.text and ">cpt</a>" in r.text and ">lsc</a>" in r.text
+        assert "Mode:" in r.text and ">full_frame</a>" in r.text
+        assert "HIP67522_sinistro_lsc_gp_250710_full.csv" in r.text
+        assert "HIP67522_sinistro_cpt_gp_250710.csv" in r.text  # all sites shown by default
+
+        # explicit site+mode narrows the displayed lightcurves
+        r2 = client.get("/transit-fit?inst=sinistro&date=250710&target=HIP67522&site=lsc&mode=central_2k_2x2")
+        assert 'data-csv-name="HIP67522_sinistro_lsc_gp_250710.csv"' in r2.text
+        assert "HIP67522_sinistro_lsc_gp_250710_full.csv" not in r2.text
+        assert "HIP67522_sinistro_cpt_gp_250710.csv" not in r2.text
+
     def test_transit_fit_file_rejects_bad_target(self, client):
         r = client.get("/transit-fit/file/muscat3/250717/evil..target/timer-fit.log")
         assert r.status_code == 400
@@ -905,6 +1292,26 @@ class TestRoutes:
         assert len(norm_queries) >= 1, \
             f"Should have queried with space-normalized target, got: {seen_urls}"
 
+    def test_transit_fit_query_archive_local_csv(self, client):
+        # 1. Test local NASA Exoplanet Archive CSV query
+        r = client.get("/transit-fit/query-archive?target=HIP67522")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert data["pl_name"] == "HIP 67522 b"
+        assert data["params"]["teff"] == 5675.0
+        assert data["params"]["period"] == 6.9594731
+        assert data["params"]["st_ref"] != ""
+
+        # 2. Test local TOI Catalog CSV query
+        r2 = client.get("/transit-fit/query-archive?target=TOI-101.01&source=toi")
+        assert r2.status_code == 200
+        data2 = r2.json()
+        assert data2["ok"] is True
+        assert "TOI-101.01" in data2["pl_name"]
+        assert data2["params"]["teff"] == 5600.0
+        assert data2["params"]["period"] == 1.43036994965074
+
     def test_jobs_page(self, client, monkeypatch):
         mock_jobs = [
             {
@@ -949,6 +1356,158 @@ class TestRoutes:
         assert r.status_code == 200
         assert "MuSCAT-db Pipeline Workflow" in r.text
         assert "mermaid" in r.text
+
+    def test_ephemeris_route(self, client):
+        r = client.get("/ephemeris")
+        assert r.status_code == 200
+        assert "Ephemeris" in r.text
+        assert "transit timing variation" in r.text.lower()
+
+    def test_api_ephemeris_targets(self, client):
+        r = client.get("/api/ephemeris/targets")
+        assert r.status_code == 200
+        res = r.json()
+        assert res["ok"] is True
+        assert isinstance(res["targets"], list)
+
+    def test_api_ephemeris_target_info(self, client):
+        r = client.get("/api/ephemeris/target-info")
+        assert r.status_code == 422
+        
+        # Test fallback for a dummy target
+        r2 = client.get("/api/ephemeris/target-info?target=test_star")
+        assert r2.status_code == 200
+        res = r2.json()
+        assert res["ok"] is True
+        assert "planets" in res
+        assert "reference_ephemeris" in res
+        assert "nasa_ephemeris" in res
+        assert "toi_ephemeris" in res
+        assert "datasets" in res
+        assert res["reference_ephemeris"] == {"b": {"t0": 2450000.0, "period": 1.0}}
+        assert res["nasa_ephemeris"] == {"b": {"t0": 2450000.0, "period": 1.0}}
+        assert res["toi_ephemeris"] == {"b": {"t0": 2450000.0, "period": 1.0}}
+
+        # Test local confirmed planet query (TOI-1136)
+        r3 = client.get("/api/ephemeris/target-info?target=TOI-1136")
+        assert r3.status_code == 200
+        res3 = r3.json()
+        assert res3["ok"] is True
+        ref_ephem3 = res3["reference_ephemeris"]
+        nasa_ephem3 = res3["nasa_ephemeris"]
+        assert "b" in ref_ephem3
+        assert "c" in ref_ephem3
+        assert "g" in ref_ephem3
+        assert "b" in nasa_ephem3
+        assert abs(nasa_ephem3["b"]["t0"] - 2458684.7) < 1e-3
+        assert abs(nasa_ephem3["b"]["period"] - 4.1727) < 1e-3
+        
+        # Test local TOI candidate query (TOI-736)
+        r4 = client.get("/api/ephemeris/target-info?target=TOI-736")
+        assert r4.status_code == 200
+        res4 = r4.json()
+        assert res4["ok"] is True
+        ref_ephem4 = res4["reference_ephemeris"]
+        toi_ephem4 = res4["toi_ephemeris"]
+        assert "b" in ref_ephem4
+        assert "c" in ref_ephem4
+        assert "b" in toi_ephem4
+        assert abs(toi_ephem4["b"]["t0"] - 2458546.508066) < 1e-3
+        assert abs(toi_ephem4["b"]["period"] - 4.9899175) < 1e-3
+
+        # Test local TOI candidate query by TIC ID (TIC 181804752, resolved to confirmed LP 791-18)
+        r5 = client.get("/api/ephemeris/target-info?target=TIC+181804752")
+        assert r5.status_code == 200
+        res5 = r5.json()
+        assert res5["ok"] is True
+        ref_ephem5 = res5["reference_ephemeris"]
+        nasa_ephem5 = res5["nasa_ephemeris"]
+        assert "b" in ref_ephem5
+        assert "c" in ref_ephem5
+        assert "d" in ref_ephem5
+        assert "b" in nasa_ephem5
+        assert abs(nasa_ephem5["b"]["t0"] - 2458774.86973) < 1e-3
+        assert abs(nasa_ephem5["b"]["period"] - 0.9479981) < 1e-3
+        assert abs(nasa_ephem5["c"]["t0"] - 2458546.50923) < 1e-3
+        assert abs(nasa_ephem5["c"]["period"] - 4.98991) < 1e-3
+
+    def test_api_ephemeris_calculate(self, client):
+        r = client.post("/api/ephemeris/calculate", json={})
+        assert r.status_code == 400
+        
+        payload = {
+            "target": "test_star",
+            "planets_ephem": {
+                "b": {"t0": 2459000.1, "period": 3.5}
+            },
+            "datasets": []
+        }
+        r2 = client.post("/api/ephemeris/calculate", json=payload)
+        assert r2.status_code == 200
+        res = r2.json()
+        assert res["ok"] is True
+        assert "results" in res
+        assert "b" in res["results"]
+        assert res["results"]["b"]["was_fit"] is False
+
+        # Test calculation with multiple targets (list)
+        payload_list = {
+            "target": ["test_star", "test_star_2"],
+            "planets_ephem": {
+                "b": {"t0": 2459000.1, "period": 3.5}
+            },
+            "datasets": [
+                {"target": "test_star", "instrument": "muscat", "date": "240624", "run_id": "default", "checked": True}
+            ]
+        }
+        r3 = client.post("/api/ephemeris/calculate", json=payload_list)
+        assert r3.status_code == 200
+        res3 = r3.json()
+        assert res3["ok"] is True
+
+    def test_api_ephemeris_view_save_and_load(self, client):
+        state = {
+            "targets": ["TOI-736", "WASP-104"],
+            "checked_datasets": {
+                "TOI-736|muscat4|250501|run_a": True,
+                "WASP-104|muscat3|240122|run_b": False,
+            },
+            "fit_method": "weighted",
+            "x_axis": "bjd",
+            "show_excluded": True,
+            "show_utc": True,
+            "plot_title": "TOI-736 + WASP-104",
+        }
+
+        r = client.post("/api/ephemeris/view", json={"state": state})
+        assert r.status_code == 200
+        res = r.json()
+        assert res["ok"] is True
+        assert isinstance(res["slug"], str)
+        assert len(res["slug"]) >= 8
+
+        r_repeat = client.post("/api/ephemeris/view", json={"state": state})
+        assert r_repeat.status_code == 200
+        assert r_repeat.json()["slug"] == res["slug"]
+
+        r_load = client.get(f"/api/ephemeris/view/{res['slug']}")
+        assert r_load.status_code == 200
+        loaded = r_load.json()
+        assert loaded["ok"] is True
+        assert loaded["slug"] == res["slug"]
+        assert loaded["state"] == state
+
+        r_missing = client.get("/api/ephemeris/view/not_found")
+        assert r_missing.status_code == 404
+
+    def test_target_name_normalization(self):
+        from muscat_db.web import _normalize_target_name
+        assert _normalize_target_name("V1298Tau") == "V1298TAU"
+        assert _normalize_target_name("V1298Tau_b") == "V1298TAU"
+        assert _normalize_target_name("V1298Tauc") == "V1298TAU"
+        assert _normalize_target_name("TOI02016.03") == "TOI02016"
+        assert _normalize_target_name("TOI-4600") == "TOI4600"
+        assert _normalize_target_name("HIP 67522") == "HIP67522"
 
 
 class TestTransitFitJobs:
@@ -1061,7 +1620,7 @@ class TestTransitFitOptions:
         rdir = tmp_path / "run_dir"
         rdir.mkdir()
         
-        _write_fit_inputs(rdir, "muscat3", "260613", [csv_file], options)
+        _write_fit_inputs(rdir, "muscat3", "260613", "target", [csv_file], options)
         
         # Verify files created
         assert (rdir / "fit.yaml").is_file()

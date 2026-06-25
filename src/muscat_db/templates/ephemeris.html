@@ -1,0 +1,1776 @@
+{% extends "base.html" %}
+{% block title %}Ephemeris — Observed minus Calculated Plot — MuSCAT-db{% endblock %}
+{% block content %}
+<script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
+
+<div class="card" style="margin-top: 2rem; padding: 2rem;">
+  <h1 style="margin-top: 0; color: var(--accent); display: flex; align-items: center; gap: 0.5rem;">
+    Ephemerides
+  </h1>
+  <p style="color: var(--text-dim); margin-bottom: 1.5rem; font-size: 0.95rem;">
+    Analyze Transit Timing Variations (TTVs) across multiple instruments and dates. Click on any data point in the plot to navigate directly to the transit fit page it is based on.
+  </p>
+
+  <!-- Target Selection Grid -->
+  <div class="opt-grid" style="border-bottom: 1px solid var(--border); padding-bottom: 1.5rem; margin-bottom: 1.5rem;">
+    <div class="opt">
+      <label for="target-input" style="font-weight: 500;">🔍 Select Target Star</label>
+      <div style="display: flex; gap: 0.5rem;">
+        <select id="target-input" style="flex-grow: 1;">
+          <option value="">-- select target star --</option>
+        </select>
+        <button class="btn primary" type="button" id="load-target-btn">Load Datasets</button>
+      </div>
+      <span class="hint">Only targets with completed transit fit runs are listed. You can add and combine multiple target names.</span>
+      
+      <!-- Loaded targets pills container -->
+      <div id="loaded-targets-container" style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem;"></div>
+    </div>
+  </div>
+
+  <!-- Dynamic Planet Parameter Cards Container -->
+  <div id="planet-cards-section" style="display: none; margin-bottom: 1.5rem;">
+    <h2 style="color: var(--text);">Planetary Reference Ephemerides</h2>
+    <div id="planet-cards-container" class="card-grid" style="grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); margin-bottom: 1.5rem;">
+      <!-- Dynamically filled with planet inputs -->
+    </div>
+  </div>
+
+  <!-- Dataset Checkbox List Table -->
+  <div id="datasets-section" style="display: none; margin-bottom: 1.5rem;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+      <h2 style="margin: 0; color: var(--text);">Select Datasets to Include in Fit</h2>
+      <div style="display: flex; gap: 0.5rem;">
+        <button class="btn sm" type="button" onclick="toggleAllDatasets(true)">Select All</button>
+        <button class="btn sm" type="button" onclick="toggleAllDatasets(false)">Deselect All</button>
+      </div>
+    </div>
+    <div class="csv-wrap" style="border: 1px solid var(--border); border-radius: 8px;">
+      <table id="datasets-table" style="margin: 0;">
+        <thead>
+          <tr style="background: var(--surface2);">
+            <th style="width: 90px; text-align: center;">Use in Fit</th>
+            <th style="width: 90px;">Instrument</th>
+            <th style="width: 150px;">Target</th>
+            <th style="width: 90px;">Date</th>
+            <th style="width: 220px;">Run Name</th>
+            <th style="width: 120px;">Planet</th>
+            <th>Transit Centers (BJD)</th>
+          </tr>
+        </thead>
+        <tbody id="datasets-body">
+          <!-- Dynamically filled -->
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Automatic Fit Controls -->
+  <div id="action-section" style="display: none; gap: 1rem; align-items: center; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 1.5rem;">
+    <div class="opt-check-row" title="Unweighted fit treats all transits equally. Weighted fit uses individual fit uncertainties." style="padding: 0; display: flex; align-items: center; gap: 0.85rem; min-height: 34px;">
+      <span style="font-size: 0.85rem; color: var(--text-dim); font-weight: 500; white-space: nowrap;">⚙️ Fitting Method</span>
+      <label class="opt-check-item" style="display: inline-flex; align-items: center; gap: 0.35rem; cursor: pointer;">
+        <input type="radio" name="fit-method-type" value="unweighted" checked style="margin: 0;">
+        <span style="font-size: 0.85rem;">Unweighted</span>
+      </label>
+      <label class="opt-check-item" style="display: inline-flex; align-items: center; gap: 0.35rem; cursor: pointer;">
+        <input type="radio" name="fit-method-type" value="weighted" style="margin: 0;">
+        <span style="font-size: 0.85rem;">Weighted</span>
+      </label>
+    </div>
+    <div id="loader" style="display: none; align-items: center;">
+      <div class="spinner" title="Calculating fit"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Interactive Plot Area -->
+<div id="plot-card" class="card" style="margin-top: 1.5rem; display: none; padding: 1.5rem; min-height: 520px;">
+  <h2 style="margin-top: 0; margin-bottom: 0.5rem; color: var(--text);">O-C Plot</h2>
+  <div id="oc-plot"></div>
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.75rem; gap: 1.5rem; flex-wrap: wrap;">
+    <div style="display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; flex-grow: 1;">
+      <div class="opt-check-row" style="padding: 0; margin: 0; display: flex; align-items: center; gap: 1rem;">
+        <label class="opt-check-item">
+          <input type="radio" name="x-axis-type" value="bjd" checked>
+          <span>Time (BJD)</span>
+        </label>
+        <label class="opt-check-item">
+          <input type="radio" name="x-axis-type" value="epoch">
+          <span>Epoch</span>
+        </label>
+      </div>
+      <label class="opt-check-item">
+        <input type="checkbox" id="show-excluded-checkbox" checked>
+        <span>Show Excluded Points</span>
+      </label>
+      <label class="opt-check-item">
+        <input type="checkbox" id="show-twin-checkbox">
+        <span>Show date (UTC)</span>
+      </label>
+      <span style="border-left: 1px solid var(--border); height: 16px; margin: 0 0.5rem;"></span>
+      <div style="display: flex; align-items: center; gap: 0.35rem;">
+        <span style="font-size: 0.85rem; color: var(--text-dim); font-weight: 500; white-space: nowrap;">Plot Title:</span>
+        <input type="text" id="plot-suptitle-input" style="font-family: inherit; font-size: 0.85rem; padding: 0.25rem 0.5rem; height: 30px; border: 1px solid var(--border); border-radius: 4px; background: var(--input-bg); color: var(--text); width: 180px; outline: none; transition: border-color 0.15s;" placeholder="e.g. WASP-12 b">
+      </div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+      <a class="btn sm" id="oc-summary-link" href="#" target="_blank" rel="noopener" style="display: flex; align-items: center; gap: 0.35rem; font-weight: 500;">
+        tcs.txt
+      </a>
+      <button class="btn sm primary" type="button" id="download-plot-btn" style="display: flex; align-items: center; gap: 0.35rem; font-weight: 500;">
+        📥 Download PNG
+      </button>
+    </div>
+  </div>
+  <div id="plot-planet-settings" style="margin-top: 0.75rem; border-top: 1px solid var(--border); padding-top: 0.75rem; display: none; flex-direction: column; gap: 0.5rem;">
+  </div>
+</div>
+
+<!-- Fit Summary Panel -->
+<div id="results-card" class="card" style="margin-top: 1.5rem; display: none; padding: 1.5rem;">
+  <h2 style="margin-top: 0; color: var(--text);">Best-Fit Ephemeris Results</h2>
+  <div id="results-grid" style="display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));">
+    <!-- Filled on fit calculate response -->
+  </div>
+</div>
+
+<style>
+  .planet-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.02);
+  }
+  .planet-card h3 {
+    margin-top: 0;
+    margin-bottom: 0.75rem;
+    font-size: 1.05rem;
+    color: var(--accent2);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .planet-card h3 span {
+    font-size: 0.75rem;
+    background: var(--surface);
+    padding: 0.15rem 0.4rem;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+  }
+  tr.selected-row td {
+    background: color-mix(in srgb, var(--accent) 3%, transparent);
+  }
+  .text-highlight {
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    background: var(--surface2);
+    padding: 0.1rem 0.3rem;
+    border-radius: 4px;
+    font-weight: 500;
+  }
+  /* Remove number input spin buttons (up/down arrows) and fix box sizing */
+  .planet-card input[type="number"]::-webkit-outer-spin-button,
+  .planet-card input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .planet-card input[type="number"] {
+    -moz-appearance: textfield;
+    width: 100%;
+    box-sizing: border-box;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.88rem;
+    padding: 0.35rem 0.5rem;
+    height: 34px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--input-bg);
+    color: var(--text);
+  }
+  /* Clean minimalist spinner for calculation states */
+  .spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    display: inline-block;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+</style>
+
+<script>
+  function jdToUtcDateLabel(jd) {
+    const unixMs = (jd - 2440587.5) * 86400000;
+    const date = new Date(unixMs);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toISOString().slice(0, 10);
+  }
+
+  // Instrument to Plotly Marker Symbol mapper
+  function getSymbolForInstrument(inst) {
+    const name = (inst || '').toLowerCase();
+    if (name.includes('muscat4')) return 'diamond';
+    if (name.includes('muscat3')) return 'triangle-up';
+    if (name.includes('muscat2')) return 'square';
+    if (name.includes('muscat')) return 'circle';
+    if (name.includes('sinistro')) return 'triangle-down';
+    return 'hexagon';
+  }
+
+  const STORAGE_TARGET_KEY = 'muscat-ephem-selected-target';
+  const STORAGE_OPTS_PREFIX = 'muscat-ephem-opts-';
+  
+  // Combined data states
+  let loadedTargets = [];
+  const targetInfoCache = {}; // targetName -> targetInfo response object
+  let combinedPlanets = [];
+  let combinedRefEphem = {};
+  let combinedNasaEphem = {};
+  let combinedToiEphem = {};
+  let combinedDatasets = [];
+  let fitResults = null;
+  let pendingViewState = null;
+  let viewSaveTimer = null;
+  let lastSavedViewJson = '';
+
+  function parseUrlTargets() {
+    const raw = window.location.search.replace(/^\?/, '').split('&').find(part => part.split('=')[0] === 'targets');
+    if (!raw) return [];
+    const value = raw.slice(raw.indexOf('=') + 1);
+    return value.split(/[+,]/).map(t => decodeURIComponent(t).trim()).filter(Boolean);
+  }
+
+  function currentViewSlug() {
+    return new URLSearchParams(window.location.search).get('view') || '';
+  }
+
+  function datasetStateKey(d) {
+    return [d.target || '', d.instrument || '', d.date || '', d.run_id || ''].join('|');
+  }
+
+  function legacyDatasetStateKey(d) {
+    return `${d.target}-${d.instrument}-${d.date}-${d.run_id}`;
+  }
+
+  function applyViewStateToStorage(state, combinedKey) {
+    if (!state || !combinedKey) return;
+
+    if (state.fit_method) {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'fit-method-type', state.fit_method);
+      const radio = document.querySelector(`input[name="fit-method-type"][value="${state.fit_method}"]`);
+      if (radio) radio.checked = true;
+    }
+    if (state.x_axis) {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'x-axis-type', state.x_axis);
+      const radio = document.querySelector(`input[name="x-axis-type"][value="${state.x_axis}"]`);
+      if (radio) radio.checked = true;
+    }
+    if (typeof state.show_excluded === 'boolean') {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-excluded', String(state.show_excluded));
+      const cb = document.getElementById('show-excluded-checkbox');
+      if (cb) cb.checked = state.show_excluded;
+    }
+    if (typeof state.show_utc === 'boolean') {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-twin', String(state.show_utc));
+      const cb = document.getElementById('show-twin-checkbox');
+      if (cb) cb.checked = state.show_utc;
+    }
+    if (typeof state.plot_title === 'string') {
+      const input = document.getElementById('plot-suptitle-input');
+      if (input) {
+        input.value = state.plot_title;
+        input.dataset.lastAutoTarget = loadedTargets.slice().sort().join(' + ');
+      }
+    }
+
+    if (state.checked_datasets && typeof state.checked_datasets === 'object') {
+      localStorage.setItem(
+        STORAGE_OPTS_PREFIX + combinedKey + '-checked',
+        JSON.stringify(state.checked_datasets)
+      );
+    }
+    if (state.planet_options && typeof state.planet_options === 'object') {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + combinedKey, JSON.stringify(state.planet_options));
+    }
+    if (state.planet_plot_settings && typeof state.planet_plot_settings === 'object') {
+      localStorage.setItem(
+        STORAGE_OPTS_PREFIX + combinedKey + '-planet-plot-settings',
+        JSON.stringify(state.planet_plot_settings)
+      );
+      Object.keys(planetPlotSettings).forEach(k => delete planetPlotSettings[k]);
+    }
+  }
+
+  function collectEphemerisViewState() {
+    const checkedDatasets = {};
+    document.querySelectorAll('.dataset-checkbox').forEach(box => {
+      const index = parseInt(box.getAttribute('data-index'));
+      const d = combinedDatasets[index];
+      if (d) checkedDatasets[datasetStateKey(d)] = box.checked;
+    });
+
+    const planetOptions = {};
+    document.querySelectorAll('#planet-cards-container .planet-card').forEach(card => {
+      const pl = card.getAttribute('data-planet');
+      planetOptions[pl + '_t0'] = card.querySelector('.planet-t0')?.value || '';
+      planetOptions[pl + '_period'] = card.querySelector('.planet-period')?.value || '';
+      const selectEl = card.querySelector('.planet-source-select');
+      if (selectEl) planetOptions[pl + '_source'] = selectEl.value;
+    });
+
+    const fitMethod = document.querySelector('input[name="fit-method-type"]:checked')?.value || 'unweighted';
+    const xAxis = document.querySelector('input[name="x-axis-type"]:checked')?.value || 'bjd';
+    const plotTitle = document.getElementById('plot-suptitle-input')?.value || '';
+    const currentPlanetPlotSettings = {};
+    combinedPlanets.forEach(pl => {
+      if (planetPlotSettings[pl]) currentPlanetPlotSettings[pl] = planetPlotSettings[pl];
+    });
+
+    return {
+      targets: loadedTargets.slice().sort(),
+      checked_datasets: checkedDatasets,
+      fit_method: fitMethod,
+      planet_options: planetOptions,
+      planet_plot_settings: currentPlanetPlotSettings,
+      x_axis: xAxis,
+      show_excluded: Boolean(document.getElementById('show-excluded-checkbox')?.checked),
+      show_utc: Boolean(document.getElementById('show-twin-checkbox')?.checked),
+      plot_title: plotTitle
+    };
+  }
+
+  function updateViewUrl(slug) {
+    if (!slug || loadedTargets.length === 0) return;
+    const targetsParam = loadedTargets.slice().sort().map(encodeURIComponent).join('+');
+    const url = `${window.location.pathname}?targets=${targetsParam}&view=${encodeURIComponent(slug)}`;
+    window.history.replaceState(null, '', url);
+  }
+
+  function scheduleSaveView(delay = 600) {
+    if (loadedTargets.length === 0 || combinedDatasets.length === 0) return;
+    if (viewSaveTimer) clearTimeout(viewSaveTimer);
+    viewSaveTimer = setTimeout(() => {
+      viewSaveTimer = null;
+      const state = collectEphemerisViewState();
+      const stateJson = JSON.stringify(state);
+      if (stateJson === lastSavedViewJson) return;
+      fetch('/api/ephemeris/view', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state })
+      })
+      .then(r => r.json())
+      .then(res => {
+        if (!res.ok) {
+          console.warn('Failed to save ephemeris view:', res.error || res);
+          return;
+        }
+        lastSavedViewJson = stateJson;
+        updateViewUrl(res.slug);
+      })
+      .catch(e => console.warn('Failed to save ephemeris view:', e));
+    }, delay);
+  }
+
+  // 1. Initial Page Load Setup
+  document.addEventListener('DOMContentLoaded', function() {
+    const urlTargets = parseUrlTargets();
+    const viewSlug = currentViewSlug();
+
+    function restoreTargetsFromLocalStorage() {
+      const savedTargetVal = localStorage.getItem(STORAGE_TARGET_KEY);
+      if (!savedTargetVal) return;
+      let targetsToLoad = [];
+      try {
+        const parsed = JSON.parse(savedTargetVal);
+        if (Array.isArray(parsed)) {
+          targetsToLoad = parsed;
+        } else if (typeof parsed === 'string') {
+          targetsToLoad = [parsed];
+        }
+      } catch (e) {
+        if (typeof savedTargetVal === 'string') {
+          targetsToLoad = [savedTargetVal];
+        }
+      }
+      
+      if (targetsToLoad.length > 0) {
+        loadMultipleTargets(targetsToLoad);
+      }
+    }
+
+    if (viewSlug) {
+      fetch('/api/ephemeris/view/' + encodeURIComponent(viewSlug))
+        .then(r => r.json())
+        .then(res => {
+          if (!res.ok) {
+            console.warn('Failed to load ephemeris view:', res.error || res);
+            if (urlTargets.length > 0) loadMultipleTargets(urlTargets);
+            else restoreTargetsFromLocalStorage();
+            return;
+          }
+          pendingViewState = res.state || null;
+          const stateTargets = Array.isArray(pendingViewState?.targets) ? pendingViewState.targets : [];
+          const targetsToLoad = urlTargets.length > 0 ? urlTargets : stateTargets;
+          if (targetsToLoad.length > 0) loadMultipleTargets(targetsToLoad);
+        })
+        .catch(e => {
+          console.warn('Failed to load ephemeris view:', e);
+          if (urlTargets.length > 0) loadMultipleTargets(urlTargets);
+          else restoreTargetsFromLocalStorage();
+        });
+    } else if (urlTargets.length > 0) {
+      loadMultipleTargets(urlTargets);
+    } else {
+      restoreTargetsFromLocalStorage();
+    }
+
+    loadTargetsDropdown();
+    
+    // Wire load target button and input interactions
+    document.getElementById('load-target-btn').addEventListener('click', loadTargetData);
+
+    // Wire download PNG button
+    document.getElementById('download-plot-btn').addEventListener('click', downloadPlotPNG);
+    document.getElementById('oc-summary-link').addEventListener('click', prepareOCSummaryTXTLink);
+    
+    // Update plot title dynamically on input
+    document.getElementById('plot-suptitle-input').addEventListener('input', function() {
+      if (fitResults) {
+        drawPlot();
+      }
+      scheduleSaveView();
+    });
+    
+    // Restore X axis type preference
+    const savedXAxis = localStorage.getItem(STORAGE_OPTS_PREFIX + 'x-axis-type');
+    if (savedXAxis) {
+      const radio = document.querySelector(`input[name="x-axis-type"][value="${savedXAxis}"]`);
+      if (radio) radio.checked = true;
+    }
+
+    // Axis toggle redraws the plot and saves selection
+    document.querySelectorAll('input[name="x-axis-type"]').forEach(radio => {
+      radio.addEventListener('change', function() {
+        localStorage.setItem(STORAGE_OPTS_PREFIX + 'x-axis-type', this.value);
+        if (fitResults) {
+          drawPlot();
+        }
+        scheduleSaveView();
+      });
+    });
+
+    // Restore show-excluded checkbox preference
+    const savedShowExcluded = localStorage.getItem(STORAGE_OPTS_PREFIX + 'show-excluded');
+    const showExcludedCheckbox = document.getElementById('show-excluded-checkbox');
+    if (savedShowExcluded !== null) {
+      showExcludedCheckbox.checked = savedShowExcluded === 'true';
+    }
+
+    // Checkbox toggle redraws the plot and saves selection
+    showExcludedCheckbox.addEventListener('change', function() {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-excluded', this.checked);
+      if (fitResults) {
+        drawPlot();
+      }
+      scheduleSaveView();
+    });
+
+    // Restore show-twin checkbox preference
+    const savedShowTwin = localStorage.getItem(STORAGE_OPTS_PREFIX + 'show-twin');
+    const showTwinCheckbox = document.getElementById('show-twin-checkbox');
+    if (savedShowTwin !== null) {
+      showTwinCheckbox.checked = savedShowTwin === 'true';
+    }
+
+    // Checkbox toggle redraws the plot and saves selection
+    showTwinCheckbox.addEventListener('change', function() {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-twin', this.checked);
+      if (fitResults) {
+        drawPlot();
+      }
+      scheduleSaveView();
+    });
+
+    // Restore fit method preference
+    const savedFitMethod = localStorage.getItem(STORAGE_OPTS_PREFIX + 'fit-method-type');
+    if (savedFitMethod) {
+      const radio = document.querySelector(`input[name="fit-method-type"][value="${savedFitMethod}"]`);
+      if (radio) radio.checked = true;
+    }
+
+    // Fit method toggle redraws/recalculates the fit
+    document.querySelectorAll('input[name="fit-method-type"]').forEach(radio => {
+      radio.addEventListener('change', function() {
+        localStorage.setItem(STORAGE_OPTS_PREFIX + 'fit-method-type', this.value);
+        scheduleComputeFit(0);
+        scheduleSaveView();
+      });
+    });
+
+    // Theme changes recalculate colors and redraw chart
+    const themeObserver = new MutationObserver(function() {
+      if (document.getElementById('oc-plot').innerHTML !== '') {
+        drawPlot();
+      }
+    });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  });
+
+  // Load target dropdown autocomplete
+  function loadTargetsDropdown() {
+    fetch('/api/ephemeris/targets')
+      .then(r => r.json())
+      .then(res => {
+        if (res.ok && res.targets) {
+          const select = document.getElementById('target-input');
+          select.innerHTML = '<option value="">-- select target star --</option>';
+          res.targets.forEach(t => {
+            const opt = document.createElement('option');
+            opt.value = t;
+            opt.textContent = t;
+            select.appendChild(opt);
+          });
+        }
+      })
+      .catch(e => console.error('Error fetching targets list:', e));
+  }
+
+  // Load datasets and planets for chosen target
+  function loadTargetData() {
+    const targetInput = document.getElementById('target-input').value.trim();
+    if (!targetInput) return;
+
+    // Check if target is already loaded
+    if (loadedTargets.includes(targetInput)) {
+      document.getElementById('target-input').value = '';
+      return;
+    }
+
+    window.showLoading('Loading target datasets...');
+    
+    fetch('/api/ephemeris/target-info?target=' + encodeURIComponent(targetInput))
+      .then(r => r.json())
+      .then(res => {
+        if (!res.ok) {
+          alert('Error: ' + (res.error || 'Failed to retrieve target info'));
+          return;
+        }
+        
+        // Cache target response and add to target list
+        targetInfoCache[res.target] = res;
+        if (!loadedTargets.includes(res.target)) {
+          loadedTargets.push(res.target);
+        }
+        localStorage.setItem(STORAGE_TARGET_KEY, JSON.stringify(loadedTargets));
+        
+        document.getElementById('target-input').value = '';
+        
+        // Merge target data and update combined UI
+        mergeTargetData(res);
+        updateCombinedUI();
+      })
+      .catch(e => {
+        console.error(e);
+        alert('Network error loading target data.');
+      })
+      .finally(() => {
+        // Trigger base.html loader completion
+        if (window.done) window.done();
+      });
+  }
+
+  // Concurrent loading for multiple targets (e.g. on restore)
+  function loadMultipleTargets(targetsToLoad) {
+    window.showLoading('Loading target datasets...');
+    
+    const promises = targetsToLoad.map(t => 
+      fetch('/api/ephemeris/target-info?target=' + encodeURIComponent(t))
+        .then(r => r.json())
+    );
+    
+    Promise.all(promises)
+      .then(results => {
+        let loadedAny = false;
+        results.forEach(res => {
+          if (res.ok) {
+            targetInfoCache[res.target] = res;
+            if (!loadedTargets.includes(res.target)) {
+              loadedTargets.push(res.target);
+            }
+            mergeTargetData(res);
+            loadedAny = true;
+          }
+        });
+        
+        if (loadedAny) {
+          localStorage.setItem(STORAGE_TARGET_KEY, JSON.stringify(loadedTargets));
+          updateCombinedUI();
+        }
+      })
+      .catch(e => {
+        console.error(e);
+        alert('Error loading target data.');
+      })
+      .finally(() => {
+        if (window.done) window.done();
+      });
+  }
+
+  // Merge loaded target info into combined lists
+  function mergeTargetData(res) {
+    // 1. Merge planets list
+    res.planets.forEach(p => {
+      if (!combinedPlanets.includes(p)) {
+        combinedPlanets.push(p);
+      }
+    });
+    combinedPlanets.sort();
+    
+    // 2. Merge reference ephemeris params
+    for (const p in res.reference_ephemeris) {
+      if (!combinedRefEphem[p]) {
+        combinedRefEphem[p] = res.reference_ephemeris[p];
+      }
+    }
+    
+    // Merge nasa and toi ephemeris params
+    for (const p in res.nasa_ephemeris) {
+      if (!combinedNasaEphem[p]) {
+        combinedNasaEphem[p] = res.nasa_ephemeris[p];
+      }
+    }
+    for (const p in res.toi_ephemeris) {
+      if (!combinedToiEphem[p]) {
+        combinedToiEphem[p] = res.toi_ephemeris[p];
+      }
+    }
+    
+    // 3. Merge datasets (deduplicate)
+    res.datasets.forEach(ds => {
+      if (!ds.target) ds.target = res.target;
+      const exists = combinedDatasets.some(x => 
+        x.instrument === ds.instrument && 
+        x.date === ds.date && 
+        x.run_id === ds.run_id && 
+        x.target === ds.target
+      );
+      if (!exists) {
+        combinedDatasets.push(ds);
+      }
+    });
+  }
+
+  // Re-build all combined data states from targetInfoCache (e.g. after target removal)
+  function rebuildCombinedData() {
+    combinedPlanets = [];
+    combinedRefEphem = {};
+    combinedNasaEphem = {};
+    combinedToiEphem = {};
+    combinedDatasets = [];
+    
+    loadedTargets.forEach(t => {
+      const res = targetInfoCache[t];
+      if (res) {
+        mergeTargetData(res);
+      }
+    });
+  }
+
+  // Remove a loaded target
+  window.removeTarget = function(targetName) {
+    loadedTargets = loadedTargets.filter(t => t !== targetName);
+    localStorage.setItem(STORAGE_TARGET_KEY, JSON.stringify(loadedTargets));
+    
+    rebuildCombinedData();
+    updateCombinedUI();
+  };
+
+  // Build storage key from combined target names
+  function getCombinedStorageKey() {
+    return loadedTargets.slice().sort().join('+');
+  }
+
+  // Render combined targets list badges
+  function renderTargetsPills() {
+    const container = document.getElementById('loaded-targets-container');
+    container.innerHTML = '';
+    loadedTargets.forEach(t => {
+      const pill = document.createElement('span');
+      pill.className = 'badge';
+      pill.style.display = 'inline-flex';
+      pill.style.alignItems = 'center';
+      pill.style.gap = '0.35rem';
+      pill.style.padding = '0.35rem 0.6rem';
+      pill.style.fontSize = '0.9rem';
+      pill.style.background = 'var(--surface2)';
+      pill.style.border = '1px solid var(--border)';
+      pill.style.borderRadius = '20px';
+      pill.style.fontWeight = '500';
+      
+      pill.innerHTML = `
+        ${t}
+        <span style="cursor: pointer; font-weight: bold; color: var(--accent); font-size: 1.1rem; line-height: 1;" onclick="removeTarget('${t}')">×</span>
+      `;
+      container.appendChild(pill);
+    });
+  }
+
+  // Refresh UI and restore results for combined targets selection
+  function updateCombinedUI() {
+    renderTargetsPills();
+    
+    const defaultTitle = loadedTargets.slice().sort().join(' + ');
+    const suptitleInput = document.getElementById('plot-suptitle-input');
+    if (suptitleInput && (!suptitleInput.value || suptitleInput.dataset.lastAutoTarget !== defaultTitle)) {
+      suptitleInput.value = defaultTitle;
+      suptitleInput.dataset.lastAutoTarget = defaultTitle;
+    }
+    
+    if (loadedTargets.length === 0) {
+      document.getElementById('planet-cards-section').style.display = 'none';
+      document.getElementById('datasets-section').style.display = 'none';
+      document.getElementById('action-section').style.display = 'none';
+      document.getElementById('results-card').style.display = 'none';
+      document.getElementById('plot-card').style.display = 'none';
+      const pSettings = document.getElementById('plot-planet-settings');
+      if (pSettings) pSettings.style.display = 'none';
+      fitResults = null;
+      return;
+    }
+    
+    const combinedKey = getCombinedStorageKey();
+    if (pendingViewState) {
+      applyViewStateToStorage(pendingViewState, combinedKey);
+      pendingViewState = null;
+    }
+    
+    document.getElementById('results-card').style.display = 'none';
+    document.getElementById('plot-card').style.display = 'none';
+    
+    // Show sections first so elements are visible and resizable tables can measure column widths properly
+    document.getElementById('planet-cards-section').style.display = 'block';
+    document.getElementById('datasets-section').style.display = 'block';
+    document.getElementById('action-section').style.display = 'flex';
+    
+    // 1. Generate Planet Parameter Cards
+    renderPlanetCards(combinedPlanets, combinedRefEphem);
+    
+    // 2. Generate Dataset Table Rows
+    renderDatasetsTable(combinedDatasets);
+    
+    // 3. Render Planet Plot Style Customizer
+    renderPlanetPlotSettings();
+    
+    // 3. Restore previously calculated results if available
+    let savedResults = null;
+    try {
+      savedResults = JSON.parse(localStorage.getItem(STORAGE_OPTS_PREFIX + combinedKey + '-results'));
+    } catch (e) {}
+    
+    if (savedResults) {
+      fitResults = savedResults;
+      renderFitResults(fitResults);
+      drawPlot();
+    }
+    scheduleComputeFit(0);
+    scheduleSaveView(1200);
+  }
+
+  // Render planet parameters inputs
+  function renderPlanetCards(planets, refEphem) {
+    const container = document.getElementById('planet-cards-container');
+    container.innerHTML = '';
+    
+    const combinedKey = getCombinedStorageKey();
+    let storedOpts = {};
+    try {
+      storedOpts = JSON.parse(localStorage.getItem(STORAGE_OPTS_PREFIX + combinedKey) || '{}') || {};
+    } catch (e) {}
+
+    planets.forEach(p => {
+      const card = document.createElement('div');
+      card.className = 'card planet-card';
+      card.setAttribute('data-planet', p);
+      
+      const selectedSource = storedOpts[p + '_source'] || (combinedNasaEphem[p] && Object.keys(combinedNasaEphem[p]).length > 0 ? 'nasa' : (combinedToiEphem[p] && Object.keys(combinedToiEphem[p]).length > 0 ? 'toi' : 'nasa'));
+      
+      let datasetOptions = '';
+      combinedDatasets.forEach((ds, dsIdx) => {
+        if (ds.planets_fitted && ds.planets_fitted.includes(p)) {
+          const dsKey = `dataset_${dsIdx}`;
+          const isSel = selectedSource === dsKey ? ' selected' : '';
+          const dsName = `${ds.instrument.toUpperCase()} (${ds.date}) - ${ds.run_name}`;
+          datasetOptions += `<option value="${dsKey}"${isSel}>${dsName}</option>`;
+        }
+      });
+
+      const t0Val = storedOpts[p + '_t0'] !== undefined ? storedOpts[p + '_t0'] : (refEphem[p] ? refEphem[p].t0 : 2450000.0);
+      const perVal = storedOpts[p + '_period'] !== undefined ? storedOpts[p + '_period'] : (refEphem[p] ? refEphem[p].period : 1.0);
+
+      card.innerHTML = `
+        <h3>
+          <span>planet <strong>${p.toLowerCase()}</strong></span>
+        </h3>
+        <div class="opt-grid" style="grid-template-columns: 1fr; gap: 0.75rem;">
+          <div class="opt">
+            <label>Reference Epoch T0 (BJD)</label>
+            <input type="number" class="planet-t0" step="any" value="${t0Val}" onchange="saveTargetOpts(); scheduleComputeFit()">
+          </div>
+          <div class="opt">
+            <label>Period (days)</label>
+            <input type="number" class="planet-period" step="any" value="${perVal}" onchange="saveTargetOpts(); scheduleComputeFit()">
+          </div>
+          <div class="opt">
+            <label>Source</label>
+            <select class="planet-source-select select-sm" onchange="changePlanetSource(this, '${p}')" style="width: 100%; font-size: 0.85rem; padding: 0.35rem 0.5rem; background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; outline: none; cursor: pointer;">
+              <option value="nasa"${selectedSource === 'nasa' ? ' selected' : ''}>NASA Catalog</option>
+              <option value="toi"${selectedSource === 'toi' ? ' selected' : ''}>TOI Catalog</option>
+              ${datasetOptions}
+            </select>
+          </div>
+        </div>
+      `;
+      container.appendChild(card);
+    });
+  }
+
+  // Handle planet source select dropdown change
+  window.changePlanetSource = function(selectEl, p) {
+    const val = selectEl.value;
+    const card = selectEl.closest('.planet-card');
+    if (!card) return;
+    
+    const t0Input = card.querySelector('.planet-t0');
+    const periodInput = card.querySelector('.planet-period');
+    if (!t0Input || !periodInput) return;
+    
+    let newT0 = 2450000.0;
+    let newPeriod = 1.0;
+    
+    if (val === 'nasa') {
+      if (combinedNasaEphem[p]) {
+        newT0 = combinedNasaEphem[p].t0;
+        newPeriod = combinedNasaEphem[p].period;
+      }
+    } else if (val === 'toi') {
+      if (combinedToiEphem[p]) {
+        newT0 = combinedToiEphem[p].t0;
+        newPeriod = combinedToiEphem[p].period;
+      }
+    } else if (val.startsWith('dataset_')) {
+      const dsIdx = parseInt(val.split('_')[1]);
+      const ds = combinedDatasets[dsIdx];
+      if (ds && ds.planets_ephem && ds.planets_ephem[p]) {
+        newT0 = ds.planets_ephem[p].t0;
+        newPeriod = ds.planets_ephem[p].period;
+      }
+    }
+    
+    t0Input.value = newT0;
+    periodInput.value = newPeriod;
+    
+    saveTargetOpts();
+    scheduleComputeFit();
+    scheduleSaveView();
+  };
+
+  // Save planet input overrides to localStorage
+  function saveTargetOpts() {
+    if (loadedTargets.length === 0) return;
+    const combinedKey = getCombinedStorageKey();
+    const opts = {};
+    document.querySelectorAll('#planet-cards-container .planet-card').forEach(card => {
+      const pl = card.getAttribute('data-planet');
+      opts[pl + '_t0'] = card.querySelector('.planet-t0').value;
+      opts[pl + '_period'] = card.querySelector('.planet-period').value;
+      const selectEl = card.querySelector('.planet-source-select');
+      if (selectEl) {
+        opts[pl + '_source'] = selectEl.value;
+      }
+    });
+    localStorage.setItem(STORAGE_OPTS_PREFIX + combinedKey, JSON.stringify(opts));
+    scheduleSaveView();
+  }
+
+  // Render planet customizer settings (color & marker type) at the bottom of the plot card
+  const planetPlotSettings = {};
+  
+  function renderPlanetPlotSettings() {
+    const container = document.getElementById('plot-planet-settings');
+    if (!container) return;
+    container.innerHTML = '';
+    
+    if (loadedTargets.length === 0 || combinedPlanets.length === 0) {
+      container.style.display = 'none';
+      return;
+    }
+    container.style.display = 'flex';
+
+    const combinedKey = getCombinedStorageKey();
+    let savedSettings = {};
+    try {
+      savedSettings = JSON.parse(localStorage.getItem(STORAGE_OPTS_PREFIX + combinedKey + '-planet-plot-settings') || '{}') || {};
+    } catch(e) {}
+
+    combinedPlanets.forEach((pl, i) => {
+      const defaultColors = ['#6c8cff', '#0f9d8b', '#f87171', '#fcd34d'];
+      const defaultColor = defaultColors[i % defaultColors.length];
+      
+      if (!planetPlotSettings[pl]) {
+        planetPlotSettings[pl] = {
+          color: savedSettings[pl]?.color || defaultColor,
+          symbol: savedSettings[pl]?.symbol || 'instrument'
+        };
+      } else {
+        if (savedSettings[pl]) {
+          planetPlotSettings[pl].color = savedSettings[pl].color;
+          planetPlotSettings[pl].symbol = savedSettings[pl].symbol;
+        }
+      }
+
+      const settings = planetPlotSettings[pl];
+      
+      const row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.alignItems = 'center';
+      row.style.gap = '1.5rem';
+      row.style.flexWrap = 'wrap';
+      row.style.background = 'var(--surface2)';
+      row.style.border = '1px solid var(--border)';
+      row.style.borderRadius = '6px';
+      row.style.padding = '0.5rem 0.75rem';
+
+      row.innerHTML = `
+        <span class="badge" style="background: var(--surface); color: var(--accent2); font-weight: 600; font-size: 0.85rem; border: 1px solid var(--border); min-width: 80px; text-align: center;">
+          planet ${pl.toLowerCase()}
+        </span>
+        
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <span style="font-size: 0.85rem; color: var(--text-dim);">Color:</span>
+          <input type="color" class="planet-color-input" data-planet="${pl}" value="${settings.color}" style="border: 1px solid var(--border); border-radius: 4px; padding: 0; width: 34px; height: 26px; cursor: pointer; background: transparent;" onchange="updatePlanetPlotSetting('${pl}', 'color', this.value)">
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <span style="font-size: 0.85rem; color: var(--text-dim);">Marker:</span>
+          <select class="planet-symbol-select select-sm" data-planet="${pl}" style="font-size: 0.85rem; padding: 0.25rem 0.5rem; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 4px; outline: none; cursor: pointer;" onchange="updatePlanetPlotSetting('${pl}', 'symbol', this.value)">
+            <option value="instrument"${settings.symbol === 'instrument' ? ' selected' : ''}>Instrument-dependent</option>
+            <option value="circle"${settings.symbol === 'circle' ? ' selected' : ''}>Circle</option>
+            <option value="square"${settings.symbol === 'square' ? ' selected' : ''}>Square</option>
+            <option value="triangle-up"${settings.symbol === 'triangle-up' ? ' selected' : ''}>Triangle Up</option>
+            <option value="triangle-down"${settings.symbol === 'triangle-down' ? ' selected' : ''}>Triangle Down</option>
+            <option value="diamond"${settings.symbol === 'diamond' ? ' selected' : ''}>Diamond</option>
+            <option value="cross"${settings.symbol === 'cross' ? ' selected' : ''}>Cross</option>
+          </select>
+        </div>
+      `;
+      container.appendChild(row);
+    });
+  }
+
+  window.updatePlanetPlotSetting = function(planet, key, value) {
+    if (!planetPlotSettings[planet]) planetPlotSettings[planet] = {};
+    planetPlotSettings[planet][key] = value;
+    
+    const combinedKey = getCombinedStorageKey();
+    localStorage.setItem(STORAGE_OPTS_PREFIX + combinedKey + '-planet-plot-settings', JSON.stringify(planetPlotSettings));
+    
+    if (fitResults) {
+      drawPlot();
+    }
+    scheduleSaveView();
+  };
+
+  // Render datasets rows
+  function renderDatasetsTable(datasets) {
+    const tbody = document.getElementById('datasets-body');
+    tbody.innerHTML = '';
+    
+    if (datasets.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-dim);">No completed fits found.</td></tr>`;
+      reinitResizableTable();
+      return;
+    }
+
+    const combinedKey = getCombinedStorageKey();
+    let checkedMap = {};
+    try {
+      checkedMap = JSON.parse(localStorage.getItem(STORAGE_OPTS_PREFIX + combinedKey + '-checked') || '{}') || {};
+    } catch(e) {}
+
+    datasets.forEach((d, idx) => {
+      const tr = document.createElement('tr');
+      const key = datasetStateKey(d);
+      const legacyKey = legacyDatasetStateKey(d);
+      const isChecked = checkedMap[key] !== undefined ? checkedMap[key] : (checkedMap[legacyKey] !== undefined ? checkedMap[legacyKey] : true);
+      if (isChecked) tr.classList.add('selected-row');
+
+      // Create label summary of transits in this dataset
+      const transitsList = [];
+      if (d.fitted_tcs) {
+        for (const pl in d.fitted_tcs) {
+          const item = d.fitted_tcs[pl];
+          if (item && item.tc !== undefined && item.tc !== null && item.unc !== undefined && item.unc !== null) {
+            const val = Number(item.tc).toFixed(5);
+            const unc = Number(item.unc).toFixed(5);
+            transitsList.push(`<span class="badge badge-blue" style="margin-right: 0.35rem;">${val} ± ${unc}</span>`);
+          }
+        }
+      }
+      const transitsSummary = transitsList.length > 0 ? transitsList.join(' ') : '<span style="color: var(--text-dim); font-style: italic;">None</span>';
+      
+      const detailsUrl = `/transit-fit?inst=${d.instrument}&date=${d.date}&target=${encodeURIComponent(d.target)}&run=${d.run_id}`;
+
+      let runTypeBadge = '';
+      if (d.run_type === 'test') {
+        runTypeBadge = `<span class="badge badge-amber" style="font-size: 0.7rem; margin-left: 0.5rem; text-transform: lowercase;">test</span>`;
+      } else if (d.run_type === 'full') {
+        runTypeBadge = `<span class="badge badge-blue" style="font-size: 0.7rem; margin-left: 0.5rem; text-transform: lowercase;">full</span>`;
+      }
+
+      tr.innerHTML = `
+        <td style="text-align: center;">
+          <input type="checkbox" class="dataset-checkbox" data-index="${idx}" ${isChecked ? 'checked' : ''} onchange="onDatasetCheckboxChange(this, ${idx})">
+        </td>
+        <td class="mono">${d.instrument.toUpperCase()}</td>
+        <td><span class="badge" style="background: var(--surface); color: var(--text-dim); font-size: 0.8rem; border: 1px solid var(--border);">${d.target}</span></td>
+        <td class="mono">${d.date}</td>
+        <td>
+          <a href="${detailsUrl}" target="_blank" style="font-weight: 600; color: var(--text);" title="Click to view transit fit">
+            ${d.run_name} ↗
+          </a>
+          ${runTypeBadge}
+        </td>
+        <td class="mono">${d.planets_fitted}</td>
+        <td>${transitsSummary}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    
+    reinitResizableTable();
+  }
+
+  function reinitResizableTable() {
+    const t = document.getElementById('datasets-table');
+    if (!t) return;
+    delete t.dataset.resizableInit;
+    t.classList.remove('resizable-init');
+    if (t.tHead && t.tHead.rows[0]) {
+      Array.from(t.tHead.rows[0].cells).forEach(function (th) {
+        th.querySelectorAll('.col-resizer').forEach(h => h.remove());
+        th.style.width = '';
+      });
+    }
+    if (window.initTable) {
+      window.initTable(t);
+    }
+  }
+
+  function onDatasetCheckboxChange(cb, idx) {
+    const tr = cb.closest('tr');
+    if (cb.checked) {
+      tr.classList.add('selected-row');
+    } else {
+      tr.classList.remove('selected-row');
+    }
+    
+    // Save checks to localStorage
+    if (loadedTargets.length > 0) {
+      const combinedKey = getCombinedStorageKey();
+      const checkedMap = {};
+      document.querySelectorAll('.dataset-checkbox').forEach(box => {
+        const index = parseInt(box.getAttribute('data-index'));
+        const d = combinedDatasets[index];
+        const key = datasetStateKey(d);
+        checkedMap[key] = box.checked;
+      });
+      localStorage.setItem(STORAGE_OPTS_PREFIX + combinedKey + '-checked', JSON.stringify(checkedMap));
+    }
+    scheduleComputeFit();
+    scheduleSaveView();
+  }
+
+  function toggleAllDatasets(checked) {
+    document.querySelectorAll('.dataset-checkbox').forEach(box => {
+      box.checked = checked;
+      const tr = box.closest('tr');
+      if (checked) tr.classList.add('selected-row');
+      else tr.classList.remove('selected-row');
+    });
+    
+    if (loadedTargets.length > 0) {
+      const combinedKey = getCombinedStorageKey();
+      const checkedMap = {};
+      document.querySelectorAll('.dataset-checkbox').forEach(box => {
+        const index = parseInt(box.getAttribute('data-index'));
+        const d = combinedDatasets[index];
+        const key = datasetStateKey(d);
+        checkedMap[key] = box.checked;
+      });
+      localStorage.setItem(STORAGE_OPTS_PREFIX + combinedKey + '-checked', JSON.stringify(checkedMap));
+    }
+    scheduleComputeFit();
+    scheduleSaveView();
+  }
+
+  // 2. Linear Regression & Plotting
+  let computeFitTimer = null;
+  let computeFitRequestSeq = 0;
+
+  function scheduleComputeFit(delay = 350) {
+    if (loadedTargets.length === 0) return;
+    if (computeFitTimer) {
+      clearTimeout(computeFitTimer);
+    }
+    computeFitTimer = setTimeout(() => {
+      computeFitTimer = null;
+      computeFit();
+    }, delay);
+  }
+
+  function computeFit() {
+    if (loadedTargets.length === 0) return;
+    const requestSeq = ++computeFitRequestSeq;
+    
+    const planetsEphem = {};
+    let valid = true;
+    document.querySelectorAll('#planet-cards-container .planet-card').forEach(card => {
+      const pl = card.getAttribute('data-planet');
+      const t0 = parseFloat(card.querySelector('.planet-t0').value);
+      const period = parseFloat(card.querySelector('.planet-period').value);
+      if (isNaN(t0) || isNaN(period) || period <= 0) {
+        alert(`Please enter valid orbital parameters for planet ${pl.toLowerCase()}`);
+        valid = false;
+        return;
+      }
+      planetsEphem[pl] = { t0, period };
+    });
+    
+    if (!valid) {
+      const loader = document.getElementById('loader');
+      if (loader) loader.style.display = 'none';
+      return;
+    }
+
+    // Collect datasets list with check values
+    const datasetsReq = [];
+    document.querySelectorAll('.dataset-checkbox').forEach(box => {
+      const idx = parseInt(box.getAttribute('data-index'));
+      const ds = combinedDatasets[idx];
+      datasetsReq.push({
+        instrument: ds.instrument,
+        date: ds.date,
+        run_id: ds.run_id,
+        target: ds.target,
+        checked: box.checked
+      });
+    });
+
+    const loader = document.getElementById('loader');
+    loader.style.display = 'flex';
+
+    const combinedKey = getCombinedStorageKey();
+    const fitMethodRadio = document.querySelector('input[name="fit-method-type"]:checked');
+    const fitMethod = fitMethodRadio ? fitMethodRadio.value : 'unweighted';
+
+    fetch('/api/ephemeris/calculate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        target: loadedTargets,
+        planets_ephem: planetsEphem,
+        datasets: datasetsReq,
+        fit_method: fitMethod
+      })
+    })
+    .then(r => r.json())
+    .then(res => {
+      if (requestSeq !== computeFitRequestSeq) return;
+      if (!res.ok) {
+        alert('Fit calculation failed: ' + (res.error || 'Unknown error'));
+        return;
+      }
+      fitResults = res.results;
+      try {
+        localStorage.setItem(STORAGE_OPTS_PREFIX + combinedKey + '-results', JSON.stringify(fitResults));
+      } catch (e) {}
+      renderFitResults(res.results);
+      drawPlot();
+    })
+    .catch(e => {
+      if (requestSeq !== computeFitRequestSeq) return;
+      console.error(e);
+      alert('Error calculating ephemeris fit.');
+    })
+    .finally(() => {
+      if (requestSeq === computeFitRequestSeq) {
+        loader.style.display = 'none';
+      }
+    });
+  }
+
+  // Render textual best-fit parameters summary
+  function renderFitResults(results) {
+    const grid = document.getElementById('results-grid');
+    grid.innerHTML = '';
+    
+    for (const pl in results) {
+      const res = results[pl];
+      const div = document.createElement('div');
+      div.className = 'planet-card';
+      
+      let fitSummaryHtml = '';
+      if (res.was_fit) {
+        const methodLabel = res.fit_method === 'weighted' ? 'Weighted' : 'Unweighted';
+        fitSummaryHtml = `
+          <div style="margin-top: 0.5rem; font-size: 0.85rem;">
+            <p style="margin-bottom: 0.35rem;" title="Epoch centered to minimize parameter covariance, matching allesfitter2.">
+              <strong>Centered T0 (E = ${res.E_center}):</strong> <span class="text-highlight">${res.t0_fit_centered.toFixed(6)} ± ${res.t0_fit_centered_unc.toFixed(6)} BJD</span>
+            </p>
+            <p style="margin-bottom: 0.35rem;">
+              <strong>Extrapolated T0 (E = 0):</strong> <span class="text-highlight">${res.t0_fit.toFixed(6)} ± ${res.t0_fit_unc.toFixed(6)} BJD</span>
+            </p>
+            <p style="margin-bottom: 0.35rem;">
+              <strong>Fitted Period:</strong> <span class="text-highlight">${res.period_fit.toFixed(8)} ± ${res.period_fit_unc.toFixed(8)} days</span>
+            </p>
+            <p style="margin-bottom: 0rem; font-size: 0.75rem; color: var(--green); font-weight: 500;">
+              ✓ ${methodLabel} linear fit converged successfully
+            </p>
+          </div>
+        `;
+      } else {
+        fitSummaryHtml = `
+          <div style="margin-top: 0.5rem; font-size: 0.85rem;">
+            <p style="margin-bottom: 0.35rem; color: var(--text-dim); font-style: italic;">
+              Showing catalog ephemeris (fewer than 2 points checked to fit)
+            </p>
+            <p style="margin-bottom: 0.35rem;">
+              <strong>Catalog T0:</strong> <span class="text-highlight">${res.t0_ref.toFixed(6)} BJD</span>
+            </p>
+            <p style="margin-bottom: 0rem;">
+              <strong>Catalog Period:</strong> <span class="text-highlight">${res.period_ref.toFixed(8)} days</span>
+            </p>
+          </div>
+        `;
+      }
+
+      div.innerHTML = `
+        <h3 style="margin-bottom: 0.5rem;">planet ${pl.toLowerCase()}</h3>
+        ${fitSummaryHtml}
+      `;
+      grid.appendChild(div);
+    }
+    
+    document.getElementById('results-card').style.display = 'block';
+  }
+
+  // Draw plot using Plotly
+  function drawPlot() {
+    if (!fitResults) return;
+
+    const plotDiv = document.getElementById('oc-plot');
+    plotDiv.innerHTML = '';
+    const plotCard = document.getElementById('plot-card');
+    plotCard.style.display = 'block';
+
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const xType = document.querySelector('input[name="x-axis-type"]:checked').value;
+    const showExcluded = document.getElementById('show-excluded-checkbox').checked;
+    const showTwin = document.getElementById('show-twin-checkbox').checked;
+    const suptitle = document.getElementById('plot-suptitle-input').value.trim();
+
+    plotCard.style.minHeight = showTwin ? '620px' : '520px';
+    
+    const planets = Object.keys(fitResults).sort();
+    if (planets.length === 0) {
+      plotDiv.innerHTML = '<div style="text-align: center; color: var(--text-dim); padding-top: 5rem;">No data points available to plot.</div>';
+      return;
+    }
+    const colors = ['#6c8cff', '#0f9d8b', '#f87171', '#fcd34d'];
+    const traces = [];
+
+    let tickvals = [];
+    let ticktext = [];
+    if (showTwin) {
+      const firstPlanet = planets[0];
+      const firstRes = fitResults[firstPlanet];
+      const allPanelX = [];
+      planets.forEach(pl => {
+        fitResults[pl].points.forEach(p => {
+          if (p.checked || showExcluded) {
+            const x = xType === 'bjd' ? (p.bjd - 2450000) : p.epoch;
+            allPanelX.push(x);
+          }
+        });
+      });
+      if (allPanelX.length > 0) {
+        let minX = Math.min(...allPanelX);
+        let maxX = Math.max(...allPanelX);
+        let span = maxX - minX || 1;
+        
+        for (let k = 0; k <= 5; k++) {
+          let val = minX + span * (k / 5);
+          let bjd;
+          if (xType === 'bjd') {
+            bjd = val + 2450000;
+          } else {
+            const t0 = firstRes.was_fit ? firstRes.t0_fit : firstRes.t0_ref;
+            const period = firstRes.was_fit ? firstRes.period_fit : firstRes.period_ref;
+            bjd = t0 + val * period;
+          }
+          const label = jdToUtcDateLabel(bjd);
+          if (label) {
+            tickvals.push(val);
+            ticktext.push(label);
+          }
+        }
+      }
+    }
+    
+    const layout = {
+      title: suptitle ? {
+        text: suptitle,
+        font: {
+          size: 14,
+          color: isDark ? '#e1e4ed' : '#1a1d27',
+          family: '-apple-system, BlinkMacSystemFont, sans-serif'
+        }
+      } : null,
+      paper_bgcolor: 'transparent',
+      plot_bgcolor: isDark ? 'rgba(36, 40, 56, 0.4)' : 'rgba(238, 240, 246, 0.4)',
+      font: {
+        color: isDark ? '#e1e4ed' : '#1a1d27',
+        family: '-apple-system, BlinkMacSystemFont, sans-serif'
+      },
+      margin: { t: showTwin ? (suptitle ? 105 : 80) : (suptitle ? 45 : 20), b: showTwin ? 95 : 50, l: 65, r: 20 },
+      showlegend: true,
+      legend: {
+        orientation: 'h',
+        yanchor: showTwin ? 'top' : 'bottom',
+        y: showTwin ? -0.22 : 1.05,
+        xanchor: showTwin ? 'center' : 'right',
+        x: showTwin ? 0.5 : 1,
+        font: { size: 10 }
+      },
+      hovermode: 'closest'
+    };
+
+    if (planets.length === 2) {
+      layout.xaxis = {
+        title: xType === 'bjd' ? 'Time (BJD - 2450000)' : 'Epoch',
+        gridcolor: isDark ? '#2e3348' : '#d8dce6',
+        zerolinecolor: isDark ? '#2e3348' : '#d8dce6',
+        linecolor: isDark ? '#2e3348' : '#d8dce6',
+        tickfont: { size: 10 },
+        anchor: 'y2'
+      };
+      
+      if (showTwin && tickvals.length > 0) {
+        layout.xaxis2 = {
+          title: 'Date (UTC)',
+          visible: true,
+          tickmode: 'array',
+          overlaying: 'x',
+          matches: 'x',
+          side: 'top',
+          anchor: 'free',
+          position: 1,
+          tickvals: tickvals,
+          ticktext: ticktext,
+          showgrid: false,
+          showline: true,
+          ticks: 'outside',
+          automargin: true,
+          linecolor: isDark ? '#2e3348' : '#d8dce6',
+          tickfont: { size: 10, color: isDark ? '#e1e4ed' : '#1a1d27' },
+          titlefont: { size: 11, color: isDark ? '#e1e4ed' : '#1a1d27' }
+        };
+      }
+      
+      layout.yaxis = {
+        title: `planet ${planets[0].toLowerCase()} O-C (min)`,
+        gridcolor: isDark ? '#2e3348' : '#d8dce6',
+        zerolinecolor: isDark ? '#2e3348' : '#d8dce6',
+        linecolor: isDark ? '#2e3348' : '#d8dce6',
+        domain: [0.55, 1]
+      };
+      
+      layout.yaxis2 = {
+        title: `planet ${planets[1].toLowerCase()} O-C (min)`,
+        gridcolor: isDark ? '#2e3348' : '#d8dce6',
+        zerolinecolor: isDark ? '#2e3348' : '#d8dce6',
+        linecolor: isDark ? '#2e3348' : '#d8dce6',
+        domain: [0, 0.45]
+      };
+
+      planets.forEach((pl, i) => {
+        const res = fitResults[pl];
+        const yaxisKey = i === 0 ? 'y' : 'y2';
+        const color = colors[i % colors.length];
+        
+        // Build traces
+        const plTraces = getPlotlyTracesForPlanet(res, pl, color, xType, yaxisKey, isDark, showExcluded);
+        plTraces.forEach(t => traces.push(t));
+      });
+      
+    } else {
+      const rows = planets.length;
+      layout.xaxis = {
+        title: xType === 'bjd' ? 'Time (BJD - 2450000)' : 'Epoch',
+        gridcolor: isDark ? '#2e3348' : '#d8dce6',
+        zerolinecolor: isDark ? '#2e3348' : '#d8dce6',
+        linecolor: isDark ? '#2e3348' : '#d8dce6',
+        tickfont: { size: 10 },
+        anchor: rows > 1 ? 'y' + rows : 'y'
+      };
+
+      if (showTwin && tickvals.length > 0) {
+        layout.xaxis2 = {
+          title: 'Date (UTC)',
+          visible: true,
+          tickmode: 'array',
+          overlaying: 'x',
+          matches: 'x',
+          side: 'top',
+          anchor: 'free',
+          position: 1,
+          tickvals: tickvals,
+          ticktext: ticktext,
+          showgrid: false,
+          showline: true,
+          ticks: 'outside',
+          automargin: true,
+          linecolor: isDark ? '#2e3348' : '#d8dce6',
+          tickfont: { size: 10, color: isDark ? '#e1e4ed' : '#1a1d27' },
+          titlefont: { size: 11, color: isDark ? '#e1e4ed' : '#1a1d27' }
+        };
+      }
+
+      planets.forEach((pl, i) => {
+        const yaxisKey = i === 0 ? 'y' : 'y' + (i + 1);
+        const heightFraction = 0.85 / rows;
+        const gap = 0.15 / (rows - 1 || 1);
+        const start = 1 - (i + 1) * heightFraction - i * gap;
+        const end = start + heightFraction;
+        
+        layout['yaxis' + (i === 0 ? '' : i + 1)] = {
+          title: `planet ${pl.toLowerCase()} O-C (min)`,
+          gridcolor: isDark ? '#2e3348' : '#d8dce6',
+          zerolinecolor: isDark ? '#2e3348' : '#d8dce6',
+          linecolor: isDark ? '#2e3348' : '#d8dce6',
+          domain: [Math.max(0, start), Math.min(1, end)]
+        };
+
+        const res = fitResults[pl];
+        const color = colors[i % colors.length];
+        const plTraces = getPlotlyTracesForPlanet(res, pl, color, xType, yaxisKey, isDark, showExcluded);
+        plTraces.forEach(t => traces.push(t));
+      });
+    }
+
+    if (showTwin && tickvals.length > 0) {
+      traces.push({
+        x: tickvals,
+        y: tickvals.map(() => 0),
+        xaxis: 'x2',
+        yaxis: 'y',
+        mode: 'markers',
+        type: 'scatter',
+        marker: { opacity: 0, size: 1 },
+        line: { width: 0 },
+        hoverinfo: 'skip',
+        showlegend: false,
+        cliponaxis: false
+      });
+    }
+
+    // Add legend guide for instruments if any planet uses instrument shapes
+    let hasInstrumentSymbol = false;
+    for (const pl in fitResults) {
+      const settings = planetPlotSettings[pl];
+      if (!settings || settings.symbol === 'instrument') {
+        hasInstrumentSymbol = true;
+        break;
+      }
+    }
+    
+    if (hasInstrumentSymbol) {
+      const activeInstruments = new Set();
+      for (const pl in fitResults) {
+        fitResults[pl].points.forEach(p => {
+          if (p.checked || showExcluded) {
+            activeInstruments.add(p.instrument);
+          }
+        });
+      }
+      
+      activeInstruments.forEach(inst => {
+        traces.push({
+          x: [null],
+          y: [null],
+          mode: 'markers',
+          type: 'scatter',
+          name: inst.toUpperCase(),
+          marker: {
+            color: '#888888',
+            size: 8,
+            symbol: getSymbolForInstrument(inst)
+          },
+          showlegend: true,
+          hoverinfo: 'skip'
+        });
+      });
+    }
+
+    Plotly.newPlot(plotDiv, traces, layout, { responsive: true, displayModeBar: false });
+
+    // Click event callback
+    plotDiv.on('plotly_click', function(data) {
+      const pt = data.points[0];
+      if (pt.customdata) {
+        const cd = pt.customdata;
+        const url = `/transit-fit?inst=${cd.inst}&date=${cd.date}&target=${encodeURIComponent(cd.target || loadedTargets[0] || '')}&run=${cd.run_id}`;
+        window.open(url, '_blank');
+      }
+    });
+  }
+
+  function downloadPlotPNG() {
+    const plotDiv = document.getElementById('oc-plot');
+    if (!plotDiv || !fitResults) return;
+    const filename = 'oc_plot_' + (getCombinedStorageKey() || 'export');
+    
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const showTwin = document.getElementById('show-twin-checkbox').checked;
+    const suptitle = document.getElementById('plot-suptitle-input').value.trim();
+    
+    // Always apply solid white background layout overrides for image export
+    const tempLayout = {
+      'paper_bgcolor': '#ffffff',
+      'plot_bgcolor': 'rgba(238, 240, 246, 0.4)',
+      'font.color': '#1a1d27',
+      'title.font.color': '#1a1d27',
+      'xaxis.gridcolor': '#d8dce6',
+      'xaxis.zerolinecolor': '#d8dce6',
+      'xaxis.linecolor': '#d8dce6',
+    };
+    
+    if (showTwin) {
+      tempLayout['xaxis2.linecolor'] = '#d8dce6';
+    }
+    
+    const planets = Object.keys(fitResults).sort();
+    planets.forEach((pl, i) => {
+      const key = 'yaxis' + (i === 0 ? '' : i + 1);
+      tempLayout[key + '.gridcolor'] = '#d8dce6';
+      tempLayout[key + '.zerolinecolor'] = '#d8dce6';
+      tempLayout[key + '.linecolor'] = '#d8dce6';
+    });
+
+    Plotly.relayout(plotDiv, tempLayout).then(() => {
+      Plotly.downloadImage(plotDiv, {
+        format: 'png',
+        width: 1200,
+        height: 600,
+        filename: filename,
+        background: '#ffffff'
+      }).then(() => {
+        // Restore layout properties back to original state based on theme
+        const restoreLayout = {
+          'paper_bgcolor': 'transparent',
+          'plot_bgcolor': isDark ? 'rgba(36, 40, 56, 0.4)' : 'rgba(238, 240, 246, 0.4)',
+          'font.color': isDark ? '#e1e4ed' : '#1a1d27',
+          'title.font.color': isDark ? '#e1e4ed' : '#1a1d27',
+          'xaxis.gridcolor': isDark ? '#2e3348' : '#d8dce6',
+          'xaxis.zerolinecolor': isDark ? '#2e3348' : '#d8dce6',
+          'xaxis.linecolor': isDark ? '#2e3348' : '#d8dce6',
+        };
+        if (showTwin) {
+          restoreLayout['xaxis2.linecolor'] = isDark ? '#2e3348' : '#d8dce6';
+        }
+        planets.forEach((pl, i) => {
+          const key = 'yaxis' + (i === 0 ? '' : i + 1);
+          restoreLayout[key + '.gridcolor'] = isDark ? '#2e3348' : '#d8dce6';
+          restoreLayout[key + '.zerolinecolor'] = isDark ? '#2e3348' : '#d8dce6';
+          restoreLayout[key + '.linecolor'] = isDark ? '#2e3348' : '#d8dce6';
+        });
+        Plotly.relayout(plotDiv, restoreLayout);
+      });
+    });
+  }
+
+  function formatSummaryNumber(value, digits) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '';
+    return n.toFixed(digits).replace(/0+$/, '').replace(/\.$/, '');
+  }
+
+  function buildOCSummaryText() {
+    const rows = ['planet,epoch,tc,tc_unc'];
+    if (!fitResults) return rows.join('\n') + '\n';
+
+    Object.keys(fitResults).sort().forEach(planet => {
+      const result = fitResults[planet];
+      const points = (result.points || []).filter(p => p.checked);
+      points
+        .slice()
+        .sort((a, b) => a.epoch - b.epoch || a.bjd - b.bjd)
+        .forEach(p => {
+          const tc = formatSummaryNumber(p.bjd, 8);
+          const tcUnc = formatSummaryNumber(p.tc_unc !== undefined ? p.tc_unc : (p.oc_err_min || 0) / 1440.0, 10);
+          rows.push(`${planet},${p.epoch},${tc},${tcUnc}`);
+        });
+    });
+
+    return rows.join('\n') + '\n';
+  }
+
+  function prepareOCSummaryTXTLink(event) {
+    if (!fitResults) {
+      event.preventDefault();
+      alert('No O-C plot results are available yet.');
+      return;
+    }
+
+    const text = buildOCSummaryText();
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    event.currentTarget.href = url;
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+
+  function getPlotlyTracesForPlanet(res, planet, color, xType, yaxisKey, isDark, showExcluded) {
+    const settings = planetPlotSettings[planet] || { color: color, symbol: 'instrument' };
+    const pColor = settings.color;
+
+    const fitX = [], fitY = [], fitErr = [], fitCustom = [], fitText = [], fitSymbols = [];
+    const unX = [], unY = [], unErr = [], unCustom = [], unText = [], unSymbols = [];
+
+    res.points.forEach(p => {
+      const x = xType === 'bjd' ? (p.bjd - 2450000) : p.epoch;
+      const y = p.oc_min;
+      const err = p.oc_err_min;
+      const cd = { inst: p.instrument, date: p.date, run_id: p.run_id, target: p.target };
+      const symbol = settings.symbol === 'instrument' ? getSymbolForInstrument(p.instrument) : settings.symbol;
+      
+      const label = `<b>${p.instrument.toUpperCase()} (${p.date}) — ${p.run_name}</b><br>` +
+                    `Target: ${p.target}<br>` +
+                    `Epoch: ${p.epoch}<br>` +
+                    `BJD: ${p.bjd.toFixed(5)}<br>` +
+                    `O-C: ${p.oc_min.toFixed(2)} ± ${p.oc_err_min.toFixed(2)} min<br>` +
+                    `<i>Click point to view transit fit ↗</i>`;
+
+      if (p.checked) {
+        fitX.push(x);
+        fitY.push(y);
+        fitErr.push(err);
+        fitCustom.push(cd);
+        fitText.push(label);
+        fitSymbols.push(symbol);
+      } else {
+        unX.push(x);
+        unY.push(y);
+        unErr.push(err);
+        unCustom.push(cd);
+        unText.push(label);
+        unSymbols.push(symbol);
+      }
+    });
+
+    const traces = [];
+    
+    // 1. Trace for Used points
+    if (fitX.length > 0) {
+      traces.push({
+        x: fitX,
+        y: fitY,
+        error_y: {
+          type: 'data',
+          array: fitErr,
+          visible: true,
+          color: pColor,
+          thickness: 1.5,
+          width: 4
+        },
+        mode: 'markers',
+        type: 'scatter',
+        name: `planet ${planet.toLowerCase()} (Used)`,
+        marker: {
+          color: pColor,
+          size: 9,
+          symbol: fitSymbols,
+          line: { color: isDark ? '#1a1d27' : '#ffffff', width: 1.5 }
+        },
+        customdata: fitCustom,
+        hoverinfo: 'text',
+        text: fitText,
+        xaxis: 'x',
+        yaxis: yaxisKey
+      });
+    }
+
+    // 2. Trace for Excluded points
+    if (showExcluded && unX.length > 0) {
+      traces.push({
+        x: unX,
+        y: unY,
+        error_y: {
+          type: 'data',
+          array: unErr,
+          visible: true,
+          color: isDark ? 'rgba(79, 88, 124, 0.4)' : 'rgba(162, 169, 189, 0.4)',
+          thickness: 1.2,
+          width: 3
+        },
+        mode: 'markers',
+        type: 'scatter',
+        name: `planet ${planet.toLowerCase()} (Excluded)`,
+        marker: {
+          color: 'rgba(0, 0, 0, 0)',
+          size: 8,
+          symbol: unSymbols,
+          line: { color: isDark ? 'rgba(79, 88, 124, 0.7)' : 'rgba(162, 169, 189, 0.7)', width: 2 }
+        },
+        customdata: unCustom,
+        hoverinfo: 'text',
+        text: unText,
+        xaxis: 'x',
+        yaxis: yaxisKey
+      });
+    }
+
+    // 3. Trace for flat horizontal line at zero representing the fit ephemeris
+    const allX = showExcluded ? fitX.concat(unX) : fitX;
+    if (allX.length > 0) {
+      const minX = Math.min(...allX);
+      const maxX = Math.max(...allX);
+      const span = maxX - minX || 1;
+      
+      traces.push({
+        x: [minX - span * 0.1, maxX + span * 0.1],
+        y: [0, 0],
+        mode: 'lines',
+        type: 'scatter',
+        name: `planet ${planet.toLowerCase()} Fit Line`,
+        line: {
+          color: pColor,
+          width: 1.5,
+          dash: 'dash'
+        },
+        hoverinfo: 'skip',
+        showlegend: false,
+        xaxis: 'x',
+        yaxis: yaxisKey
+      });
+    }
+
+    return traces;
+  }
+</script>
+{% endblock %}

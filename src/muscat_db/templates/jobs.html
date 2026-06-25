@@ -49,7 +49,7 @@
   {% for j in jobs %}
     {% set link_url -%}
       {%- if j.type == 'photometry' -%}/photometry?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}
-      {%- else -%}/transit-fit?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}
+      {%- else -%}/transit-fit?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}{% if j.run_id %}&run={{ j.run_id }}{% endif %}
       {%- endif -%}
     {%- endset %}
     <tr class="job-row" data-key="{{ j.key }}" data-status="{{ j.state }}" data-type="{{ j.type }}"
@@ -97,6 +97,7 @@
                   data-inst="{{ j.inst }}"
                   data-date="{{ j.date }}"
                   data-target="{{ j.target }}"
+                  data-run="{{ j.run_id }}"
                   onclick="cancelJob(this)">Cancel</button>
         {% elif j.state == 'cancelling' %}
           <button class="btn sm" disabled="">Cancelling…</button>
@@ -107,11 +108,12 @@
                   data-inst="{{ j.inst }}"
                   data-date="{{ j.date }}"
                   data-target="{{ j.target }}"
+                  data-run="{{ j.run_id }}"
                   onclick="cancelJob(this)">Cancel</button>
         {% else %}
           <button class="btn sm" onclick="reRunJob(this, '{{ j.key }}')" title="Re-run this job">⟳ Re-run</button>
         {% endif %}
-        <button class="btn sm log-btn" onclick="viewLog(this, '{{ j.type }}', '{{ j.inst }}', '{{ j.date }}', '{{ j.target }}')" title="View log" style="margin-left:0.25rem;">📄 Log</button>
+        <button class="btn sm log-btn" onclick="viewLog(this, '{{ j.type }}', '{{ j.inst }}', '{{ j.date }}', '{{ j.target }}', '{{ j.run_id }}')" title="View log" style="margin-left:0.25rem;">📄 Log</button>
         <button class="btn sm hide-btn" onclick="hideRow(this, '{{ j.key }}')" title="Hide this row" style="margin-left:0.25rem;">✕</button>
       </td>
     </tr>
@@ -226,20 +228,22 @@
     td.innerHTML = html;
   }
 
-  function replaceActions(row, state, key, type, inst, date, target) {
+  function replaceActions(row, state, key, type, inst, date, target, runId) {
     var td = row.querySelector('td.job-actions');
     if (!td) return;
+    runId = runId || '';
+    var cancelAttrs = 'data-key="' + key + '" data-type="' + type + '" data-inst="' + inst + '" data-date="' + date + '" data-target="' + target + '" data-run="' + runId + '"';
     var html = '';
     if (state === 'running') {
-      html = '<button class="btn sm danger" data-key="' + key + '" data-type="' + type + '" data-inst="' + inst + '" data-date="' + date + '" data-target="' + target + '" onclick="cancelJob(this)">Cancel</button>';
+      html = '<button class="btn sm danger" ' + cancelAttrs + ' onclick="cancelJob(this)">Cancel</button>';
     } else if (state === 'cancelling') {
       html = '<button class="btn sm" disabled="">Cancelling…</button>';
     } else if (state === 'pending') {
-      html = '<button class="btn sm danger" data-key="' + key + '" data-type="' + type + '" data-inst="' + inst + '" data-date="' + date + '" data-target="' + target + '" onclick="cancelJob(this)">Cancel</button>';
+      html = '<button class="btn sm danger" ' + cancelAttrs + ' onclick="cancelJob(this)">Cancel</button>';
     } else {
       html = '<button class="btn sm" onclick="reRunJob(this, \'' + key + '\')" title="Re-run this job">⟳ Re-run</button>';
     }
-    html += '<button class="btn sm log-btn" onclick="viewLog(this, \'' + type + '\', \'' + inst + '\', \'' + date + '\', \'' + target + '\')" title="View log" style="margin-left:0.25rem;">📄 Log</button>';
+    html += '<button class="btn sm log-btn" onclick="viewLog(this, \'' + type + '\', \'' + inst + '\', \'' + date + '\', \'' + target + '\', \'' + runId + '\')" title="View log" style="margin-left:0.25rem;">📄 Log</button>';
     html += '<button class="btn sm hide-btn" onclick="hideRow(this, \'' + key + '\')" title="Hide this row" style="margin-left:0.25rem;">✕</button>';
     td.innerHTML = html;
   }
@@ -264,14 +268,12 @@
     if (activeStatus === status) {
       activeStatus = null;
       document.querySelectorAll('.job-count').forEach(function(e) { e.classList.remove('active'); });
-      document.getElementById('clear-filter').style.display = 'none';
     } else {
       activeStatus = status;
       document.querySelectorAll('.job-count').forEach(function(e) { e.classList.remove('active'); });
       el.classList.add('active');
-      document.getElementById('clear-filter').style.display = '';
     }
-    applyFilters(); saveFilters();
+    applyFilters(); showClearFilter(); saveFilters();
   };
 
   window.clearFilter = function() {
@@ -279,9 +281,14 @@
     activeType = '';
     activeInst = '';
     document.querySelectorAll('.job-count').forEach(function(e) { e.classList.remove('active'); });
-    document.getElementById('clear-filter').style.display = 'none';
-    applyFilters(); saveFilters();
+    applyFilters(); showClearFilter(); saveFilters();
   };
+
+  function showClearFilter() {
+    var el = document.getElementById('clear-filter');
+    if (!el) return;
+    el.style.display = (activeStatus || activeType || activeInst) ? '' : 'none';
+  }
 
   // ── Search ───────────────────────────────────────────────────────────────
   function applyFilters() {
@@ -340,6 +347,7 @@
     var inst   = btn.getAttribute('data-inst');
     var date   = btn.getAttribute('data-date');
     var target = btn.getAttribute('data-target');
+    var runId  = btn.getAttribute('data-run') || '';
     var url    = type === 'transit_fit' ? '/transit-fit/cancel' : '/photometry/cancel';
 
     btn.disabled = true;
@@ -348,7 +356,7 @@
     fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ inst: inst, date: date, target: target })
+      body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })
     })
     .then(function(r) { if (!r.ok) return r.json().then(function(e) { throw new Error(e.error || 'Failed'); }); return r.json(); })
     .then(function() {
@@ -392,7 +400,7 @@
   };
 
   // ── View log (inline expand) ────────────────────────────────────────────
-  window.viewLog = function(btn, type, inst, date, target) {
+  window.viewLog = function(btn, type, inst, date, target, runId) {
     var row = btn.closest('tr');
     var logRow = row.nextElementSibling;
     if (!logRow || !logRow.classList.contains('log-row')) return;
@@ -404,6 +412,7 @@
     logRow.style.display = '';
     pre.textContent = 'Loading…';
     var url = '/jobs/log/' + encodeURIComponent(type) + '/' + encodeURIComponent(inst) + '/' + encodeURIComponent(date) + '/' + encodeURIComponent(target);
+    if (runId) url += '?run=' + encodeURIComponent(runId);
     fetch(url)
       .then(function(r) { if (!r.ok) throw new Error('Log not found'); return r.text(); })
       .then(function(text) { pre.textContent = text; })
@@ -464,7 +473,7 @@
           }
           var type = parts[0] || row.getAttribute('data-type') || '';
           type = type === 'transit_fit' ? 'transit_fit' : 'photometry';
-          replaceActions(row, f.state, key, type, parts[1] || '', parts[2] || '', parts[3] || '');
+          replaceActions(row, f.state, key, type, parts[1] || '', parts[2] || '', parts[3] || '', parts[4] || '');
           applyFilters();
         }
 
@@ -495,26 +504,75 @@
   // ── Initialise ──────────────────────────────────────────────────────────
   if (searchStatus) searchStatus.textContent = total + ' jobs';
 
-  // Restore / save filter state
-  try {
-    var saved = localStorage.getItem('jobs:activeStatus');
-    if (saved) {
-      var el = document.querySelector('.job-count[data-status="' + saved + '"]');
-      if (el) { toggleStatus(el, saved); }
+  // Read all saved values first and apply them without intermediate saves.
+  // This avoids a race where toggleType/toggleStatus call saveFilters() before
+  // all dimensions have been restored, overwriting values yet to be read.
+  (function() {
+    var savedStatus, savedSearch, savedType, savedInst;
+    try { savedStatus = localStorage.getItem('jobs:activeStatus'); } catch (_) {}
+    try { savedSearch = localStorage.getItem('jobs:search'); } catch (_) {}
+    try { savedType = localStorage.getItem('jobs:typeFilter'); } catch (_) {}
+    try { savedInst = localStorage.getItem('jobs:instFilter'); } catch (_) {}
+
+    if (savedStatus) {
+      try {
+        var el = document.querySelector('.job-count[data-status="' + savedStatus + '"]');
+        if (el) { toggleStatus(el, savedStatus); }
+      } catch (_) {}
     }
-    var savedSearch = localStorage.getItem('jobs:search');
-    if (savedSearch && searchInput) { searchInput.value = savedSearch; applyFilters(); }
-    var savedType = localStorage.getItem('jobs:typeFilter');
+    if (savedSearch && searchInput) { searchInput.value = savedSearch; }
     if (savedType) {
-      var tel = document.querySelector('#type-summary .job-count[data-type="' + savedType + '"]');
-      if (tel) { toggleType(tel, savedType); }
+      try {
+        var tel = document.querySelector('#type-summary .job-count[data-type="' + savedType + '"]');
+        if (tel) { toggleType(tel, savedType); }
+      } catch (_) {}
     }
-    var savedInst = localStorage.getItem('jobs:instFilter');
     if (savedInst) {
-      var iel = document.querySelector('#inst-summary .job-count[data-inst="' + savedInst + '"]');
-      if (iel) { toggleInst(iel, savedInst); }
+      try {
+        var iel = document.querySelector('#inst-summary .job-count[data-inst="' + savedInst + '"]');
+        if (iel) { toggleInst(iel, savedInst); }
+      } catch (_) {}
     }
-  } catch (_) {}
+    // Save final consolidated state after all restores are done
+    saveFilters();
+    showClearFilter();
+  })();
+  applyFilters();        // ensure table reflects state (even when nothing was restored)
+  showClearFilter();
+  window.addEventListener('pageshow', function(ev) {
+    if (ev.persisted) {
+      // On bfcache restore the JS context is preserved, so activeType/activeInst
+      // still hold the old values. Directly set, don't toggle, to avoid toggling off.
+      try {
+        var s = localStorage.getItem('jobs:activeStatus');
+        if (s && activeStatus !== s) {
+          var el = document.querySelector('.job-count[data-status="' + s + '"]');
+          if (el) toggleStatus(el, s);
+        }
+      } catch (_) {}
+      try {
+        var sq = localStorage.getItem('jobs:search');
+        if (sq && searchInput) searchInput.value = sq;
+      } catch (_) {}
+      try {
+        var st = localStorage.getItem('jobs:typeFilter');
+        if (st && activeType !== st) {
+          var tel = document.querySelector('#type-summary .job-count[data-type="' + st + '"]');
+          if (tel) toggleType(tel, st);
+        }
+      } catch (_) {}
+      try {
+        var si = localStorage.getItem('jobs:instFilter');
+        if (si && activeInst !== si) {
+          var iel = document.querySelector('#inst-summary .job-count[data-inst="' + si + '"]');
+          if (iel) toggleInst(iel, si);
+        }
+      } catch (_) {}
+      applyFilters();
+      showClearFilter();
+      saveFilters();
+    }
+  });
 
   function saveFilters() {
     try {
@@ -524,8 +582,6 @@
       localStorage.setItem('jobs:instFilter', activeInst || '');
     } catch (_) {}
   }
-
-  applyFilters();
 
   // ── Sort persistence ────────────────────────────────────────────────────
   function saveSort(colIdx, dir) {

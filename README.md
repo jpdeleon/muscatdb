@@ -16,6 +16,52 @@ Converted from the original Perl scripts (`mkobslog*.pl`, `auto_mkobslog.pl`, `s
 pip install -e .
 ```
 
+## Configuration
+
+All runtime configuration is read from environment variables; every variable has
+a sensible in-code default, so muscat-db works out of the box. The canonical
+registry lives in `src/muscat_db/config.py`, and `.env.example` documents each
+one.
+
+On import muscat-db auto-loads a `.env` file (via `python-dotenv`,
+`find_dotenv` searching upward from the working directory). A `.env` is
+**optional** — when absent, `load_dotenv` is a no-op and the defaults apply.
+Copy the template only when you want to override a default or pin a value:
+
+```bash
+cp .env.example .env   # then edit
+```
+
+Variables the app and the jobs it spawns inherit include `MUSCAT_DB_PATH`,
+`MUSCAT_DATA_DIR`, `MUSCAT_PROSE_DIR`, `MUSCAT_PROSE_PROJECT`,
+`MUSCAT_PROSE_CONDA_ENV`, `MUSCAT_TIMER_DIR`, the `MUSCAT_PHOT_*` job-lifecycle
+timeouts, `MUSCAT_TMPDIR`, and `ASTROMETRY_NET_API_KEY` (see below). At startup
+the server prints each variable's status (`set` / `default` / `unset`).
+
+`MUSCAT_TMPDIR` (default `/raid_ut2/home/jerome/tmp`) routes the temp files of
+spawned pipeline jobs (`TMPDIR`/`TMP`/`TEMP`) onto a roomy raid-backed directory,
+avoiding `ENOSPC` failures when the root `/tmp` fills up.
+
+Note: the auto-load covers the web app and the photometry/transit-fit jobs it
+launches. **Manual** `run_photometry` invocations in the conda `prose` shell do
+not import `muscat_db`, so set the shell directly (e.g.
+`export TMPDIR=/raid_ut2/home/jerome/tmp`) or `source .env` for those.
+
+### WCS solving (muscat / muscat2 only)
+
+muscat and muscat2 frames have no WCS in their headers, so the pipeline solves
+astrometry during calibration. The method is selected per run with
+`--wcs_method` (a **WCS method** selector is also exposed on the photometry page,
+enabled only for muscat/muscat2):
+
+- `twirl` — twirl + Gaia, **no API key needed** (default-safe choice).
+- `nova` — nova.astrometry.net, **requires `ASTROMETRY_NET_API_KEY`**.
+
+If `nova` is selected without the key set, calibration fails fast with a message
+pointing you to `--wcs_method twirl`. BANZAI-reduced **muscat3 / muscat4 /
+sinistro** already carry WCS in their headers and skip solving entirely, so the
+API key is irrelevant for those instruments.
+
 ## CLI Usage
 
 ### Scan a single date

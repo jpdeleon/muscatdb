@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass, field
 
 
@@ -104,4 +105,9 @@ def get_instrument(name: str) -> InstrumentConfig:
     return inst
 
 
-OBSLOG_BASE = "/ut3/muscat/obslog"
+# Shared obslog CSV base. Read here (and by prose2's _detect_narrow_bands) from
+# MUSCAT_OBSLOG_DIR so both repos agree and it can be pointed at a shared mount
+# during the celery/redis multi-server migration. .env is loaded in __init__ before
+# this module is imported, so the override is picked up. Must be a shared path
+# (NOT $HOME-derived) -- every worker + the web host read the same obslogs.
+OBSLOG_BASE = os.environ.get("MUSCAT_OBSLOG_DIR", "/ut3/muscat/obslog")

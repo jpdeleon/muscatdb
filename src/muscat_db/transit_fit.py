@@ -21,16 +21,45 @@ from dataclasses import dataclass, field
 from typing import IO
 import yaml
 
-from muscat_db import __version__
+from muscat_db import __meta__, __muscatdb_version__, __version__
 from muscat_db.instruments import INSTRUMENTS
-from muscat_db.photometry import output_base, valid_date, _conda_env_python, _tail, _to_float
+from muscat_db.photometry import (
+    output_base, valid_date, _conda_env_python, _tail, _to_float,
+    SINISTRO_SITES, SINISTRO_MODES,
+)
 from muscat_db.cache import register_cache
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent.resolve()
 
+_TIMER_VERSION: str | None = None
+_TIMER_VERSION_LOCK = threading.Lock()
 
-def _write_log_banner(logf: IO, cmd: list[str]) -> None:
-    """Write a versioned startup header then the command line to *logf*.
+
+def _timer_version() -> str:
+    """Return the installed timer package version, cached after first lookup."""
+    global _TIMER_VERSION
+    if _TIMER_VERSION is not None:
+        return _TIMER_VERSION
+    with _TIMER_VERSION_LOCK:
+        if _TIMER_VERSION is not None:
+            return _TIMER_VERSION
+        timer_py = _conda_env_python("timer")
+        if timer_py is None:
+            _TIMER_VERSION = "unknown"
+        else:
+            try:
+                result = subprocess.run(
+                    [timer_py, "-c", "from importlib.metadata import version; print(version('timer'))"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                _TIMER_VERSION = result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else "unknown"
+            except Exception:
+                _TIMER_VERSION = "unknown"
+    return _TIMER_VERSION
+
+
+def _write_log_banner(logf: IO, cmd: list[str], options: dict | None = None) -> None:
+    """Write a versioned startup header then the command line and parsed args to *logf*.
 
     This is the very first content written to every timer-fit.log so that
     each run is clearly stamped with the muscat-db version and wall-clock time.
@@ -38,21 +67,43 @@ def _write_log_banner(logf: IO, cmd: list[str]) -> None:
     separator = "=" * 60
     now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     logf.write(f"{separator}\n")
-    logf.write(f"muscat-db v{__version__}  |  {now_utc}\n")
+    logf.write(f"muscat-db v{__version__}  |  timer-fit v{_timer_version()}  |  {now_utc}\n")
     logf.write(f"command: transit-fit\n")
     logf.write(f"{separator}\n\n")
     logf.write(f"$ {shlex.join(cmd)}\n\n")
 
+    if options is not None:
+        logf.write("--- options ---\n")
+        for k, v in sorted(options.items()):
+            if (k == "stellar_ref" or k.startswith("pl_ref")) and isinstance(v, str) and v:
+                val = re.sub(
+                    r'<a\b[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+                    lambda m: f"{re.sub(r'<[^>]+>', '', m.group(2))} ({m.group(1)})",
+                    v
+                )
+                val = re.sub(r'<[^>]+>', '', val)
+                logf.write(f"  {k}: {val!r}\n")
+            else:
+                logf.write(f"  {k}: {v!r}\n")
+        logf.write("\n")
 
-def fit_output_dir(inst: str, date: str, target: str) -> pathlib.Path:
+
+def fit_output_dir(inst: str, date: str, target: str, run_id: str | None = None) -> pathlib.Path:
     """Return a transit-fit output directory confined below the timer root.
 
     Spaces are removed from the target directory component. ``ValueError`` is
     raised for an empty target or one containing ``..``, ``/``, or ``\\``.
+
+    When ``run_id`` is given, the fit is isolated in a per-run subdirectory
+    ``{target}/{run_id}/`` so distinct runs (different site/mode/run-name) never
+    overwrite each other. ``run_id=None`` reproduces the legacy ``{target}/``
+    path so pre-existing fits keep resolving.
     """
     base = pathlib.Path(os.environ.get("MUSCAT_TIMER_DIR", "/ut2/jerome/ql/timer")).expanduser().resolve(strict=False)
-    target_dir = _target_dir_name(target)
-    path = (base / inst / date / target_dir).resolve(strict=False)
+    parts = [base, inst, date, _target_dir_name(target)]
+    if run_id:
+        parts.append(_run_dir_name(run_id))
+    path = pathlib.Path(*[str(p) for p in parts]).resolve(strict=False)
     try:
         path.relative_to(base)
     except ValueError as exc:
@@ -73,9 +124,51 @@ def _target_dir_name(target: str) -> str:
     return target_dir
 
 
-def log_path(inst: str, date: str, target: str) -> pathlib.Path | None:
+def _run_dir_name(run_id: str) -> str:
+    """Validate a run-id used as a single path segment (same rules as target)."""
+    rid = (run_id or "").strip()
+    if (
+        not rid
+        or ".." in rid
+        or "/" in rid
+        or "\\" in rid
+        or rid in {".", ".."}
+    ):
+        raise ValueError("invalid run id")
+    return rid
+
+
+_RUN_NAME_MAX = 40
+_RUN_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def slugify_run_name(run_name: str | None) -> str:
+    """Slug a user run label: lowercase, non-alphanumeric -> ``_``, trimmed,
+    length-capped. Blank input -> ``default``. Never contains ``-`` so it stays
+    unambiguous under the ``-`` run-id join."""
+    s = _RUN_SLUG_RE.sub("_", (run_name or "").strip().lower()).strip("_")
+    return s[:_RUN_NAME_MAX].strip("_") or "default"
+
+
+def build_run_id(site: str | None, mode: str | None, run_name: str | None) -> str:
+    """Compose a run id from optional site, optional mode, and a run-name slug.
+
+    Components are joined by ``-`` (the components themselves only ever contain
+    ``_``, so ``-`` keeps the id readable and splittable). ``site``/``mode`` are
+    blank for non-sinistro or when undetermined; ``mixed`` when the selected
+    lightcurves span more than one value (mixing is allowed).
+    """
+    parts = [p for p in (
+        (site or "").strip().lower(),
+        (mode or "").strip().lower(),
+        slugify_run_name(run_name),
+    ) if p]
+    return "-".join(parts)
+
+
+def log_path(inst: str, date: str, target: str, run_id: str = "") -> pathlib.Path | None:
     try:
-        rdir = fit_output_dir(inst, date, target)
+        rdir = fit_output_dir(inst, date, target, run_id or None)
     except ValueError:
         return None
     p = rdir / "timer-fit.log"
@@ -98,6 +191,10 @@ class TransitFitJob:
     cancelled: bool = False
     elapsed: int | None = None
     run_type: str = "full"      # "test" | "full"
+    run_id: str = ""            # site-mode-runname slug; "" == legacy single-dir run
+    site: str = ""
+    mode: str = ""
+    run_name: str = ""
 
 
 _FIT_JOBS: dict[str, TransitFitJob] = {}
@@ -110,9 +207,45 @@ def _count_running_full() -> int:
     return sum(1 for j in _FIT_JOBS.values() if j.run_type == "full" and j.proc.poll() is None)
 
 
-def fit_job_key(inst: str, date: str, target: str) -> str:
-    """Return a job key using the validated target directory name."""
-    return f"{inst}/{date}/{_target_dir_name(target)}"
+def fit_job_key(inst: str, date: str, target: str, run_id: str = "") -> str:
+    """Return a job key using the validated target directory name.
+
+    When ``run_id`` is set the key is run-scoped so distinct runs of the same
+    target are independent jobs; an empty ``run_id`` reproduces the legacy key.
+    """
+    base = f"{inst}/{date}/{_target_dir_name(target)}"
+    return f"{base}/{run_id}" if run_id else base
+
+
+def csv_site_mode(name: str) -> tuple[str | None, str | None]:
+    """``(site, canonical_mode)`` parsed from a sinistro lightcurve CSV name.
+
+    Mirrors prose ``build_stem``: the LCO site is an ``_<site>_`` token and the
+    readout mode is the trailing ``_full`` token (``full_frame``; absence means
+    ``central_2k_2x2``). ``site`` is ``None`` when no site token is present.
+    """
+    stem = name[:-4] if name.lower().endswith(".csv") else name
+    mode = "central_2k_2x2"
+    if stem.endswith("_full"):
+        mode = "full_frame"
+        stem = stem[:-5]
+    site = next((t for t in stem.lower().split("_") if t in SINISTRO_SITES), None)
+    return site, mode
+
+
+def selected_site_mode(inst: str, csv_names: list[str]) -> tuple[str, str]:
+    """Derive ``(site_token, mode_token)`` for a run from its selected CSVs.
+
+    Single shared value -> that value; more than one -> ``mixed`` (mixing is
+    allowed); none / non-sinistro -> ``""``. Used to compose the run id.
+    """
+    if inst != "sinistro" or not csv_names:
+        return "", ""
+    sites = {s for s, _ in map(csv_site_mode, csv_names) if s}
+    modes = {m for _, m in map(csv_site_mode, csv_names) if m}
+    site = next(iter(sites)) if len(sites) == 1 else ("mixed" if sites else "")
+    mode = next(iter(modes)) if len(modes) == 1 else ("mixed" if modes else "")
+    return site, mode
 
 
 def _timer_prefix() -> list[str]:
@@ -525,6 +658,12 @@ def _normalize_band(raw: str) -> str:
     and dropped the narrow bands from chromatic plots.
     """
     low = raw.strip().lower()
+    # Strip site code prefix if present (e.g. cpt_, lsc_ for Sinistro site codes)
+    # so that the actual filter name is extracted and normalized correctly.
+    for site in SINISTRO_SITES:
+        if low.startswith(f"{site}_"):
+            low = low[len(site) + 1:]
+            break
     # Sodium D: real tokens start with "na" (Na_D, NaD, Na). Narrow Sloan tokens
     # start with their filter letter (e.g. "i_narrow"), so this is unambiguous.
     if low.startswith("na"):
@@ -532,6 +671,7 @@ def _normalize_band(raw: str) -> str:
     is_narrow = "narrow" in low or low.endswith("_nb")
     base = low[0] if low[:1] in "griz" else "g"
     return f"{base}_narrow" if is_narrow else base
+
 
 
 def _band_sort_key(band: str) -> tuple:
@@ -551,14 +691,21 @@ def _write_fit_inputs(
     rdir: pathlib.Path,
     inst: str,
     date: str,
+    target: str,
     csvs: list[pathlib.Path],
     options: dict,
+    site: str = "",
+    mode: str = "",
+    run_name: str = "",
+    run_id: str = "",
+    run_type: str = "",
 ) -> None:
     """Copy light-curve CSVs into ``rdir`` and write fit.yaml / sys.yaml.
 
     Shared by :func:`start_fit` (real run directory) and :func:`compute_logp`
     (throwaway temp directory) so both build identical timer inputs from the
-    form options.
+    form options. ``site``/``mode``/``run_name``/``run_id`` are recorded in
+    meta.yaml so run discovery never has to parse the directory name.
     """
     for c in csvs:
         shutil.copy2(c, rdir / c.name)
@@ -775,6 +922,25 @@ def _write_fit_inputs(
             default_flow_style=None, sort_keys=False,
         )
 
+    # meta.yaml
+    now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    meta_data = {
+        "__muscatdb_version__": __muscatdb_version__,
+        "__meta__": __meta__,
+        "timer_version": _timer_version(),
+        "created_at": now_utc,
+        "instrument": inst,
+        "date": date,
+        "target": target,
+        "site": site or "",
+        "mode": mode or "",
+        "run_name": run_name or "",
+        "run_id": run_id or "",
+        "run_type": run_type or "",
+    }
+    with open(rdir / "meta.yaml", "w") as f:
+        yaml.safe_dump(meta_data, f, default_flow_style=False, sort_keys=False)
+
 
 # Path to the standalone helper run inside the `timer` conda env.
 _LOGP_HELPER = pathlib.Path(__file__).parent / "_logp_helper.py"
@@ -822,7 +988,7 @@ def compute_logp(inst: str, date: str, target: str, options: dict, selected_csvs
 
     tmpdir = pathlib.Path(tempfile.mkdtemp(prefix="muscat_logp_"))
     try:
-        _write_fit_inputs(tmpdir, inst, date, csvs, options)
+        _write_fit_inputs(tmpdir, inst, date, target, csvs, options)
         try:
             proc = subprocess.run(
                 [timer_py, str(_LOGP_HELPER), str(tmpdir)],
@@ -870,7 +1036,7 @@ def start_fit(
     if not (target or "").strip():
         return {"ok": False, "error": "target is required"}
     try:
-        rdir = fit_output_dir(inst, date, target)
+        _target_dir_name(target)  # fail fast on a bad target name
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -889,19 +1055,40 @@ def start_fit(
         if not csvs:
             return {"ok": False, "error": "No lightcurves selected for fitting."}
 
+    # Identify this run: site/mode derived from the selected lightcurves (mixing
+    # allowed -> "mixed"), plus the user's run-name label. The run id isolates the
+    # working directory so distinct runs never overwrite each other.
+    run_name = str(options.get("run_name") or "").strip()
+    site, mode = selected_site_mode(inst, [c.name for c in csvs])
+    run_id = build_run_id(site, mode, run_name)
+    try:
+        rdir = fit_output_dir(inst, date, target, run_id)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
     # Working directory
     rdir.mkdir(parents=True, exist_ok=True)
 
     # Preserve existing products so timer can reuse them when clobber is false.
     # When overwrite is selected, fit.yaml sets clobber=true and timer owns the
     # invalidation/replacement of its cached results.
-    _write_fit_inputs(rdir, inst, date, csvs, options)
+    # Full fits always clobber — otherwise timer reuses the cached test-run
+    # trace (20 draws) and exits immediately, misleading the user into thinking
+    # their full-fit request was silently ignored.
+    run_type = "test" if test_run else "full"
+    _write_fit_inputs(rdir, inst, date, target, csvs, options,
+                      site=site, mode=mode, run_name=run_name, run_id=run_id,
+                      run_type=run_type)
 
     # Clear cached outputs so the next page load reads fresh results from disk.
     _fit_outputs_cache.clear()
 
-    key = fit_job_key(inst, date, target)
-    run_type = "test" if test_run else "full"
+    key = fit_job_key(inst, date, target, run_id)
+    params_json = json.dumps(
+        {"test_run": test_run, "options": options, "selected_csvs": selected_csvs,
+         "run_id": run_id, "site": site, "mode": mode, "run_name": run_name},
+        separators=(",", ":"),
+    )
 
     with _FIT_LOCK:
         # Queue full jobs when at capacity
@@ -910,16 +1097,16 @@ def start_fit(
             try:
                 save_job(
                     type_="transit_fit",
-                    inst=inst, date=date, target=target,
+                    inst=inst, date=date, target=target, run_id=run_id,
                     state="pending",
                     returncode=None, elapsed=0,
                     started_at=time.time(),
                     run_type=run_type,
-                    params=json.dumps({"test_run": test_run, "options": options, "selected_csvs": selected_csvs}, separators=(",", ":"))
+                    params=params_json,
                 )
             except Exception:
                 return {"ok": False, "error": "database not writable"}
-            return {"ok": True, "key": key, "queued": True}
+            return {"ok": True, "key": key, "queued": True, "run_id": run_id}
 
     # Launch process
     cmd = [*_timer_prefix(), "-v", str(rdir)]
@@ -927,7 +1114,7 @@ def start_fit(
         cmd.append("--test_run")
     log_path = rdir / "timer-fit.log"
     logf = open(log_path, "w")
-    _write_log_banner(logf, cmd)
+    _write_log_banner(logf, cmd, options)
     logf.flush()
 
     try:
@@ -939,6 +1126,11 @@ def start_fit(
             text=True,
             start_new_session=True,
         )
+        try:
+            with open(rdir / "timer-fit.pid", "w") as pidf:
+                pidf.write(str(proc.pid))
+        except Exception:
+            pass
     except (FileNotFoundError, OSError) as exc:
         logf.write(f"\nfailed to launch fitting: {exc}\n")
         logf.close()
@@ -948,7 +1140,7 @@ def start_fit(
         _FIT_JOBS[key] = TransitFitJob(
             key=key, inst=inst, date=date, target=target,
             cmd=cmd, proc=proc, logf=logf, log_path=log_path,
-            run_type=run_type,
+            run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name,
         )
         # Record new job in the database
         from muscat_db.database import save_job
@@ -957,32 +1149,143 @@ def start_fit(
             inst=inst,
             date=date,
             target=target,
+            run_id=run_id,
             state="running",
             returncode=None,
             elapsed=0,
             started_at=_FIT_JOBS[key].started_at,
             run_type=run_type,
-            params=json.dumps({"test_run": test_run, "options": options, "selected_csvs": selected_csvs}, separators=(",", ":"))
+            params=params_json,
         )
 
-    return {"ok": True, "key": key}
+    return {"ok": True, "key": key, "run_id": run_id}
 
 
-def job_status(inst: str, date: str, target: str) -> dict:
+def _pending_status(inst: str, date: str, target: str, run_id: str = "") -> dict | None:
+    """Return a queued-job status dict if a pending DB entry exists, else None.
+
+    A full run launched while the single full-job slot is occupied is recorded
+    in the DB as ``pending`` but not added to ``_FIT_JOBS``; surface that here so the
+    transit fitting page can show a "queued" state instead of silently resetting.
+    """
+    from muscat_db.database import get_persisted_jobs
+    try:
+        db_key = f"transit_fit:{fit_job_key(inst, date, target, run_id)}"
+    except ValueError:
+        return None
+    try:
+        for entry in get_persisted_jobs():
+            if (
+                entry["key"] == db_key
+                and entry["type"] == "transit_fit"
+                and entry["state"] == "pending"
+            ):
+                started = entry.get("started_at") or time.time()
+                return {
+                    "state": "pending",
+                    "returncode": None,
+                    "log": "",
+                    "elapsed": round(time.time() - started),
+                }
+    except Exception:
+        pass
+    return None
+
+
+def _running_status(inst: str, date: str, target: str, run_id: str = "") -> dict | None:
+    """Return an active running-job status dict if a running DB entry exists, else None.
+
+    A full run launched while the single full-job slot is occupied is recorded
+    in the DB as ``running``; surface that here if the process is active but not in ``_FIT_JOBS``.
+    """
+    from muscat_db.database import get_persisted_jobs
+    try:
+        db_key = f"transit_fit:{fit_job_key(inst, date, target, run_id)}"
+    except ValueError:
+        return None
+    try:
+        for entry in get_persisted_jobs():
+            if (
+                entry["key"] == db_key
+                and entry["type"] == "transit_fit"
+                and entry["state"] == "running"
+            ):
+                try:
+                    rdir = fit_output_dir(inst, date, target, run_id or None)
+                    lp = rdir / "timer-fit.log"
+                except ValueError:
+                    lp = None
+                started = entry.get("started_at") or time.time()
+                return {
+                    "state": "running",
+                    "returncode": None,
+                    "log": _tail(lp) if (lp and lp.is_file()) else "",
+                    "elapsed": round(time.time() - started),
+                }
+    except Exception:
+        pass
+    return None
+
+
+def _persisted_status(inst: str, date: str, target: str, run_id: str = "") -> dict | None:
+    """Return a terminal-state status dict from the DB for a job no longer in ``_FIT_JOBS``."""
+    from muscat_db.database import get_persisted_jobs
+    try:
+        db_key = f"transit_fit:{fit_job_key(inst, date, target, run_id)}"
+    except ValueError:
+        return None
+    try:
+        for entry in get_persisted_jobs():  # newest-first; one row per key
+            if entry["key"] != db_key or entry["type"] != "transit_fit":
+                continue
+            state = entry["state"]
+            if state not in ("done", "error", "cancelled"):
+                return None  # running/pending handled by the caller
+            
+            try:
+                rdir = fit_output_dir(inst, date, target, run_id or None)
+                lp = rdir / "timer-fit.log"
+            except ValueError:
+                lp = None
+            
+            return {
+                "state": state,
+                "returncode": entry.get("returncode"),
+                "log": _tail(lp) if (lp and lp.is_file()) else "",
+                "elapsed": round(entry.get("elapsed") or 0),
+            }
+    except Exception:
+        pass
+    return None
+
+
+def job_status(inst: str, date: str, target: str, run_id: str = "") -> dict:
     """Retrieve logs and status of an active transit fitting job."""
     try:
-        key = fit_job_key(inst, date, target)
+        key = fit_job_key(inst, date, target, run_id)
     except ValueError as exc:
         return {"state": "none", "log": "", "returncode": None, "elapsed": 0, "error": str(exc)}
     with _FIT_LOCK:
         job = _FIT_JOBS.get(key)
         if job is None:
+            pending = _pending_status(inst, date, target, run_id)
+            if pending is not None:
+                return pending
+            running = _running_status(inst, date, target, run_id)
+            if running is not None:
+                return running
+            persisted = _persisted_status(inst, date, target, run_id)
+            if persisted is not None:
+                return persisted
             # Check if output exists on disk
-            rdir = fit_output_dir(inst, date, target)
-            log_path = rdir / "timer-fit.log"
-            if log_path.is_file():
-                # Read completed job log
-                return {"state": "done", "log": _tail(log_path), "returncode": 0, "elapsed": 0}
+            try:
+                rdir = fit_output_dir(inst, date, target, run_id or None)
+                log_path = rdir / "timer-fit.log"
+                if log_path.is_file():
+                    # Read completed job log
+                    return {"state": "done", "log": _tail(log_path), "returncode": 0, "elapsed": 0}
+            except ValueError:
+                pass
             return {"state": "none", "log": "", "returncode": None, "elapsed": 0}
         
         rc = job.proc.poll()
@@ -1023,10 +1326,84 @@ def _kill_after(proc: subprocess.Popen, grace: float = 6.0) -> None:
         except OSError: pass
 
 
-def cancel_fit(inst: str, date: str, target: str) -> dict:
+def delete_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
+    """Delete the selected run's fit results for (inst, date, target) from disk and DB.
+
+    When *run_id* is empty (legacy single-dir run), removes the run's output
+    files from the base target directory without touching named-run
+    subdirectories. When *run_id* names a specific run, removes that
+    subdirectory entirely. Only the matching DB job record and in-memory
+    entry are cleared; other runs for the same target are preserved.
+    """
+    try:
+        if run_id:
+            rdir = fit_output_dir(inst, date, target, run_id)
+        else:
+            rdir = fit_output_dir(inst, date, target)
+    except ValueError:
+        return {"ok": False, "error": "invalid target"}
+
+    removed = 0
+    if run_id:
+        # Named run subdirectory — remove the whole thing.
+        if rdir.is_dir():
+            try:
+                shutil.rmtree(rdir)
+                removed += 1
+            except OSError:
+                pass
+    else:
+        # Legacy single-dir run — remove output files from the base target
+        # directory without removing the directory itself or named-run
+        # subdirectories beneath it.
+        if rdir.is_dir():
+            legacy_targets = [
+                rdir / "out",
+                rdir / "timer-fit.log",
+                rdir / "fit.yaml",
+                rdir / "sys.yaml",
+                rdir / "meta.yaml",
+            ]
+            for p in legacy_targets:
+                try:
+                    if p.is_dir():
+                        shutil.rmtree(p)
+                        removed += 1
+                    elif p.is_file():
+                        p.unlink()
+                        removed += 1
+                except OSError:
+                    pass
+
+    from muscat_db.database import db_path, clear_all_caches
+    import sqlite3
+    try:
+        conn = sqlite3.connect(db_path())
+        db_key = f"transit_fit:{inst}/{date}/{_target_dir_name(target)}"
+        if run_id:
+            db_key = f"{db_key}/{_run_dir_name(run_id)}"
+        conn.execute("DELETE FROM jobs WHERE key = ?", (db_key,))
+        conn.commit()
+        conn.close()
+        clear_all_caches()
+    except Exception:
+        pass
+
+    job_key = f"{inst}/{date}/{_target_dir_name(target)}"
+    if run_id:
+        job_key = f"{job_key}/{_run_dir_name(run_id)}"
+    with _FIT_LOCK:
+        _FIT_JOBS.pop(job_key, None)
+
+    _fit_outputs_cache.clear()
+
+    return {"ok": True, "count": removed}
+
+
+def cancel_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
     """Terminate the running or pending fitting process."""
     try:
-        key = fit_job_key(inst, date, target)
+        key = fit_job_key(inst, date, target, run_id)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
     with _FIT_LOCK:
@@ -1039,7 +1416,7 @@ def cancel_fit(inst: str, date: str, target: str) -> dict:
             found = [j for j in db_jobs if j["key"] == db_key]
             if found and found[0]["state"] == "pending":
                 save_job(
-                    type_="transit_fit", inst=inst, date=date, target=target,
+                    type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id,
                     state="cancelled", returncode=-1, elapsed=0,
                     started_at=found[0]["started_at"],
                     error_desc="Cancelled by user"
@@ -1056,6 +1433,7 @@ def cancel_fit(inst: str, date: str, target: str) -> dict:
             inst=inst,
             date=date,
             target=target,
+            run_id=run_id,
             state="cancelled",
             returncode=-1,
             elapsed=round(time.time() - job.started_at),
@@ -1104,6 +1482,8 @@ def get_all_jobs() -> list[dict]:
                 "returncode": rc,
                 "elapsed": round(elapsed),
                 "started_at": job.started_at,
+                "run_id": job.run_id,
+                "run_name": job.run_name,
             })
         return sorted(res, key=lambda j: j["started_at"], reverse=True)
 
@@ -1112,7 +1492,7 @@ _fit_outputs_cache = register_cache(ttl=300.0)
 
 
 @_fit_outputs_cache
-def get_fit_outputs(inst: str, date: str, target: str) -> dict:
+def get_fit_outputs(inst: str, date: str, target: str, run_id: str | None = None) -> dict:
     """Check and retrieve output files, plots, and summary values from completed run."""
     outputs = {
         "has_any": False,
@@ -1121,11 +1501,12 @@ def get_fit_outputs(inst: str, date: str, target: str) -> dict:
         "has_log": False,
         "has_fit_yaml": False,
         "has_sys_yaml": False,
+        "has_meta_yaml": False,
         "extra_files": []
     }
 
     try:
-        rdir = fit_output_dir(inst, date, target)
+        rdir = fit_output_dir(inst, date, target, run_id or None)
     except ValueError:
         return outputs
     out_dir = rdir / "out"
@@ -1138,6 +1519,9 @@ def get_fit_outputs(inst: str, date: str, target: str) -> dict:
 
     if (rdir / "sys.yaml").is_file():
         outputs["has_sys_yaml"] = True
+
+    if (rdir / "meta.yaml").is_file():
+        outputs["has_meta_yaml"] = True
 
     if not out_dir.is_dir():
         return outputs
@@ -1188,12 +1572,133 @@ def get_fit_outputs(inst: str, date: str, target: str) -> dict:
     return outputs
 
 
+@dataclass
+class RunDescriptor:
+    run_id: str
+    site: str
+    mode: str
+    run_name: str
+    mtime: float
+    is_legacy: bool
+
+
+def _read_run_meta(d: pathlib.Path) -> dict:
+    try:
+        with open(d / "meta.yaml") as f:
+            return yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+
+
+def _run_has_outputs(d: pathlib.Path) -> bool:
+    out = d / "out"
+    if not out.is_dir():
+        return False
+    try:
+        return any(out.glob("*.png")) or (out / "summary.csv").is_file()
+    except OSError:
+        return False
+
+
+def _parse_run_dir_name(name: str) -> tuple[str, str, str]:
+    """Best-effort split of a run-id dir name into (site, mode, run_name).
+
+    Used only as a fallback when meta.yaml lacks identity keys. Components are
+    hyphen-joined and never themselves contain ``-``.
+    """
+    parts = name.split("-")
+    site = mode = ""
+    if parts and parts[0] in (set(SINISTRO_SITES) | {"mixed"}):
+        site, parts = parts[0], parts[1:]
+    if parts and parts[0] in (set(SINISTRO_MODES) | {"mixed"}):
+        mode, parts = parts[0], parts[1:]
+    return site, mode, "-".join(parts)
+
+
+def list_fit_runs(inst: str, date: str, target: str) -> list[RunDescriptor]:
+    """Enumerate the runs that exist for a target, newest-first.
+
+    Each ``{target}/<run_id>/`` holding outputs is a run; a legacy
+    ``{target}/out/`` (no run subdir) is surfaced as an ``is_legacy`` run with
+    ``run_id=""``. Identity is read from each run's meta.yaml, falling back to
+    splitting the dir name on ``-``.
+    """
+    try:
+        tdir = fit_output_dir(inst, date, target)
+    except ValueError:
+        return []
+    if not tdir.is_dir():
+        return []
+    runs: list[RunDescriptor] = []
+
+    if _run_has_outputs(tdir):  # legacy single-dir run
+        meta = _read_run_meta(tdir)
+        runs.append(RunDescriptor(
+            run_id="",
+            site=str(meta.get("site") or ""),
+            mode=str(meta.get("mode") or ""),
+            run_name=str(meta.get("run_name") or "") or "legacy",
+            mtime=(tdir / "out").stat().st_mtime,
+            is_legacy=True,
+        ))
+
+    for d in sorted(tdir.iterdir()):
+        if not d.is_dir() or d.name == "out" or not _run_has_outputs(d):
+            continue
+        meta = _read_run_meta(d)
+        if meta.get("run_id") or meta.get("run_name"):
+            site = str(meta.get("site") or "")
+            mode = str(meta.get("mode") or "")
+            run_name = str(meta.get("run_name") or "")
+        else:
+            site, mode, run_name = _parse_run_dir_name(d.name)
+        runs.append(RunDescriptor(
+            run_id=d.name,
+            site=site,
+            mode=mode,
+            run_name=run_name or d.name,
+            mtime=(d / "out").stat().st_mtime,
+            is_legacy=False,
+        ))
+
+    runs.sort(key=lambda r: r.mtime, reverse=True)
+    return runs
+
+
+def _detect_run_type(rdir: pathlib.Path) -> str:
+    # 1. Try reading meta.yaml
+    try:
+        with open(rdir / "meta.yaml") as f:
+            meta = yaml.safe_load(f) or {}
+            if "run_type" in meta and meta["run_type"]:
+                return str(meta["run_type"])
+    except Exception:
+        pass
+
+    # 2. Try reading timer-fit.log to see if "--test_run" was used
+    try:
+        log_file = rdir / "timer-fit.log"
+        if log_file.is_file():
+            with open(log_file) as lf:
+                for _ in range(30):
+                    line = lf.readline()
+                    if not line:
+                        break
+                    if line.startswith("$ ") and "--test_run" in line:
+                        return "test"
+    except Exception:
+        pass
+
+    return "full"
+
+
 def _discover_orphan_fits(existing: set[str]) -> list[dict]:
     """Scan disk for completed fits not yet in the jobs table.
 
-    Walks ``$MUSCAT_TIMER_DIR/<inst>/<date>/<target>/out/*.png``
-    and returns synthetic job dicts (state="done") for any fit whose
-    key (``transit_fit:{inst}/{date}/{target}``) is not in *existing*.
+    Walks ``$MUSCAT_TIMER_DIR/<inst>/<date>/<target>/`` and returns synthetic job
+    dicts (state="done") for any run — legacy ``{target}/out/`` (key
+    ``transit_fit:{inst}/{date}/{target}``) and per-run ``{target}/<run_id>/out/``
+    (key ``…/{target}/{run_id}``) — whose key is not in *existing*.
     """
     base = pathlib.Path(os.environ.get("MUSCAT_TIMER_DIR", "/ut2/jerome/ql/timer"))
     orphans: list[dict] = []
@@ -1211,32 +1716,62 @@ def _discover_orphan_fits(existing: set[str]) -> list[dict]:
                 target = target_dir.name
                 inst = inst_dir.name
                 date = date_dir.name
-                key = f"transit_fit:{inst}/{date}/{target}"
-                if key in existing:
-                    continue
-                out_dir = target_dir / "out"
-                if not out_dir.is_dir():
-                    continue
-                pngs = sorted(out_dir.glob("*.png"))
-                if not pngs:
-                    continue
-                started_at = out_dir.stat().st_mtime
-                orphans.append({
-                    "key": key,
-                    "type": "transit_fit",
-                    "instrument": inst,
-                    "obsdate": date,
-                    "target": target,
-                    "state": "done",
-                    "returncode": 0,
-                    "elapsed": 0,
-                    "started_at": started_at,
-                    "error_desc": None,
-                    "run_type": "",
-                    "inst": inst,
-                    "date": date,
-                })
+
+                # Each run dir = legacy {target}/ (run_id="") plus per-run
+                # {target}/<run_id>/. Skip a child literally named "out" so the
+                # legacy out/ is not misread as a run.
+                run_dirs: list[tuple[str, pathlib.Path]] = [("", target_dir)]
+                for child in sorted(target_dir.iterdir()):
+                    if child.is_dir() and child.name != "out":
+                        run_dirs.append((child.name, child))
+
+                for run_id, rdir in run_dirs:
+                    out_dir = rdir / "out"
+                    if not out_dir.is_dir() or not sorted(out_dir.glob("*.png")):
+                        continue
+                    key = f"transit_fit:{inst}/{date}/{target}"
+                    if run_id:
+                        key = f"{key}/{run_id}"
+                    if key in existing:
+                        continue
+                    meta = _read_run_meta(rdir)
+                    orphans.append({
+                        "key": key,
+                        "type": "transit_fit",
+                        "instrument": inst,
+                        "obsdate": date,
+                        "target": target,
+                        "state": "done",
+                        "returncode": 0,
+                        "elapsed": 0,
+                        "started_at": out_dir.stat().st_mtime,
+                        "error_desc": None,
+                        "run_type": _detect_run_type(rdir),
+                        "run_id": run_id,
+                        "run_name": str(meta.get("run_name") or ""),
+                        "inst": inst,
+                        "date": date,
+                    })
     return orphans
+
+def _is_pid_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _detect_process_running(rdir: pathlib.Path) -> bool:
+    pid_file = rdir / "timer-fit.pid"
+    if pid_file.is_file():
+        try:
+            with open(pid_file) as f:
+                pid = int(f.read().strip())
+            return _is_pid_running(pid)
+        except Exception:
+            pass
+    return False
 
 
 def sync_jobs() -> None:
@@ -1246,7 +1781,7 @@ def sync_jobs() -> None:
         running_keys = {j["key"] for j in db_jobs if j["state"] == "running" and j["type"] == "transit_fit"}
         
         for key, job in _FIT_JOBS.items():
-            db_key = f"transit_fit:{job.inst}/{job.date}/{job.target.replace(' ', '')}"
+            db_key = f"transit_fit:{fit_job_key(job.inst, job.date, job.target, job.run_id)}"
             rc = job.proc.poll()
             if rc is None:
                 state = "cancelling" if job.cancelled else "running"
@@ -1277,6 +1812,7 @@ def sync_jobs() -> None:
                 inst=job.inst,
                 date=job.date,
                 target=job.target,
+                run_id=job.run_id,
                 state=state,
                 returncode=rc,
                 elapsed=round(elapsed),
@@ -1284,28 +1820,60 @@ def sync_jobs() -> None:
                 error_desc=error_desc
             )
             running_keys.discard(db_key)
-            
+
         for db_key in running_keys:
-            _, rest = db_key.split(":", 1)
-            inst, date, target = rest.split("/", 2)
-            started_at = time.time()
-            elapsed = 0
-            for j in db_jobs:
-                if j["key"] == db_key:
-                    started_at = j["started_at"]
-                    elapsed = j["elapsed"]
-                    break
-            save_job(
-                type_="transit_fit",
-                inst=inst,
-                date=date,
-                target=target,
-                state="error",
-                returncode=-1,
-                elapsed=elapsed,
-                started_at=started_at,
-                error_desc="Process lost (server restart)"
-            )
+            # Read identity from the DB row's columns (robust to run_id in the key).
+            row = next((j for j in db_jobs if j["key"] == db_key), None)
+            if row is None:
+                continue
+            inst = row["inst"]
+            date = row["date"]
+            target = row["target"]
+            run_id = row.get("run_id", "")
+            
+            # Check if outputs exist on disk (meaning the process finished successfully in the background)
+            completed_ok = False
+            try:
+                rdir = fit_output_dir(inst, date, target, run_id or None)
+                if _run_has_outputs(rdir):
+                    log_path = rdir / "timer-fit.log"
+                    if log_path.is_file():
+                        with open(log_path, errors="replace") as lf:
+                            log_content = lf.read()
+                            if "Timer-fit completed successfully" in log_content:
+                                completed_ok = True
+            except Exception:
+                pass
+                
+            if completed_ok:
+                save_job(
+                    type_="transit_fit",
+                    inst=inst,
+                    date=date,
+                    target=target,
+                    run_id=run_id,
+                    state="done",
+                    returncode=0,
+                    elapsed=row["elapsed"],
+                    started_at=row["started_at"],
+                    error_desc=""
+                )
+            elif _detect_process_running(rdir):
+                # Process is still running on the system, leave state as "running"
+                continue
+            else:
+                save_job(
+                    type_="transit_fit",
+                    inst=inst,
+                    date=date,
+                    target=target,
+                    run_id=run_id,
+                    state="error",
+                    returncode=-1,
+                    elapsed=row["elapsed"],
+                    started_at=row["started_at"],
+                    error_desc="Process lost (server restart)"
+                )
 
         # Launch pending full jobs if capacity allows
         if _count_running_full() < _MAX_FULL_JOBS:
@@ -1316,7 +1884,7 @@ def sync_jobs() -> None:
                 if _count_running_full() >= _MAX_FULL_JOBS:
                     break
                 if entry["key"] in _FIT_JOBS:
-                    save_job(type_="transit_fit", inst=entry["inst"], date=entry["date"], target=entry["target"], state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry")
+                    save_job(type_="transit_fit", inst=entry["inst"], date=entry["date"], target=entry["target"], run_id=entry.get("run_id", ""), state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry")
                     continue
                 try:
                     p = json.loads(entry.get("params") or "{}")
@@ -1324,17 +1892,23 @@ def sync_jobs() -> None:
                     p = {}
                 opts = p.get("options", {})
                 test_run = p.get("test_run", False)
+                run_type = "test" if test_run else "full"
                 selected_csvs = p.get("selected_csvs")
+                run_id = p.get("run_id") or entry.get("run_id", "")
+                site = p.get("site", "")
+                mode = p.get("mode", "")
+                run_name = p.get("run_name", "")
                 inst, date, target = entry["inst"], entry["date"], entry["target"]
                 try:
-                    key = fit_job_key(inst, date, target)
-                    rdir = fit_output_dir(inst, date, target)
+                    key = fit_job_key(inst, date, target, run_id)
+                    rdir = fit_output_dir(inst, date, target, run_id or None)
                 except ValueError:
                     save_job(
                         type_="transit_fit",
                         inst=inst,
                         date=date,
                         target=target,
+                        run_id=run_id,
                         state="error",
                         returncode=-1,
                         elapsed=0,
@@ -1345,7 +1919,13 @@ def sync_jobs() -> None:
                     )
                     continue
                 rdir.mkdir(parents=True, exist_ok=True)
-                _write_fit_inputs(rdir, inst, date, get_csv_lightcurves(inst, date, target), opts)
+                csvs = get_csv_lightcurves(inst, date, target)
+                if selected_csvs is not None:
+                    selected = set(selected_csvs)
+                    csvs = [c for c in csvs if c.name in selected]
+                _write_fit_inputs(rdir, inst, date, target, csvs, opts,
+                                  site=site, mode=mode, run_name=run_name, run_id=run_id,
+                                  run_type=run_type)
                 _fit_outputs_cache.clear()
                 cmd = [*_timer_prefix(), "-v", str(rdir)]
                 if test_run:
@@ -1353,22 +1933,27 @@ def sync_jobs() -> None:
                 log_path = rdir / "timer-fit.log"
                 try:
                     logf = open(log_path, "w")
-                    _write_log_banner(logf, cmd)
+                    _write_log_banner(logf, cmd, opts)
                     logf.flush()
                     proc = subprocess.Popen(cmd, cwd=str(rdir), stdout=logf, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+                    try:
+                        with open(rdir / "timer-fit.pid", "w") as pidf:
+                            pidf.write(str(proc.pid))
+                    except Exception:
+                        pass
                 except (FileNotFoundError, OSError) as exc:
                     try: logf.close()
                     except OSError: pass
-                    save_job(type_="transit_fit", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}")
+                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}")
                     continue
                 run_type = "test" if test_run else "full"
-                _FIT_JOBS[key] = TransitFitJob(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=log_path, run_type=run_type)
+                _FIT_JOBS[key] = TransitFitJob(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=log_path, run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name)
                 try:
-                    save_job(type_="transit_fit", inst=inst, date=date, target=target, state="running", returncode=None, elapsed=0, started_at=_FIT_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""))
+                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="running", returncode=None, elapsed=0, started_at=_FIT_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""))
                 except Exception:
                     try: proc.terminate()
                     except OSError: pass
                     try: logf.close()
                     except OSError: pass
                     _FIT_JOBS.pop(key, None)
-                    save_job(type_="transit_fit", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Database error")
+                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Database error")
