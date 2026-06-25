@@ -46,7 +46,7 @@ def test_start_fit_delegates_overwrite_to_timer_without_deleting_outputs(
         assert cached_result.read_text() == "cached"
         assert existing_plot.read_text() == "plot"
         fit_yaml = yaml.safe_load((run_dir / "fit.yaml").read_text())
-        assert fit_yaml["clobber"] is True
+        assert fit_yaml["clobber"] is (overwrite == "true")
     finally:
         for job in fit._FIT_JOBS.values():
             job.logf.close()
