@@ -26,11 +26,13 @@
 ## frontend and GUI
 * GUI settings should be consistent with the arguments in run_photometry.py
 * maintian design consistency across all pages based on style.css
+* table column widths cannot be wider than the text length of their row values or column names (e.g. in jobs.html, instrument column should be narrow to fit the content).
 * test all GUI elements the same way a user interacts in practice
 * ensure all new inputs and checkboxes added to templates (e.g. photometry.html) are registered in the corresponding JavaScript helper arrays 
 (collectOptions, restoreOptions, and the default settings listener) so they persist in localStorage across page navigation.
 * the jobs are run in a 24-core remote server with 100 Gb memory so queuing heavy jobs should be handled safely
 * in the future, the pipeline will use celery and redis across several servers with 48, 120, and 120 cores
+
 
 ## backend and scripts
 * the output should be high-quality lightcurves from photometry, and robust inferences from transit fit
