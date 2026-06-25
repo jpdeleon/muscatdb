@@ -445,18 +445,30 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
         # ``run`` unspecified -> newest; ``__legacy__`` -> the legacy single-dir
         # run (run_id ""); an explicit run_id -> that run.
         runs = fit.list_fit_runs(inst, date, target)
+        if inst == "sinistro":
+            if sel_site:
+                runs = [r for r in runs if r.site == sel_site]
+            if sel_mode:
+                runs = [r for r in runs if r.mode == sel_mode]
+
         run_ids = {r.run_id for r in runs}
-        newest = runs[0].run_id if runs else ""
+        newest = runs[0].run_id if runs else None
+
         if not run:
             sel_run = newest
         elif run == "__legacy__":
-            sel_run = ""
+            sel_run = "" if "" in run_ids else None
         elif run in run_ids:
             sel_run = run
         else:
             sel_run = newest
-        outputs = fit.get_fit_outputs(inst, date, target, run_id=sel_run or None)
+
+        if sel_run is not None:
+            outputs = fit.get_fit_outputs(inst, date, target, run_id=sel_run or None)
+        else:
+            outputs = None
         target_params = fit.get_target_parameters(target)
+
 
     return _render(
         "transit_fit.html",

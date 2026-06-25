@@ -161,8 +161,31 @@ class TestRunFileRoute:
         r = c.get("/transit-fit/file/sinistro/250710/HIP67522/run/..%2Fevil/summary.csv")
         assert r.status_code in (400, 404)
 
+    def test_page_route_filters_runs_by_site_and_mode(self, client):
+        c, tmp_path = client
+        # Create two runs: one for lsc, one for cpt
+        tdir = tmp_path / "timer" / "sinistro" / "250710" / "HIP67522"
+        _make_run(tdir, "lsc-central_2k_2x2-g", "lsc", "central_2k_2x2", "g", 1_000_100)
+        _make_run(tdir, "cpt-central_2k_2x2-g", "cpt", "central_2k_2x2", "g", 1_000_200)
+
+        # 1. When querying site=lsc, cpt should NOT be active or fallback shown
+        r_lsc = c.get("/transit-fit?inst=sinistro&date=250710&target=HIP%2067522&site=lsc")
+        assert r_lsc.status_code == 200
+        # The page title/results should indicate lsc
+        assert "lsc-central_2k_2x2-g" in r_lsc.text
+        assert "cpt-central_2k_2x2-g" not in r_lsc.text
+
+        # 2. When querying site=elp (does not exist / not run), no run should be shown at all (no plots/results outputs)
+        r_elp = c.get("/transit-fit?inst=sinistro&date=250710&target=HIP%2067522&site=elp")
+        assert r_elp.status_code == 200
+        assert "lsc-central_2k_2x2-g" not in r_elp.text
+        assert "cpt-central_2k_2x2-g" not in r_elp.text
+        # Transit Fit Results section should NOT have outputs
+        assert "Transit Fit Results" not in r_elp.text
+
 
 # ── job status DB prioritization ───────────────────────────────────────────
+
 
 class TestTransitFitJobStatus:
     def test_job_status_prioritizes_db_state(self, monkeypatch, tmp_path):
