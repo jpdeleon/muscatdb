@@ -7,6 +7,7 @@ per instrument/date under ``$MUSCAT_PROSE_DIR/<inst>/<date>/`` with filenames
 
     {target}_{inst}_{band}_{date}_ref.png        # per-band reference image
     {target}_{inst}_{band}_{date}_apertures.png  # per-band aperture overlay
+    {target}_{inst}_{band}_{date}_cutouts.png    # per-band star cutout montage
     {target}_{inst}_{band}_{date}_alignment.png  # per-band alignment diagnostic
     {target}_{inst}_{band}_{date}.gif            # per-band animation
     {target}_{inst}_{band}_{date}.csv            # per-band light curve
@@ -26,6 +27,7 @@ import csv as _csv
 import datetime
 import hashlib
 import json
+import logging
 import os
 import re
 import shlex
@@ -42,6 +44,9 @@ from typing import IO
 
 from muscat_db.instruments import INSTRUMENTS
 from muscat_db.cache import register_cache
+from muscat_db.band_utils import DEFAULT_BANDS, NARROW_BANDS, _FILTER_BAND_ALIAS, bands_from_filters  # noqa: F401
+
+logger = logging.getLogger(__name__)
 
 # --------------------------- configuration ---------------------------
 # All paths are env-overridable so the page works in dev and on the server.
@@ -49,8 +54,16 @@ _HERE = Path(__file__).resolve().parent          # .../src/muscat_db
 _REPO_ROOT = _HERE.parent.parent                 # .../muscat-db
 _DEFAULT_PROSE_PROJECT = _REPO_ROOT.parent / "ext_tools" / "prose2"
 _DEFAULT_OUTPUT_BASE = "/ut2/jerome/ql/prose"
+# Temp dir for spawned pipeline jobs. The root filesystem holding /tmp is small
+# and prone to filling up (astropy's mmap probe and FITS I/O write ephemerals
+# there), so default to a roomy home-backed location instead of user-space /tmp.
+# Derived from the home directory rather than a hardcoded user path so it is
+# portable across machines/users (planned celery/redis multi-server setup).
+# ``Path.home()`` resolves via the password database, so this still works when
+# ``$HOME`` is unset (cron/systemd workers) -- unlike a literal ``$HOME`` in .env.
+# Override with ``MUSCAT_TMPDIR`` when home is on a small/full filesystem.
+_DEFAULT_TMPDIR = str(Path.home() / ".muscatdb" / "tmp")
 
-DEFAULT_BANDS = ["gp", "rp", "ip", "zs"]
 # Default values for every optional run_photometry argument the form exposes.
 # Kept here so the template, normalizer, and command builder share one source.
 RUN_DEFAULTS: dict = {
@@ -62,6 +75,7 @@ RUN_DEFAULTS: dict = {
     "aper_unit": "pix",        # pix | fwhm (only applies with aper_radii)
     "make_gif": True,
     "plot_gaia_sources": True,
+    "cmap": "gray",            # colormap for image-display plots (--cmap)
     "use_barycorrpy": False,
     "test_run_frames": 10,
     "min_star_separation": 10.0,
@@ -69,6 +83,7 @@ RUN_DEFAULTS: dict = {
     "n_stars_align": "",       # "" -> same as max_num_stars
     "cutout_size": 35,
     "ccd_trim": "",            # "Y,X"; "" -> no trim (pipeline default)
+    "edge_margin": "",         # px from CCD edge to exclude comps; "" -> auto (half cutout), 0 -> off
     "bin_size_minutes": 10.0,
     "target_id": "",           # "" -> auto
     "comparison_ids": "",      # "" -> auto, or "1,2,3"
@@ -81,53 +96,27 @@ RUN_DEFAULTS: dict = {
     "sig_dx": None,            # None -> sigma clipping disabled for dx axis
     "sig_dy": None,            # None -> sigma clipping disabled for dy axis
     "min_star_area": 10,
+    "wcs_method": "astrometry.net",
+    "calib_dir": "",
+    "site": "",                # sinistro only: "" -> all sites; else one of SINISTRO_SITES
+    "mode": "",                # sinistro only: "" -> all modes; else one of SINISTRO_MODES
 }
 
-# Narrow-band tokens, kept after the broadband four in the canonical order.
-NARROW_BANDS = ["g_narrow", "Na_D", "i_narrow", "z_narrow"]
+# Valid sinistro --site / --mode values, mirrored from prose2's run_photometry.py.
+SINISTRO_SITES = ("lsc", "cpt", "coj", "tfn", "elp")
+SINISTRO_MODES = ("central_2k_2x2", "full_frame")
 
-# Raw obslog FILTER value -> prose `--bands` token. Mirrors prose's
-# ``prose/utils.py:_FILTER_ALIASES`` (the source of truth); kept in sync here
-# because the web process cannot import prose (it runs only in the "prose"
-# conda env via subprocess). Unknown filters (e.g. Sinistro R/V/B) are not
-# listed and pass through unchanged — run_photometry's ``_resolve_band`` falls
-# back to the raw value, so ``--bands R V`` works for those frames.
-_FILTER_BAND_ALIAS = {
-    "gp": "gp", "g": "gp",
-    "rp": "rp", "r": "rp", "rp*diffuser": "rp",
-    "ip": "ip", "i": "ip",
-    "zs": "zs", "z": "zs", "zp": "zs", "z_s": "zs", "zp*diffuser": "zs",
-    "g_narrow": "g_narrow", "r_narrow": "r_narrow",
-    "i_narrow": "i_narrow", "z_narrow": "z_narrow",
-    "g_wide": "g_wide", "Na_D": "Na_D",
-}
+# Colormaps offered for image-display plots (--cmap). run_photometry.py accepts
+# any matplotlib name, so this curated set is the GUI/validation allowlist and
+# must stay in sync with the <select> options in templates/photometry.html.
+CMAP_CHOICES = (
+    "gray", "gray_r",
+    "coolwarm", "RdBu", "RdGy", "PiYG", "PRGn", "BrBG", "PuOr",
+    "RdYlBu", "RdYlGn", "Spectral",
+)
 
 
-def bands_from_filters(filters: list[str]) -> list[str]:
-    """Map raw obslog FILTER values to ordered, de-duplicated ``--bands`` tokens.
-
-    Each raw filter is normalized via :data:`_FILTER_BAND_ALIAS`; unknown values
-    (e.g. Sinistro ``R``/``V``/``B``) pass through unchanged. The result is
-    ordered canonically — broadband (gp, rp, ip, zs), then narrowbands, then any
-    extras in first-seen order — so the UI shows a stable, familiar layout.
-    Returns ``[]`` for empty input.
-    """
-    seen: set[str] = set()
-    tokens: list[str] = []
-    for f in filters or []:
-        if not f:
-            continue
-        # Exact match only, like prose's _resolve_band: do NOT case-fold, or
-        # Johnson "R"/"V" would collapse into Sloan "rp"/etc.
-        token = _FILTER_BAND_ALIAS.get(f, f)
-        if token not in seen:
-            seen.add(token)
-            tokens.append(token)
-    order = {b: i for i, b in enumerate([*DEFAULT_BANDS, *NARROW_BANDS])}
-    return sorted(tokens, key=lambda b: (order.get(b, len(order)), tokens.index(b)))
-
-
-ALLOWED_EXTS = {".png", ".gif", ".csv", ".npz", ".log"}
+ALLOWED_EXTS = {".png", ".gif", ".csv", ".npz", ".log", ".txt"}
 _RUN_LOG_NAME = "_webrun.log"
 _CONDA_ENV_DEFAULT = "prose"   # prose deps live in a conda env named "prose"
 _MODULE = "prose.scripts.run_photometry"
@@ -148,6 +137,7 @@ _SUMMARY_SUFFIX = {
 _BAND_SUFFIX = {
     "_ref.png": "ref",
     "_apertures.png": "apertures",
+    "_cutouts.png": "cutouts",
     "_alignment.png": "alignment",
     ".gif": "gif",
     ".csv": "csv",
@@ -155,11 +145,38 @@ _BAND_SUFFIX = {
 
 
 def output_base() -> Path:
-    return Path(os.environ.get("MUSCAT_PROSE_DIR", _DEFAULT_OUTPUT_BASE))
+    # ``.expanduser()`` for parity with the timer dir getter (transit_fit.py), so
+    # a ``~``-prefixed MUSCAT_PROSE_DIR resolves instead of creating a literal '~'.
+    return Path(os.environ.get("MUSCAT_PROSE_DIR", _DEFAULT_OUTPUT_BASE)).expanduser()
 
 
 def prose_project_dir() -> Path:
     return Path(os.environ.get("MUSCAT_PROSE_PROJECT", str(_DEFAULT_PROSE_PROJECT)))
+
+
+def prose_tmpdir() -> str:
+    """Temp dir handed to spawned pipeline jobs (overridable via MUSCAT_TMPDIR)."""
+    return os.environ.get("MUSCAT_TMPDIR", _DEFAULT_TMPDIR)
+
+
+def _job_env() -> dict[str, str]:
+    """Environment for spawned pipeline subprocesses.
+
+    Routes all ephemeral files (TMPDIR/TMP/TEMP) to a raid-backed directory so
+    jobs never trip over a full root ``/tmp``. The dir is created if missing;
+    if that fails we fall back to the inherited environment rather than block
+    the launch.
+    """
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    tmpdir = prose_tmpdir()
+    try:
+        Path(tmpdir).mkdir(parents=True, exist_ok=True)
+        env["TMPDIR"] = tmpdir
+        env["TMP"] = tmpdir
+        env["TEMP"] = tmpdir
+    except OSError as exc:
+        logger.warning("could not prepare TMPDIR %s (%s); using inherited temp", tmpdir, exc)
+    return env
 
 
 def prose_python() -> str | None:
@@ -278,12 +295,30 @@ def discovered_targets(inst: str, date: str) -> list[str]:
     return sorted(found)
 
 
-def list_outputs(inst: str, date: str, target: str) -> dict:
+def list_outputs(
+    inst: str,
+    date: str,
+    target: str,
+    site: str | None = None,
+    mode: str | None = None,
+) -> dict:
     """Classify the existing products for one (inst, date, target).
 
     Returns a dict with ``summary`` (key->filename), ``bands``
-    (band->{ref,apertures,alignment,gif,csv}), ``npz``, ``log`` (newest), and
-    ``has_any``. Only filenames are returned; serve them via the file route.
+    (band->{ref,apertures,alignment,gif,csv}), ``npz``, ``log`` (newest),
+    ``has_any``, ``sites``/``modes`` (distinct sinistro sites/readout modes
+    present, for the filter chips), ``site``/``mode`` (the ones actually shown),
+    and ``ref_header`` (the reference-frame header sidecar, site/mode-scoped).
+    Only filenames are returned; serve them via the file route.
+
+    A single sinistro date+target can hold products from more than one LCO site
+    and more than one readout mode (identical bands per combination). To avoid
+    silently collapsing them via newest-wins, products are restricted to one
+    (site, mode) at a time: ``site``/``mode`` select them when given and present,
+    otherwise the newest reduction is shown by default. Mode is read from the
+    ``_full`` filename token prose appends for ``full_frame`` (``central_2k_2x2``
+    has no token). For non-sinistro instruments there is no site/mode dimension
+    and ``sites``/``modes`` stay empty.
 
     The date token embedded in filenames by the pipeline is taken from the FITS
     header and may differ from the directory name (obs-night vs UT date). We
@@ -297,6 +332,11 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
         "log": None,
         "has_any": False,
         "masters": [],
+        "sites": [],
+        "site": None,
+        "modes": [],
+        "mode": None,
+        "ref_header": None,
     }
     rdir = results_dir(inst, date)
     if not rdir.is_dir():
@@ -306,15 +346,85 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
     inst_esc = re.escape(inst)
     t_esc = re.escape(t)
 
-    # Multi-band summary stem: <target>_<inst>_<date6>  (no band token)
+    # Sinistro filenames optionally carry a site token between inst and the
+    # band/date when reduced with ``--site`` (prose ``build_stem``):
+    #   <target>_sinistro_<site>_<date6>            (summary)
+    #   <target>_sinistro_<site>_<band>_<date6>     (per-band)
+    # Constrain the token to the known site codes so it can't be confused with a
+    # band name that itself contains underscores (e.g. g_narrow, Na_D). For all
+    # other instruments there is no site token and this slot is omitted.
+    site_opt = (
+        rf"(?:(?P<site>{'|'.join(SINISTRO_SITES)})_)?" if inst == "sinistro" else ""
+    )
+    # Prose appends ``_full`` after the date for full_frame; central_2k_2x2 has
+    # no token. Captured between the date and the product suffix (e.g.
+    # ..._250710_full_lightcurves.png, ..._250710_full.npz, ..._gp_250710_full.csv).
+    mode_opt = r"(?P<mode>_full)?" if inst == "sinistro" else ""
+
+    # Multi-band summary stem: <target>_<inst>_[<site>_]<date6>[_full]  (no band).
     # Allow any 6-digit date so obs-night and UT-date both match.
     summary_re = re.compile(
-        rf"^{t_esc}_{inst_esc}_(?P<file_date>\d{{6}})(?P<rest>.*)$"
+        rf"^{t_esc}_{inst_esc}_{site_opt}(?P<file_date>\d{{6}}){mode_opt}(?P<rest>.*)$"
     )
-    # Per-band stem: <target>_<inst>_<band>_<date6>
+    # Per-band stem: <target>_<inst>_[<site>_]<band>_<date6>[_full]. The band
+    # token may itself contain underscores (narrow-band/Johnson filters:
+    # g_narrow, Na_D, z_s), so allow ``_`` in the band and match it lazily up to
+    # the 6-digit date.
     band_re = re.compile(
-        rf"^{t_esc}_{inst_esc}_(?P<band>[A-Za-z0-9]+)_(?P<file_date>\d{{6}})(?P<rest>.*)$"
+        rf"^{t_esc}_{inst_esc}_{site_opt}(?P<band>[A-Za-z0-9_]+?)_(?P<file_date>\d{{6}}){mode_opt}(?P<rest>.*)$"
     )
+
+    def _mode_of(m: re.Match) -> str:
+        """Canonical readout mode for a matched product file."""
+        return "full_frame" if m.groupdict().get("mode") else "central_2k_2x2"
+
+    # First pass (sinistro only): discover which sites and readout modes are
+    # present so multi-site/multi-mode dates expose one chip per value and default
+    # to the most recently reduced combination rather than a newest-wins mix.
+    # Mode chips are scoped to the chosen site (each site may carry its own modes),
+    # so switching site never lands on an empty (site, mode) pairing by default.
+    effective_site: str | None = None
+    effective_mode: str | None = None
+    if inst == "sinistro":
+        # records: (site_or_None, canonical_mode, mtime)
+        records: list[tuple[str | None, str, float]] = []
+        for p in rdir.iterdir():
+            if not p.is_file() or p.suffix == ".log":
+                continue
+            m = summary_re.match(p.name) or band_re.match(p.name)
+            if not m:
+                continue
+            try:
+                mt = p.stat().st_mtime
+            except OSError:
+                mt = 0.0
+            records.append((m.groupdict().get("site"), _mode_of(m), mt))
+
+        site_mtime: dict[str, float] = {}
+        for s, _m, mt in records:
+            if s and mt > site_mtime.get(s, -1.0):
+                site_mtime[s] = mt
+        out["sites"] = sorted(site_mtime)
+        if site and site in site_mtime:
+            effective_site = site
+        elif site_mtime:
+            effective_site = max(site_mtime, key=site_mtime.get)  # newest wins
+        out["site"] = effective_site
+
+        # Modes available for the chosen site (or all records when no site token).
+        mode_mtime: dict[str, float] = {}
+        for s, md, mt in records:
+            if effective_site is not None and s != effective_site:
+                continue
+            if mt > mode_mtime.get(md, -1.0):
+                mode_mtime[md] = mt
+        out["modes"] = sorted(mode_mtime)
+        if mode and mode in mode_mtime:
+            effective_mode = mode
+        elif mode_mtime:
+            effective_mode = max(mode_mtime, key=mode_mtime.get)  # newest wins
+        out["mode"] = effective_mode
+
     logs: list[Path] = []
 
     for p in sorted(rdir.iterdir()):
@@ -334,12 +444,23 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
         # Try summary suffixes first (no band token between inst and date).
         ms = summary_re.match(name)
         if ms:
+            # When a site/mode is in force, only that combination is shown.
+            if effective_site is not None and ms.group("site") != effective_site:
+                continue
+            if effective_mode is not None and _mode_of(ms) != effective_mode:
+                continue
             rest = ms.group("rest")
             if rest == ".npz":
                 existing = out.get("npz")
                 if existing is None or mtime > out.get("_npz_mtime", 0):
                     out["npz"] = name
                     out["_npz_mtime"] = mtime
+                out["has_any"] = True
+                continue
+            if rest == "_ref_header.txt":
+                if out["ref_header"] is None or mtime > out.get("_ref_header_mtime", 0):
+                    out["ref_header"] = name
+                    out["_ref_header_mtime"] = mtime
                 out["has_any"] = True
                 continue
             key = _SUMMARY_SUFFIX.get(rest)
@@ -354,6 +475,10 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
 
         mb = band_re.match(name)
         if not mb:
+            continue
+        if effective_site is not None and mb.group("site") != effective_site:
+            continue
+        if effective_mode is not None and _mode_of(mb) != effective_mode:
             continue
         rest = mb.group("rest")
         key = _BAND_SUFFIX.get(rest)
@@ -384,6 +509,7 @@ def list_outputs(inst: str, date: str, target: str) -> dict:
         for d in band_d.values():
             d.pop("_mtime", None)
     out.pop("_npz_mtime", None)
+    out.pop("_ref_header_mtime", None)
     ordered = {b: out["bands"][b] for b in DEFAULT_BANDS if b in out["bands"]}
     for b, v in out["bands"].items():
         ordered.setdefault(b, v)
@@ -565,7 +691,7 @@ def normalize_run_options(raw: dict | None) -> dict:
     if "bands" in raw:  # present-but-empty must surface as an error, not default
         o["bands"] = [str(b).strip() for b in (bands or []) if str(b).strip()]
 
-    for key in ("ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "target_coord"):
+    for key in ("ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "target_coord", "wcs_method", "calib_dir", "site", "mode", "cmap"):
         if raw.get(key) is not None:
             o[key] = str(raw[key]).strip()
 
@@ -574,7 +700,7 @@ def normalize_run_options(raw: dict | None) -> dict:
             val = str(raw.get(key, "")).strip()
             o[key] = "" if val == "" else (_to_int(val) if _to_int(val) is not None else "")
 
-    for key in ("test_run_frames", "max_num_stars", "cutout_size", "gif_stride", "min_star_area"):
+    for key in ("test_run_frames", "max_num_stars", "cutout_size", "gif_stride", "min_star_area", "edge_margin"):
         if str(raw.get(key, "")).strip() != "":
             iv = _to_int(raw[key])
             if iv is not None:
@@ -614,6 +740,16 @@ def validate_run_options(o: dict) -> str | None:
         return "CCD trim must be two integers Y,X (e.g. 10,10)"
     if o.get("aper_unit", "pix") not in ("pix", "fwhm"):
         return "aperture unit must be 'pix' or 'fwhm'"
+    if o.get("wcs_method") not in ("twirl", "astrometry.net"):
+        return "WCS method must be 'twirl' or 'astrometry.net'"
+    if (o.get("cmap") or "Greys_r") not in CMAP_CHOICES:
+        return f"colormap must be one of {', '.join(CMAP_CHOICES)}"
+    site = (o.get("site") or "").strip().lower()
+    if site and site not in SINISTRO_SITES:
+        return f"site must be one of {', '.join(SINISTRO_SITES)}"
+    mode = (o.get("mode") or "").strip()
+    if mode and mode not in SINISTRO_MODES:
+        return f"mode must be one of {', '.join(SINISTRO_MODES)}"
     return None
 
 
@@ -690,11 +826,29 @@ def build_command(
         args += ["--n_stars_align", str(o["n_stars_align"])]
     if (o.get("ccd_trim") or "").replace(" ", ""):
         args += ["--ccd_trim", o["ccd_trim"].replace(" ", "")]
+    # Empty -> auto (half cutout); explicit int (incl. 0 to disable) is emitted.
+    if str(o.get("edge_margin", "")).strip() != "":
+        args += ["--edge_margin", str(o["edge_margin"])]
 
+    if o.get("wcs_method", "astrometry.net") != "astrometry.net":
+        args += ["--wcs_method", o["wcs_method"]]
+    # --site / --mode are sinistro-only filters; ignore for other instruments.
+    if inst == "sinistro":
+        site = (o.get("site") or "").strip()
+        if site:
+            args += ["--site", site]
+        mode = (o.get("mode") or "").strip()
+        if mode:
+            args += ["--mode", mode]
+    if inst in ("muscat", "muscat2"):
+        args += ["--calib_dir", o.get("calib_dir") or str(results_dir(inst, date)) + "_calibrated"]
     if o.get("make_gif", False):
         args.append("--gif")
     if o.get("plot_gaia_sources", True):
         args.append("--plot_gaia_sources")
+    cmap = (o.get("cmap") or "").strip()
+    if cmap and cmap != RUN_DEFAULTS["cmap"]:
+        args += ["--cmap", cmap]
     if o.get("use_barycorrpy"):
         args.append("--use_barycorrpy")
 
@@ -832,7 +986,7 @@ def start_run(
         logf.write(f"$ {shlex.join(cmd)}\n\n")
         logf.flush()
         try:
-            env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+            env = _job_env()
             proc = subprocess.Popen(
                 cmd,
                 cwd=str(prose_project_dir()),
@@ -925,17 +1079,55 @@ def _terminal_job_state(
 # style of _STALL_LIMIT_S / _MAX_RUNTIME_S.
 _FINALIZE_GRACE_S = int(os.environ.get("MUSCAT_PHOT_FINALIZE_GRACE_S", 8))
 
+# Once prose logs a terminal result line (SUCCEEDED / PARTIAL FAILURE / FAILED),
+# its main work is done and the only remaining writes are worker teardown, so a
+# much shorter quiescence window is enough to declare the job terminal. Before
+# that line appears we keep the conservative default above so the live log never
+# freezes mid-run. This lets a successful short run reload promptly instead of
+# always waiting out the full window.
+_FINALIZE_GRACE_TERMINAL_S = int(
+    os.environ.get("MUSCAT_PHOT_FINALIZE_GRACE_TERMINAL_S", 2)
+)
+
+# Result lines emitted by prose's run_photometry once a run is decided. Any of
+# these marks the end of the pipeline's own output (see run_photometry.py).
+_TERMINAL_LOG_MARKERS = (
+    "photometry SUCCEEDED",
+    "photometry PARTIAL FAILURE",
+    "photometry FAILED",
+)
+
+
+def _log_has_terminal_marker(path: Path | None) -> bool:
+    """True once prose has logged a final result line. After this, remaining log
+    writes are worker teardown, so the finalize window can be shortened."""
+    if path is None or not path.is_file():
+        return False
+    tail = _tail(path, n=1000)
+    return any(marker in tail for marker in _TERMINAL_LOG_MARKERS)
+
+
+def _finalize_grace_s(log_path_: Path | None) -> int:
+    """Effective finalize quiescence window for a log: the short terminal window
+    once a result line is logged, else the conservative default. The ``min``
+    guards against a default set below the terminal window — there is never a
+    reason to wait longer after the result line than before it."""
+    if _log_has_terminal_marker(log_path_):
+        return min(_FINALIZE_GRACE_TERMINAL_S, _FINALIZE_GRACE_S)
+    return _FINALIZE_GRACE_S
+
 
 def _log_quiescent(log_path_: Path, now: float) -> bool:
     """True when the log has not been written for at least the finalize grace
-    window. A missing/unreadable log means nothing more is coming, so it counts
-    as quiescent; each append by a still-running worker refreshes the mtime and
-    keeps the job finalizing."""
+    window. The window shrinks once prose logs a terminal result line (trailing
+    output by then is just worker teardown). A missing/unreadable log means
+    nothing more is coming, so it counts as quiescent; each append by a
+    still-running worker refreshes the mtime and keeps the job finalizing."""
     try:
         mtime = log_path_.stat().st_mtime
     except OSError:
         return True
-    return (now - mtime) >= _FINALIZE_GRACE_S
+    return (now - mtime) >= _finalize_grace_s(log_path_)
 
 
 def _resolve_job_state(job: "Job", now: float | None = None) -> tuple[str, int | None, bool]:
@@ -1134,6 +1326,51 @@ def _watchdog_breach(job: "Job", now: float) -> str | None:
     if stall > _STALL_LIMIT_S:
         return f"no log output for {int(stall // 60)} min"
     return None
+
+
+def delete_reduction(inst: str, date: str, target: str) -> dict:
+    """Delete all reduction products for one (inst, date, target) from disk.
+
+    Removes files matching the target's stem in the results directory, plus
+    the web-run log. Also clears the persisted job record so the Jobs page
+    no longer shows a stale entry. Never touches other targets.
+    """
+    rdir = results_dir(inst, date)
+    if not rdir.is_dir():
+        return {"ok": True, "count": 0}
+    t = target.replace(" ", "")
+    stem = f"{t}_{inst}"
+    web_log = _run_log_path(rdir, inst, date, target)
+    removed = 0
+    for p in list(rdir.iterdir()):
+        if not p.is_file():
+            continue
+        if p.name.startswith(stem):
+            try:
+                p.unlink()
+                removed += 1
+            except OSError:
+                pass
+    if web_log.is_file():
+        try:
+            web_log.unlink()
+            removed += 1
+        except OSError:
+            pass
+    from muscat_db.database import db_path, clear_all_caches
+    try:
+        conn = sqlite3.connect(db_path())
+        conn.execute("DELETE FROM jobs WHERE key = ?", (f"photometry:{job_key(inst, date, target)}",))
+        conn.commit()
+        conn.close()
+        clear_all_caches()
+    except Exception:
+        pass
+    try:
+        del _JOBS[job_key(inst, date, target)]
+    except KeyError:
+        pass
+    return {"ok": True, "count": removed}
 
 
 def cancel_run(inst: str, date: str, target: str) -> dict:
@@ -1345,7 +1582,7 @@ def sync_jobs() -> None:
                     logf = open(pending_log_path, "w")
                     logf.write(f"$ {shlex.join(cmd)}\n\n")
                     logf.flush()
-                    proc_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+                    proc_env = _job_env()
                     proc = subprocess.Popen(cmd, cwd=str(prose_project_dir()), stdout=logf, stderr=subprocess.STDOUT, text=True, start_new_session=True, env=proc_env)
                 except (FileNotFoundError, OSError) as exc:
                     try: logf.close()

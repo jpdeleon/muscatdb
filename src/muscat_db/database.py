@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import csv
+import base64
+import hashlib
+import json
 import os
 import re
 import datetime
@@ -113,7 +116,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     started_at   REAL NOT NULL,
     error_desc   TEXT,
     run_type     TEXT NOT NULL DEFAULT '',
-    params       TEXT NOT NULL DEFAULT ''
+    params       TEXT NOT NULL DEFAULT '',
+    run_id       TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS db_meta (
@@ -140,7 +144,29 @@ CREATE TABLE IF NOT EXISTS exposure_jobs (
     started_at  REAL NOT NULL,
     updated_at  REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS ephemeris_views (
+    slug         TEXT PRIMARY KEY,
+    state_hash   TEXT NOT NULL,
+    state_json   TEXT NOT NULL,
+    targets_json TEXT NOT NULL,
+    created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
+
+
+def _canonical_json(value) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def ephemeris_view_slug(state: dict) -> tuple[str, str, str]:
+    """Return deterministic slug, hex hash, and canonical JSON for a view state."""
+    state_json = _canonical_json(state)
+    digest = hashlib.sha256(state_json.encode("utf-8")).digest()
+    slug = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")[:16]
+    state_hash = hashlib.sha256(state_json.encode("utf-8")).hexdigest()
+    return slug, state_hash, state_json
 
 
 def build_db(db_path: str, progress=None) -> int:
@@ -154,14 +180,19 @@ def build_db(db_path: str, progress=None) -> int:
     """
     tmp_path = db_path + ".tmp"
 
-    # Preserve jobs from existing database so they survive the rebuild.
-    preserved_jobs: list[tuple] = []
+    # Preserve app-owned tables from the existing database so they survive the
+    # temp-file rebuild of observation-derived tables.
+    preserved_jobs: list[dict] = []
+    preserved_ephemeris_views: list[dict] = []
     if os.path.exists(db_path):
         try:
             old_conn = sqlite3.connect(db_path)
             old_conn.row_factory = sqlite3.Row
+            old_conn.executescript(SCHEMA)
             rows = old_conn.execute("SELECT * FROM jobs").fetchall()
-            preserved_jobs = [tuple(r) for r in rows]
+            preserved_jobs = [dict(r) for r in rows]
+            rows = old_conn.execute("SELECT * FROM ephemeris_views").fetchall()
+            preserved_ephemeris_views = [dict(r) for r in rows]
             old_conn.close()
         except sqlite3.OperationalError:
             pass
@@ -303,9 +334,40 @@ def build_db(db_path: str, progress=None) -> int:
             conn.execute(
                 """INSERT OR REPLACE INTO jobs
                    (key, type, instrument, obsdate, target, state, returncode,
-                    elapsed, started_at, error_desc, run_type, params)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                job,
+                    elapsed, started_at, error_desc, run_type, params, run_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    job.get("key", ""),
+                    job.get("type", ""),
+                    job.get("instrument", ""),
+                    job.get("obsdate", ""),
+                    job.get("target", ""),
+                    job.get("state", ""),
+                    job.get("returncode"),
+                    job.get("elapsed", 0),
+                    job.get("started_at", 0.0),
+                    job.get("error_desc", ""),
+                    job.get("run_type", ""),
+                    job.get("params", ""),
+                    job.get("run_id", ""),
+                ),
+            )
+
+        # Restore saved ephemeris view URLs so build-db doesn't wipe shareable
+        # reproducibility state.
+        for view in preserved_ephemeris_views:
+            conn.execute(
+                """INSERT OR REPLACE INTO ephemeris_views
+                   (slug, state_hash, state_json, targets_json, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (
+                    view.get("slug", ""),
+                    view.get("state_hash", ""),
+                    view.get("state_json", "{}"),
+                    view.get("targets_json", "[]"),
+                    view.get("created_at") or datetime.datetime.now().isoformat(),
+                    view.get("updated_at") or datetime.datetime.now().isoformat(),
+                ),
             )
 
         conn.commit()
@@ -722,29 +784,39 @@ def save_job(
     started_at: float,
     error_desc: str = "",
     run_type: str = "",
-    params: str = ""
+    params: str = "",
+    run_id: str = "",
 ) -> None:
     path = db_path()
     conn = sqlite3.connect(path, timeout=30)
     conn.executescript(SCHEMA)
     # Migrations for databases created before these columns existed.
-    for col, col_type in [("run_type", "TEXT NOT NULL DEFAULT ''"), ("params", "TEXT NOT NULL DEFAULT ''")]:
+    for col, col_type in [
+        ("run_type", "TEXT NOT NULL DEFAULT ''"),
+        ("params", "TEXT NOT NULL DEFAULT ''"),
+        ("run_id", "TEXT NOT NULL DEFAULT ''"),
+    ]:
         try:
             conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
             pass
+    # Run-scoped key so distinct runs of the same target are separate job rows;
+    # an empty run_id reproduces the legacy key.
     key = f"{type_}:{inst}/{date}/{target.replace(' ', '')}"
+    if run_id:
+        key = f"{key}/{run_id}"
     conn.execute(
-        """INSERT INTO jobs(key, type, instrument, obsdate, target, state, returncode, elapsed, started_at, error_desc, run_type, params)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """INSERT INTO jobs(key, type, instrument, obsdate, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(key) DO UPDATE SET
              state      = excluded.state,
              returncode = excluded.returncode,
              elapsed    = excluded.elapsed,
              error_desc = excluded.error_desc,
              run_type   = CASE WHEN excluded.run_type != '' THEN excluded.run_type ELSE run_type END,
-             params     = CASE WHEN excluded.params != '' THEN excluded.params ELSE params END""",
-        (key, type_, inst, date, target, state, returncode, elapsed, started_at, error_desc, run_type, params)
+             params     = CASE WHEN excluded.params != '' THEN excluded.params ELSE params END,
+             run_id     = excluded.run_id""",
+        (key, type_, inst, date, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id)
     )
     conn.commit()
     conn.close()
@@ -767,6 +839,52 @@ def get_persisted_jobs() -> list[dict]:
     return result
 
 
+def save_ephemeris_view(state: dict) -> dict:
+    """Persist a deterministic ephemeris page view and return its slug."""
+    path = db_path()
+    slug, state_hash, state_json = ephemeris_view_slug(state)
+    targets = state.get("targets") if isinstance(state, dict) else []
+    if not isinstance(targets, list):
+        targets = []
+    targets_json = _canonical_json([str(t) for t in targets])
+
+    conn = sqlite3.connect(path, timeout=30)
+    conn.executescript(SCHEMA)
+    conn.execute(
+        """INSERT INTO ephemeris_views
+           (slug, state_hash, state_json, targets_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+           ON CONFLICT(slug) DO UPDATE SET
+             updated_at = CURRENT_TIMESTAMP""",
+        (slug, state_hash, state_json, targets_json),
+    )
+    conn.commit()
+    conn.close()
+    return {"slug": slug, "state_hash": state_hash}
+
+
+def get_ephemeris_view(slug: str) -> dict | None:
+    path = db_path()
+    conn = sqlite3.connect(path)
+    conn.executescript(SCHEMA)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT slug, state_hash, state_json, targets_json, created_at, updated_at FROM ephemeris_views WHERE slug = ?",
+        (slug,),
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    state = json.loads(row["state_json"])
+    return {
+        "slug": row["slug"],
+        "state_hash": row["state_hash"],
+        "state": state,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
 def get_last_build_date(db_path: str) -> str:
     """Get the date when muscat-db build was run, or the date when the database file was generated."""
     try:
@@ -784,4 +902,3 @@ def get_last_build_date(db_path: str) -> str:
         return datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
     except OSError:
         return datetime.date.today().strftime("%Y-%m-%d")
-

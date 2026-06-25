@@ -57,8 +57,31 @@
     padding: 0.3rem 0.9rem; font-size: 0.85rem; cursor: pointer;
   }
   .band-tab.active { border-color: var(--accent); color: var(--accent); }
+  .site-chips { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin: 0.75rem 0 0; }
+  .site-chips .site-label { font-size: 0.8rem; color: var(--text-dim); }
+  .site-chip {
+    background: var(--surface2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 0.3rem 0.9rem; font-size: 0.85rem; cursor: pointer;
+    text-decoration: none;
+  }
+  .site-chip.active { border-color: var(--accent); color: var(--accent); }
   .band-panel { display: none; }
   .band-panel.active { display: block; }
+  /* Foldable output sections (Light curves & Covariates, Per-band products). */
+  .phot-fold > summary {
+    list-style: none; cursor: pointer; user-select: none;
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+  .phot-fold > summary::-webkit-details-marker { display: none; }
+  .phot-fold > summary::before {
+    content: '\25B8'; color: var(--text-dim); font-size: 0.9rem;
+    transition: transform 0.15s ease; flex-shrink: 0;
+  }
+  .phot-fold[open] > summary::before { transform: rotate(90deg); }
+  .phot-fold > summary h2 { margin: 0; }
+  /* Interactive controls in the summary (csv download links) must not toggle. */
+  .phot-fold > summary a { cursor: pointer; }
   .warn { color: var(--red); font-size: 0.85rem; margin-top: 0.5rem; }
   .band-checks { display: flex; gap: 0.75rem; flex-wrap: wrap; }
   .band-checks label { display: flex; align-items: center; gap: 0.3rem; color: var(--text); font-size: 0.85rem; }
@@ -124,6 +147,31 @@
       {% endfor %}
     </select>
   </div>
+  {% if sel_inst == 'sinistro' %}
+  {# Only expose a filter when the obslog offers a real choice (>1 value). #}
+  {% if available_sites | length > 1 %}
+  <div class="field">
+    <label for="opt-site">Site <span class="help-tooltip" title="Only reduce frames from this LCO site (corresponds to --site; sinistro only). Empty = all sites.">?</span></label>
+    <select id="opt-site" title="--site; empty → all sites">
+      <option value="">— all —</option>
+      {% for s in available_sites %}
+      <option value="{{ s }}" {% if run_defaults.site == s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% endif %}
+  {% if available_modes | length > 1 %}
+  <div class="field">
+    <label for="opt-mode">Mode <span class="help-tooltip" title="Only reduce frames in this readout mode (corresponds to --mode; sinistro only). Empty = all modes.">?</span></label>
+    <select id="opt-mode" title="--mode; empty → all modes">
+      <option value="">— all —</option>
+      {% for m in available_modes %}
+      <option value="{{ m }}" {% if run_defaults.mode == m %}selected{% endif %}>{{ m }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% endif %}
+  {% endif %}
   <noscript><button class="btn" type="submit">View</button></noscript>
 </form>
 
@@ -145,11 +193,34 @@
       </span>
       {% if wiki_url %}<a href="{{ wiki_url }}" target="_blank" rel="noopener" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">MuSCAT2 wiki ↗</a>{% endif %}
     </h2>
+    {# Build each href as one expression with plain '&'; autoescape turns it into
+       a single '&amp;' (writing '&amp;' here would double-escape to '&amp;amp;'). #}
+    {% set base_qs = '/photometry?inst=' ~ sel_inst ~ '&date=' ~ sel_date ~ '&target=' ~ (sel_target | urlencode) %}
+    {% if outputs and outputs.sites | length > 1 %}
+    <div class="site-chips">
+      <span class="site-label">Site:</span>
+      {% for s in outputs.sites %}
+      <a class="site-chip {% if s == sel_site %}active{% endif %}"
+         href="{{ base_qs ~ '&site=' ~ s ~ ('&mode=' ~ sel_mode if sel_mode else '') }}">{{ s }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if outputs and outputs.modes | length > 1 %}
+    <div class="site-chips">
+      <span class="site-label">Mode:</span>
+      {% for m in outputs.modes %}
+      <a class="site-chip {% if m == sel_mode %}active{% endif %}"
+         href="{{ base_qs ~ ('&site=' ~ sel_site if sel_site else '') ~ '&mode=' ~ m }}">{{ m }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
   </div>
 
+  <div id="output-area">
   {% if outputs and outputs.has_any %}
     {% if outputs.summary %}
-    <div class="phot-section">
+    <details class="phot-section phot-fold" open>
+      <summary>
       <h2 style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
         <span>Light curves &amp; Covariates <span style="font-size:0.75rem;color:var(--text-dim);font-weight:400;">— drag ⠿ to rearrange</span></span>
         {% set ns = namespace(has_csv=false) %}
@@ -168,6 +239,7 @@
         </span>
         {% endif %}
       </h2>
+      </summary>
       <div class="fig-grid col sortable" data-sort-key="summary">
         {% for key in ['lightcurves', 'raw_flux', 'covariates', 'stacks'] %}
           {% if outputs.summary.get(key) %}
@@ -183,12 +255,12 @@
           {% endif %}
         {% endfor %}
       </div>
-    </div>
+    </details>
     {% endif %}
 
     {% if outputs.bands %}
-    <div class="phot-section">
-      <h2>Per-band products</h2>
+    <details class="phot-section phot-fold" open>
+      <summary><h2>Per-band products</h2></summary>
       <div class="band-tabs">
         {% for band in outputs.bands %}
         <button type="button" class="band-tab {% if loop.first %}active{% endif %}" data-band="{{ band }}">{{ band }}</button>
@@ -197,7 +269,7 @@
       {% for band, prods in outputs.bands.items() %}
       <div class="band-panel {% if loop.first %}active{% endif %}" data-band="{{ band }}">
         <div class="fig-grid col sortable" data-sort-key="band">
-          {% for key in ['ref', 'apertures', 'alignment', 'gif'] %}
+          {% for key in ['ref', 'apertures', 'cutouts', 'alignment', 'gif'] %}
             {% if prods.get(key) %}
             <figure class="fig" data-fig-id="{{ key }}">
               <figcaption class="cap">
@@ -225,13 +297,14 @@
         {% endif %}
       </div>
       {% endfor %}
-    </div>
+    </details>
     {% endif %}
 
     <div class="phot-section">
       <div class="dl-row">
         {% if outputs.npz %}<a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.npz }}" download>⬇ data archive (.npz)</a>{% endif %}
         {% if outputs.log %}<a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.log }}" target="_blank">📄 pipeline log</a>{% endif %}
+        {% if outputs.ref_header %}<a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.ref_header }}" target="_blank">🧾 view ref header</a>{% endif %}
       </div>
     </div>
   {% else %}
@@ -241,6 +314,7 @@
       <p style="color: var(--text-dim);">No prose outputs yet for this target — configure options below and run.</p>
     </div>
   {% endif %}
+  </div>
 
   {% if outputs.masters %}
   <div class="phot-section">
@@ -277,13 +351,10 @@
              is empty (e.g. manually-typed / un-ingested target) fall back to the
              standard static list. Shared by the checkboxes and the ref_band select. #}
           {% set band_choices = available_bands if available_bands else ['gp', 'rp', 'ip', 'zs', 'Na_D', 'g_narrow', 'i_narrow', 'z_narrow'] %}
-          <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-            <div class="band-checks">
-              {% for b in band_choices %}
-              <label><input type="checkbox" name="band" value="{{ b }}" {% if available_bands or b in run_defaults.bands or (is_narrowband and b in narrow_bands) %}checked{% endif %}> {{ b }}</label>
-              {% endfor %}
-            </div>
-            <button class="btn" type="button" id="defaults-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2; flex-shrink: 0;">Use default settings</button>
+          <div class="band-checks">
+            {% for b in band_choices %}
+            <label><input type="checkbox" name="band" value="{{ b }}" {% if available_bands or b in run_defaults.bands or (is_narrowband and b in narrow_bands) %}checked{% endif %}> {{ b }}</label>
+            {% endfor %}
           </div>
         </div>
 
@@ -345,6 +416,13 @@
               <label for="opt-min_star_area">Min star area (px) <span class="help-tooltip" title="Minimum pixel area for source detection (corresponds to --min_star_area).">?</span></label>
               <input type="number" id="opt-min_star_area" value="{{ run_defaults.min_star_area }}" min="1" style="width: 100%;">
             </div>
+            <div class="opt">
+              <label for="opt-wcs_method">WCS method <span class="help-tooltip" title="WCS solving method for muscat1/2 calibration: 'twirl' (twirl+Gaia, no API key) or 'astrometry.net' (nova.astrometry.net, requires ASTROMETRY_NET_API_KEY). Disabled for instruments with WCS in header.">?</span></label>
+              <select id="opt-wcs_method" style="width: 100%;">
+                <option value="astrometry.net" {% if run_defaults.wcs_method == 'astrometry.net' %}selected{% endif %}>astrometry.net</option>
+                <option value="twirl" {% if run_defaults.wcs_method == 'twirl' %}selected{% endif %}>twirl</option>
+              </select>
+            </div>
           </div>
         </details>
 
@@ -376,6 +454,10 @@
             <div class="opt">
               <label for="opt-ccd_trim">CCD trim (Y,X) <span class="help-tooltip" title="Number of pixels to trim from the borders of the image (corresponds to --ccd_trim).">?</span></label>
               <input type="text" id="opt-ccd_trim" value="{{ run_defaults.ccd_trim }}" style="width: 100%;">
+            </div>
+            <div class="opt">
+              <label for="opt-edge_margin">Edge margin (px) <span class="help-tooltip" title="Exclude detected stars within this many pixels of any CCD edge from the comparison-star pool; the target is never excluded (corresponds to --edge_margin). Blank = auto (half the cutout size); 0 = disable.">?</span></label>
+              <input type="number" id="opt-edge_margin" value="{{ run_defaults.edge_margin }}" min="0" placeholder="auto" style="width: 100%;">
             </div>
           </div>
         </details>
@@ -421,6 +503,14 @@
         <label class="opt-check-item"><input type="checkbox" id="opt-use_barycorrpy"> Use barycorrpy (BJD-TDB) <span class="help-tooltip" title="Use barycorrpy to perform high-precision BJD time conversion (corresponds to --use_barycorrpy).">?</span></label>
         <label class="opt-check-item"><input type="checkbox" id="opt-overwrite" checked> Overwrite existing products <span class="help-tooltip" title="Overwrite existing reduction products for this target (corresponds to --overwrite).">?</span></label>
         <label class="opt-check-item"><input type="checkbox" id="opt-plot_gaia_sources" checked> Plot Gaia sources <span class="help-tooltip" title="Overlay Gaia DR3 source catalog on check plots (corresponds to --plot_gaia_sources).">?</span></label>
+        <label class="opt-check-item" for="opt-cmap">Colormap <span class="help-tooltip" title="Matplotlib colormap for image-display plots such as reference, stacks and cutouts (corresponds to --cmap). Names ending in '_r' are reversed.">?</span>
+          <select id="opt-cmap">
+            {% for c in cmap_choices %}
+            <option value="{{ c }}" {% if (run_defaults.cmap or 'gray') == c %}selected{% endif %}>{{ c }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button class="btn" type="button" id="defaults-btn" style="font-size: 0.78rem; padding: 0.25rem 0.6rem; line-height: 1.2; margin-left: auto;">Use default settings</button>
       </div>
     </details>
 
@@ -435,19 +525,36 @@
       <button class="btn" type="button" id="cancel-btn" style="display:none;border-color:var(--red);color:var(--red);">
         ■ Cancel
       </button>
-      <span class="hint" style="color: var(--text-dim); font-size: 0.8rem;">
-        Both use the options above; the test run limits frames per band.
-      </span>
+      {% if outputs and outputs.has_any %}
+      <button class="btn" type="button" id="delete-btn" style="border-color:var(--red);color:var(--red);margin-left:auto;">
+        🗑 Delete Reduction
+      </button>
+      {% endif %}
     </div>
 
-    <p style="color: var(--text-dim); font-size: 0.8rem; margin-top: 1rem;">Full reduction (all frames) — copy &amp; run in a shell:</p>
+    <p style="color: var(--text-dim); font-size: 0.8rem; margin: 0.4rem 0 0;">Both use the options above; the test run limits frames per band.</p>
+
+    <p style="color: var(--text-dim); font-size: 0.8rem; margin-top: 1rem;">Or copy &amp; run the command in the terminal:</p>
     <div class="run-cmd">
       <code id="full-cmd">{{ command }}</code>
       <button class="btn" type="button" id="copy-cmd">Copy</button>
     </div>
     <pre id="run-log"></pre>
   </div>
+
+  <div id="delete-confirm-overlay">
+    <div class="modal-box">
+      <p style="margin-bottom:0.75rem;font-size:0.95rem;font-weight:600;">Delete reduction files</p>
+      <p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:1.5rem;line-height:1.5;">Delete all reduction products for <strong>{{ sel_target }}</strong> ({{ sel_inst }}/{{ sel_date }})? This cannot be undone.</p>
+      <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+        <button class="btn" id="delete-cancel-btn">Cancel</button>
+        <button class="btn" id="delete-confirm-btn" style="border-color:var(--red);color:var(--red);">Delete</button>
+      </div>
+    </div>
+  </div>
+
 {% endif %}
+
 {% endblock %}
 
 {% block scripts %}
@@ -553,6 +660,11 @@
   if (selInst)   selInst.addEventListener('change', function () { go({ inst: this.value }); });
   if (selDate)   selDate.addEventListener('change', function () { go({ inst: selInst.value, date: this.value }); });
   if (selTarget) selTarget.addEventListener('change', function () { go({ inst: selInst.value, date: selDate.value, target: this.value }); });
+
+  // ----- foldable sections: keep summary controls (csv links) from toggling -----
+  document.querySelectorAll('.phot-fold > summary a').forEach(function (el) {
+    el.addEventListener('click', function (e) { e.stopPropagation(); });
+  });
 
   // ----- band tabs (results view) -----
   document.querySelectorAll('.band-tab').forEach(function (tab) {
@@ -686,13 +798,18 @@
       n_stars_align: val('opt-n_stars_align'),
       cutout_size: val('opt-cutout_size'),
       ccd_trim: val('opt-ccd_trim'),
+      edge_margin: val('opt-edge_margin'),
       bin_size_minutes: val('opt-bin_size_minutes'),
       overwrite: chk('opt-overwrite'),
       sig_bkg: val('opt-sig_bkg'),
       sig_fwhm: val('opt-sig_fwhm'),
       sig_dx: val('opt-sig_dx'),
       sig_dy: val('opt-sig_dy'),
-      min_star_area: val('opt-min_star_area')
+      min_star_area: val('opt-min_star_area'),
+      wcs_method: val('opt-wcs_method'),
+      cmap: val('opt-cmap'),
+      site: val('opt-site'),
+      mode: val('opt-mode')
     };
   }
   function saveOptions() {
@@ -702,12 +819,14 @@
     var saved;
     try { saved = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); } catch (e) { saved = null; }
     if (!saved) return;
+    // migrate legacy persisted value after the 'nova' -> 'astrometry.net' rename
+    if (saved.wcs_method === 'nova') saved.wcs_method = 'astrometry.net';
     document.querySelectorAll('input[name="band"]').forEach(function (c) {
       c.checked = saved.bands && saved.bands.indexOf(c.value) !== -1;
     });
     ['ref_band','refid','aper_unit','aper_radii','annulus',
      'target_id','comparison_ids','avoid_comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
-     'n_stars_align','cutout_size','ccd_trim','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area'].forEach(function (id) {
+       'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','cmap','site','mode'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
     });
@@ -738,6 +857,20 @@
   restoreOptions();
   updateApertureHints();
 
+  function updateWcsMethod() {
+    var el = document.getElementById('opt-wcs_method');
+    if (!el) return;
+    var inst = selInst ? selInst.value : '';
+    var needsWcs = (inst === 'muscat' || inst === 'muscat2');
+    el.disabled = !needsWcs;
+    el.style.opacity = needsWcs ? '1' : '0.4';
+    el.title = needsWcs ? '' : 'WCS in header — method not configurable for this instrument';
+  }
+  updateWcsMethod();
+  if (selInst) {
+    selInst.addEventListener('change', updateWcsMethod);
+  }
+
   var aperUnitEl = document.getElementById('opt-aper_unit');
   if (aperUnitEl) {
     aperUnitEl.addEventListener('change', function () {
@@ -756,7 +889,7 @@
       });
       ['ref_band','refid','aper_unit','aper_radii','annulus',
        'target_id','comparison_ids','avoid_comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
-       'n_stars_align','cutout_size','ccd_trim','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area'].forEach(function (id) {
+     'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','cmap','site','mode'].forEach(function (id) {
         var el = document.getElementById('opt-'+id);
         if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';
       });
@@ -786,6 +919,7 @@
   var testBtn   = document.getElementById('run-test-btn');
   var fullBtn   = document.getElementById('run-full-btn');
   var cancelBtn = document.getElementById('cancel-btn');
+  var deleteBtn = document.getElementById('delete-btn');
   var logEl     = document.getElementById('run-log');
   var runBtns   = [testBtn, fullBtn].filter(Boolean);
 
@@ -841,6 +975,13 @@
     panel.addEventListener('input', debounce(refreshCmd, 400));
   }
 
+  // site/mode (sinistro only) live in the selector row, not the run panel, so
+  // wire them explicitly to persist + refresh the previewed command on change.
+  ['opt-site', 'opt-mode'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('change', function () { saveOptions(); refreshCmd(); });
+  });
+
   // ----- copy command -----
   var copyBtn = document.getElementById('copy-cmd');
   if (copyBtn) {
@@ -885,6 +1026,8 @@
     jobActive = on;
     runBtns.forEach(function (b) { b.disabled = on || hasOptError || rawMissing; });
     if (cancelBtn) cancelBtn.style.display = on ? '' : 'none';
+    var oa = document.getElementById('output-area');
+    if (oa) oa.style.display = on ? 'none' : '';
   }
   function stopPolling() { if (polling) { clearInterval(polling); polling = null; } }
 
@@ -903,7 +1046,7 @@
         setRunning(true);
       }
       if (s.state === 'done') {
-        stopPolling(); clearJob();
+        stopPolling(); setRunning(false); clearJob();
         logEl.textContent = (s.log || '') + '\n\n✓ done (' + s.elapsed + 's) — reloading…';
         try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
         if (typeof window.showLoading === 'function') {
@@ -933,7 +1076,13 @@
           logEl.textContent = '⏳ Queued — waiting for the running full reduction to finish…';
         }
       } else if (s.state === 'none') {
-        stopPolling(); setRunning(false); clearJob();
+        stopPolling();
+        var wasRunning = jobActive;
+        setRunning(false);
+        clearJob();
+        if (wasRunning) {
+          window.location.reload();
+        }
       }
     }).catch(function () {});
   }
@@ -948,6 +1097,7 @@
       var hi = h.indexOf(jk); if (hi !== -1) { h.splice(hi, 1); localStorage.setItem('jobs:hidden', JSON.stringify(h)); }
     } catch (_) {}
 
+    stopPolling();
     setRunning(true);
     logEl.style.display = 'block';
     logEl.textContent = 'Launching ' + (testRun ? 'test' : 'full') + ' reduction…';
@@ -989,6 +1139,38 @@
     }).catch(function () { cancelBtn.disabled = false; });
   });
 
+  var deleteOverlay = document.getElementById('delete-confirm-overlay');
+  var deleteConfirmBtn = document.getElementById('delete-confirm-btn');
+  if (deleteConfirmBtn) deleteConfirmBtn.addEventListener('click', function () {
+    deleteOverlay.classList.remove('visible');
+    deleteBtn.disabled = true;
+    deleteBtn.textContent = 'Deleting…';
+    fetch('/photometry/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (res.ok) {
+        if (typeof window.showLoading === 'function') window.showLoading('Reloading…');
+        setTimeout(function () { window.location.reload(); }, 800);
+      } else {
+        alert('Delete failed: ' + (res.error || 'unknown error'));
+        deleteBtn.disabled = false;
+        deleteBtn.textContent = '🗑 Delete Reduction';
+      }
+    }).catch(function (err) {
+      alert('Delete failed: ' + err.message);
+      deleteBtn.disabled = false;
+      deleteBtn.textContent = '🗑 Delete Reduction';
+    });
+  });
+  var deleteCancelBtn = document.getElementById('delete-cancel-btn');
+  if (deleteCancelBtn) deleteCancelBtn.addEventListener('click', function () {
+    deleteOverlay.classList.remove('visible');
+  });
+  if (deleteBtn) deleteBtn.addEventListener('click', function () {
+    deleteOverlay.classList.add('visible');
+  });
+
   // ----- download all CSV links -----
   var dlAll = document.getElementById('dl-all-csv');
   if (dlAll) {
@@ -1015,6 +1197,7 @@
 </script>
 <div style="text-align:center; margin:2em 0; display: flex; justify-content: center; gap: 1rem; align-items: center;">
   <a href="#" style="display:inline-block; padding:0.5em 2em; background:#0056b3; color:#fff; text-decoration:none; border-radius:4px;">Back to Top</a>
+  <a href="/jobs" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Jobs</a>
   {% if sel_inst and sel_date and sel_target %}
     <a href="/transit-fit?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Transit Fit</a>
   {% endif %}

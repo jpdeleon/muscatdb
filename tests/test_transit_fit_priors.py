@@ -21,7 +21,7 @@ TARGET = "TOI-1234"
 
 
 def _write(tmp_path: Path, options: dict) -> dict:
-    fit._write_fit_inputs(tmp_path, INST, DATE, [], options)
+    fit._write_fit_inputs(tmp_path, INST, DATE, TARGET, [], options)
     return yaml.safe_load((tmp_path / "fit.yaml").read_text())
 
 
@@ -202,7 +202,7 @@ def test_uniform_param_sys_yaml_uses_bound_midpoint(tmp_path):
         "fixed": ["u_star"],
     }
 
-    fit._write_fit_inputs(tmp_path, INST, DATE, [], options)
+    fit._write_fit_inputs(tmp_path, INST, DATE, TARGET, [], options)
     sys_yaml = yaml.safe_load((tmp_path / "sys.yaml").read_text())
 
     # Uniform bounds [0, 0.5] -> sys.yaml seed [midpoint, half-width].
@@ -297,9 +297,59 @@ def test_fit_yaml_data_keys_in_canonical_band_order(tmp_path):
         p.write_text("time,flux\n")
         csvs.append(p)
 
-    fit._write_fit_inputs(tmp_path, inst, date, csvs, {"planets": "b"})
+    fit._write_fit_inputs(tmp_path, inst, date, target, csvs, {"planets": "b"})
     fit_yaml = yaml.safe_load((tmp_path / "fit.yaml").read_text())
 
     assert list(fit_yaml["data"].keys()) == [
         "g_narrow", "Na_D", "i_narrow", "z_narrow",
     ]
+
+
+def test_fit_yaml_normalizes_sinistro_site_bands(tmp_path):
+    inst, date, target = "sinistro", "250710", "HIP67522"
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    # Create CSVs with Sinistro site-prefixed bands:
+    # cpt_gp, cpt_zs, lsc_gp, lsc_zs
+    raw_files = [
+        "HIP67522_sinistro_cpt_gp_250710.csv",
+        "HIP67522_sinistro_cpt_zs_250710.csv",
+        "HIP67522_sinistro_lsc_gp_250710.csv",
+        "HIP67522_sinistro_lsc_zs_250710.csv",
+    ]
+    csvs = []
+    for fn in raw_files:
+        p = src_dir / fn
+        p.write_text("time,flux\n")
+        csvs.append(p)
+
+    fit._write_fit_inputs(tmp_path, inst, date, target, csvs, {"planets": "b"})
+    fit_yaml = yaml.safe_load((tmp_path / "fit.yaml").read_text())
+
+    # The keys in 'data' should match the extracted raw bands (e.g. cpt_gp, cpt_zs)
+    # but the nested 'band' fields must be mapped to their normalized equivalents:
+    # cpt_gp -> g, cpt_zs -> z, lsc_gp -> g, lsc_zs -> z
+    assert fit_yaml["data"]["cpt_gp"]["band"] == "g"
+    assert fit_yaml["data"]["cpt_zs"]["band"] == "z"
+    assert fit_yaml["data"]["lsc_gp"]["band"] == "g"
+    assert fit_yaml["data"]["lsc_zs"]["band"] == "z"
+
+
+def test_write_log_banner_cleans_html_refs():
+    import io
+    options = {
+        "stellar_ref": 'Source: <a refstr="REF" href="http://url">Stellar Author</a>',
+        "pl_ref": 'Source: <a refstr="REF" href="http://url">Planet Author</a>',
+        "pl_ref_b": 'Source: <a refstr="REF" href="http://url">Planet B Author</a>',
+        "pl_ref_c": 'Source: <span>Some text</span> with <a href="http://url">Planet C Author</a>',
+    }
+    logf = io.StringIO()
+    fit._write_log_banner(logf, ["cmd"], options)
+    log_text = logf.getvalue()
+
+    assert "  stellar_ref: 'Source: Stellar Author (http://url)'" in log_text
+    assert "  pl_ref: 'Source: Planet Author (http://url)'" in log_text
+    assert "  pl_ref_b: 'Source: Planet B Author (http://url)'" in log_text
+    assert "  pl_ref_c: 'Source: Some text with Planet C Author (http://url)'" in log_text
+
+
