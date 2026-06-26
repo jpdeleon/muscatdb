@@ -49,6 +49,15 @@ class TestRunId:
         assert fit.fit_job_key("sinistro", "250710", "HIP 67522", "lsc-x-g") == "sinistro/250710/HIP67522/lsc-x-g"
         assert fit.fit_job_key("sinistro", "250710", "HIP 67522") == "sinistro/250710/HIP67522"
 
+    def test_csv_discovery_allows_header_date_mismatch(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        rdir = tmp_path / "sinistro" / "260625"
+        rdir.mkdir(parents=True)
+        csv = rdir / "TIC88297141_sinistro_lsc_gp_260624.csv"
+        csv.write_text("BJD_TDB,Flux\n1,1\n")
+
+        assert fit.get_csv_lightcurves("sinistro", "260625", "TIC88297141") == [csv]
+
 
 # ── directory isolation ────────────────────────────────────────────────────
 
@@ -131,6 +140,29 @@ class TestSaveJobRunId:
         assert "transit_fit:sinistro/250710/HIP67522/cpt-central_2k_2x2-g" in keys
         assert {j["run_id"] for j in rows} == {"lsc-central_2k_2x2-g", "cpt-central_2k_2x2-g"}
 
+    def test_fit_outputs_include_plot_version(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_TIMER_DIR", str(tmp_path))
+        tdir = tmp_path / "sinistro" / "250710" / "HIP67522"
+        _make_run(tdir, "lsc-central_2k_2x2-g", "lsc", "central_2k_2x2", "g", 1_000_100)
+
+        outputs = fit.get_fit_outputs("sinistro", "250710", "HIP67522", "lsc-central_2k_2x2-g")
+
+        assert outputs["plots"]
+        assert outputs["plots"][0]["version"].isdigit()
+
+    def test_fit_outputs_group_systematics_plots(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_TIMER_DIR", str(tmp_path))
+        tdir = tmp_path / "sinistro" / "250710" / "HIP67522"
+        _make_run(tdir, "lsc-central_2k_2x2-g", "lsc", "central_2k_2x2", "g", 1_000_100)
+        out_dir = tdir / "lsc-central_2k_2x2-g" / "out"
+        (out_dir / "sys-lsc_gp.png").write_bytes(b"\x89PNG\r\n")
+
+        fit._fit_outputs_cache.clear()
+        outputs = fit.get_fit_outputs("sinistro", "250710", "HIP67522", "lsc-central_2k_2x2-g")
+
+        assert [p["file"] for p in outputs["plots"]] == ["fit.png"]
+        assert [p["file"] for p in outputs["systematics_plots"]] == ["sys-lsc_gp.png"]
+
 
 # ── run-aware file route ───────────────────────────────────────────────────
 
@@ -139,6 +171,7 @@ class TestRunFileRoute:
     def client(self, tmp_path, monkeypatch):
         from fastapi.testclient import TestClient
         monkeypatch.setenv("MUSCAT_TIMER_DIR", str(tmp_path / "timer"))
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path / "prose"))
         monkeypatch.setenv("MUSCAT_DB_PATH", str(tmp_path / "muscat.db"))
         from muscat_db.web import app
         with TestClient(app) as c:
@@ -182,6 +215,37 @@ class TestRunFileRoute:
         assert "cpt-central_2k_2x2-g" not in r_elp.text
         # Transit Fit Results section should NOT have outputs
         assert "Transit Fit Results" not in r_elp.text
+
+    def test_page_versions_plot_urls(self, client):
+        c, tmp_path = client
+        tdir = tmp_path / "timer" / "sinistro" / "250710" / "HIP67522"
+        _make_run(tdir, "lsc-central_2k_2x2-g", "lsc", "central_2k_2x2", "g", 1_000_100)
+        pdir = tmp_path / "prose" / "sinistro" / "250710"
+        pdir.mkdir(parents=True)
+        (pdir / "HIP67522_sinistro_lsc_gp_250710.csv").write_text("BJD_TDB,Flux\n1,1\n")
+        fit._fit_outputs_cache.clear()
+
+        r = c.get("/transit-fit?inst=sinistro&date=250710&target=HIP%2067522&run=lsc-central_2k_2x2-g")
+
+        assert r.status_code == 200
+        assert "/transit-fit/file/sinistro/250710/HIP 67522/run/lsc-central_2k_2x2-g/fit.png?v=" in r.text
+
+    def test_page_groups_systematics_plots_in_collapsible_section(self, client):
+        c, tmp_path = client
+        tdir = tmp_path / "timer" / "sinistro" / "250710" / "HIP67522"
+        _make_run(tdir, "lsc-central_2k_2x2-g", "lsc", "central_2k_2x2", "g", 1_000_100)
+        (tdir / "lsc-central_2k_2x2-g" / "out" / "sys-lsc_gp.png").write_bytes(b"\x89PNG\r\n")
+        pdir = tmp_path / "prose" / "sinistro" / "250710"
+        pdir.mkdir(parents=True)
+        (pdir / "HIP67522_sinistro_lsc_gp_250710.csv").write_text("BJD_TDB,Flux\n1,1\n")
+        fit._fit_outputs_cache.clear()
+
+        r = c.get("/transit-fit?inst=sinistro&date=250710&target=HIP%2067522&run=lsc-central_2k_2x2-g")
+
+        assert r.status_code == 200
+        assert '<details class="result-collapse">' in r.text
+        assert "Systematics Plots (1)" in r.text
+        assert "sys-lsc_gp" in r.text
 
 
 # ── job status DB prioritization ───────────────────────────────────────────

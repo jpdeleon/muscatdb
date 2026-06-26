@@ -232,7 +232,7 @@
           Download csv:
           {% for band, prods in outputs.bands.items() %}
             {% if prods.get('csv') %}
-          <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods['csv']['file'] }}" download class="csv-link">⬇ {{ band }}</a>
+          <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods['csv']['file'] }}?v={{ prods['csv']['version'] }}" download class="csv-link">⬇ {{ band }}</a>
             {% endif %}
           {% endfor %}
           <a href="#" id="dl-all-csv" style="color: var(--accent2); font-weight: 600;">⬇ all</a>
@@ -248,8 +248,8 @@
               <span>{{ key }} (Created: {{ outputs.summary[key].created_at }})</span>
               <span class="drag-handle" title="Drag to reorder">⠿</span>
             </figcaption>
-            <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.summary[key].file }}" target="_blank">
-              <img draggable="false" loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.summary[key].file }}" alt="{{ key }}">
+            <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.summary[key].file }}?v={{ outputs.summary[key].version }}" target="_blank">
+              <img draggable="false" loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.summary[key].file }}?v={{ outputs.summary[key].version }}" alt="{{ key }}">
             </a>
           </figure>
           {% endif %}
@@ -276,8 +276,8 @@
                 <span>{{ band }} · {{ key }} (Created: {{ prods[key].created_at }})</span>
                 <span class="drag-handle" title="Drag to reorder">⠿</span>
               </figcaption>
-              <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods[key].file }}" target="_blank">
-                <img draggable="false" loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods[key].file }}" alt="{{ band }} {{ key }}">
+              <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods[key].file }}?v={{ prods[key].version }}" target="_blank">
+                <img draggable="false" loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods[key].file }}?v={{ prods[key].version }}" alt="{{ band }} {{ key }}">
               </a>
             </figure>
             {% endif %}

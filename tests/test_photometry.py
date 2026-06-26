@@ -90,6 +90,7 @@ class TestListOutputs:
         assert out["has_any"]
         assert set(out["summary"]) == {"lightcurves", "raw_flux", "covariates", "stacks"}
         assert out["summary"]["lightcurves"]["file"] == f"{TARGET}_{INST}_{DATE}_lightcurves.png"
+        assert out["summary"]["lightcurves"]["version"].isdigit()
         assert out["summary"]["raw_flux"]["file"] == f"{TARGET}_{INST}_{DATE}_raw_flux.png"
         assert out["npz"] == f"{TARGET}_{INST}_{DATE}.npz"
         assert out["log"].endswith(".log")
@@ -901,6 +902,12 @@ class TestRoutes:
         assert r.status_code == 200
         assert f"{TARGET}_{INST}_{DATE}_lightcurves.png" in r.text
         assert "Per-band products" in r.text
+
+    def test_photometry_page_versions_artifact_urls(self, client):
+        r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
+        assert r.status_code == 200
+        name = f"{TARGET}_{INST}_{DATE}_lightcurves.png"
+        assert f"/photometry/file/{INST}/{DATE}/{name}?v=" in r.text
 
     def test_ref_header_link_and_inline_serving(self, client, prose_dir):
         # The "view ref header" link appears when the sidecar exists and the file
