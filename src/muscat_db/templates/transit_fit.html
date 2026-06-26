@@ -29,6 +29,31 @@
   }
   .fig img { width: 100%; height: auto; border-radius: 6px; display: block; background: #000; }
   .fig .cap { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-dim); }
+  .result-collapse {
+    margin-top: 1.25rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.9rem;
+  }
+  .result-collapse > summary {
+    color: var(--accent2);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    list-style: none;
+    user-select: none;
+  }
+  .result-collapse > summary::-webkit-details-marker { display: none; }
+  .result-collapse > summary::before {
+    content: '\25B8';
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    transition: transform 0.15s ease;
+  }
+  .result-collapse[open] > summary::before { transform: rotate(90deg); }
+  .result-collapse > .fig-grid { margin-top: 1rem; }
 
   /* Bottom-align checkboxes within the options grid (page-specific override). */
   .opt.check { margin-top: auto; }
@@ -272,12 +297,30 @@
         <figcaption class="cap">
           <span>{{ p.file | replace('.png', '') }} (Created: {{ p.created_at }})</span>
         </figcaption>
-        <a href="{{ file_base }}/{{ p.file }}" target="_blank">
-          <img draggable="false" loading="lazy" src="{{ file_base }}/{{ p.file }}" alt="{{ p.file }}">
+        <a href="{{ file_base }}/{{ p.file }}?v={{ p.version }}" target="_blank">
+          <img draggable="false" loading="lazy" src="{{ file_base }}/{{ p.file }}?v={{ p.version }}" alt="{{ p.file }}">
         </a>
       </figure>
       {% endfor %}
     </div>
+
+    {% if outputs.systematics_plots %}
+    <details class="result-collapse">
+      <summary>Systematics Plots ({{ outputs.systematics_plots | length }})</summary>
+      <div class="fig-grid">
+        {% for p in outputs.systematics_plots %}
+        <figure class="fig">
+          <figcaption class="cap">
+            <span>{{ p.file | replace('.png', '') }} (Created: {{ p.created_at }})</span>
+          </figcaption>
+          <a href="{{ file_base }}/{{ p.file }}?v={{ p.version }}" target="_blank">
+            <img draggable="false" loading="lazy" src="{{ file_base }}/{{ p.file }}?v={{ p.version }}" alt="{{ p.file }}">
+          </a>
+        </figure>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
 
     {% if outputs.summary %}
     <div class="phot-section">

@@ -116,7 +116,7 @@
     </div>
     <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
       <a class="btn sm" id="oc-summary-link" href="#" target="_blank" rel="noopener" style="display: flex; align-items: center; gap: 0.35rem; font-weight: 500;">
-        tcs.txt
+        tcs.txt ↗
       </a>
       <button class="btn sm primary" type="button" id="download-plot-btn" style="display: flex; align-items: center; gap: 0.35rem; font-weight: 500;">
         📥 Download PNG
@@ -1294,31 +1294,45 @@
     }
     const colors = ['#6c8cff', '#0f9d8b', '#f87171', '#fcd34d'];
     const traces = [];
+    let bjdOffset = 2450000;
+    let foundBjdOffset = false;
+    for (const pl of planets) {
+      const firstPoint = fitResults[pl].points.find(p => p.checked || showExcluded);
+      if (firstPoint && Number.isFinite(firstPoint.bjd)) {
+        bjdOffset = Math.floor(firstPoint.bjd);
+        foundBjdOffset = true;
+        break;
+      }
+    }
+    const bjdAxisTitle = foundBjdOffset ? `Time (BJD - ${bjdOffset})` : 'Time (BJD)';
+    const plottedX = [];
+    planets.forEach(pl => {
+      fitResults[pl].points.forEach(p => {
+        if (p.checked || showExcluded) {
+          plottedX.push(xType === 'bjd' ? (p.bjd - bjdOffset) : p.epoch);
+        }
+      });
+    });
+    const sharedXSpan = plottedX.length > 0 ? {
+      min: Math.min(...plottedX),
+      max: Math.max(...plottedX)
+    } : null;
 
     let tickvals = [];
     let ticktext = [];
     if (showTwin) {
       const firstPlanet = planets[0];
       const firstRes = fitResults[firstPlanet];
-      const allPanelX = [];
-      planets.forEach(pl => {
-        fitResults[pl].points.forEach(p => {
-          if (p.checked || showExcluded) {
-            const x = xType === 'bjd' ? (p.bjd - 2450000) : p.epoch;
-            allPanelX.push(x);
-          }
-        });
-      });
-      if (allPanelX.length > 0) {
-        let minX = Math.min(...allPanelX);
-        let maxX = Math.max(...allPanelX);
+      if (sharedXSpan) {
+        let minX = sharedXSpan.min;
+        let maxX = sharedXSpan.max;
         let span = maxX - minX || 1;
         
         for (let k = 0; k <= 5; k++) {
           let val = minX + span * (k / 5);
           let bjd;
           if (xType === 'bjd') {
-            bjd = val + 2450000;
+            bjd = val + bjdOffset;
           } else {
             const t0 = firstRes.was_fit ? firstRes.t0_fit : firstRes.t0_ref;
             const period = firstRes.was_fit ? firstRes.period_fit : firstRes.period_ref;
@@ -1358,13 +1372,16 @@
         x: showTwin ? 0.5 : 1,
         font: { size: 10 }
       },
-      hovermode: 'closest'
+      hovermode: 'closest',
+      shapes: []
     };
 
     if (planets.length === 2) {
       layout.xaxis = {
-        title: xType === 'bjd' ? 'Time (BJD - 2450000)' : 'Epoch',
+        title: xType === 'bjd' ? bjdAxisTitle : 'Epoch',
         gridcolor: isDark ? '#2e3348' : '#d8dce6',
+        zeroline: false,
+        zerolinewidth: 0,
         zerolinecolor: isDark ? '#2e3348' : '#d8dce6',
         linecolor: isDark ? '#2e3348' : '#d8dce6',
         tickfont: { size: 10 },
@@ -1384,6 +1401,8 @@
           tickvals: tickvals,
           ticktext: ticktext,
           showgrid: false,
+          zeroline: false,
+          zerolinewidth: 0,
           showline: true,
           ticks: 'outside',
           automargin: true,
@@ -1394,7 +1413,7 @@
       }
       
       layout.yaxis = {
-        title: `planet ${planets[0].toLowerCase()} O-C (min)`,
+        title: `planet ${planets[0].toLowerCase()}<br>O-C (min)`,
         gridcolor: isDark ? '#2e3348' : '#d8dce6',
         zerolinecolor: isDark ? '#2e3348' : '#d8dce6',
         linecolor: isDark ? '#2e3348' : '#d8dce6',
@@ -1402,7 +1421,7 @@
       };
       
       layout.yaxis2 = {
-        title: `planet ${planets[1].toLowerCase()} O-C (min)`,
+        title: `planet ${planets[1].toLowerCase()}<br>O-C (min)`,
         gridcolor: isDark ? '#2e3348' : '#d8dce6',
         zerolinecolor: isDark ? '#2e3348' : '#d8dce6',
         linecolor: isDark ? '#2e3348' : '#d8dce6',
@@ -1415,15 +1434,18 @@
         const color = colors[i % colors.length];
         
         // Build traces
-        const plTraces = getPlotlyTracesForPlanet(res, pl, color, xType, yaxisKey, isDark, showExcluded);
+        const plTraces = getPlotlyTracesForPlanet(res, pl, color, xType, yaxisKey, isDark, showExcluded, bjdOffset);
         plTraces.forEach(t => traces.push(t));
+        addZeroLineShape(layout, yaxisKey, color);
       });
       
     } else {
       const rows = planets.length;
       layout.xaxis = {
-        title: xType === 'bjd' ? 'Time (BJD - 2450000)' : 'Epoch',
+        title: xType === 'bjd' ? bjdAxisTitle : 'Epoch',
         gridcolor: isDark ? '#2e3348' : '#d8dce6',
+        zeroline: false,
+        zerolinewidth: 0,
         zerolinecolor: isDark ? '#2e3348' : '#d8dce6',
         linecolor: isDark ? '#2e3348' : '#d8dce6',
         tickfont: { size: 10 },
@@ -1443,6 +1465,8 @@
           tickvals: tickvals,
           ticktext: ticktext,
           showgrid: false,
+          zeroline: false,
+          zerolinewidth: 0,
           showline: true,
           ticks: 'outside',
           automargin: true,
@@ -1460,7 +1484,7 @@
         const end = start + heightFraction;
         
         layout['yaxis' + (i === 0 ? '' : i + 1)] = {
-          title: `planet ${pl.toLowerCase()} O-C (min)`,
+          title: `planet ${pl.toLowerCase()}<br>O-C (min)`,
           gridcolor: isDark ? '#2e3348' : '#d8dce6',
           zerolinecolor: isDark ? '#2e3348' : '#d8dce6',
           linecolor: isDark ? '#2e3348' : '#d8dce6',
@@ -1469,8 +1493,9 @@
 
         const res = fitResults[pl];
         const color = colors[i % colors.length];
-        const plTraces = getPlotlyTracesForPlanet(res, pl, color, xType, yaxisKey, isDark, showExcluded);
+        const plTraces = getPlotlyTracesForPlanet(res, pl, color, xType, yaxisKey, isDark, showExcluded, bjdOffset);
         plTraces.forEach(t => traces.push(t));
+        addZeroLineShape(layout, yaxisKey, color);
       });
     }
 
@@ -1645,7 +1670,24 @@
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
 
-  function getPlotlyTracesForPlanet(res, planet, color, xType, yaxisKey, isDark, showExcluded) {
+  function addZeroLineShape(layout, yaxisKey, color) {
+    layout.shapes.push({
+      type: 'line',
+      xref: 'paper',
+      yref: yaxisKey,
+      x0: 0,
+      x1: 1,
+      y0: 0,
+      y1: 0,
+      line: {
+        color: color,
+        width: 1.5,
+        dash: 'dash'
+      }
+    });
+  }
+
+  function getPlotlyTracesForPlanet(res, planet, color, xType, yaxisKey, isDark, showExcluded, bjdOffset) {
     const settings = planetPlotSettings[planet] || { color: color, symbol: 'instrument' };
     const pColor = settings.color;
 
@@ -1653,7 +1695,7 @@
     const unX = [], unY = [], unErr = [], unCustom = [], unText = [], unSymbols = [];
 
     res.points.forEach(p => {
-      const x = xType === 'bjd' ? (p.bjd - 2450000) : p.epoch;
+      const x = xType === 'bjd' ? (p.bjd - bjdOffset) : p.epoch;
       const y = p.oc_min;
       const err = p.oc_err_min;
       const cd = { inst: p.instrument, date: p.date, run_id: p.run_id, target: p.target };
@@ -1700,7 +1742,7 @@
         },
         mode: 'markers',
         type: 'scatter',
-        name: `planet ${planet.toLowerCase()} (Used)`,
+        name: `planet ${planet.toLowerCase()}`,
         marker: {
           color: pColor,
           size: 9,
@@ -1730,7 +1772,7 @@
         },
         mode: 'markers',
         type: 'scatter',
-        name: `planet ${planet.toLowerCase()} (Excluded)`,
+        name: `planet ${planet.toLowerCase()} (unused)`,
         marker: {
           color: 'rgba(0, 0, 0, 0)',
           size: 8,
@@ -1740,31 +1782,6 @@
         customdata: unCustom,
         hoverinfo: 'text',
         text: unText,
-        xaxis: 'x',
-        yaxis: yaxisKey
-      });
-    }
-
-    // 3. Trace for flat horizontal line at zero representing the fit ephemeris
-    const allX = showExcluded ? fitX.concat(unX) : fitX;
-    if (allX.length > 0) {
-      const minX = Math.min(...allX);
-      const maxX = Math.max(...allX);
-      const span = maxX - minX || 1;
-      
-      traces.push({
-        x: [minX - span * 0.1, maxX + span * 0.1],
-        y: [0, 0],
-        mode: 'lines',
-        type: 'scatter',
-        name: `planet ${planet.toLowerCase()} Fit Line`,
-        line: {
-          color: pColor,
-          width: 1.5,
-          dash: 'dash'
-        },
-        hoverinfo: 'skip',
-        showlegend: false,
         xaxis: 'x',
         yaxis: yaxisKey
       });

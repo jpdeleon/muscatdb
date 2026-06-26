@@ -273,16 +273,18 @@ def get_csv_lightcurves(inst: str, date: str, target: str) -> list[pathlib.Path]
         return []
 
     target_clean = target.replace(" ", "").replace("-", "").lower()
+    inst_token = f"_{inst.lower()}_"
     csvs = []
     for f in rdir.glob("*.csv"):
         if f.name.startswith("_") or "summary" in f.name:
             continue
         fname = f.name.lower()
-        if inst.lower() in fname and date in fname:
-            t_part = fname.split(f"_{inst.lower()}_")[0]
-            t_clean = t_part.replace("-", "")
-            if t_clean == target_clean:
-                csvs.append(f)
+        if inst_token not in fname:
+            continue
+        t_part = fname.split(inst_token, 1)[0]
+        t_clean = t_part.replace("-", "")
+        if t_clean == target_clean:
+            csvs.append(f)
     return sorted(csvs)
 
 
@@ -1497,6 +1499,7 @@ def get_fit_outputs(inst: str, date: str, target: str, run_id: str | None = None
     outputs = {
         "has_any": False,
         "plots": [],
+        "systematics_plots": [],
         "summary": None,
         "has_log": False,
         "has_fit_yaml": False,
@@ -1526,15 +1529,27 @@ def get_fit_outputs(inst: str, date: str, target: str, run_id: str | None = None
     if not out_dir.is_dir():
         return outputs
 
-    # Show every PNG plot produced by the run, sorted by name.
+    # Show PNG plots produced by the run, sorted by name. Timer systematics
+    # plots are grouped separately in the UI because there can be one per band.
     for p in sorted(out_dir.glob("*.png")):
         if p.is_file():
             try:
-                mtime = p.stat().st_mtime
+                st = p.stat()
+                mtime = st.st_mtime
+                version = str(st.st_mtime_ns)
                 created_at = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
             except Exception:
+                version = "0"
                 created_at = "Unknown"
-            outputs["plots"].append({"file": p.name, "created_at": created_at})
+            plot_info = {
+                "file": p.name,
+                "created_at": created_at,
+                "version": version,
+            }
+            if p.name.startswith("sys-"):
+                outputs["systematics_plots"].append(plot_info)
+            else:
+                outputs["plots"].append(plot_info)
             outputs["has_any"] = True
 
     # Collect any other output files for download (exclude plots already shown

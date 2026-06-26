@@ -436,9 +436,13 @@ def list_outputs(
             continue
 
         try:
-            mtime = p.stat().st_mtime
+            st = p.stat()
+            mtime = st.st_mtime
+            version = str(st.st_mtime_ns)
             created_at = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
         except Exception:
+            mtime = 0.0
+            version = "0"
             created_at = "Unknown"
 
         # Try summary suffixes first (no band token between inst and date).
@@ -467,7 +471,12 @@ def list_outputs(
             if key is not None:
                 existing = out["summary"].get(key)
                 if existing is None or mtime > existing.get("_mtime", 0):
-                    out["summary"][key] = {"file": name, "created_at": created_at, "_mtime": mtime}
+                    out["summary"][key] = {
+                        "file": name,
+                        "created_at": created_at,
+                        "version": version,
+                        "_mtime": mtime,
+                    }
                     out["has_any"] = True
                 continue
             # If the summary regex matched but rest is unrecognised, fall
@@ -487,7 +496,12 @@ def list_outputs(
         band = mb.group("band")
         existing = out["bands"].setdefault(band, {}).get(key)
         if existing is None or mtime > existing.get("_mtime", 0):
-            out["bands"][band][key] = {"file": name, "created_at": created_at, "_mtime": mtime}
+            out["bands"][band][key] = {
+                "file": name,
+                "created_at": created_at,
+                "version": version,
+                "_mtime": mtime,
+            }
             out["has_any"] = True
 
     if inst in ("muscat", "muscat2"):
