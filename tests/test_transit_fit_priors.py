@@ -399,4 +399,51 @@ def test_bump_model_options_are_encoded_correctly(tmp_path):
     assert bump["ampl_prior"] == "gaussian"
 
 
+def test_flare_model_options_are_encoded_correctly(tmp_path):
+    inst = "muscat"
+    date = "171103"
+    target = "HAT-P-45"
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    p = src_dir / "HAT-P-45_muscat_zs_171103.csv"
+    p.write_text("time,flux\n")
+    csvs = [p]
+
+    opts = {
+        "planets": "b",
+        "include_flare": "true",
+        "chromatic_flare": "true",
+        "flare_tpeak": "0.1,0.01; 0.5,0.02",
+        "flare_tpeak_prior": "gaussian",
+        "flare_fwhm": "0.01,0.03",
+        "flare_fwhm_prior": "uniform",
+        "flare_ampl": "0.01,0.001",
+        "flare_ampl_prior": "gaussian",
+    }
+
+    fit._write_fit_inputs(tmp_path, inst, date, target, csvs, opts)
+    fit_yaml = yaml.safe_load((tmp_path / "fit.yaml").read_text())
+
+    assert fit_yaml["include_flare"] is True
+    assert fit_yaml["chromatic_flare"] is True
+    
+    flare = fit_yaml["flare"]
+    # 2 flares parsed from tpeak
+    assert flare["tpeak"] == [0.1, 0.5]
+    assert flare["tpeak_unc"] == [0.01, 0.02]
+    assert flare["tpeak_prior"] == "gaussian"
+    
+    # fwhm uniform prior: [0.01, 0.03] low/high converted to center/width
+    # center = (0.01 + 0.03)/2 = 0.02, width = 0.03 - 0.01 = 0.02
+    assert flare["fwhm"] == pytest.approx(0.02)
+    assert flare["fwhm_unc"] == pytest.approx(0.02)
+    assert flare["fwhm_prior"] == "uniform"
+
+    # ampl prior: single Gaussian
+    assert flare["ampl"] == pytest.approx(0.01)
+    assert flare["ampl_unc"] == pytest.approx(0.001)
+    assert flare["ampl_prior"] == "gaussian"
+
+
+
 
