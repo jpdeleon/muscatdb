@@ -266,6 +266,56 @@
     </details>
     {% endif %}
 
+    {% if nearby_previews %}
+    <details class="phot-section phot-fold" open style="margin-bottom: 2rem;">
+      <summary><h2>Nearby stars (within outer annulus)</h2></summary>
+      <div class="band-tabs">
+        {% for band in nearby_previews %}
+        <button type="button" class="band-tab nearby-tab-click {% if loop.first %}active{% endif %}" data-band="nearby-{{ band }}">{{ band }}</button>
+        {% endfor %}
+      </div>
+      {% for band, preview in nearby_previews.items() %}
+      <div class="nearby-panel-click {% if loop.first %}active{% endif %}" data-band="nearby-{{ band }}" style="{% if not loop.first %}display:none;{% endif %}">
+        {% if preview.rows %}
+        <div class="csv-wrap">
+          <table>
+            <thead>
+              <tr>
+                {% for h in preview.headers %}
+                <th>{{ h }}</th>
+                {% endfor %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in preview.rows %}
+              <tr>
+                {% for cell in row %}
+                <td class="mono">
+                  {% if cell is none or cell == "" or cell == "nan" %}
+                    —
+                  {% else %}
+                    {{ cell }}
+                  {% endif %}
+                </td>
+                {% endfor %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% if outputs.bands.get(band) and outputs.bands[band].get('nearby_stars') %}
+        <span class="dl-row" style="font-size: 0.85rem; font-weight: 400; margin-top: 0.5rem; display: block;">
+          Download CSV: <a href="{{ file_base }}/{{ outputs.bands[band]['nearby_stars']['file'] }}?v={{ outputs.bands[band]['nearby_stars']['version'] }}" download class="csv-link">⬇ {{ band }} nearby stars</a>
+        </span>
+        {% endif %}
+        {% else %}
+        <p style="color:var(--text-dim);font-size:0.85rem;padding:0.5rem 0;">No nearby stars within the outer annulus detected in Gaia for this band.</p>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </details>
+    {% endif %}
+
     {% if outputs.bands %}
     <details class="phot-section phot-fold" open>
       <summary><h2>Per-band products</h2></summary>
@@ -698,11 +748,31 @@
   });
 
   // ----- band tabs (results view) -----
-  document.querySelectorAll('.band-tab').forEach(function (tab) {
+  document.querySelectorAll('.band-tab:not(.nearby-tab-click)').forEach(function (tab) {
     tab.addEventListener('click', function () {
       var band = this.dataset.band;
-      document.querySelectorAll('.band-tab').forEach(function (t) { t.classList.toggle('active', t.dataset.band === band); });
+      document.querySelectorAll('.band-tab:not(.nearby-tab-click)').forEach(function (t) { t.classList.toggle('active', t.dataset.band === band); });
       document.querySelectorAll('.band-panel').forEach(function (p) { p.classList.toggle('active', p.dataset.band === band); });
+    });
+  });
+
+  // ----- nearby star tabs -----
+  document.querySelectorAll('.nearby-tab-click').forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      var band = this.dataset.band;
+      var siblings = this.parentElement.querySelectorAll('.nearby-tab-click');
+      siblings.forEach(function (t) { t.classList.toggle('active', t.dataset.band === band); });
+      
+      var parentSection = this.closest('.phot-section');
+      parentSection.querySelectorAll('.nearby-panel-click').forEach(function (p) {
+        if (p.dataset.band === band) {
+          p.style.display = 'block';
+          p.classList.add('active');
+        } else {
+          p.style.display = 'none';
+          p.classList.remove('active');
+        }
+      });
     });
   });
 

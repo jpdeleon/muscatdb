@@ -148,6 +148,7 @@ _BAND_SUFFIX = {
     "_alignment.png": "alignment",
     ".gif": "gif",
     ".csv": "csv",
+    "_nearby_stars.csv": "nearby_stars",
 }
 
 
