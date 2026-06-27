@@ -6,6 +6,7 @@ import pathlib
 import re
 import sqlite3
 import threading
+import time
 
 _DB_LOCK = threading.Lock()
 _CATALOG_CACHE: dict = {}
@@ -1684,6 +1685,18 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
     return JSONResponse({"ok": True, "results": results})
 
 
+def _live_elapsed(job: dict) -> int:
+    """Elapsed seconds for display: live for active jobs, stored otherwise.
+
+    ``sync_jobs`` no longer rewrites a running job's row every poll just to bump
+    its elapsed, so derive it from ``started_at`` for active states instead of
+    reading the (intentionally stale) stored value.
+    """
+    if job.get("state") in ("running", "cancelling") and job.get("started_at"):
+        return round(time.time() - job["started_at"])
+    return round(job.get("elapsed") or 0)
+
+
 @app.get("/jobs", response_class=HTMLResponse)
 def jobs_page():
     phot.sync_jobs()
@@ -1696,6 +1709,9 @@ def jobs_page():
     if orphan_fits:
         all_jobs.extend(orphan_fits)
         all_jobs.sort(key=lambda j: j.get("started_at", 0), reverse=True)
+
+    for j in all_jobs:
+        j["elapsed"] = _live_elapsed(j)
 
     counts = {"running": 0, "done": 0, "error": 0, "cancelled": 0, "pending": 0}
     for j in all_jobs:
@@ -1730,7 +1746,7 @@ def jobs_status():
         {
             "key": j["key"],
             "state": j["state"],
-            "elapsed": j["elapsed"],
+            "elapsed": _live_elapsed(j),
             "started_at_str": _datetime_from_timestamp(int(j["started_at"])) if j.get("started_at") else "—",
         }
         for j in all_jobs if j["state"] in ("running", "cancelling")

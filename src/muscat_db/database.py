@@ -8,6 +8,7 @@ import os
 import re
 import datetime
 import sqlite3
+import threading
 
 from muscat_db.instruments import INSTRUMENTS, OBSLOG_BASE
 from muscat_db.cache import clear_all_caches
@@ -818,6 +819,28 @@ def _backfill_job_run_names(conn: sqlite3.Connection) -> bool:
     return True
 
 
+# The jobs schema-ensure (executescript + ALTER probes) and the run_name backfill
+# (a full-table scan) are one-time migrations, but they sat in the hot path of
+# every save_job / get_persisted_jobs call -- i.e. on every 2s status poll. Run
+# them once per (process, db path) instead. build_db always rewrites the full
+# SCHEMA when it swaps the file in, so a DB seen after the first call can never be
+# older than the current schema, making the skip safe.
+_migrated_paths: set[str] = set()
+_migrate_lock = threading.Lock()
+
+
+def _ensure_jobs_migrated(conn: sqlite3.Connection, path: str) -> None:
+    if path in _migrated_paths:
+        return
+    with _migrate_lock:
+        if path in _migrated_paths:
+            return
+        _ensure_jobs_schema(conn)
+        if _backfill_job_run_names(conn):
+            conn.commit()
+        _migrated_paths.add(path)
+
+
 def save_job(
     type_: str,
     inst: str,
@@ -835,8 +858,7 @@ def save_job(
 ) -> None:
     path = db_path()
     conn = sqlite3.connect(path, timeout=30)
-    _ensure_jobs_schema(conn)
-    _backfill_job_run_names(conn)
+    _ensure_jobs_migrated(conn, path)
     # Run-scoped key so distinct runs of the same target are separate job rows;
     # an empty run_id reproduces the legacy key.
     key = f"{type_}:{inst}/{date}/{target.replace(' ', '')}"
@@ -864,9 +886,7 @@ def save_job(
 def get_persisted_jobs() -> list[dict]:
     path = db_path()
     conn = sqlite3.connect(path)
-    _ensure_jobs_schema(conn)
-    if _backfill_job_run_names(conn):
-        conn.commit()
+    _ensure_jobs_migrated(conn, path)
     cur = conn.execute("SELECT * FROM jobs ORDER BY started_at DESC")
     columns = [d[0] for d in cur.description]
     result = []

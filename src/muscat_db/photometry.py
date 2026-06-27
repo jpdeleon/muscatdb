@@ -1793,7 +1793,8 @@ def sync_jobs() -> None:
             )
 
         running_keys = {j["key"] for j in db_jobs if j["state"] == "running" and j["type"] == "photometry"}
-        
+        db_by_key = {j["key"]: j for j in db_jobs}
+
         for key, job in _JOBS.items():
             db_key = f"photometry:{job_key(job.inst, job.date, job.target, job.run_id)}"
             state, rc, is_terminal = _resolve_job_state(job)
@@ -1813,6 +1814,21 @@ def sync_jobs() -> None:
             persist_state = "running" if state == "finalizing" else state
             persist_rc = None if state == "finalizing" else rc
             elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
+            # Only persist when the row actually changed. A steadily-running job
+            # whose DB row already says "running" needs no rewrite; elapsed is
+            # computed live in the web layer, so we no longer write every 2s poll
+            # just to bump it (each write also fired clear_all_caches, nullifying
+            # the directory caches). Terminal transitions still write through.
+            existing = db_by_key.get(db_key)
+            unchanged = (
+                existing is not None
+                and existing.get("state") == persist_state
+                and existing.get("returncode") == persist_rc
+            )
+            running_keys.discard(db_key)
+            if unchanged:
+                continue
+
             error_desc = ""
             if persist_state == "error":
                 error_desc = _get_error_desc(job.log_path)
@@ -1831,7 +1847,6 @@ def sync_jobs() -> None:
                 error_desc=error_desc,
                 run_id=job.run_id,
             )
-            running_keys.discard(db_key)
             
         for db_key in running_keys:
             _, rest = db_key.split(":", 1)
