@@ -445,5 +445,34 @@ def test_flare_model_options_are_encoded_correctly(tmp_path):
     assert flare["ampl_prior"] == "gaussian"
 
 
+def test_fit_basis_option_is_encoded_correctly(tmp_path):
+    inst = "muscat"
+    date = "171103"
+    target = "HAT-P-45"
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    p = src_dir / "HAT-P-45_muscat_zs_171103.csv"
+    p.write_text("time,flux\n")
+    csvs = [p]
+
+    # Test standard basis
+    opts = {
+        "planets": "b",
+        "fit_basis": "standard",
+    }
+    fit._write_fit_inputs(tmp_path, inst, date, target, csvs, opts)
+    fit_yaml = yaml.safe_load((tmp_path / "fit.yaml").read_text())
+    assert fit_yaml["fit_basis"] == "standard"
+
+    # Test duration basis (default)
+    opts_default = {
+        "planets": "b",
+    }
+    fit._write_fit_inputs(tmp_path, inst, date, target, csvs, opts_default)
+    fit_yaml_default = yaml.safe_load((tmp_path / "fit.yaml").read_text())
+    assert fit_yaml_default["fit_basis"] == "duration"
+
+
+
 
 

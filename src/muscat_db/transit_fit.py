@@ -854,6 +854,7 @@ def _write_fit_inputs(
     # Model options (timer defaults: include_mean and use_custom_optimizer on).
     fit_data["include_mean"] = _bool_opt("include_mean", default=True)
     fit_data["use_custom_optimizer"] = _bool_opt("use_custom_optimizer", default=True)
+    fit_data["fit_basis"] = str(options.get("fit_basis") or "duration").strip().lower()
 
     # Gaussian-process noise model. Only emit the ``gp`` block when enabled:
     # timer reads gp['log_amp'] etc. directly, so use_gp=true with no block
