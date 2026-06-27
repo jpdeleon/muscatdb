@@ -1885,6 +1885,7 @@ def sync_jobs() -> None:
             
             # Check if outputs exist on disk (meaning the process finished successfully in the background)
             completed_ok = False
+            rdir = None
             try:
                 rdir = fit_output_dir(inst, date, target, run_id or None)
                 if _run_has_outputs(rdir):
@@ -1910,7 +1911,7 @@ def sync_jobs() -> None:
                     started_at=row["started_at"],
                     error_desc=""
                 )
-            elif _detect_process_running(rdir):
+            elif rdir is not None and _detect_process_running(rdir):
                 # Process is still running on the system, leave state as "running"
                 continue
             else:
@@ -1935,8 +1936,16 @@ def sync_jobs() -> None:
             for entry in pending:
                 if _count_running_full() >= _MAX_FULL_JOBS:
                     break
-                if entry["key"] in _FIT_JOBS:
-                    save_job(type_="transit_fit", inst=entry["inst"], date=entry["date"], target=entry["target"], run_id=entry.get("run_id", ""), state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_name=run_name)
+                # The DB key is prefixed ("transit_fit:..."), so compare against the
+                # in-memory job key (unprefixed) to detect a job that is already
+                # running and must not be relaunched from its stale pending row.
+                entry_run_id = entry.get("run_id", "")
+                try:
+                    mem_key = fit_job_key(entry["inst"], entry["date"], entry["target"], entry_run_id)
+                except ValueError:
+                    mem_key = None
+                if mem_key is not None and mem_key in _FIT_JOBS:
+                    save_job(type_="transit_fit", inst=entry["inst"], date=entry["date"], target=entry["target"], run_id=entry_run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_name=entry.get("run_name", ""))
                     continue
                 try:
                     p = json.loads(entry.get("params") or "{}")
