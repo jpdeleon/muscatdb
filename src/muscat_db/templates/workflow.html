@@ -207,6 +207,7 @@
         <li><a href="#prose-card" class="toc-link">prose Photometry</a></li>
         <li><a href="#timer-card" class="toc-link">timer Transit Fitting</a></li>
         <li><a href="#ephemeris-card" class="toc-link">Ephemeris O-C Plotter</a></li>
+        <li><a href="#schema-card" class="toc-link">Database Schema</a></li>
         <li><a href="#execution-details" class="toc-link">Execution Details</a></li>
         <li><a href="#faq-card" class="toc-link">FAQs</a></li>
       </ul>
@@ -397,45 +398,219 @@ graph TD
     O --> Q["Interactive Controls\ndate twin axis, excluded points, planet styles, PNG export"]:::default
           </pre>
         </div>
+        
+      </div>
+    </div>
 
-        <div class="workflow-grid" style="margin-top: 1.5rem;">
-          <div class="workflow-stage">
-            <div class="workflow-header">
-              <span class="workflow-badge">A</span>
-              <span class="workflow-title">Data Source</span>
-            </div>
-            <div class="workflow-desc">
-              The page only lists targets with completed transit-fit jobs. It also discovers orphan fit outputs so legacy results remain available.
-            </div>
+    <div class="workflow-card collapsible" id="schema-card">
+      <div class="card-header-toggle" onclick="toggleCard('schema-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Database Schema
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Entity-relationship diagram and column definitions for <code>muscat.db</code>.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+erDiagram
+    frames {
+        int id PK
+        text instrument
+        text obsdate
+        int ccd
+        text filename
+        text object
+        real jd_start
+        text ut_start
+        real exptime
+        text read_mode
+        text filter
+        text ra
+        text declination
+        real airmass
+        real focus
+        real pa
+    }
+    summaries {
+        int id PK
+        text instrument
+        text obsdate
+        int ccd
+        text object
+        real exptime
+        text read_mode
+        text frame_start
+        text frame_end
+        text ut_start
+        text ut_end
+        int nframes
+        text filter
+        text ra
+        text declination
+        real airmass_min
+        real airmass_max
+    }
+    targets {
+        text object PK
+        int n_dates
+        int n_frames
+        text instruments
+        text dates
+        text inst_dates
+        text filters
+        real total_exptime
+        text ra
+        text declination
+        real airmass_min
+        real airmass_max
+        int is_identified
+    }
+    target_notes {
+        text object PK
+        text note
+        text updated_at
+    }
+    target_overrides {
+        text object PK
+        int is_identified
+        text updated_at
+    }
+    jobs {
+        text key PK
+        text type
+        text instrument
+        text obsdate
+        text target
+        text state
+        int returncode
+        int elapsed
+        real started_at
+        text error_desc
+        text run_type
+        text params
+        text run_id
+        text run_name
+    }
+    db_meta {
+        text key PK
+        text value
+    }
+    exposure_coeffs {
+        text instrument PK
+        text band PK
+        real focus_mm PK
+        real coef
+        real fwhm_pix
+        int n_frames
+        text updated_at
+    }
+    exposure_jobs {
+        text id PK
+        text instrument
+        text state
+        text progress
+        real started_at
+        real updated_at
+    }
+    ephemeris_views {
+        text slug PK
+        text state_hash
+        text state_json
+        text targets_json
+        text created_at
+        text updated_at
+    }
+
+    frames ||--o{ summaries : "grouped into"
+    targets ||--o{ frames : "contains"
+    targets ||--o{ summaries : "contains"
+    targets ||--|| target_notes : "annotates"
+    targets ||--|| target_overrides : "overrides"
+          </pre>
+        </div>
+
+        <div style="margin-top: 2rem;">
+          <h3 style="color: var(--accent); margin-bottom: 1rem; font-size: 1.1rem;">Table Reference</h3>
+          <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+              <thead>
+                <tr style="border-bottom: 2px solid var(--border);">
+                  <th style="text-align: left; padding: 0.5rem 0.75rem; color: var(--text-dim); font-weight: 600;">Table</th>
+                  <th style="text-align: left; padding: 0.5rem 0.75rem; color: var(--text-dim); font-weight: 600;">Description</th>
+                  <th style="text-align: left; padding: 0.5rem 0.75rem; color: var(--text-dim); font-weight: 600;">Rows</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">frames</td>
+                  <td style="padding: 0.5rem 0.75rem;">Per-FITS-row metadata: instrument, date, CCD, target name, JD, filter, coordinates, airmass</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per science frame</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">summaries</td>
+                  <td style="padding: 0.5rem 0.75rem;">Per-observation rollup: date range, frame count, airmass range, filter</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per (inst, date, CCD, object)</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">targets</td>
+                  <td style="padding: 0.5rem 0.75rem;">Aggregate target stats: observation count, instrument list, date coverage, total exposure time</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per unique object name</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">target_notes</td>
+                  <td style="padding: 0.5rem 0.75rem;">User-defined notes attached to a target</td>
+                  <td style="padding: 0.5rem 0.75rem;">Zero or one per target</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">target_overrides</td>
+                  <td style="padding: 0.5rem 0.75rem;">Manual override for the <code>is_identified</code> flag on a target</td>
+                  <td style="padding: 0.5rem 0.75rem;">Zero or one per target</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">jobs</td>
+                  <td style="padding: 0.5rem 0.75rem;">Pipeline job tracking: type (photometry / transit_fit), state, return code, elapsed time, serialized params</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per pipeline launch</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">db_meta</td>
+                  <td style="padding: 0.5rem 0.75rem;">Key-value metadata store (build version, last rebuild timestamp, etc.)</td>
+                  <td style="padding: 0.5rem 0.75rem;">Few rows</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">exposure_coeffs</td>
+                  <td style="padding: 0.5rem 0.75rem;">Exposure-time calibration coefficients per (instrument, band, focus)</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per calibration point</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">exposure_jobs</td>
+                  <td style="padding: 0.5rem 0.75rem;">Exposure calculator job tracking: state, progress, timestamps</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per exposure calc run</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">ephemeris_views</td>
+                  <td style="padding: 0.5rem 0.75rem;">Saved interactive O-C plot views: persisted filter state, target list, and plot configuration</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per saved view</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
+        </div>
 
-          <div class="workflow-stage">
-            <div class="workflow-header">
-              <span class="workflow-badge">B</span>
-              <span class="workflow-title">Reference Ephemerides</span>
+        <div class="faq-section" style="margin-top: 1.5rem;">
+          <h3 style="color: var(--accent); margin-bottom: 0.5rem; font-size: 1.1rem;">Build Strategy</h3>
+          <div class="faq-item open">
+            <div class="faq-question" onclick="toggleFaq(this)">
+              <span>How are tables rebuilt without losing app data?</span>
+              <span class="faq-icon">+</span>
             </div>
-            <div class="workflow-desc">
-              Planet cards are initialized from NASA, TOI, or catalog fallback values, and can be overridden from a fitted dataset source.
-            </div>
-          </div>
-
-          <div class="workflow-stage stage-phot">
-            <div class="workflow-header">
-              <span class="workflow-badge">C</span>
-              <span class="workflow-title">Automatic Updates</span>
-            </div>
-            <div class="workflow-desc">
-              Dataset checkboxes, fitting method, and T0/period edits trigger a debounced calculate request so the plot reflects the current selection.
-            </div>
-          </div>
-
-          <div class="workflow-stage stage-phot">
-            <div class="workflow-header">
-              <span class="workflow-badge">D</span>
-              <span class="workflow-title">O-C Outputs</span>
-            </div>
-            <div class="workflow-desc">
-              The result includes used/excluded points, per-planet O-C panels, an optional UTC date twin axis, and best-fit ephemeris parameters.
+            <div class="faq-answer">
+              <p>The <code>build-db</code> command writes a new database to a temporary file first, then atomically replaces <code>muscat.db</code>. Before replacement, app-owned tables (<code>jobs</code>, <code>ephemeris_views</code>, <code>target_notes</code>, <code>target_overrides</code>, <code>db_meta</code>, <code>exposure_coeffs</code>, <code>exposure_jobs</code>) are copied from the existing database so no job history or user data is lost. The observation-derived tables (<code>frames</code>, <code>summaries</code>, <code>targets</code>) are rebuilt from scratch from the CSV obslogs.</p>
             </div>
           </div>
         </div>
@@ -443,7 +618,7 @@ graph TD
     </div>
 
     <div class="workflow-card" id="execution-details">
-    <h2 style="margin-bottom: 1rem; color: var(--text);">Pipeline Execution Details</h2>
+    <h2 style="margin-bottom: 1rem; color: var(--text);">Pipeline Features</h2>
     <div class="workflow-grid">
       
       <!-- Stage 1 -->
@@ -765,6 +940,7 @@ graph TD
               <li><strong>aper_unit</strong>: pix</li>
               <li><strong>max_num_stars</strong>: 10</li>
               <li><strong>min_star_separation</strong>: 10.0 pix</li>
+              <li><strong>avoid_nearby_star_mode</strong>: auto (max(2 x FWHM, 3 arcsec))</li>
               <li><strong>cutout_size</strong>: 35 pix</li>
               <li><strong>bin_size_minutes</strong>: 10.0</li>
               <li><strong>gif_stride</strong>: 100</li>
@@ -817,7 +993,7 @@ graph TD
               <li><strong>Per-band self-reference (default, <code>--ref_band</code> not set)</strong> — each band creates its own reference frame from its first science frame. Alignment is within-camera only. Recommended for multi-camera instruments (MuSCAT3/4) where each band uses a separate CCD, because cross-camera registration would introduce interpolation artifacts from slightly different pointing and distortion.</li>
               <li><strong>Single reference (<code>--ref_band gp</code> for example)</strong> — all bands align to the reference band's middle frame. This can introduce systematic offsets between bands because different cameras have different pixel scales, rotations, and distortions. The resulting lightcurves may show band-dependent systematics.</li>
             </ul>
-            <p>For MuSCAT2 (single CCD with filter wheel), both strategies work because all bands share the same detector. Per-band self-reference is still the default and generally recommended.</p>
+            <p>For MuSCAT2 (single CCD with filter wheel), both strategies work because all bands share the same detector. Per-band self-reference is still the default and generally recommended. For Sinistro, <code>--ref_band</code> is disabled in the GUI because simultaneous bands can be observed by different LCO telescopes with large pointing offsets, so mapping one band's reference catalog onto another can fail or produce invalid alignment.</p>
           </div>
         </div>
 
