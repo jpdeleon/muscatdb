@@ -46,6 +46,21 @@ def _make_outputs(base: Path) -> Path:
     return rdir
 
 
+def _make_run_outputs(base: Path, run_id: str, *, inst: str = INST, date: str = DATE, target: str = TARGET) -> Path:
+    """Create synthetic prose outputs inside a named photometry run dir."""
+    rdir = base / inst / date / "_runs" / target.replace(" ", "") / run_id
+    rdir.mkdir(parents=True)
+    stem = f"{target}_{inst}_{date}"
+    (rdir / (stem + "_lightcurves.png")).write_bytes(b"\x89PNG\r\n")
+    (rdir / (stem + ".npz")).write_bytes(b"npz")
+    (rdir / "_webrun_meta.json").write_text(
+        '{"run_id":"' + run_id + '","run_name":"' + run_id.split("-")[-1] + '","site":"","mode":""}'
+    )
+    bstem = f"{target}_{inst}_gp_{date}"
+    (rdir / (bstem + ".csv")).write_text("BJD_TDB,Flux\n1,1\n")
+    return rdir
+
+
 @pytest.fixture
 def prose_dir(tmp_path, monkeypatch):
     base = tmp_path / "prose"
@@ -71,6 +86,11 @@ class TestPaths:
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
         assert phot.results_dir(INST, DATE) == tmp_path / INST / DATE
 
+    def test_photometry_run_id_omits_default_sinistro_mode(self):
+        assert phot.build_run_id("sinistro", "lsc", "central_2k_2x2", "default") == "lsc-default"
+        assert phot.build_run_id("sinistro", "lsc", "full_frame", "default") == "lsc-full_frame-default"
+        assert phot.build_run_id("muscat4", "", "", "default") == "default"
+
     def test_raw_data_dir_uses_instrument_config(self):
         # MUSCAT4.data_dir == /data/MuSCAT4
         assert phot.raw_data_dir(INST, DATE) == Path("/data/MuSCAT4") / DATE
@@ -94,6 +114,38 @@ class TestListOutputs:
         assert out["summary"]["raw_flux"]["file"] == f"{TARGET}_{INST}_{DATE}_raw_flux.png"
         assert out["npz"] == f"{TARGET}_{INST}_{DATE}.npz"
         assert out["log"].endswith(".log")
+
+    def test_list_outputs_reads_named_run_dir(self, prose_dir):
+        _make_run_outputs(prose_dir, "default")
+        out = phot.list_outputs(INST, DATE, TARGET, run_id="default")
+        assert out["has_any"]
+        assert out["summary"]["lightcurves"]["file"] == f"{TARGET}_{INST}_{DATE}_lightcurves.png"
+
+    def test_list_outputs_reads_band_scoped_summary_products(self, prose_dir):
+        rdir = prose_dir / INST / DATE / "_runs" / TARGET.replace(" ", "") / "subset"
+        rdir.mkdir(parents=True)
+        stem = f"{TARGET}_{INST}_gp_zs_{DATE}"
+        (rdir / f"{TARGET}_{INST}_gp_{DATE}_lightcurves.png").write_bytes(b"\x89PNG\r\n")
+        (rdir / f"{stem}_lightcurves.png").write_bytes(b"\x89PNG\r\n")
+        (rdir / f"{stem}_raw_flux.png").write_bytes(b"\x89PNG\r\n")
+        (rdir / f"{stem}_covariates.png").write_bytes(b"\x89PNG\r\n")
+        (rdir / f"{stem}_stacks.png").write_bytes(b"\x89PNG\r\n")
+        (rdir / f"{stem}.npz").write_bytes(b"npz")
+
+        out = phot.list_outputs(INST, DATE, TARGET, run_id="subset")
+
+        assert set(out["summary"]) == {"lightcurves", "raw_flux", "covariates", "stacks"}
+        assert {item["file"] for item in out["summary_items"] if item["key"] == "lightcurves"} == {
+            f"{TARGET}_{INST}_gp_{DATE}_lightcurves.png",
+            f"{stem}_lightcurves.png",
+        }
+        assert out["npz"] == f"{stem}.npz"
+
+    def test_list_photometry_runs_includes_legacy_and_named(self, prose_dir):
+        _make_run_outputs(prose_dir, "default")
+        runs = phot.list_photometry_runs(INST, DATE, TARGET)
+        assert {r.run_id for r in runs} == {"", "default"}
+        assert any(r.is_legacy and r.run_name == "legacy" for r in runs)
 
     def test_discovers_masters_for_muscat(self, prose_dir, tmp_path):
         raw_base = tmp_path / "data"
@@ -441,6 +493,7 @@ class TestRunOptions:
                      "--ccd_trim", "--edge_margin", "--bin_size_minutes", "--ref_band",
                      "--aper_radii", "--no_gif", "--use_barycorrpy"):
             assert flag not in cmd
+        assert "--avoid_nearby_star" in cmd
         assert cmd[cmd.index("--bands") + 1:cmd.index("--bands") + 5] == BANDS
 
     def test_options_are_passed_through(self, monkeypatch, tmp_path):
@@ -505,8 +558,95 @@ class TestRunOptions:
                                  {"avoid_comparison_ids": ""}, test_run=False)
         assert "--avoid_cids" not in cmd
 
+    def test_avoid_nearby_star_blank_uses_auto_flag(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        cmd = phot.build_command(
+            INST,
+            DATE,
+            TARGET,
+            {"avoid_nearby_star_mode": "auto", "avoid_nearby_star": ""},
+            test_run=False,
+        )
+        idx = cmd.index("--avoid_nearby_star")
+        assert idx == len(cmd) - 1 or cmd[idx + 1].startswith("--")
+
+    def test_avoid_nearby_star_custom_arcsec_is_emitted(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        cmd = phot.build_command(
+            INST,
+            DATE,
+            TARGET,
+            {"avoid_nearby_star_mode": "custom", "avoid_nearby_star": "4.5"},
+            test_run=False,
+        )
+        assert "--avoid_nearby_star 4.5" in " ".join(cmd)
+
+    def test_avoid_nearby_star_off_emits_nothing(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        cmd = phot.build_command(
+            INST,
+            DATE,
+            TARGET,
+            {"avoid_nearby_star_mode": "off", "avoid_nearby_star": "4.5"},
+            test_run=False,
+        )
+        assert "--avoid_nearby_star" not in cmd
+
+    def test_avoid_nearby_star_legacy_checkbox_migrates_to_auto(self):
+        opts = phot.normalize_run_options({"bands": ["gp"], "avoid_nearby_stars": True, "avoid_nearby_star": ""})
+        assert opts["avoid_nearby_star_mode"] == "auto"
+
+    def test_avoid_nearby_star_legacy_checkbox_migrates_to_custom(self):
+        opts = phot.normalize_run_options({"bands": ["gp"], "avoid_nearby_stars": True, "avoid_nearby_star": "4.5"})
+        assert opts["avoid_nearby_star_mode"] == "custom"
+
     def test_validate_requires_band(self):
         assert phot.validate_run_options(phot.normalize_run_options({"bands": []}))
+
+    def test_validate_rejects_sinistro_reference_band_for_multiband(self):
+        err = phot.validate_run_options(
+            phot.normalize_run_options({"bands": ["gp", "rp"], "ref_band": "gp"}),
+            inst="sinistro",
+        )
+        assert err and "multi-band sinistro" in err.lower()
+
+    def test_validate_allows_sinistro_reference_band_for_single_band(self):
+        err = phot.validate_run_options(
+            phot.normalize_run_options({"bands": ["gp"], "ref_band": "gp", "avoid_comparison_ids": "5"}),
+            inst="sinistro",
+        )
+        assert err is None
+
+    def test_validate_rejects_reference_band_not_selected(self):
+        err = phot.validate_run_options(
+            phot.normalize_run_options({"bands": ["gp"], "ref_band": "zs"}),
+            inst="sinistro",
+        )
+        assert err and "one of the selected bands" in err.lower()
+
+    def test_validate_avoid_ids_require_reference_band(self):
+        err = phot.validate_run_options(
+            phot.normalize_run_options({"bands": ["gp"], "avoid_comparison_ids": "5"})
+        )
+        assert err and "requires a reference band" in err.lower()
+
+    def test_validate_avoid_nearby_star_must_be_positive(self):
+        err = phot.validate_run_options(
+            phot.normalize_run_options({"bands": ["gp"], "avoid_nearby_star_mode": "custom", "avoid_nearby_star": "0"})
+        )
+        assert err and "> 0 arcsec" in err
+
+    def test_validate_avoid_nearby_star_must_be_numeric(self):
+        err = phot.validate_run_options(
+            phot.normalize_run_options({"bands": ["gp"], "avoid_nearby_star_mode": "custom", "avoid_nearby_star": "abc"})
+        )
+        assert err and "must be a number" in err
+
+    def test_validate_avoid_nearby_star_custom_requires_value(self):
+        err = phot.validate_run_options(
+            phot.normalize_run_options({"bands": ["gp"], "avoid_nearby_star_mode": "custom", "avoid_nearby_star": ""})
+        )
+        assert err and "required in custom mode" in err.lower()
 
     def test_validate_aper_requires_annulus(self):
         err = phot.validate_run_options(
@@ -686,6 +826,7 @@ class TestStartRun:
 
     def test_cancel_running_job(self, monkeypatch, tmp_path):
         # Launch a harmless long-running process as the "pipeline" and cancel it.
+        monkeypatch.setenv("MUSCAT_DB_PATH", str(tmp_path / "muscat.db"))
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path / "out"))
         monkeypatch.setenv("MUSCAT_PROSE_PYTHON", "/bin/sh")
         from dataclasses import replace
@@ -703,9 +844,11 @@ class TestStartRun:
         )
         res = phot.start_run(INST, DATE, TARGET, test_run=True)
         assert res["ok"], res
-        assert phot.job_status(INST, DATE, TARGET)["state"] in ("running", "cancelling")
+        run_id = res["run_id"]
+        assert phot.job_status(INST, DATE, TARGET, run_id)["state"] in ("running", "cancelling")
+        assert phot.job_status(INST, DATE, TARGET)["state"] == "none"
 
-        cancel = phot.cancel_run(INST, DATE, TARGET)
+        cancel = phot.cancel_run(INST, DATE, TARGET, run_id)
         assert cancel["ok"] is True
 
         # The process should terminate; status becomes 'cancelled'.
@@ -713,7 +856,7 @@ class TestStartRun:
         deadline = _t.time() + 10
         state = None
         while _t.time() < deadline:
-            state = phot.job_status(INST, DATE, TARGET)["state"]
+            state = phot.job_status(INST, DATE, TARGET, run_id)["state"]
             if state == "cancelled":
                 break
             _t.sleep(0.2)
@@ -909,6 +1052,20 @@ class TestRoutes:
         name = f"{TARGET}_{INST}_{DATE}_lightcurves.png"
         assert f"/photometry/file/{INST}/{DATE}/{name}?v=" in r.text
 
+    def test_photometry_page_versions_named_run_urls(self, client, prose_dir):
+        _make_run_outputs(prose_dir, "default")
+        r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}&run=default")
+        assert r.status_code == 200
+        name = f"{TARGET}_{INST}_{DATE}_lightcurves.png"
+        assert f"/photometry/file/{INST}/{DATE}/{TARGET}/run/default/{name}?v=" in r.text
+        assert "- default" in r.text
+
+    def test_run_file_route_serves_named_run_artifact(self, client, prose_dir):
+        _make_run_outputs(prose_dir, "default")
+        name = f"{TARGET}_{INST}_{DATE}_lightcurves.png"
+        r = client.get(f"/photometry/file/{INST}/{DATE}/{TARGET}/run/default/{name}")
+        assert r.status_code == 200
+
     def test_ref_header_link_and_inline_serving(self, client, prose_dir):
         # The "view ref header" link appears when the sidecar exists and the file
         # route serves it inline as text (so target=_blank opens it in a tab).
@@ -1054,6 +1211,27 @@ class TestRoutes:
         r = client.post("/photometry/command", json={**body, "options": {"bands": ["gp"], "site": "lsc"}})
         assert r.json()["error"] is None
 
+    def test_sinistro_command_blocks_multiband_reference_band_even_with_site(self, client, tmp_path):
+        self._insert_two_sites(tmp_path)
+        r = client.post("/photometry/command", json={
+            "inst": "sinistro", "date": "250710", "target": "HIP67522",
+            "test_run": False,
+            "options": {"bands": ["gp", "rp"], "site": "lsc", "ref_band": "gp"},
+        })
+        assert "multi-band sinistro" in (r.json()["error"] or "").lower()
+
+    def test_sinistro_command_allows_single_band_ref_and_avoid_ids(self, client, tmp_path):
+        self._insert_two_sites(tmp_path)
+        r = client.post("/photometry/command", json={
+            "inst": "sinistro", "date": "250710", "target": "HIP67522",
+            "test_run": False,
+            "options": {"bands": ["gp"], "site": "lsc", "ref_band": "gp", "avoid_comparison_ids": "5,7"},
+        })
+        data = r.json()
+        assert data["error"] is None
+        assert "--ref_band gp" in data["command"]
+        assert "--avoid_cids 5 7" in data["command"]
+
     def test_sinistro_single_site_not_blocked(self, client, tmp_path):
         import sqlite3
         conn = sqlite3.connect(tmp_path / "muscat.db")
@@ -1091,10 +1269,10 @@ class TestRoutes:
         # single-column sortable summary container
         assert 'fig-grid col sortable" data-sort-key="summary"' in html
         # default order: light curve, then raw flux, then covariates, then stacks
-        i_lc = html.index('data-fig-id="lightcurves"')
-        i_rf = html.index('data-fig-id="raw_flux"')
-        i_sy = html.index('data-fig-id="covariates"')
-        i_st = html.index('data-fig-id="stacks"')
+        i_lc = html.index('data-fig-id="lightcurves:')
+        i_rf = html.index('data-fig-id="raw_flux:')
+        i_sy = html.index('data-fig-id="covariates:')
+        i_st = html.index('data-fig-id="stacks:')
         assert i_lc < i_rf < i_sy < i_st
         # drag affordance + per-band grids are sortable too
         assert "drag-handle" in html

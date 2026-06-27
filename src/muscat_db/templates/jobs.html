@@ -5,57 +5,17 @@
 
 {% set status_order = ['running', 'pending', 'done', 'error', 'cancelled'] %}
 {% set status_labels = {'running': 'Running', 'pending': 'Pending', 'done': 'Done', 'error': 'Failed', 'cancelled': 'Cancelled'} %}
-
-<div class="jobs-summary" id="jobs-summary">
-  {% for s in status_order %}
-    {% set c = counts.get(s, 0) %}
-    <span class="job-count {% if c > 0 %}has-{{ s }}{% endif %}" data-status="{{ s }}" onclick="toggleStatus(this, '{{ s }}')">
-      <span class="job-count-num">{{ c }}</span>
-      <span class="job-count-label">{{ status_labels[s] }}</span>
-    </span>
-  {% endfor %}
-  <span class="job-count-bar-spacer"></span>
-  <span class="job-count job-count-clear" id="clear-filter" style="display:none;cursor:pointer;opacity:0.6;" onclick="clearFilter()">✕ Clear filter</span>
-</div>
-
-<div class="jobs-summary" id="type-summary">
-  <span class="job-count" data-type="photometry" onclick="toggleType(this, 'photometry')">Photometry</span>
-  <span class="job-count" data-type="transit_fit" onclick="toggleType(this, 'transit_fit')">Transit Fit</span>
-</div>
-<div class="jobs-summary" id="inst-summary"></div>
-
-<div class="search-bar">
-  <input id="job-search" type="text" placeholder="Search target, instrument, date, type…" autocomplete="off">
-  <span id="search-status" class="hint"></span>
-</div>
-
-{% if jobs %}
-<div class="csv-wrap">
-<table id="jobs-table">
-  <thead>
-    <tr>
-      <th data-sort-attr="target" class="sortable">Target</th>
-      <th data-sort-attr="type" class="sortable">Type</th>
-      <th data-sort-attr="instrument" class="sortable">Instrument</th>
-      <th data-sort-attr="obsdate" class="sortable">Date Obs</th>
-      <th data-sort-attr="started_at" data-sort-type="number" class="sortable">Date Run</th>
-      <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
-      <th data-sort-attr="state" class="sortable">Status</th>
-      <th>Details</th>
-      <th>Actions</th>
-    </tr>
-  </thead>
-  <tbody>
-  {% for j in jobs %}
+{% macro render_job_rows(job_list) -%}
+  {% for j in job_list %}
     {% set link_url -%}
-      {%- if j.type == 'photometry' -%}/photometry?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}
+      {%- if j.type == 'photometry' -%}/photometry?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}{% if j.run_id %}&run={{ j.run_id }}{% endif %}
       {%- else -%}/transit-fit?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}{% if j.run_id %}&run={{ j.run_id }}{% endif %}
       {%- endif -%}
     {%- endset %}
     <tr class="job-row" data-key="{{ j.key }}" data-status="{{ j.state }}" data-type="{{ j.type }}"
-        data-search="{{ (j.target + ' ' + j.inst + ' ' + j.date + ' ' + j.type) | lower }}">
+        data-search="{{ (j.target + ' ' + (j.run_name or '') + ' ' + j.inst + ' ' + j.date + ' ' + j.type) | lower }}">
       <td><strong><a href="{{ link_url }}">{{ j.target }}</a></strong></td>
-      <td><span class="badge" style="background:var(--surface2);color:var(--text);">{{ 'Photometry' if j.type == 'photometry' else 'Transit Fit' }}</span></td>
+      <td class="mono" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ j.run_name or '' }}">{{ j.run_name or '—' }}</td>
       <td><span class="badge badge-blue" style="background:var(--surface2);color:var(--text);">{{ j.inst }}</span></td>
       <td class="mono">{{ j.date }}</td>
       <td class="mono" style="font-size:0.8rem;color:var(--text-dim);">
@@ -123,9 +83,79 @@
       </td>
     </tr>
   {% endfor %}
-  </tbody>
-</table>
+{%- endmacro %}
+
+<div class="jobs-summary" id="jobs-summary">
+  {% for s in status_order %}
+    {% set c = counts.get(s, 0) %}
+    <span class="job-count {% if c > 0 %}has-{{ s }}{% endif %}" data-status="{{ s }}" onclick="toggleStatus(this, '{{ s }}')">
+      <span class="job-count-num">{{ c }}</span>
+      <span class="job-count-label">{{ status_labels[s] }}</span>
+    </span>
+  {% endfor %}
+  <span class="job-count-bar-spacer"></span>
+  <span class="job-count job-count-clear" id="clear-filter" style="display:none;cursor:pointer;opacity:0.6;" onclick="clearFilter()">✕ Clear filter</span>
 </div>
+
+<div class="jobs-summary" id="type-summary">
+  <span class="job-count" data-type="photometry" onclick="toggleType(this, 'photometry')">Photometry</span>
+  <span class="job-count" data-type="transit_fit" onclick="toggleType(this, 'transit_fit')">Transit Fit</span>
+</div>
+<div class="jobs-summary" id="inst-summary"></div>
+
+<div class="search-bar">
+  <input id="job-search" type="text" placeholder="Search target, run name, instrument, date, type…" autocomplete="off">
+  <span id="search-status" class="hint"></span>
+</div>
+
+{% if jobs %}
+<details class="adv job-section" id="photometry-jobs-section" open data-job-section="photometry">
+  <summary>Photometry Jobs</summary>
+  <div class="csv-wrap">
+  <table class="jobs-table" data-job-type="photometry">
+    <thead>
+      <tr>
+        <th data-sort-attr="target" class="sortable">Target</th>
+        <th data-sort-attr="run_name" class="sortable">Run Name</th>
+        <th data-sort-attr="instrument" class="sortable">Instrument</th>
+        <th data-sort-attr="obsdate" class="sortable">Date Obs</th>
+        <th data-sort-attr="started_at" data-sort-type="number" class="sortable">Date Run</th>
+        <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
+        <th data-sort-attr="state" class="sortable">Status</th>
+        <th>Details</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{ render_job_rows(jobs | selectattr('type', 'equalto', 'photometry') | list) }}
+    </tbody>
+  </table>
+  </div>
+</details>
+
+<details class="adv job-section" id="transit-fit-jobs-section" open data-job-section="transit_fit" style="margin-top:1rem;">
+  <summary>Transit Fit Jobs</summary>
+  <div class="csv-wrap">
+  <table class="jobs-table" data-job-type="transit_fit">
+    <thead>
+      <tr>
+        <th data-sort-attr="target" class="sortable">Target</th>
+        <th data-sort-attr="run_name" class="sortable">Run Name</th>
+        <th data-sort-attr="instrument" class="sortable">Instrument</th>
+        <th data-sort-attr="obsdate" class="sortable">Date Obs</th>
+        <th data-sort-attr="started_at" data-sort-type="number" class="sortable">Date Run</th>
+        <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
+        <th data-sort-attr="state" class="sortable">Status</th>
+        <th>Details</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{ render_job_rows(jobs | selectattr('type', 'equalto', 'transit_fit') | list) }}
+    </tbody>
+  </table>
+  </div>
+</details>
 {% else %}
 <div style="background:var(--surface);border:1px dashed var(--border);border-radius:10px;padding:2rem;text-align:center;margin-top:1rem;">
   <p style="color:var(--text-dim);">No jobs have been launched yet.</p>
@@ -161,7 +191,9 @@
     return d + 'd ' + h + 'h';
   }
 
-  var allRows = Array.from(document.querySelectorAll('#jobs-table tbody tr.job-row'));
+  var allRows = Array.from(document.querySelectorAll('.jobs-table tbody tr.job-row'));
+  var allTables = Array.from(document.querySelectorAll('.jobs-table'));
+  var allSections = Array.from(document.querySelectorAll('.job-section'));
   var total = allRows.length;
   var activeStatus = null;
   var searchInput = document.getElementById('job-search');
@@ -212,6 +244,19 @@
       if (allRows[i].getAttribute('data-key') === key) return allRows[i];
     }
     return null;
+  }
+
+  function updateSectionVisibility() {
+    allSections.forEach(function(section) {
+      var type = section.getAttribute('data-job-section') || '';
+      var rows = Array.from(section.querySelectorAll('tbody tr.job-row'));
+      var anyVisible = rows.some(function(r) { return r.style.display !== 'none'; });
+      if (activeType && activeType !== type) {
+        section.style.display = 'none';
+        return;
+      }
+      section.style.display = anyVisible ? '' : 'none';
+    });
   }
 
   function replaceStatusBadge(row, state) {
@@ -315,6 +360,7 @@
     if (searchStatus) {
       searchStatus.textContent = (q || activeStatus || activeType || activeInst) ? visible + ' / ' + total + ' matching' : total + ' jobs';
     }
+    updateSectionVisibility();
   }
 
   if (searchInput) searchInput.addEventListener('input', function() { applyFilters(); saveFilters(); });
@@ -393,7 +439,7 @@
         var inst = row.querySelector('.job-actions .log-btn');
         var instV = inst ? inst.getAttribute('onclick').match(/'([^']+)'/g).map(function(m) { return m.replace(/'/g,''); }) : [];
         replaceStatusBadge(row, 'running');
-        replaceActions(row, 'running', key, instV[0] || '', instV[1] || '', instV[2] || '', instV[3] || '');
+        replaceActions(row, 'running', key, instV[0] || '', instV[1] || '', instV[2] || '', instV[3] || '', instV[4] || '');
       }
     })
     .catch(function(err) { alert('Error: ' + err.message); btn.disabled = false; btn.innerText = '⟳ Re-run'; });
@@ -593,22 +639,36 @@
       if (!raw) return;
       var ref = JSON.parse(raw);
       if (ref.col == null || !ref.dir) return;
-      var table = document.getElementById('jobs-table');
-      if (!table) return;
-      var headerRow = table.tHead && table.tHead.rows[0];
-      if (!headerRow) return;
-      var th = headerRow.cells[ref.col];
-      if (!th) return;
-      th.dataset.sortDir = ref.dir === 'asc' ? '' : 'asc';
-      th.click();
+      allTables.forEach(function(table) {
+        var headerRow = table.tHead && table.tHead.rows[0];
+        if (!headerRow) return;
+        var th = headerRow.cells[ref.col];
+        if (!th) return;
+        th.dataset.sortDir = ref.dir === 'asc' ? '' : 'asc';
+        th.click();
+      });
     } catch (_) {}
   }
-  document.querySelectorAll('#jobs-table thead tr:first-child th.sortable').forEach(function(th) {
+  document.querySelectorAll('.jobs-table thead tr:first-child th.sortable').forEach(function(th) {
     th.addEventListener('click', function() {
       requestAnimationFrame(function() { saveSort(th.cellIndex, th.dataset.sortDir || ''); });
     });
   });
   requestAnimationFrame(restoreSort);
+
+  ['photometry-jobs-section', 'transit-fit-jobs-section'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var key = 'jobs:details:' + id;
+    try {
+      var saved = localStorage.getItem(key);
+      if (saved === 'closed') el.removeAttribute('open');
+      else if (saved === 'open') el.setAttribute('open', '');
+    } catch (_) {}
+    el.addEventListener('toggle', function() {
+      try { localStorage.setItem(key, el.open ? 'open' : 'closed'); } catch (_) {}
+    });
+  });
 
   // Start polling
   var hasRunning = document.querySelectorAll('.job-row[data-status="running"], .job-row[data-status="cancelling"]').length > 0;

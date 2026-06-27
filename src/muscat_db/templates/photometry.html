@@ -214,15 +214,25 @@
       {% endfor %}
     </div>
     {% endif %}
+    {% if runs and runs | length > 1 %}
+    <div class="site-chips">
+      <span class="site-label">Run:</span>
+      {% for r in runs %}
+      <a class="site-chip {% if r.run_id == sel_run %}active{% endif %}"
+         href="{{ base_qs ~ ('&site=' ~ sel_site if sel_site else '') ~ ('&mode=' ~ sel_mode if sel_mode else '') ~ '&run=' ~ (r.run_id or '__legacy__') }}">{{ r.run_name or 'legacy' }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
   </div>
 
   <div id="output-area">
   {% if outputs and outputs.has_any %}
+    {% set file_base = '/photometry/file/' ~ sel_inst ~ '/' ~ sel_date ~ (('/' ~ sel_target ~ '/run/' ~ sel_run) if sel_run else '') %}
     {% if outputs.summary %}
     <details class="phot-section phot-fold" open>
       <summary>
       <h2 style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
-        <span>Light curves &amp; Covariates <span style="font-size:0.75rem;color:var(--text-dim);font-weight:400;">— drag ⠿ to rearrange</span></span>
+        <span>Light curves &amp; Covariates{% if sel_run %} <span style="font-size:0.8rem;color:var(--text-dim);font-weight:400;">- {{ sel_run }}</span>{% endif %} <span style="font-size:0.75rem;color:var(--text-dim);font-weight:400;">— drag ⠿ to rearrange</span></span>
         {% set ns = namespace(has_csv=false) %}
         {% for band, prods in outputs.bands.items() %}
           {% if prods.get('csv') %}{% set ns.has_csv = true %}{% endif %}
@@ -232,7 +242,7 @@
           Download csv:
           {% for band, prods in outputs.bands.items() %}
             {% if prods.get('csv') %}
-          <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods['csv']['file'] }}?v={{ prods['csv']['version'] }}" download class="csv-link">⬇ {{ band }}</a>
+          <a href="{{ file_base }}/{{ prods['csv']['file'] }}?v={{ prods['csv']['version'] }}" download class="csv-link">⬇ {{ band }}</a>
             {% endif %}
           {% endfor %}
           <a href="#" id="dl-all-csv" style="color: var(--accent2); font-weight: 600;">⬇ all</a>
@@ -241,18 +251,16 @@
       </h2>
       </summary>
       <div class="fig-grid col sortable" data-sort-key="summary">
-        {% for key in ['lightcurves', 'raw_flux', 'covariates', 'stacks'] %}
-          {% if outputs.summary.get(key) %}
-          <figure class="fig" data-fig-id="{{ key }}">
+        {% for item in outputs.summary_items %}
+          <figure class="fig" data-fig-id="{{ item.key }}:{{ item.file }}">
             <figcaption class="cap">
-              <span>{{ key }} (Created: {{ outputs.summary[key].created_at }})</span>
+              <span>{{ item.key }} - {{ item.file }} (Created: {{ item.created_at }})</span>
               <span class="drag-handle" title="Drag to reorder">⠿</span>
             </figcaption>
-            <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.summary[key].file }}?v={{ outputs.summary[key].version }}" target="_blank">
-              <img draggable="false" loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.summary[key].file }}?v={{ outputs.summary[key].version }}" alt="{{ key }}">
+            <a href="{{ file_base }}/{{ item.file }}?v={{ item.version }}" target="_blank">
+              <img draggable="false" loading="lazy" src="{{ file_base }}/{{ item.file }}?v={{ item.version }}" alt="{{ item.key }}">
             </a>
           </figure>
-          {% endif %}
         {% endfor %}
       </div>
     </details>
@@ -276,8 +284,8 @@
                 <span>{{ band }} · {{ key }} (Created: {{ prods[key].created_at }})</span>
                 <span class="drag-handle" title="Drag to reorder">⠿</span>
               </figcaption>
-              <a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods[key].file }}?v={{ prods[key].version }}" target="_blank">
-                <img draggable="false" loading="lazy" src="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ prods[key].file }}?v={{ prods[key].version }}" alt="{{ band }} {{ key }}">
+              <a href="{{ file_base }}/{{ prods[key].file }}?v={{ prods[key].version }}" target="_blank">
+                <img draggable="false" loading="lazy" src="{{ file_base }}/{{ prods[key].file }}?v={{ prods[key].version }}" alt="{{ band }} {{ key }}">
               </a>
             </figure>
             {% endif %}
@@ -302,9 +310,9 @@
 
     <div class="phot-section">
       <div class="dl-row">
-        {% if outputs.npz %}<a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.npz }}" download>⬇ data archive (.npz)</a>{% endif %}
-        {% if outputs.log %}<a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.log }}" target="_blank">📄 pipeline log</a>{% endif %}
-        {% if outputs.ref_header %}<a href="/photometry/file/{{ sel_inst }}/{{ sel_date }}/{{ outputs.ref_header }}" target="_blank">🧾 view ref header</a>{% endif %}
+        {% if outputs.npz %}<a href="{{ file_base }}/{{ outputs.npz }}" download>⬇ data archive (.npz)</a>{% endif %}
+        {% if outputs.log %}<a href="{{ file_base }}/{{ outputs.log }}" target="_blank">📄 pipeline log</a>{% endif %}
+        {% if outputs.ref_header %}<a href="{{ file_base }}/{{ outputs.ref_header }}" target="_blank">🧾 view ref header</a>{% endif %}
       </div>
     </div>
   {% else %}
@@ -342,8 +350,13 @@
     {% endif %}
 
     <details class="adv" id="opt-panel">
-      <summary>Pipeline options (all run_photometry arguments)</summary>
+      <summary>Pipeline options</summary>
       <div class="opt-grid" style="margin-top: 0.5rem;">
+        <div class="opt opt-span2">
+          <label for="opt-run_name">Run name <span class="help-tooltip" title="Label for this isolated photometry run. Blank becomes default. The default Sinistro central_2k_2x2 mode is omitted from the run id.">?</span></label>
+          <input type="text" id="opt-run_name" placeholder="default" value="{{ run_defaults.run_name }}" style="width: 100%;">
+          <span class="hint">new outputs are saved under a named run directory</span>
+        </div>
         <div class="opt opt-span2">
           <label>Bands <span class="help-tooltip" title="Filter bands to reduce.">?</span></label>
           {% set narrow_bands = ['Na_D', 'g_narrow', 'i_narrow', 'z_narrow'] %}
@@ -378,9 +391,22 @@
               <span class="hint">--cID; comma-separated, empty → auto</span>
             </div>
             <div class="opt">
-              <label for="opt-avoid_comparison_ids">Avoid Comparison IDs <span class="help-tooltip" title="Star indices to exclude as comparisons (corresponds to --avoid_cids). Requires --ref_band; indices refer to that band's catalog. Comma-separated (e.g. 5,7,12). Empty means none excluded.">?</span></label>
+              <label for="opt-avoid_comparison_ids">Avoid Comparison IDs <span class="help-tooltip" title="Star indices to exclude as comparisons (corresponds to --avoid_cids). Requires --ref_band. For Sinistro this is enabled only when exactly one band is selected, so IDs refer to that band's own reference catalog. Comma-separated (e.g. 5,7,12). Empty means none excluded.">?</span></label>
               <input type="text" id="opt-avoid_comparison_ids" placeholder="none" value="{{ run_defaults.avoid_comparison_ids }}" disabled style="width: 100%;">
-              <span class="hint">--avoid_cids; requires --ref_band; comma-separated, empty → none</span>
+              <span class="hint">--avoid_cids; requires --ref_band; Sinistro: single-band only</span>
+            </div>
+            <div class="opt">
+              <label for="opt-avoid_nearby_star_mode">Avoid nearby stars <span class="help-tooltip" title="Reject detected stars from the comparison-star pool when a nearby companion is present (corresponds to --avoid_nearby_star). Auto uses max(2 x FWHM, 3 arcsec), with Gaia-aware screening when available.">?</span></label>
+              <select id="opt-avoid_nearby_star_mode" style="width: 100%;">
+                <option value="off" {% if run_defaults.avoid_nearby_star_mode == 'off' %}selected{% endif %}>off</option>
+                <option value="auto" {% if run_defaults.avoid_nearby_star_mode == 'auto' %}selected{% endif %}>auto</option>
+                <option value="custom" {% if run_defaults.avoid_nearby_star_mode == 'custom' %}selected{% endif %}>custom</option>
+              </select>
+            </div>
+            <div class="opt">
+              <label for="opt-avoid_nearby_star">Max nearby-star separation (arcsec) <span class="help-tooltip" title="Maximum companion separation used by --avoid_nearby_star. Blank = auto. Auto uses max(2 x FWHM, 3 arcsec); without Gaia the same threshold is converted to pixels using the image PIXSCALE.">?</span></label>
+              <input type="number" id="opt-avoid_nearby_star" value="{{ run_defaults.avoid_nearby_star }}" step="0.1" min="0" placeholder="auto" style="width: 100%;">
+              <span class="hint">used only in custom mode</span>
             </div>
           </div>
         </details>
@@ -390,11 +416,12 @@
           <summary>Reference & Alignment <span class="help-tooltip" title="Settings to establish the reference frame and coordinate source alignment.">?</span></summary>
           <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem;">
             <div class="opt">
-              <label for="opt-ref_band">Reference band <span class="help-tooltip" title="Band used as alignment reference across other bands (corresponds to --ref_band). Empty means per-band self-reference.">?</span></label>
+              <label for="opt-ref_band">Reference band <span class="help-tooltip" title="Band used as alignment reference (corresponds to --ref_band). Empty means per-band self-reference. For Sinistro, enabled only when exactly one band is selected; multi-band Sinistro must self-reference per band.">?</span></label>
               <select id="opt-ref_band" style="width: 100%;">
                 <option value="">per-band self-reference</option>
                 {% for b in band_choices %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
               </select>
+              {% if sel_inst == 'sinistro' %}<span class="hint">Sinistro: enabled for one selected band, disabled for multi-band</span>{% endif %}
             </div>
             <div class="opt">
               <label for="opt-refid">Reference frame ID <span class="help-tooltip" title="FITS file frame number (4-digit suffix, e.g. 1480 for MCT20_1911191480). Empty means auto (middle/best frame).">?</span></label>
@@ -409,11 +436,11 @@
               <input type="number" id="opt-n_stars_align" placeholder="= max # stars" min="1" style="width: 100%;">
             </div>
             <div class="opt">
-              <label for="opt-min_star_separation">Min star separation (px) <span class="help-tooltip" title="Minimum pixel separation between stars to avoid blended sources (corresponds to --min_star_separation).">?</span></label>
+              <label for="opt-min_star_separation">Min star separation (pix) <span class="help-tooltip" title="Minimum pixel separation between stars to avoid blended sources (corresponds to --min_star_separation).">?</span></label>
               <input type="number" id="opt-min_star_separation" value="{{ run_defaults.min_star_separation }}" step="0.5" min="0" style="width: 100%;">
             </div>
             <div class="opt">
-              <label for="opt-min_star_area">Min star area (px) <span class="help-tooltip" title="Minimum pixel area for source detection (corresponds to --min_star_area).">?</span></label>
+              <label for="opt-min_star_area">Min star area (pix) <span class="help-tooltip" title="Minimum pixel area for source detection (corresponds to --min_star_area).">?</span></label>
               <input type="number" id="opt-min_star_area" value="{{ run_defaults.min_star_area }}" min="1" style="width: 100%;">
             </div>
             <div class="opt">
@@ -438,17 +465,17 @@
               </select>
             </div>
             <div class="opt">
-              <label for="opt-aper_radii">Aperture radii (MIN,MAX,DR) <span class="help-tooltip" title="Radius grid search parameters as MIN,MAX,DR (corresponds to --aper_radii). Required if annulus is set. Empty means use Gaia heuristic.">?</span></label>
-              <input type="text" id="opt-aper_radii" placeholder="e.g. 1.5,6.0,0.5" style="width: 100%;">
-              <span class="hint" id="hint-aper_radii">blank → auto from Gaia (in px)</span>
+              <label for="opt-aper_radii">Aperture radii (min,max,dr) <span class="help-tooltip" title="Radius grid search parameters as min,max,dr (corresponds to --aper_radii). Required if annulus is set. Empty means use Gaia heuristic.">?</span></label>
+              <input type="text" id="opt-aper_radii" placeholder="e.g. 10,30,2" style="width: 100%;">
+              <span class="hint" id="hint-aper_radii">blank → auto from Gaia (in pix)</span>
             </div>
             <div class="opt">
-              <label for="opt-annulus">Sky annulus (RIN,ROUT) <span class="help-tooltip" title="Inner and outer radii of background sky subtraction annulus (corresponds to --annulus). Required if aperture radii is set.">?</span></label>
+              <label for="opt-annulus">Sky annulus (Rin,Rout) <span class="help-tooltip" title="Inner and outer radii of background sky subtraction annulus (corresponds to --annulus). Required if aperture radii is set.">?</span></label>
               <input type="text" id="opt-annulus" placeholder="e.g. 25,40" style="width: 100%;">
-              <span class="hint" id="hint-annulus">required with aperture radii (in px)</span>
+              <span class="hint" id="hint-annulus">required with aperture radii (in pix)</span>
             </div>
             <div class="opt">
-              <label for="opt-cutout_size">Cutout size (px) <span class="help-tooltip" title="Postage stamp cutout size around each star (corresponds to --cutout_size).">?</span></label>
+              <label for="opt-cutout_size">Cutout size (pix) <span class="help-tooltip" title="Postage stamp cutout size around each star (corresponds to --cutout_size).">?</span></label>
               <input type="number" id="opt-cutout_size" value="{{ run_defaults.cutout_size }}" min="1" style="width: 100%;">
             </div>
             <div class="opt">
@@ -456,7 +483,7 @@
               <input type="text" id="opt-ccd_trim" value="{{ run_defaults.ccd_trim }}" style="width: 100%;">
             </div>
             <div class="opt">
-              <label for="opt-edge_margin">Edge margin (px) <span class="help-tooltip" title="Exclude detected stars within this many pixels of any CCD edge from the comparison-star pool; the target is never excluded (corresponds to --edge_margin). Blank = auto (half the cutout size); 0 = disable.">?</span></label>
+              <label for="opt-edge_margin">Edge margin (pix) <span class="help-tooltip" title="Exclude detected stars within this many pixels of any CCD edge from the comparison-star pool; the target is never excluded (corresponds to --edge_margin). Blank = auto (half the cutout size); 0 = disable.">?</span></label>
               <input type="number" id="opt-edge_margin" value="{{ run_defaults.edge_margin }}" min="0" placeholder="auto" style="width: 100%;">
             </div>
           </div>
@@ -563,6 +590,7 @@
   var inst   = {{ sel_inst|tojson }};
   var date   = {{ sel_date|tojson }};
   var target = {{ sel_target|tojson }};
+  var runId  = {{ sel_run|tojson }};
   var rawMissing = {{ raw_missing|tojson }};
 
   var SEL_KEY = 'phot:last';
@@ -587,7 +615,7 @@
   }
 
   // ----- persistent job: resume or show banner across page navigations -----
-  function saveJob() { try { localStorage.setItem(JOB_KEY, JSON.stringify({ inst: inst, date: date, target: target })); } catch (e) {} }
+  function saveJob() { try { localStorage.setItem(JOB_KEY, JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })); } catch (e) {} }
   function clearJob() { try { localStorage.removeItem(JOB_KEY); } catch (e) {} }
   // Defined here but invoked at the end of the script, after cancelBtn, logEl,
   // runBtns, and polling are assigned. Calling it inline would run setRunning()
@@ -600,6 +628,7 @@
     // Cancel button visible whenever the server reports an active/queued job.
     if (inst && date && target) {
       var cqs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
+      if (runId) cqs += '&run=' + encodeURIComponent(runId);
       fetch('/photometry/status?' + cqs).then(function (r) { return r.json(); }).then(function (s) {
         if (s.state === 'pending' || s.state === 'running' || s.state === 'cancelling' || s.state === 'finalizing') {
           saveJob();
@@ -623,18 +652,19 @@
     var saved;
     try { saved = JSON.parse(localStorage.getItem(JOB_KEY) || 'null'); } catch (e) { saved = null; }
     if (!saved || !saved.inst) return;
-    if (saved.inst === inst && saved.date === date && saved.target === target) return;
+    if (saved.inst === inst && saved.date === date && saved.target === target && (saved.run_id || '') === (runId || '')) return;
     var banner = document.getElementById('job-banner');
     var bannerMsg = document.getElementById('job-banner-msg');
     var bannerLink = document.getElementById('job-banner-link');
     if (!banner) return;
     (function pollBanner() {
       var qs = 'inst=' + encodeURIComponent(saved.inst) + '&date=' + encodeURIComponent(saved.date) + '&target=' + encodeURIComponent(saved.target);
+      if (saved.run_id) qs += '&run=' + encodeURIComponent(saved.run_id);
       fetch('/photometry/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
         if (s.state === 'none') { clearJob(); banner.style.display = 'none'; return; }
         banner.style.display = '';
         bannerMsg.textContent = '⚡ ' + saved.target + ' @ ' + saved.inst + '/' + saved.date + ' — ' + s.state;
-        bannerLink.href = '/photometry?inst=' + encodeURIComponent(saved.inst) + '&date=' + encodeURIComponent(saved.date) + '&target=' + encodeURIComponent(saved.target);
+        bannerLink.href = '/photometry?inst=' + encodeURIComponent(saved.inst) + '&date=' + encodeURIComponent(saved.date) + '&target=' + encodeURIComponent(saved.target) + (saved.run_id ? '&run=' + encodeURIComponent(saved.run_id) : '');
         if (s.state === 'done' || s.state === 'error' || s.state === 'cancelled') {
           clearJob();
           setTimeout(function () { banner.style.display = 'none'; }, 15000);
@@ -779,6 +809,7 @@
     var bands = Array.prototype.slice.call(document.querySelectorAll('input[name="band"]:checked'))
       .map(function (c) { return c.value; });
     return {
+      run_name: val('opt-run_name'),
       bands: bands,
       ref_band: val('opt-ref_band'),
       refid: val('opt-refid'),
@@ -788,6 +819,8 @@
       target_id: val('opt-target_id'),
       comparison_ids: val('opt-comparison_ids'),
       avoid_comparison_ids: val('opt-avoid_comparison_ids'),
+      avoid_nearby_star_mode: val('opt-avoid_nearby_star_mode'),
+      avoid_nearby_star: val('opt-avoid_nearby_star'),
       target_coord: val('opt-target_coord'),
       make_gif: chk('opt-make_gif'),
       plot_gaia_sources: chk('opt-plot_gaia_sources'),
@@ -821,11 +854,16 @@
     if (!saved) return;
     // migrate legacy persisted value after the 'nova' -> 'astrometry.net' rename
     if (saved.wcs_method === 'nova') saved.wcs_method = 'astrometry.net';
+    if (saved.avoid_nearby_star_mode === undefined && saved.avoid_nearby_stars !== undefined) {
+      saved.avoid_nearby_star_mode = saved.avoid_nearby_stars
+        ? ((saved.avoid_nearby_star || '').toString().trim() !== '' ? 'custom' : 'auto')
+        : 'off';
+    }
     document.querySelectorAll('input[name="band"]').forEach(function (c) {
       c.checked = saved.bands && saved.bands.indexOf(c.value) !== -1;
     });
-    ['ref_band','refid','aper_unit','aper_radii','annulus',
-     'target_id','comparison_ids','avoid_comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
+    ['run_name','ref_band','refid','aper_unit','aper_radii','annulus',
+     'target_id','comparison_ids','avoid_comparison_ids','avoid_nearby_star_mode','avoid_nearby_star','target_coord','test_run_frames','min_star_separation','max_num_stars',
        'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','cmap','site','mode'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
@@ -849,8 +887,8 @@
     } else {
       if (radiiEl) radiiEl.placeholder = 'e.g. 1.5,6.0,0.5';
       if (annulusEl) annulusEl.placeholder = 'e.g. 25,40';
-      if (radiiHint) radiiHint.textContent = 'blank → auto from Gaia (in px)';
-      if (annulusHint) annulusHint.textContent = 'required with aperture radii (in px)';
+      if (radiiHint) radiiHint.textContent = 'blank → auto from Gaia (in pix)';
+      if (annulusHint) annulusHint.textContent = 'required with aperture radii (in pix)';
     }
   }
 
@@ -887,8 +925,8 @@
       document.querySelectorAll('input[name="band"]').forEach(function (c) {
         c.checked = DEFAULTS.bands && DEFAULTS.bands.indexOf(c.value) !== -1;
       });
-      ['ref_band','refid','aper_unit','aper_radii','annulus',
-       'target_id','comparison_ids','avoid_comparison_ids','target_coord','test_run_frames','min_star_separation','max_num_stars',
+      ['run_name','ref_band','refid','aper_unit','aper_radii','annulus',
+       'target_id','comparison_ids','avoid_comparison_ids','avoid_nearby_star_mode','avoid_nearby_star','target_coord','test_run_frames','min_star_separation','max_num_stars',
      'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','cmap','site','mode'].forEach(function (id) {
         var el = document.getElementById('opt-'+id);
         if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';
@@ -923,11 +961,15 @@
   var logEl     = document.getElementById('run-log');
   var runBtns   = [testBtn, fullBtn].filter(Boolean);
 
+  function logKey() {
+    return 'phot:log:' + inst + ':' + date + ':' + target + ':' + (runId || 'legacy');
+  }
+
   // ----- restore the log if it was previously saved -----
   (function restoreLog() {
     if (!logEl) return;
     var savedLog;
-    try { savedLog = localStorage.getItem('phot:log:' + inst + ':' + date + ':' + target); } catch (e) { savedLog = null; }
+    try { savedLog = localStorage.getItem(logKey()); } catch (e) { savedLog = null; }
     if (savedLog) {
       logEl.style.display = 'block';
       logEl.textContent = savedLog;
@@ -956,6 +998,46 @@
       }
     }).catch(function () {});
   }
+  function selectedBands() {
+    return Array.prototype.slice.call(document.querySelectorAll('input[name="band"]:checked'))
+      .map(function (c) { return c.value; });
+  }
+  function updateReferenceBandChoices() {
+    var refBand = document.getElementById('opt-ref_band');
+    if (!refBand) return;
+    var bands = selectedBands();
+    var allowed = new Set(bands);
+    var current = refBand.value;
+    Array.prototype.slice.call(refBand.options).forEach(function (opt) {
+      if (opt.value === '') {
+        opt.hidden = false;
+        opt.disabled = false;
+      } else {
+        var enabled = allowed.has(opt.value);
+        opt.hidden = !enabled;
+        opt.disabled = !enabled;
+      }
+    });
+    if (current && !allowed.has(current)) {
+      refBand.value = '';
+    }
+  }
+  function updateSinistroReferenceBand() {
+    var refBand = document.getElementById('opt-ref_band');
+    if (!refBand || inst !== 'sinistro') return;
+    var bands = selectedBands();
+    var singleBand = bands.length === 1;
+    refBand.disabled = !singleBand;
+    if (singleBand) {
+      refBand.value = bands[0];
+    } else {
+      refBand.value = '';
+    }
+  }
+  function updateReferenceBandState() {
+    updateReferenceBandChoices();
+    updateSinistroReferenceBand();
+  }
   function toggleAvoidField() {
     var refBand = document.getElementById('opt-ref_band');
     var avoidField = document.getElementById('opt-avoid_comparison_ids');
@@ -965,9 +1047,31 @@
       if (disabled) avoidField.value = '';
     }
   }
+  function toggleAvoidNearbyField() {
+    var enabled = val('opt-avoid_nearby_star_mode') === 'custom';
+    var field = document.getElementById('opt-avoid_nearby_star');
+    if (field) {
+      field.disabled = !enabled;
+      field.style.opacity = enabled ? '1' : '0.5';
+    }
+  }
   var refBand = document.getElementById('opt-ref_band');
-  if (refBand) refBand.addEventListener('change', toggleAvoidField);
+  if (refBand) {
+    updateReferenceBandState();
+    refBand.addEventListener('change', toggleAvoidField);
+  }
+  document.querySelectorAll('input[name="band"]').forEach(function (el) {
+    el.addEventListener('change', function () {
+      updateReferenceBandState();
+      toggleAvoidField();
+    });
+  });
   toggleAvoidField();
+  toggleAvoidNearbyField();
+  var avoidNearbyMode = document.getElementById('opt-avoid_nearby_star_mode');
+  if (avoidNearbyMode) {
+    avoidNearbyMode.addEventListener('change', toggleAvoidNearbyField);
+  }
 
   var panel = document.querySelector('.run-panel');
   if (panel) {
@@ -1033,11 +1137,12 @@
 
   function poll() {
     var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
+    if (runId) qs += '&run=' + encodeURIComponent(runId);
     fetch('/photometry/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
       if (s.log) {
         logEl.textContent = s.log;
         logEl.scrollTop = logEl.scrollHeight;
-        try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, s.log); } catch (e) {}
+        try { localStorage.setItem(logKey(), s.log); } catch (e) {}
       }
       if (s.state === 'running' || s.state === 'cancelling' || s.state === 'finalizing') {
         // 'finalizing': parent exited but prose workers are still writing the
@@ -1048,7 +1153,7 @@
       if (s.state === 'done') {
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent = (s.log || '') + '\n\n✓ done (' + s.elapsed + 's) — reloading…';
-        try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
         if (typeof window.showLoading === 'function') {
           window.showLoading('Reloading…');
         }
@@ -1056,7 +1161,7 @@
       } else if (s.state === 'error') {
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent = (s.log || '') + '\n\n✗ pipeline exited with code ' + s.returncode;
-        try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
         if (typeof window.showLoading === 'function') {
           window.showLoading('Reloading…');
         }
@@ -1064,7 +1169,7 @@
       } else if (s.state === 'cancelled') {
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent = (s.log || '') + '\n\n■ cancelled';
-        try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
         if (typeof window.showLoading === 'function') {
           window.showLoading('Reloading…');
         }
@@ -1088,7 +1193,6 @@
   }
 
   function launch(testRun) {
-    saveJob();
     // Unhide this job on the Jobs page
     try {
       var h = JSON.parse(localStorage.getItem('jobs:hidden') || '[]');
@@ -1101,7 +1205,7 @@
     setRunning(true);
     logEl.style.display = 'block';
     logEl.textContent = 'Launching ' + (testRun ? 'test' : 'full') + ' reduction…';
-    try { localStorage.removeItem('phot:log:' + inst + ':' + date + ':' + target); } catch (e) {}
+    try { localStorage.removeItem(logKey()); } catch (e) {}
     fetch('/photometry/run', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inst: inst, date: date, target: target, test_run: testRun, options: collectOptions() })
@@ -1111,6 +1215,10 @@
         setRunning(false);
         logEl.textContent = 'Error: ' + (res.error || 'failed to start');
         return;
+      }
+      if (res.run_id !== undefined) {
+        runId = res.run_id || '';
+        saveJob();
       }
       if (res.queued) {
         logEl.textContent = '⏳ Queued — waiting for the running full reduction to finish…';
@@ -1129,10 +1237,10 @@
   if (cancelBtn) cancelBtn.addEventListener('click', function () {
     cancelBtn.disabled = true;
     logEl.textContent += '\n\n■ cancelling…';
-    try { localStorage.setItem('phot:log:' + inst + ':' + date + ':' + target, logEl.textContent); } catch (e) {}
+    try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
     fetch('/photometry/cancel', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ inst: inst, date: date, target: target })
+      body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })
     }).then(function (r) { return r.json(); }).then(function () {
       cancelBtn.disabled = false;
       if (!polling) { polling = setInterval(poll, 2000); poll(); }
@@ -1147,7 +1255,7 @@
     deleteBtn.textContent = 'Deleting…';
     fetch('/photometry/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ inst: inst, date: date, target: target })
+      body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })
     }).then(function (r) { return r.json(); }).then(function (res) {
       if (res.ok) {
         if (typeof window.showLoading === 'function') window.showLoading('Reloading…');

@@ -156,11 +156,16 @@ def build_run_id(site: str | None, mode: str | None, run_name: str | None) -> st
     Components are joined by ``-`` (the components themselves only ever contain
     ``_``, so ``-`` keeps the id readable and splittable). ``site``/``mode`` are
     blank for non-sinistro or when undetermined; ``mixed`` when the selected
-    lightcurves span more than one value (mixing is allowed).
+    lightcurves span more than one value (mixing is allowed). Sinistro's
+    ``central_2k_2x2`` readout mode is the default and is omitted; non-default
+    modes such as ``full_frame`` remain explicit.
     """
+    mode_part = (mode or "").strip().lower()
+    if mode_part == "central_2k_2x2":
+        mode_part = ""
     parts = [p for p in (
         (site or "").strip().lower(),
-        (mode or "").strip().lower(),
+        mode_part,
         slugify_run_name(run_name),
     ) if p]
     return "-".join(parts)
@@ -267,25 +272,48 @@ def _timer_prefix() -> list[str]:
 
 
 def get_csv_lightcurves(inst: str, date: str, target: str) -> list[pathlib.Path]:
-    """Find the CSV lightcurves outputted by the Photometry page for a target."""
+    """Find the CSV lightcurves outputted by the Photometry page for a target.
+
+    Photometry now stores named runs under ``_runs/<target>/<run_id>/`` while
+    older reductions wrote CSVs directly in ``<inst>/<date>/``. Transit-fit
+    accepts both layouts so one-band Sinistro reductions remain selectable.
+    """
     rdir = output_base() / inst / date
     if not rdir.is_dir():
         return []
 
     target_clean = target.replace(" ", "").replace("-", "").lower()
     inst_token = f"_{inst.lower()}_"
-    csvs = []
-    for f in rdir.glob("*.csv"):
+
+    def matches_lightcurve(f: pathlib.Path) -> bool:
         if f.name.startswith("_") or "summary" in f.name:
-            continue
+            return False
         fname = f.name.lower()
         if inst_token not in fname:
-            continue
+            return False
         t_part = fname.split(inst_token, 1)[0]
-        t_clean = t_part.replace("-", "")
-        if t_clean == target_clean:
+        return t_part.replace("-", "") == target_clean
+
+    search_dirs = [rdir]
+    try:
+        runs_root = rdir / "_runs" / _target_dir_name(target)
+    except ValueError:
+        runs_root = None
+    if runs_root is not None and runs_root.is_dir():
+        search_dirs.extend(d for d in sorted(runs_root.iterdir()) if d.is_dir())
+
+    csvs = []
+    seen: set[pathlib.Path] = set()
+    for search_dir in search_dirs:
+        for f in search_dir.glob("*.csv"):
+            if not matches_lightcurve(f):
+                continue
+            resolved = f.resolve(strict=False)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
             csvs.append(f)
-    return sorted(csvs)
+    return sorted(csvs, key=lambda p: (p.name, str(p.parent)))
 
 
 def get_target_parameters(target_name: str) -> dict:
@@ -1105,6 +1133,7 @@ def start_fit(
                     started_at=time.time(),
                     run_type=run_type,
                     params=params_json,
+                    run_name=run_name,
                 )
             except Exception:
                 return {"ok": False, "error": "database not writable"}
@@ -1158,6 +1187,7 @@ def start_fit(
             started_at=_FIT_JOBS[key].started_at,
             run_type=run_type,
             params=params_json,
+            run_name=run_name,
         )
 
     return {"ok": True, "key": key, "run_id": run_id}
@@ -1421,7 +1451,8 @@ def cancel_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
                     type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id,
                     state="cancelled", returncode=-1, elapsed=0,
                     started_at=found[0]["started_at"],
-                    error_desc="Cancelled by user"
+                    error_desc="Cancelled by user",
+                    run_name=found[0].get("run_name", ""),
                 )
                 return {"ok": True, "key": key}
             return {"ok": False, "error": "no job to cancel"}
@@ -1440,7 +1471,8 @@ def cancel_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
             returncode=-1,
             elapsed=round(time.time() - job.started_at),
             started_at=job.started_at,
-            error_desc="Cancelled by user"
+            error_desc="Cancelled by user",
+            run_name=job.run_name,
         )
 
     try:
@@ -1619,7 +1651,9 @@ def _parse_run_dir_name(name: str) -> tuple[str, str, str]:
     """Best-effort split of a run-id dir name into (site, mode, run_name).
 
     Used only as a fallback when meta.yaml lacks identity keys. Components are
-    hyphen-joined and never themselves contain ``-``.
+    hyphen-joined and never themselves contain ``-``. Newer sinistro run ids
+    omit the default ``central_2k_2x2`` mode, so a site-prefixed name with no
+    explicit mode is treated as central mode.
     """
     parts = name.split("-")
     site = mode = ""
@@ -1627,6 +1661,8 @@ def _parse_run_dir_name(name: str) -> tuple[str, str, str]:
         site, parts = parts[0], parts[1:]
     if parts and parts[0] in (set(SINISTRO_MODES) | {"mixed"}):
         mode, parts = parts[0], parts[1:]
+    elif site:
+        mode = "central_2k_2x2"
     return site, mode, "-".join(parts)
 
 
@@ -1832,7 +1868,8 @@ def sync_jobs() -> None:
                 returncode=rc,
                 elapsed=round(elapsed),
                 started_at=job.started_at,
-                error_desc=error_desc
+                error_desc=error_desc,
+                run_name=job.run_name,
             )
             running_keys.discard(db_key)
 
@@ -1899,7 +1936,7 @@ def sync_jobs() -> None:
                 if _count_running_full() >= _MAX_FULL_JOBS:
                     break
                 if entry["key"] in _FIT_JOBS:
-                    save_job(type_="transit_fit", inst=entry["inst"], date=entry["date"], target=entry["target"], run_id=entry.get("run_id", ""), state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry")
+                    save_job(type_="transit_fit", inst=entry["inst"], date=entry["date"], target=entry["target"], run_id=entry.get("run_id", ""), state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_name=run_name)
                     continue
                 try:
                     p = json.loads(entry.get("params") or "{}")
@@ -1927,11 +1964,12 @@ def sync_jobs() -> None:
                         state="error",
                         returncode=-1,
                         elapsed=0,
-                        started_at=entry["started_at"],
-                        error_desc="Invalid target",
-                        run_type=entry.get("run_type", ""),
-                        params=entry.get("params", ""),
-                    )
+                    started_at=entry["started_at"],
+                    error_desc="Invalid target",
+                    run_type=entry.get("run_type", ""),
+                    params=entry.get("params", ""),
+                    run_name=run_name,
+                )
                     continue
                 rdir.mkdir(parents=True, exist_ok=True)
                 csvs = get_csv_lightcurves(inst, date, target)
@@ -1959,16 +1997,16 @@ def sync_jobs() -> None:
                 except (FileNotFoundError, OSError) as exc:
                     try: logf.close()
                     except OSError: pass
-                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}")
+                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_name=run_name)
                     continue
                 run_type = "test" if test_run else "full"
                 _FIT_JOBS[key] = TransitFitJob(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=log_path, run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name)
                 try:
-                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="running", returncode=None, elapsed=0, started_at=_FIT_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""))
+                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="running", returncode=None, elapsed=0, started_at=_FIT_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""), run_name=run_name)
                 except Exception:
                     try: proc.terminate()
                     except OSError: pass
                     try: logf.close()
                     except OSError: pass
                     _FIT_JOBS.pop(key, None)
-                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Database error")
+                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Database error", run_name=run_name)

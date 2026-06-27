@@ -117,7 +117,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     error_desc   TEXT,
     run_type     TEXT NOT NULL DEFAULT '',
     params       TEXT NOT NULL DEFAULT '',
-    run_id       TEXT NOT NULL DEFAULT ''
+    run_id       TEXT NOT NULL DEFAULT '',
+    run_name     TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS db_meta (
@@ -334,8 +335,8 @@ def build_db(db_path: str, progress=None) -> int:
             conn.execute(
                 """INSERT OR REPLACE INTO jobs
                    (key, type, instrument, obsdate, target, state, returncode,
-                    elapsed, started_at, error_desc, run_type, params, run_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    elapsed, started_at, error_desc, run_type, params, run_id, run_name)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     job.get("key", ""),
                     job.get("type", ""),
@@ -350,6 +351,7 @@ def build_db(db_path: str, progress=None) -> int:
                     job.get("run_type", ""),
                     job.get("params", ""),
                     job.get("run_id", ""),
+                    job.get("run_name", ""),
                 ),
             )
 
@@ -773,6 +775,49 @@ def db_path() -> str:
     return str(pathlib.Path(os.environ.get("MUSCAT_DB_PATH", "muscat.db")).resolve())
 
 
+def _ensure_jobs_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA)
+    # Migrations for databases created before these columns existed.
+    for col, col_type in [
+        ("run_type", "TEXT NOT NULL DEFAULT ''"),
+        ("params", "TEXT NOT NULL DEFAULT ''"),
+        ("run_id", "TEXT NOT NULL DEFAULT ''"),
+        ("run_name", "TEXT NOT NULL DEFAULT ''"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
+
+
+def _backfill_job_run_names(conn: sqlite3.Connection) -> bool:
+    rows = conn.execute(
+        "SELECT key, params, run_id, run_name FROM jobs WHERE COALESCE(run_name, '') = ''"
+    ).fetchall()
+    updates: list[tuple[str, str]] = []
+    for key, params_raw, run_id, _run_name in rows:
+        parsed_name = ""
+        if params_raw:
+            try:
+                payload = json.loads(params_raw)
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            if isinstance(payload, dict):
+                parsed_name = str(payload.get("run_name") or "").strip()
+                if not parsed_name:
+                    options = payload.get("options")
+                    if isinstance(options, dict):
+                        parsed_name = str(options.get("run_name") or "").strip()
+        if not parsed_name and run_id:
+            parsed_name = str(run_id).strip()
+        if parsed_name:
+            updates.append((parsed_name, key))
+    if not updates:
+        return False
+    conn.executemany("UPDATE jobs SET run_name = ? WHERE key = ?", updates)
+    return True
+
+
 def save_job(
     type_: str,
     inst: str,
@@ -786,28 +831,20 @@ def save_job(
     run_type: str = "",
     params: str = "",
     run_id: str = "",
+    run_name: str = "",
 ) -> None:
     path = db_path()
     conn = sqlite3.connect(path, timeout=30)
-    conn.executescript(SCHEMA)
-    # Migrations for databases created before these columns existed.
-    for col, col_type in [
-        ("run_type", "TEXT NOT NULL DEFAULT ''"),
-        ("params", "TEXT NOT NULL DEFAULT ''"),
-        ("run_id", "TEXT NOT NULL DEFAULT ''"),
-    ]:
-        try:
-            conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_type}")
-        except sqlite3.OperationalError:
-            pass
+    _ensure_jobs_schema(conn)
+    _backfill_job_run_names(conn)
     # Run-scoped key so distinct runs of the same target are separate job rows;
     # an empty run_id reproduces the legacy key.
     key = f"{type_}:{inst}/{date}/{target.replace(' ', '')}"
     if run_id:
         key = f"{key}/{run_id}"
     conn.execute(
-        """INSERT INTO jobs(key, type, instrument, obsdate, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """INSERT INTO jobs(key, type, instrument, obsdate, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id, run_name)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(key) DO UPDATE SET
              state      = excluded.state,
              returncode = excluded.returncode,
@@ -815,8 +852,9 @@ def save_job(
              error_desc = excluded.error_desc,
              run_type   = CASE WHEN excluded.run_type != '' THEN excluded.run_type ELSE run_type END,
              params     = CASE WHEN excluded.params != '' THEN excluded.params ELSE params END,
-             run_id     = excluded.run_id""",
-        (key, type_, inst, date, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id)
+             run_id     = excluded.run_id,
+             run_name   = CASE WHEN excluded.run_name != '' THEN excluded.run_name ELSE run_name END""",
+        (key, type_, inst, date, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id, run_name)
     )
     conn.commit()
     conn.close()
@@ -826,7 +864,9 @@ def save_job(
 def get_persisted_jobs() -> list[dict]:
     path = db_path()
     conn = sqlite3.connect(path)
-    conn.executescript(SCHEMA)
+    _ensure_jobs_schema(conn)
+    if _backfill_job_run_names(conn):
+        conn.commit()
     cur = conn.execute("SELECT * FROM jobs ORDER BY started_at DESC")
     columns = [d[0] for d in cur.description]
     result = []
@@ -834,6 +874,8 @@ def get_persisted_jobs() -> list[dict]:
         d = dict(zip(columns, r))
         d["inst"] = d["instrument"]
         d["date"] = d["obsdate"]
+        if not str(d.get("run_name") or "").strip():
+            d["run_name"] = str(d.get("run_id") or "").strip()
         result.append(d)
     conn.close()
     return result
