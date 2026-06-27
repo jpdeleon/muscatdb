@@ -408,6 +408,16 @@
             <input type="checkbox" id="opt-plot_ingress_egress" checked>
             <label for="opt-plot_ingress_egress">Plot ing/egr <span class="help-tooltip" title="Plot dashed vertical lines at ingress and egress times on data.png.">?</span></label>
           </div>
+          <div style="margin-top: 0; display: inline-flex; align-items: center; gap: 0.45rem; white-space: nowrap;">
+            <label for="opt-fit_basis" style="margin: 0; font-size: 0.85rem; color: var(--text); display: inline-flex; align-items: center; gap: 0.25rem;">
+              Fit basis
+              <span class="help-tooltip" title="Basis parameterization for PyMC transit model: standard (semi-major axis scale a/R* etc.) or duration (transit duration).">?</span>
+            </label>
+            <select id="opt-fit_basis" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.15rem 0.4rem; font-size: 0.8rem; margin: 0; height: 24px; box-sizing: border-box; line-height: 1; cursor: pointer;">
+              <option value="duration" selected>duration</option>
+              <option value="standard">standard</option>
+            </select>
+          </div>
         </div>
 
         <div class="opt-section-title" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
@@ -926,6 +936,7 @@
       planets: planetsListStr,
       run_name: val('opt-run_name'),
       chromatic: chk('opt-chromatic') ? 'true' : 'false',
+      fit_basis: val('opt-fit_basis'),
       trend: chk('opt-trend') ? 'true' : 'false',
       overwrite: chk('opt-overwrite') ? 'true' : 'false',
       plot_midtransit: chk('opt-plot_midtransit') ? 'true' : 'false',
@@ -1574,7 +1585,8 @@
      'tune','draws','chains','cores','spline_knots','clip_nsig','chunk_thresh','trim_beg','trim_end',
      'gp_log_amp_prior','gp_log_scale_prior',
      'bump_tcenter','bump_tcenter_prior','bump_width','bump_width_prior','bump_ampl','bump_ampl_prior',
-     'flare_tpeak','flare_tpeak_prior','flare_fwhm','flare_fwhm_prior','flare_ampl','flare_ampl_prior'].forEach(function (id) {
+     'flare_tpeak','flare_tpeak_prior','flare_fwhm','flare_fwhm_prior','flare_ampl','flare_ampl_prior',
+     'fit_basis'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
     });
@@ -1663,7 +1675,8 @@
                          'opt-bump_ampl':'0.01,0.01','opt-bump_ampl_prior':'gaussian',
                          'opt-flare_tpeak':'0.0,0.1','opt-flare_tpeak_prior':'gaussian',
                          'opt-flare_fwhm':'0.02,0.01','opt-flare_fwhm_prior':'gaussian',
-                         'opt-flare_ampl':'0.01,0.01','opt-flare_ampl_prior':'gaussian'};
+                         'opt-flare_ampl':'0.01,0.01','opt-flare_ampl_prior':'gaussian',
+                         'opt-fit_basis':'duration'};
       Object.keys(numDefaults).forEach(function (id) { var el = document.getElementById(id); if (el) el.value = numDefaults[id]; });
 
       var checkDefaults = {'opt-include_mean':true,'opt-use_custom_optimizer':true,'opt-spline':false,
