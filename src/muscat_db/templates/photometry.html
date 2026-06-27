@@ -1151,21 +1151,38 @@
         setRunning(true);
       }
       if (s.state === 'done') {
-        stopPolling(); setRunning(false); clearJob();
+        stopPolling(); setRunning(false);
         logEl.textContent = (s.log || '') + '\n\n✓ done (' + s.elapsed + 's) — reloading…';
         try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
         if (typeof window.showLoading === 'function') {
           window.showLoading('Reloading…');
         }
-        setTimeout(function () { window.location.reload(); }, 1200);
+        setTimeout(function () {
+          // Navigate to the new run's outputs explicitly (not a bare reload),
+          // so the page shows the correct run even if timing makes another run
+          // look "newer" by mtime. Keep current site/mode filters if present.
+          var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
+          if (runId) qs += '&run=' + encodeURIComponent(runId);
+          if (siteSel && siteSel.value) qs += '&site=' + encodeURIComponent(siteSel.value);
+          if (modeSel && modeSel.value) qs += '&mode=' + encodeURIComponent(modeSel.value);
+          window.location.href = '/photometry?' + qs;
+          clearJob();
+        }, 1200);
       } else if (s.state === 'error') {
-        stopPolling(); setRunning(false); clearJob();
+        stopPolling(); setRunning(false);
         logEl.textContent = (s.log || '') + '\n\n✗ pipeline exited with code ' + s.returncode;
         try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
         if (typeof window.showLoading === 'function') {
           window.showLoading('Reloading…');
         }
-        setTimeout(function () { window.location.reload(); }, 1200);
+        setTimeout(function () {
+          var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
+          if (runId) qs += '&run=' + encodeURIComponent(runId);
+          if (siteSel && siteSel.value) qs += '&site=' + encodeURIComponent(siteSel.value);
+          if (modeSel && modeSel.value) qs += '&mode=' + encodeURIComponent(modeSel.value);
+          window.location.href = '/photometry?' + qs;
+          clearJob();
+        }, 1200);
       } else if (s.state === 'cancelled') {
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent = (s.log || '') + '\n\n■ cancelled';
