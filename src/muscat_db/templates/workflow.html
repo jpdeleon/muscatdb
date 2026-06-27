@@ -789,10 +789,27 @@ erDiagram
                   <li>Updating the comparison star weights based on their correlation with the current reference</li>
                 </ul>
               </li>
-              <li><strong>Weights</strong> — stars with lower intrinsic scatter and higher correlation with the ensemble receive higher weights. Stars affected by systematic noise (e.g., airmass trends, seeing variations) are down-weighted automatically</li>
+              <li><strong>Weights</strong> — stars with lower intrinsic scatter and higher correlation receive higher weights. To ensure robustness against outliers (e.g. cosmic rays, transient spikes), the weights are computed using a robust scale estimator, the <strong>Median Absolute Deviation (MAD)</strong> (i.e. weight $\propto 1/\text{MAD}$), rather than the standard deviation.</li>
               <li><strong>Convergence</strong> — the iteration continues until the target lightcurve stabilizes, typically within a few iterations</li>
             </ol>
             <p>The key advantage is that no manual selection of comparison stars is needed — the algorithm handles both the choice and the relative weighting, and it can exclude bad comparison stars that would otherwise introduce noise.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What is Broeg's NaN limitation, and how can we address it?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p><strong>The NaN Limitation:</strong> The matrix-based implementation of <code>autodiff</code> in prose requires a dense matrix with no <code>NaN</code>s. Because of this, we cannot easily mask out localized outliers (like a cosmic ray hitting a single comparison star on a single frame) by setting them to <code>NaN</code> without propagating that <code>NaN</code> to all other stars through the matrix multiplications.</p>
+            <p><strong>Proposed Fix (Imputation):</strong> Instead of dropping the entire frame (which is wasteful) or using <code>NaN</code>s (which breaks the algebra), we can apply star-level sigma clipping on the flux matrix and <strong>impute/replace individual outlier points with the median flux of that star</strong> before running the <code>autodiff</code> calculation.</p>
+            <p><strong>Implications:</strong></p>
+            <ul>
+              <li><strong>Zero Data Loss:</strong> We preserve the target and all other comparison stars' data at that epoch rather than throwing the whole frame away.</li>
+              <li><strong>No Outlier Propagation:</strong> Since the outlier is replaced by the median, it does not leak into the weighted artificial lightcurve and pollute other stars' differential lightcurves.</li>
+              <li><strong>Matrix Compatibility:</strong> The matrix remains fully dense and compatible with the vectorized NumPy operations.</li>
+            </ul>
           </div>
         </div>
 
