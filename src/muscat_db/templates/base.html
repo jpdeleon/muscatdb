@@ -152,14 +152,10 @@
         measured.forEach(function (w) {
           totalMeasured += w;
         });
-        const extraW = containerW - totalMeasured;
         ths.forEach(function (th, i) {
-          if (i === 0 && extraW > 0) {
-            th.style.width = (measured[i] + extraW) + 'px';
-            th.style.maxWidth = 'none';
-          } else {
-            th.style.width = measured[i] + 'px';
-          }
+          const share = totalMeasured > 0 ? (measured[i] / totalMeasured) : (1 / ths.length);
+          th.style.width = (containerW * share) + 'px';
+          th.style.maxWidth = 'none';
         });
       } else {
         ths.forEach(function (th, i) {
@@ -340,6 +336,14 @@
             pairs.push({ primary, detail });
           }
           const sorted = pairs.slice().sort((a, b) => {
+            if (sortAttr === 'startedAt') {
+              const statusA = a.primary.dataset.status;
+              const statusB = b.primary.dataset.status;
+              const isRunningA = (statusA === 'running' || statusA === 'cancelling');
+              const isRunningB = (statusB === 'running' || statusB === 'cancelling');
+              if (isRunningA && !isRunningB) return -1;
+              if (isRunningB && !isRunningA) return 1;
+            }
             const ka = rowKey(a.primary, currentIdx, sortAttr, kind);
             const kb = rowKey(b.primary, currentIdx, sortAttr, kind);
             if (ka == null && kb == null) return 0;

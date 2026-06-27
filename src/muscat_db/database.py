@@ -119,7 +119,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     run_type     TEXT NOT NULL DEFAULT '',
     params       TEXT NOT NULL DEFAULT '',
     run_id       TEXT NOT NULL DEFAULT '',
-    run_name     TEXT NOT NULL DEFAULT ''
+    run_name     TEXT NOT NULL DEFAULT '',
+    user_name    TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS db_meta (
@@ -784,6 +785,7 @@ def _ensure_jobs_schema(conn: sqlite3.Connection) -> None:
         ("params", "TEXT NOT NULL DEFAULT ''"),
         ("run_id", "TEXT NOT NULL DEFAULT ''"),
         ("run_name", "TEXT NOT NULL DEFAULT ''"),
+        ("user_name", "TEXT NOT NULL DEFAULT ''"),
     ]:
         try:
             conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_type}")
@@ -855,7 +857,11 @@ def save_job(
     params: str = "",
     run_id: str = "",
     run_name: str = "",
+    user_name: str | None = None,
 ) -> None:
+    import getpass
+    if user_name is None:
+        user_name = getpass.getuser()
     path = db_path()
     conn = sqlite3.connect(path, timeout=30)
     _ensure_jobs_migrated(conn, path)
@@ -865,8 +871,8 @@ def save_job(
     if run_id:
         key = f"{key}/{run_id}"
     conn.execute(
-        """INSERT INTO jobs(key, type, instrument, obsdate, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id, run_name)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """INSERT INTO jobs(key, type, instrument, obsdate, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id, run_name, user_name)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(key) DO UPDATE SET
              state      = excluded.state,
              returncode = excluded.returncode,
@@ -875,8 +881,9 @@ def save_job(
              run_type   = CASE WHEN excluded.run_type != '' THEN excluded.run_type ELSE run_type END,
              params     = CASE WHEN excluded.params != '' THEN excluded.params ELSE params END,
              run_id     = excluded.run_id,
-             run_name   = CASE WHEN excluded.run_name != '' THEN excluded.run_name ELSE run_name END""",
-        (key, type_, inst, date, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id, run_name)
+             run_name   = CASE WHEN excluded.run_name != '' THEN excluded.run_name ELSE run_name END,
+             user_name  = CASE WHEN excluded.user_name != '' THEN excluded.user_name ELSE user_name END""",
+        (key, type_, inst, date, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id, run_name, user_name)
     )
     conn.commit()
     conn.close()
