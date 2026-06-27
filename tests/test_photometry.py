@@ -1061,6 +1061,18 @@ class TestRoutes:
         assert f"/photometry/file/{INST}/{DATE}/{TARGET}/run/default/{name}?v=" in r.text
         assert "- default" in r.text
 
+    def test_photometry_page_hides_other_runs_on_test_run(self, client, prose_dir):
+        rdir = _make_run_outputs(prose_dir, "my_test")
+        rdir.joinpath("_webrun_meta.json").write_text(
+            '{"run_id":"my_test","run_name":"my_test","site":"","mode":"","run_type":"test"}'
+        )
+        _make_run_outputs(prose_dir, "other_run")
+        r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}&run=my_test")
+        assert r.status_code == 200
+        assert "my_test" in r.text
+        assert "run=other_run" not in r.text
+        assert "run=__legacy__" not in r.text
+
     def test_run_file_route_serves_named_run_artifact(self, client, prose_dir):
         _make_run_outputs(prose_dir, "default")
         name = f"{TARGET}_{INST}_{DATE}_lightcurves.png"

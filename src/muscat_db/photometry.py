@@ -655,6 +655,7 @@ class RunDescriptor:
     run_name: str = ""
     mtime: float = 0.0
     is_legacy: bool = False
+    run_type: str = "full"
 
 
 def _read_run_meta(d: Path) -> dict:
@@ -714,6 +715,7 @@ def list_photometry_runs(
             run_name="legacy",
             mtime=_dir_mtime(legacy_dir),
             is_legacy=True,
+            run_type="full",
         ))
 
     try:
@@ -733,8 +735,10 @@ def list_photometry_runs(
                 site = str(meta.get("site") or "")
                 mode = str(meta.get("mode") or "")
                 run_name = str(meta.get("run_name") or "")
+                run_type = str(meta.get("run_type") or "full")
             else:
                 site, mode, run_name = _parse_run_dir_name(inst, d.name)
+                run_type = "full"
             runs.append(RunDescriptor(
                 run_id=d.name,
                 site=site,
@@ -742,6 +746,7 @@ def list_photometry_runs(
                 run_name=run_name or d.name,
                 mtime=_dir_mtime(d),
                 is_legacy=False,
+                run_type=run_type,
             ))
     runs.sort(key=lambda r: r.mtime, reverse=True)
     return runs, run_outputs

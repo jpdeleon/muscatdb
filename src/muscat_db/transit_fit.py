@@ -887,6 +887,63 @@ def _write_fit_inputs(
             gp_block["per_dataset"] = per_dataset
         fit_data["gp"] = gp_block
 
+    fit_data["include_bump"] = _bool_opt("include_bump", default=False)
+    fit_data["chromatic_bump"] = _bool_opt("chromatic_bump", default=False)
+    if fit_data["include_bump"]:
+        def _bump_values(param: str, val_default: float, unc_default: float) -> tuple[float | list[float], float | list[float], str]:
+            raw_val = options.get(f"bump_{param}", "")
+            prior = str(options.get(f"bump_{param}_prior") or "gaussian").strip().lower()
+
+            s = str(raw_val).strip()
+            if not s:
+                if prior == "uniform":
+                    low, high = val_default - 3 * unc_default, val_default + 3 * unc_default
+                    return (low + high) / 2.0, high - low, prior
+                return val_default, unc_default, prior
+
+            pairs = [p.strip() for p in s.split(";") if p.strip()]
+            vals_val = []
+            vals_unc = []
+            for p in pairs:
+                parts = [x.strip() for x in p.split(",") if x.strip()]
+                if len(parts) >= 2:
+                    try:
+                        v, u = float(parts[0]), float(parts[1])
+                        if prior == "uniform":
+                            vals_val.append((v + u) / 2.0)
+                            vals_unc.append(u - v)
+                        else:
+                            vals_val.append(v)
+                            vals_unc.append(u)
+                    except ValueError:
+                        pass
+
+            if not vals_val:
+                if prior == "uniform":
+                    low, high = val_default - 3 * unc_default, val_default + 3 * unc_default
+                    return (low + high) / 2.0, high - low, prior
+                return val_default, unc_default, prior
+
+            if len(vals_val) == 1:
+                return vals_val[0], vals_unc[0], prior
+            return vals_val, vals_unc, prior
+
+        tcenter, tcenter_unc, tcenter_prior = _bump_values("tcenter", 0.0, 0.1)
+        width, width_unc, width_prior = _bump_values("width", 0.02, 0.01)
+        ampl, ampl_unc, ampl_prior = _bump_values("ampl", 0.01, 0.01)
+
+        fit_data["bump"] = {
+            "tcenter": tcenter,
+            "tcenter_unc": tcenter_unc,
+            "tcenter_prior": tcenter_prior,
+            "width": width,
+            "width_unc": width_unc,
+            "width_prior": width_prior,
+            "ampl": ampl,
+            "ampl_unc": ampl_unc,
+            "ampl_prior": ampl_prior,
+        }
+
     fixed = options.get("fixed")
     fit_data["fixed"] = ["period", "u_star"] if fixed is None else fixed
 
