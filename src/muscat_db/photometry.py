@@ -139,6 +139,7 @@ _SUMMARY_SUFFIX = {
     "_covariates.png": "covariates",
     "_systematics.png": "covariates",   # backward compat with old pipeline
     "_stacks.png": "stacks",
+    "_nearby_stars.csv": "nearby_stars",
 }
 # Per-band product suffixes -> short key.
 _BAND_SUFFIX = {
@@ -148,7 +149,6 @@ _BAND_SUFFIX = {
     "_alignment.png": "alignment",
     ".gif": "gif",
     ".csv": "csv",
-    "_nearby_stars.csv": "nearby_stars",
 }
 
 
