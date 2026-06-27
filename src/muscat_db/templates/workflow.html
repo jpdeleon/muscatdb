@@ -831,6 +831,27 @@ erDiagram
 
         <div class="faq-item">
           <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How are the optimal comparison stars and aperture size computed?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p><strong>Optimal Comparison Stars:</strong></p>
+            <ul>
+              <li><strong>Candidate Pool:</strong> Taken from the tracked sources (up to <code>max_num_stars</code>), excluding the target and avoided stars.</li>
+              <li><strong>Iterative Weighting:</strong> The Broeg et al. 2005 algorithm assigns weights to each candidate star inversely proportional to their Median Absolute Deviation (MAD) (i.e., $w \propto 1/\text{MAD}$). Using MAD instead of standard deviation prevents transient outliers (like cosmic rays or hot pixels) from skewing the weight.</li>
+              <li><strong>Combination Optimization:</strong> Comparison stars are sorted by weight. The pipeline (in <code>auto_diff_1d</code>) starts with the highest-weighted star, iteratively adding the next-highest, and computes the binned white noise (<code>binned_nanstd</code>) of the target's resulting differential lightcurve. It retains the subset of comparison stars that minimizes this white noise.</li>
+            </ul>
+            <p><strong>Optimal Aperture Size:</strong></p>
+            <ul>
+              <li><strong>Aperture Grid:</strong> The pipeline runs photometry on a series of aperture radii (either defined by Gaia heuristics or custom parameters).</li>
+              <li><strong>Outlier Filtering:</strong> During evaluation, points that are $> 4\sigma$ from the median are temporarily clipped to avoid biasing the aperture metric.</li>
+              <li><strong>Noise Minimization (stddiff):</strong> For each aperture, the standard deviation of successive differences ($\sigma(\Delta f)$) is computed. This acts as a high-pass filter to remove slow trends (red noise, systematics, or the transit itself) and focus purely on high-frequency white noise. The aperture size that minimizes this metric is selected as the optimal aperture.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
             <span>What is the difference between a test run and a full run?</span>
             <span class="faq-icon">+</span>
           </div>
