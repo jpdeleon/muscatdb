@@ -1830,7 +1830,8 @@ def sync_jobs() -> None:
     with _FIT_LOCK:
         db_jobs = get_persisted_jobs()
         running_keys = {j["key"] for j in db_jobs if j["state"] == "running" and j["type"] == "transit_fit"}
-        
+        db_by_key = {j["key"]: j for j in db_jobs}
+
         for key, job in _FIT_JOBS.items():
             db_key = f"transit_fit:{fit_job_key(job.inst, job.date, job.target, job.run_id)}"
             rc = job.proc.poll()
@@ -1851,13 +1852,29 @@ def sync_jobs() -> None:
                         pass
             
             elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
+
+            # Only persist when the row actually changed. A steadily-running job
+            # whose DB row already says "running" needs no rewrite; elapsed is
+            # computed live in the web layer, so we no longer write every 2s poll
+            # just to bump it (each write also fired clear_all_caches, nullifying
+            # the directory caches). Terminal transitions still write through.
+            existing = db_by_key.get(db_key)
+            unchanged = (
+                existing is not None
+                and existing.get("state") == state
+                and existing.get("returncode") == rc
+            )
+            running_keys.discard(db_key)
+            if unchanged:
+                continue
+
             error_desc = ""
             if state == "error":
                 from muscat_db.photometry import _get_error_desc
                 error_desc = _get_error_desc(job.log_path)
             elif state == "cancelled":
                 error_desc = "Cancelled by user"
-            
+
             save_job(
                 type_="transit_fit",
                 inst=job.inst,
@@ -1871,7 +1888,6 @@ def sync_jobs() -> None:
                 error_desc=error_desc,
                 run_name=job.run_name,
             )
-            running_keys.discard(db_key)
 
         for db_key in running_keys:
             # Read identity from the DB row's columns (robust to run_id in the key).
