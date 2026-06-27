@@ -565,6 +565,52 @@
         </div>
         </details>
 
+        <details class="opt-collapse">
+        <summary>Bump Model <span class="help-tooltip" title="Model sudden flux bumps (e.g. starspot crossings). Parameters support lists (comma-separated for multi-bump) or single values. The bump block is only written to fit.yaml when Use Bump is on.">?</span></summary>
+        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: flex-end; padding-bottom: 0.45rem;">
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-include_bump">
+            <label for="opt-include_bump">Use Bump <span class="help-tooltip" title="Enable the bump noise model. Default off.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-chromatic_bump" disabled>
+            <label for="opt-chromatic_bump">Chromatic Bump <span class="help-tooltip" title="Fit chromatic bump amplitude.">?</span></label>
+          </div>
+        </div>
+        <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem;">
+          <div class="opt">
+            <label for="opt-bump_tcenter">tcenter prior <span class="help-tooltip" title="Prior on center time of the bump (BJD_TDB). Gaussian: enter value,unc. Uniform: enter low,high bounds. Use ; to separate multiple bumps.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="text" id="opt-bump_tcenter" value="0.0,0.1" placeholder="value,unc" style="flex: 3; width: 100%; min-width: 0;" disabled>
+              <select id="opt-bump_tcenter_prior" title="Prior shape — Gaussian: enter value,unc. Uniform: enter low,high bounds." style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;" disabled>
+                <option value="gaussian">Gaussian</option>
+                <option value="uniform">Uniform</option>
+              </select>
+            </div>
+          </div>
+          <div class="opt">
+            <label for="opt-bump_width">width prior <span class="help-tooltip" title="Prior on width of the bump (days). Gaussian: enter value,unc. Uniform: enter low,high bounds. Use ; to separate multiple bumps.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="text" id="opt-bump_width" value="0.02,0.01" placeholder="value,unc" style="flex: 3; width: 100%; min-width: 0;" disabled>
+              <select id="opt-bump_width_prior" title="Prior shape — Gaussian: enter value,unc. Uniform: enter low,high bounds." style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;" disabled>
+                <option value="gaussian">Gaussian</option>
+                <option value="uniform">Uniform</option>
+              </select>
+            </div>
+          </div>
+          <div class="opt">
+            <label for="opt-bump_ampl">ampl prior <span class="help-tooltip" title="Prior on amplitude of the bump (flux units). Gaussian: enter value,unc. Uniform: enter low,high bounds. Use ; to separate multiple bumps.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="text" id="opt-bump_ampl" value="0.01,0.01" placeholder="value,unc" style="flex: 3; width: 100%; min-width: 0;" disabled>
+              <select id="opt-bump_ampl_prior" title="Prior shape — Gaussian: enter value,unc. Uniform: enter low,high bounds." style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;" disabled>
+                <option value="gaussian">Gaussian</option>
+                <option value="uniform">Uniform</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        </details>
+
       </div>
 
       <div class="opt-grid" style="margin-top: 1.5rem;">
@@ -863,6 +909,14 @@
       gp_log_scale_prior: val('opt-gp_log_scale_prior'),
       gp_per_dataset_log_amp: chk('opt-gp_per_dataset_log_amp') ? 'true' : 'false',
       gp_per_dataset_log_scale: chk('opt-gp_per_dataset_log_scale') ? 'true' : 'false',
+      include_bump: chk('opt-include_bump') ? 'true' : 'false',
+      chromatic_bump: chk('opt-chromatic_bump') ? 'true' : 'false',
+      bump_tcenter: val('opt-bump_tcenter'),
+      bump_tcenter_prior: val('opt-bump_tcenter_prior'),
+      bump_width: val('opt-bump_width'),
+      bump_width_prior: val('opt-bump_width_prior'),
+      bump_ampl: val('opt-bump_ampl'),
+      bump_ampl_prior: val('opt-bump_ampl_prior'),
       teff: val('opt-teff'),
       teff_unc: val('opt-teff_unc'),
       logg: val('opt-logg'),
@@ -1464,7 +1518,8 @@
 
     ['run_name','teff','teff_unc','logg','logg_unc','feh','feh_unc',
      'tune','draws','chains','cores','spline_knots','clip_nsig','chunk_thresh','trim_beg','trim_end',
-     'gp_log_amp_prior','gp_log_scale_prior'].forEach(function (id) {
+     'gp_log_amp_prior','gp_log_scale_prior',
+     'bump_tcenter','bump_tcenter_prior','bump_width','bump_width_prior','bump_ampl','bump_ampl_prior'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
     });
@@ -1477,6 +1532,7 @@
 
     ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset',
      'use_gp','gp_per_dataset_log_amp','gp_per_dataset_log_scale',
+     'include_bump','chromatic_bump',
      'plot_midtransit','plot_ingress_egress'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.checked = saved[id] === 'true';
@@ -1545,15 +1601,20 @@
       var numDefaults = {'opt-tune':'2000','opt-draws':'2000','opt-chains':'2','opt-cores':'2',
                          'opt-spline_knots':'5','opt-clip_nsig':'7','opt-chunk_thresh':'0','opt-trim_beg':'','opt-trim_end':'',
                          'opt-gp_log_amp':'-3,2','opt-gp_log_amp_prior':'gaussian',
-                         'opt-gp_log_scale':'-1,2','opt-gp_log_scale_prior':'gaussian'};
+                         'opt-gp_log_scale':'-1,2','opt-gp_log_scale_prior':'gaussian',
+                         'opt-bump_tcenter':'0.0,0.1','opt-bump_tcenter_prior':'gaussian',
+                         'opt-bump_width':'0.02,0.01','opt-bump_width_prior':'gaussian',
+                         'opt-bump_ampl':'0.01,0.01','opt-bump_ampl_prior':'gaussian'};
       Object.keys(numDefaults).forEach(function (id) { var el = document.getElementById(id); if (el) el.value = numDefaults[id]; });
 
       var checkDefaults = {'opt-include_mean':true,'opt-use_custom_optimizer':true,'opt-spline':false,
                            'opt-add_bias':false,'opt-quadratic':false,'opt-clip':false,'opt-chunk_offset':false,
                            'opt-use_gp':false,'opt-gp_per_dataset_log_amp':false,'opt-gp_per_dataset_log_scale':false,
+                           'opt-include_bump':false,'opt-chromatic_bump':false,
                            'opt-plot_midtransit':true,'opt-plot_ingress_egress':true};
       Object.keys(checkDefaults).forEach(function (id) { var el = document.getElementById(id); if (el) el.checked = checkDefaults[id]; });
       refreshGpPriorControls();
+      refreshBumpPriorControls();
       updateDependentFields();
 
       document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
@@ -1701,6 +1762,62 @@
     });
   }
 
+  var BUMP_PRIOR_SPECS = [
+    { field: 'opt-bump_tcenter', prior: 'opt-bump_tcenter_prior' },
+    { field: 'opt-bump_width', prior: 'opt-bump_width_prior' },
+    { field: 'opt-bump_ampl', prior: 'opt-bump_ampl_prior' }
+  ];
+
+  function refreshBumpPriorControls() {
+    BUMP_PRIOR_SPECS.forEach(function (spec) {
+      var field = document.getElementById(spec.field);
+      var prior = document.getElementById(spec.prior);
+      if (!field || !prior) return;
+      prior.dataset.mode = prior.value === 'uniform' ? 'uniform' : 'gaussian';
+      field.placeholder = prior.dataset.mode === 'uniform' ? 'low,high (use ; for multiple)' : 'mean,unc (use ; for multiple)';
+    });
+  }
+
+  function setupBumpPriorSelectors() {
+    refreshBumpPriorControls();
+    BUMP_PRIOR_SPECS.forEach(function (spec) {
+      var field = document.getElementById(spec.field);
+      var prior = document.getElementById(spec.prior);
+      if (!field || !prior) return;
+      prior.addEventListener('change', function () {
+        var next = prior.value === 'uniform' ? 'uniform' : 'gaussian';
+        var prev = prior.dataset.mode || 'gaussian';
+        if (next !== prev) {
+          var val = field.value.trim();
+          if (val) {
+            var pairs = val.split(';').map(function (s) { return s.trim(); });
+            var newPairs = [];
+            var ok = true;
+            for (var k = 0; k < pairs.length; k++) {
+              var pair = splitPair(pairs[k]);
+              var a = Number(pair[0]), b = Number(pair[1]);
+              if (pair[0] !== '' && pair[1] !== '' && isFinite(a) && isFinite(b)) {
+                if (next === 'uniform') {
+                  newPairs.push(fmtSig(a - 3 * b, 4) + ',' + fmtSig(a + 3 * b, 4));
+                } else {
+                  newPairs.push(fmtSig((a + b) / 2, 4) + ',' + fmtSig((b - a) / 6, 4));
+                }
+              } else {
+                ok = false;
+                break;
+              }
+            }
+            if (ok && newPairs.length > 0) {
+              field.value = newPairs.join('; ');
+            }
+          }
+        }
+        prior.dataset.mode = next;
+        field.placeholder = next === 'uniform' ? 'low,high (use ; for multiple)' : 'mean,unc (use ; for multiple)';
+      });
+    });
+  }
+
   var CONTROL_DEPENDENCIES = [
     { controller: 'opt-spline', targets: ['opt-spline_knots'] },
     { controller: 'opt-clip', targets: ['opt-clip_nsig'] },
@@ -1711,6 +1828,15 @@
         'opt-gp_log_amp', 'opt-gp_log_amp_prior',
         'opt-gp_log_scale', 'opt-gp_log_scale_prior',
         'opt-gp_per_dataset_log_amp', 'opt-gp_per_dataset_log_scale'
+      ]
+    },
+    {
+      controller: 'opt-include_bump',
+      targets: [
+        'opt-chromatic_bump',
+        'opt-bump_tcenter', 'opt-bump_tcenter_prior',
+        'opt-bump_width', 'opt-bump_width_prior',
+        'opt-bump_ampl', 'opt-bump_ampl_prior'
       ]
     }
   ];
@@ -1729,6 +1855,7 @@
 
   restoreOptions();
   setupGpPriorSelectors();
+  setupBumpPriorSelectors();
   updateDependentFields();
 
   // ----- field validation -----
@@ -1753,6 +1880,9 @@
     { id: 'opt-trim_end',     type: 'integer', min: 0, optional: true },
     { id: 'opt-gp_log_amp',   type: 'pair', dependsOn: 'opt-use_gp' },
     { id: 'opt-gp_log_scale', type: 'pair', dependsOn: 'opt-use_gp' },
+    { id: 'opt-bump_tcenter', type: 'bump_pair', dependsOn: 'opt-include_bump' },
+    { id: 'opt-bump_width',   type: 'bump_pair', dependsOn: 'opt-include_bump' },
+    { id: 'opt-bump_ampl',    type: 'bump_pair', dependsOn: 'opt-include_bump' },
   ];
 
   function validateField(id, rules) {
@@ -1790,6 +1920,21 @@
       var a = Number(parts[0]), b = Number(parts[1]);
       if (isNaN(a) || !isFinite(a) || isNaN(b) || !isFinite(b)) {
         err.textContent = 'Must be two numbers'; err.classList.add('visible'); return false;
+      }
+      err.classList.remove('visible'); err.textContent = ''; return true;
+    }
+
+    if (rules.type === 'bump_pair') {
+      var pairs = val.split(';').map(function (s) { return s.trim(); });
+      for (var k = 0; k < pairs.length; k++) {
+        var parts = pairs[k].split(',').map(function (s) { return s.trim(); });
+        if (parts.length < 2 || parts[0] === '' || parts[1] === '') {
+          err.textContent = 'Enter value,unc (use ; for multiple bumps)'; err.classList.add('visible'); return false;
+        }
+        var a = Number(parts[0]), b = Number(parts[1]);
+        if (isNaN(a) || !isFinite(a) || isNaN(b) || !isFinite(b)) {
+          err.textContent = 'Must be numbers'; err.classList.add('visible'); return false;
+        }
       }
       err.classList.remove('visible'); err.textContent = ''; return true;
     }

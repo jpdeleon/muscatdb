@@ -592,6 +592,8 @@
   var target = {{ sel_target|tojson }};
   var runId  = {{ sel_run|tojson }};
   var rawMissing = {{ raw_missing|tojson }};
+  var siteSel = document.getElementById('opt-site');
+  var modeSel = document.getElementById('opt-mode');
 
   var SEL_KEY = 'phot:last';
   var OPT_KEY = 'phot:options:' + inst + ':' + date + ':' + target;
