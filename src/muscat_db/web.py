@@ -267,7 +267,7 @@ def _site_required_error(db: str, inst: str, date: str, target: str, options: di
 
 
 @app.get("/photometry", response_class=HTMLResponse)
-def photometry_page(inst: str = "", date: str = "", target: str = "", site: str = "", mode: str = ""):
+def photometry_page(inst: str = "", date: str = "", target: str = "", site: str = "", mode: str = "", run: str = ""):
     db = _db_path()
     inst = inst if inst in INSTRUMENTS else ""
     date = date if phot.valid_date(date) else ""
@@ -287,6 +287,8 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
     available_sites: list[str] = ["lsc", "cpt", "coj", "tfn", "elp"]
     available_modes: list[str] = ["central_2k_2x2", "full_frame"]
     outputs = None
+    runs: list = []
+    sel_run: str | None = None
     previews: dict[str, dict] = {}
     command = ""
     raw_missing = False
@@ -301,7 +303,27 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
     is_narrowband = False
     available_bands: list[str] = []
     if inst and date and target:
-        outputs = phot.list_outputs(inst, date, target, site=site or None, mode=mode or None)
+        runs = phot.list_photometry_runs(inst, date, target)
+        if inst == "sinistro":
+            if site:
+                runs = [r for r in runs if r.is_legacy or r.site == site]
+            if mode:
+                runs = [r for r in runs if r.is_legacy or r.mode == mode]
+        run_ids = {r.run_id for r in runs}
+        newest = runs[0].run_id if runs else None
+        if not run:
+            sel_run = newest
+        elif run == "__legacy__":
+            sel_run = "" if "" in run_ids else None
+        elif run in run_ids:
+            sel_run = run
+        else:
+            sel_run = newest
+
+        if sel_run is not None:
+            outputs = phot.list_outputs(inst, date, target, site=site or None, mode=mode or None, run_id=sel_run or None)
+        else:
+            outputs = phot.list_outputs(inst, date, target, site=site or None, mode=mode or None)
         command = phot.command_str(inst, date, target, test_run=False)
         raw_missing = not phot.raw_data_dir(inst, date).is_dir()
 
@@ -340,7 +362,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
 
         # fall through; previews computed below when outputs exist
         if outputs["has_any"]:
-            rdir = phot.results_dir(inst, date)
+            rdir = phot.run_output_dir(inst, date, target, sel_run or None)
             for band, prods in outputs["bands"].items():
                 csv_info = prods.get("csv")
                 if csv_info:
@@ -353,6 +375,8 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         sel_inst=inst, sel_date=date, sel_target=target,
         sel_site=(outputs.get("site") if outputs else "") or "",
         sel_mode=(outputs.get("mode") if outputs else "") or "",
+        runs=runs,
+        sel_run=sel_run or "",
         dates=dates, targets=targets,
         outputs=outputs, previews=previews,
         command=command, raw_missing=raw_missing,
@@ -1722,7 +1746,7 @@ def jobs_status():
 @app.get("/jobs/log/{type_}/{inst}/{date}/{target}")
 def job_log(type_: str, inst: str, date: str, target: str, run: str = ""):
     if type_ == "photometry":
-        path = phot.log_path(inst, date, target)
+        path = phot.log_path(inst, date, target, run_id=(run or "").strip())
     elif type_ == "transit_fit":
         path = fit.log_path(inst, date, target, run_id=(run or "").strip())
     else:
@@ -1759,6 +1783,14 @@ def jobs_rerun(payload: dict = Body(...)):
     return JSONResponse(result)
 
 
+@app.get("/photometry/file/{inst}/{date}/{target}/run/{run_id}/{name}")
+def photometry_file_run(inst: str, date: str, target: str, run_id: str, name: str):
+    path = phot.safe_run_artifact_path(inst, date, target, run_id, name)
+    if path is None:
+        raise HTTPException(404, "artifact not found")
+    return FileResponse(str(path), headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
+
+
 @app.get("/photometry/file/{inst}/{date}/{name}")
 def photometry_file(inst: str, date: str, name: str):
     path = phot.safe_artifact_path(inst, date, name)
@@ -1792,7 +1824,7 @@ def photometry_command(payload: dict = Body(...)):
     target = (payload.get("target") or "").strip()
     options = payload.get("options") or {}
     test_run = bool(payload.get("test_run", False))
-    error = phot.validate_run_options(phot.normalize_run_options(options))
+    error = phot.validate_run_options(phot.normalize_run_options(options), inst=inst)
     # Surface the multi-site block as a command error so the page disables the
     # run buttons and shows why until a site is chosen.
     if not error:
@@ -1802,11 +1834,11 @@ def photometry_command(payload: dict = Body(...)):
 
 
 @app.get("/photometry/status")
-def photometry_status(inst: str, date: str, target: str):
+def photometry_status(inst: str, date: str, target: str, run: str = ""):
     # Drain the queue so a pending full job is promoted once the slot frees,
     # even when only the photometry page (not the Jobs page) is polling.
     phot.sync_jobs()
-    return JSONResponse(phot.job_status(inst, date, target))
+    return JSONResponse(phot.job_status(inst, date, target, run_id=(run or "").strip()))
 
 
 @app.post("/photometry/cancel")
@@ -1814,7 +1846,8 @@ def photometry_cancel(payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
     target = (payload.get("target") or "").strip()
-    result = phot.cancel_run(inst, date, target)
+    run_id = (payload.get("run_id") or payload.get("run") or "").strip()
+    result = phot.cancel_run(inst, date, target, run_id=run_id)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
     return JSONResponse(result)
@@ -1831,7 +1864,8 @@ def photometry_delete(payload: dict = Body(...)):
         return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
     if not (target or "").strip():
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
-    result = phot.delete_reduction(inst, date, target)
+    run_id = (payload.get("run_id") or payload.get("run") or "").strip()
+    result = phot.delete_reduction(inst, date, target, run_id=run_id)
     return JSONResponse(result)
 
 

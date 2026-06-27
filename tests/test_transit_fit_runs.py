@@ -29,8 +29,9 @@ class TestRunId:
         assert "-" not in fit.slugify_run_name("x-y-z")
 
     def test_build_run_id_components(self):
-        assert fit.build_run_id("lsc", "central_2k_2x2", "gaussian priors") == "lsc-central_2k_2x2-gaussian_priors"
-        assert fit.build_run_id("mixed", "central_2k_2x2", "") == "mixed-central_2k_2x2-default"
+        assert fit.build_run_id("lsc", "central_2k_2x2", "gaussian priors") == "lsc-gaussian_priors"
+        assert fit.build_run_id("mixed", "central_2k_2x2", "") == "mixed-default"
+        assert fit.build_run_id("lsc", "full_frame", "gaussian priors") == "lsc-full_frame-gaussian_priors"
         assert fit.build_run_id("", "", "uniform") == "uniform"
         assert fit.build_run_id("", "", "") == "default"
 
@@ -49,6 +50,10 @@ class TestRunId:
         assert fit.fit_job_key("sinistro", "250710", "HIP 67522", "lsc-x-g") == "sinistro/250710/HIP67522/lsc-x-g"
         assert fit.fit_job_key("sinistro", "250710", "HIP 67522") == "sinistro/250710/HIP67522"
 
+    def test_parse_short_sinistro_run_id_defaults_mode(self):
+        assert fit._parse_run_dir_name("lsc-g") == ("lsc", "central_2k_2x2", "g")
+        assert fit._parse_run_dir_name("lsc-full_frame-g") == ("lsc", "full_frame", "g")
+
     def test_csv_discovery_allows_header_date_mismatch(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
         rdir = tmp_path / "sinistro" / "260625"
@@ -58,6 +63,17 @@ class TestRunId:
 
         assert fit.get_csv_lightcurves("sinistro", "260625", "TIC88297141") == [csv]
 
+    def test_csv_discovery_includes_named_photometry_runs(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        rdir = tmp_path / "sinistro" / "260624" / "_runs" / "TIC88297141" / "default"
+        rdir.mkdir(parents=True)
+        gp = rdir / "TIC88297141_sinistro_lsc_gp_260624.csv"
+        zs = rdir / "TIC88297141_sinistro_lsc_zs_260624.csv"
+        gp.write_text("BJD_TDB,Flux\n1,1\n")
+        zs.write_text("BJD_TDB,Flux\n1,1\n")
+
+        assert fit.get_csv_lightcurves("sinistro", "260624", "TIC88297141") == [gp, zs]
+
 
 # ── directory isolation ────────────────────────────────────────────────────
 
@@ -65,8 +81,8 @@ class TestFitOutputDir:
     def test_run_isolation_and_legacy(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSCAT_TIMER_DIR", str(tmp_path))
         legacy = fit.fit_output_dir("sinistro", "250710", "HIP 67522")
-        run_a = fit.fit_output_dir("sinistro", "250710", "HIP 67522", "lsc-central_2k_2x2-g")
-        run_b = fit.fit_output_dir("sinistro", "250710", "HIP 67522", "cpt-central_2k_2x2-g")
+        run_a = fit.fit_output_dir("sinistro", "250710", "HIP 67522", "lsc-g")
+        run_b = fit.fit_output_dir("sinistro", "250710", "HIP 67522", "cpt-g")
         assert legacy.name == "HIP67522"
         assert run_a != run_b
         assert run_a.parent == legacy  # run dirs nest under the target dir
@@ -94,10 +110,10 @@ class TestRunDiscovery:
     def test_list_runs_newest_first_and_ignores_out(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSCAT_TIMER_DIR", str(tmp_path))
         tdir = tmp_path / "sinistro" / "250710" / "HIP67522"
-        _make_run(tdir, "lsc-central_2k_2x2-gaussian", "lsc", "central_2k_2x2", "gaussian", 1_000_100)
-        _make_run(tdir, "cpt-central_2k_2x2-uniform", "cpt", "central_2k_2x2", "uniform", 1_000_200)
+        _make_run(tdir, "lsc-gaussian", "lsc", "central_2k_2x2", "gaussian", 1_000_100)
+        _make_run(tdir, "cpt-uniform", "cpt", "central_2k_2x2", "uniform", 1_000_200)
         runs = fit.list_fit_runs("sinistro", "250710", "HIP67522")
-        assert [r.run_id for r in runs] == ["cpt-central_2k_2x2-uniform", "lsc-central_2k_2x2-gaussian"]
+        assert [r.run_id for r in runs] == ["cpt-uniform", "lsc-gaussian"]
         assert runs[0].run_name == "uniform" and runs[0].site == "cpt"
         assert all(not r.is_legacy for r in runs)
 
@@ -112,9 +128,9 @@ class TestRunDiscovery:
     def test_get_fit_outputs_run_scoped(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSCAT_TIMER_DIR", str(tmp_path))
         tdir = tmp_path / "sinistro" / "250710" / "HIP67522"
-        _make_run(tdir, "lsc-central_2k_2x2-gaussian", "lsc", "central_2k_2x2", "gaussian", 1_000_100)
+        _make_run(tdir, "lsc-gaussian", "lsc", "central_2k_2x2", "gaussian", 1_000_100)
         fit._fit_outputs_cache.clear()
-        out = fit.get_fit_outputs("sinistro", "250710", "HIP67522", run_id="lsc-central_2k_2x2-gaussian")
+        out = fit.get_fit_outputs("sinistro", "250710", "HIP67522", run_id="lsc-gaussian")
         assert out["has_any"] and any(p["file"] == "fit.png" for p in out["plots"])
         # A non-existent run yields nothing.
         fit._fit_outputs_cache.clear()
@@ -129,23 +145,23 @@ class TestSaveJobRunId:
         monkeypatch.setenv("MUSCAT_DB_PATH", str(tmp_path / "muscat.db"))
         from muscat_db.database import save_job, get_persisted_jobs
         save_job(type_="transit_fit", inst="sinistro", date="250710", target="HIP 67522",
-                 run_id="lsc-central_2k_2x2-g", state="running", returncode=None,
+                 run_id="lsc-g", state="running", returncode=None,
                  elapsed=0, started_at=time.time(), run_type="full")
         save_job(type_="transit_fit", inst="sinistro", date="250710", target="HIP 67522",
-                 run_id="cpt-central_2k_2x2-g", state="done", returncode=0,
+                 run_id="cpt-g", state="done", returncode=0,
                  elapsed=5, started_at=time.time(), run_type="full")
         rows = [j for j in get_persisted_jobs() if j["type"] == "transit_fit"]
         keys = {j["key"] for j in rows}
-        assert "transit_fit:sinistro/250710/HIP67522/lsc-central_2k_2x2-g" in keys
-        assert "transit_fit:sinistro/250710/HIP67522/cpt-central_2k_2x2-g" in keys
-        assert {j["run_id"] for j in rows} == {"lsc-central_2k_2x2-g", "cpt-central_2k_2x2-g"}
+        assert "transit_fit:sinistro/250710/HIP67522/lsc-g" in keys
+        assert "transit_fit:sinistro/250710/HIP67522/cpt-g" in keys
+        assert {j["run_id"] for j in rows} == {"lsc-g", "cpt-g"}
 
     def test_fit_outputs_include_plot_version(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSCAT_TIMER_DIR", str(tmp_path))
         tdir = tmp_path / "sinistro" / "250710" / "HIP67522"
-        _make_run(tdir, "lsc-central_2k_2x2-g", "lsc", "central_2k_2x2", "g", 1_000_100)
+        _make_run(tdir, "lsc-g", "lsc", "central_2k_2x2", "g", 1_000_100)
 
-        outputs = fit.get_fit_outputs("sinistro", "250710", "HIP67522", "lsc-central_2k_2x2-g")
+        outputs = fit.get_fit_outputs("sinistro", "250710", "HIP67522", "lsc-g")
 
         assert outputs["plots"]
         assert outputs["plots"][0]["version"].isdigit()
@@ -153,12 +169,12 @@ class TestSaveJobRunId:
     def test_fit_outputs_group_systematics_plots(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSCAT_TIMER_DIR", str(tmp_path))
         tdir = tmp_path / "sinistro" / "250710" / "HIP67522"
-        _make_run(tdir, "lsc-central_2k_2x2-g", "lsc", "central_2k_2x2", "g", 1_000_100)
-        out_dir = tdir / "lsc-central_2k_2x2-g" / "out"
+        _make_run(tdir, "lsc-g", "lsc", "central_2k_2x2", "g", 1_000_100)
+        out_dir = tdir / "lsc-g" / "out"
         (out_dir / "sys-lsc_gp.png").write_bytes(b"\x89PNG\r\n")
 
         fit._fit_outputs_cache.clear()
-        outputs = fit.get_fit_outputs("sinistro", "250710", "HIP67522", "lsc-central_2k_2x2-g")
+        outputs = fit.get_fit_outputs("sinistro", "250710", "HIP67522", "lsc-g")
 
         assert [p["file"] for p in outputs["plots"]] == ["fit.png"]
         assert [p["file"] for p in outputs["systematics_plots"]] == ["sys-lsc_gp.png"]
@@ -180,11 +196,11 @@ class TestRunFileRoute:
     def test_serves_run_segment_and_legacy(self, client):
         c, tmp_path = client
         tdir = tmp_path / "timer" / "sinistro" / "250710" / "HIP67522"
-        _make_run(tdir, "lsc-central_2k_2x2-g", "lsc", "central_2k_2x2", "g", 1_000_100)
+        _make_run(tdir, "lsc-g", "lsc", "central_2k_2x2", "g", 1_000_100)
         (tdir / "out").mkdir(parents=True, exist_ok=True)
         (tdir / "out" / "fit.png").write_bytes(b"\x89PNG\r\n")  # legacy too
 
-        r = c.get("/transit-fit/file/sinistro/250710/HIP67522/run/lsc-central_2k_2x2-g/summary.csv")
+        r = c.get("/transit-fit/file/sinistro/250710/HIP67522/run/lsc-g/summary.csv")
         assert r.status_code == 200 and "t0[0]" in r.text
         r_legacy = c.get("/transit-fit/file/sinistro/250710/HIP67522/fit.png")
         assert r_legacy.status_code == 200
@@ -198,49 +214,49 @@ class TestRunFileRoute:
         c, tmp_path = client
         # Create two runs: one for lsc, one for cpt
         tdir = tmp_path / "timer" / "sinistro" / "250710" / "HIP67522"
-        _make_run(tdir, "lsc-central_2k_2x2-g", "lsc", "central_2k_2x2", "g", 1_000_100)
-        _make_run(tdir, "cpt-central_2k_2x2-g", "cpt", "central_2k_2x2", "g", 1_000_200)
+        _make_run(tdir, "lsc-g", "lsc", "central_2k_2x2", "g", 1_000_100)
+        _make_run(tdir, "cpt-g", "cpt", "central_2k_2x2", "g", 1_000_200)
 
         # 1. When querying site=lsc, cpt should NOT be active or fallback shown
         r_lsc = c.get("/transit-fit?inst=sinistro&date=250710&target=HIP%2067522&site=lsc")
         assert r_lsc.status_code == 200
         # The page title/results should indicate lsc
-        assert "lsc-central_2k_2x2-g" in r_lsc.text
-        assert "cpt-central_2k_2x2-g" not in r_lsc.text
+        assert "lsc-g" in r_lsc.text
+        assert "cpt-g" not in r_lsc.text
 
         # 2. When querying site=elp (does not exist / not run), no run should be shown at all (no plots/results outputs)
         r_elp = c.get("/transit-fit?inst=sinistro&date=250710&target=HIP%2067522&site=elp")
         assert r_elp.status_code == 200
-        assert "lsc-central_2k_2x2-g" not in r_elp.text
-        assert "cpt-central_2k_2x2-g" not in r_elp.text
+        assert "lsc-g" not in r_elp.text
+        assert "cpt-g" not in r_elp.text
         # Transit Fit Results section should NOT have outputs
         assert "Transit Fit Results" not in r_elp.text
 
     def test_page_versions_plot_urls(self, client):
         c, tmp_path = client
         tdir = tmp_path / "timer" / "sinistro" / "250710" / "HIP67522"
-        _make_run(tdir, "lsc-central_2k_2x2-g", "lsc", "central_2k_2x2", "g", 1_000_100)
+        _make_run(tdir, "lsc-g", "lsc", "central_2k_2x2", "g", 1_000_100)
         pdir = tmp_path / "prose" / "sinistro" / "250710"
         pdir.mkdir(parents=True)
         (pdir / "HIP67522_sinistro_lsc_gp_250710.csv").write_text("BJD_TDB,Flux\n1,1\n")
         fit._fit_outputs_cache.clear()
 
-        r = c.get("/transit-fit?inst=sinistro&date=250710&target=HIP%2067522&run=lsc-central_2k_2x2-g")
+        r = c.get("/transit-fit?inst=sinistro&date=250710&target=HIP%2067522&run=lsc-g")
 
         assert r.status_code == 200
-        assert "/transit-fit/file/sinistro/250710/HIP 67522/run/lsc-central_2k_2x2-g/fit.png?v=" in r.text
+        assert "/transit-fit/file/sinistro/250710/HIP 67522/run/lsc-g/fit.png?v=" in r.text
 
     def test_page_groups_systematics_plots_in_collapsible_section(self, client):
         c, tmp_path = client
         tdir = tmp_path / "timer" / "sinistro" / "250710" / "HIP67522"
-        _make_run(tdir, "lsc-central_2k_2x2-g", "lsc", "central_2k_2x2", "g", 1_000_100)
-        (tdir / "lsc-central_2k_2x2-g" / "out" / "sys-lsc_gp.png").write_bytes(b"\x89PNG\r\n")
+        _make_run(tdir, "lsc-g", "lsc", "central_2k_2x2", "g", 1_000_100)
+        (tdir / "lsc-g" / "out" / "sys-lsc_gp.png").write_bytes(b"\x89PNG\r\n")
         pdir = tmp_path / "prose" / "sinistro" / "250710"
         pdir.mkdir(parents=True)
         (pdir / "HIP67522_sinistro_lsc_gp_250710.csv").write_text("BJD_TDB,Flux\n1,1\n")
         fit._fit_outputs_cache.clear()
 
-        r = c.get("/transit-fit?inst=sinistro&date=250710&target=HIP%2067522&run=lsc-central_2k_2x2-g")
+        r = c.get("/transit-fit?inst=sinistro&date=250710&target=HIP%2067522&run=lsc-g")
 
         assert r.status_code == 200
         assert '<details class="result-collapse">' in r.text
