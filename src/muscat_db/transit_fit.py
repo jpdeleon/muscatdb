@@ -253,6 +253,26 @@ def selected_site_mode(inst: str, csv_names: list[str]) -> tuple[str, str]:
     return site, mode
 
 
+def validate_no_duplicate_datasets(inst: str, date: str, csvs: list[pathlib.Path]) -> str | None:
+    """Ensure no selected lightcurves represent the same physical dataset (site, mode, band)."""
+    seen_keys = set()
+    for c in csvs:
+        parts = c.name.split(f"_{inst}_")
+        raw_band = parts[1].split(f"_{date}")[0] if len(parts) > 1 else "gp"
+        mapped_band = _normalize_band(raw_band)
+        site, mode = csv_site_mode(c.name)
+        key = (site or "", mode or "", mapped_band)
+        if key in seen_keys:
+            if inst == "sinistro":
+                site_str = f" (site: {site})" if site else ""
+                mode_str = f" (mode: {mode})" if mode else ""
+                return f"Multiple lightcurves selected for the same dataset: band '{mapped_band}'{site_str}{mode_str}. Please select only one run."
+            else:
+                return f"Multiple lightcurves selected for the same band '{mapped_band}'. Please select only one run."
+        seen_keys.add(key)
+    return None
+
+
 def _timer_prefix() -> list[str]:
     """Resolve how to invoke the timer-fit tool, using the timer conda env."""
     env = "timer"
@@ -1125,6 +1145,10 @@ def compute_logp(inst: str, date: str, target: str, options: dict, selected_csvs
         if not csvs:
             return {"ok": False, "error": "No lightcurves selected for logP computation."}
 
+    err = validate_no_duplicate_datasets(inst, date, csvs)
+    if err:
+        return {"ok": False, "error": err}
+
     timer_py = _conda_env_python("timer")
     if not timer_py:
         return {"ok": False, "error": "timer conda environment not found"}
@@ -1199,6 +1223,10 @@ def start_fit(
         csvs = [c for c in csvs if c.name in selected]
         if not csvs:
             return {"ok": False, "error": "No lightcurves selected for fitting."}
+
+    err = validate_no_duplicate_datasets(inst, date, csvs)
+    if err:
+        return {"ok": False, "error": err}
 
     # Identify this run: site/mode derived from the selected lightcurves (mixing
     # allowed -> "mixed"), plus the user's run-name label. The run id isolates the

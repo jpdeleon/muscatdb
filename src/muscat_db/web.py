@@ -1727,6 +1727,8 @@ def jobs_page():
     counts = {"running": 0, "done": 0, "error": 0, "cancelled": 0, "pending": 0}
     for j in all_jobs:
         s = j["state"]
+        if s == "cancelling":
+            s = "running"
         if s in counts:
             counts[s] += 1
 
@@ -1740,6 +1742,13 @@ def jobs_status():
     phot.sync_jobs()
     fit.sync_jobs()
     all_jobs = get_persisted_jobs()
+
+    # Discover fits completed on-disk outside the web UI.
+    existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
+    orphan_fits = fit._discover_orphan_fits(existing_keys)
+    if orphan_fits:
+        all_jobs.extend(orphan_fits)
+
     global _last_running
     current_running = {j["key"] for j in all_jobs if j["state"] in ("running", "cancelling")}
     finished = {}
@@ -1750,7 +1759,9 @@ def jobs_status():
                 "elapsed": j["elapsed"],
                 "error_desc": j.get("error_desc", "") or "",
                 "returncode": j.get("returncode"),
+                "started_at": j.get("started_at"),
                 "started_at_str": _datetime_from_timestamp(int(j["started_at"])) if j.get("started_at") else "—",
+                "user_name": j.get("user_name", ""),
             }
     _last_running = current_running
     running = [
@@ -1758,13 +1769,17 @@ def jobs_status():
             "key": j["key"],
             "state": j["state"],
             "elapsed": _live_elapsed(j),
+            "started_at": j.get("started_at"),
             "started_at_str": _datetime_from_timestamp(int(j["started_at"])) if j.get("started_at") else "—",
+            "user_name": j.get("user_name", ""),
         }
         for j in all_jobs if j["state"] in ("running", "cancelling")
     ]
     counts = {"running": 0, "done": 0, "error": 0, "cancelled": 0, "pending": 0}
     for j in all_jobs:
         s = j["state"]
+        if s == "cancelling":
+            s = "running"
         if s in counts:
             counts[s] += 1
     return {"running": running, "counts": counts, "finished": finished}
