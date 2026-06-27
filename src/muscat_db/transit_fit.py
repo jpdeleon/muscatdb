@@ -1342,6 +1342,7 @@ def job_status(inst: str, date: str, target: str, run_id: str = "") -> dict:
         "returncode": rc,
         "log": _tail(log_path),
         "elapsed": round(elapsed),
+        "run_type": job.run_type if job else "full",
     }
 
 
