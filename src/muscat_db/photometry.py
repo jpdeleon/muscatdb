@@ -994,7 +994,10 @@ def validate_run_options(o: dict, inst: str | None = None) -> str | None:
         return "aperture unit must be 'pix' or 'fwhm'"
     if o.get("wcs_method") not in ("twirl", "astrometry.net"):
         return "WCS method must be 'twirl' or 'astrometry.net'"
-    if (o.get("cmap") or "Greys_r") not in CMAP_CHOICES:
+    # Colormap validation: default is "gray" (black=low, white=high).
+    # Note: prose2's run_photometry has a bug where gray and gray_r render
+    # identically; this is a prose2 issue and needs to be fixed there.
+    if (o.get("cmap") or "gray") not in CMAP_CHOICES:
         return f"colormap must be one of {', '.join(CMAP_CHOICES)}"
     site = (o.get("site") or "").strip().lower()
     if site and site not in SINISTRO_SITES:
