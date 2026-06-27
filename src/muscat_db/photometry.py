@@ -1869,8 +1869,11 @@ def sync_jobs() -> None:
                 if _count_running_full() >= _MAX_FULL_JOBS:
                     break
                 run_id = entry.get("run_id") or ""
-                if entry["key"] in _JOBS:
-                    save_job(type_="photometry", inst=entry["inst"], date=entry["date"], target=entry["target"], state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_id=run_id, run_name=run_name)
+                # The DB key is prefixed ("photometry:..."), so compare against the
+                # in-memory job key (unprefixed) to detect a job that is already
+                # running and must not be relaunched from its stale pending row.
+                if job_key(entry["inst"], entry["date"], entry["target"], run_id) in _JOBS:
+                    save_job(type_="photometry", inst=entry["inst"], date=entry["date"], target=entry["target"], state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_id=run_id, run_name=entry.get("run_name", ""))
                     continue
                 try:
                     p = json.loads(entry.get("params") or "{}")

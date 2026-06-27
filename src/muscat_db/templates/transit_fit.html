@@ -2039,6 +2039,14 @@
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent += '\n\n■ cancelled';
         try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+      } else if (s.state === 'pending') {
+        // Queued behind the running full job; keep the Cancel button and poll
+        // until the slot frees and the run is promoted to 'running'.
+        setRunning(true);
+        if (!s.log) {
+          logEl.style.display = 'block';
+          logEl.textContent = '⏳ Queued — waiting for the running full fit to finish…';
+        }
       } else if (s.state === 'none') {
         stopPolling(); setRunning(false); clearJob();
       }
@@ -2079,6 +2087,9 @@
       runId = res.run_id || '';
       saveJob();
       try { localStorage.removeItem(logKey()); } catch (e) {}
+      if (res.queued) {
+        logEl.textContent = '⏳ Queued — waiting for the running full fit to finish…';
+      }
       if (!polling) polling = setInterval(poll, 2000);
       poll();
     }).catch(function (err) {
