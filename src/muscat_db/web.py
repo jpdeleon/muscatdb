@@ -291,6 +291,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
     runs: list = []
     sel_run: str | None = None
     previews: dict[str, dict] = {}
+    nearby_previews: dict[str, dict] = {}
     command = ""
     raw_missing = False
 
@@ -380,6 +381,10 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
                 if csv_info:
                     headers, rows = phot.csv_preview(rdir / csv_info["file"], n=8)
                     previews[band] = {"headers": headers, "rows": rows}
+                nearby_info = prods.get("nearby_stars")
+                if nearby_info:
+                    nb_headers, nb_rows = phot.csv_preview(rdir / nearby_info["file"], n=100)
+                    nearby_previews[band] = {"headers": nb_headers, "rows": nb_rows}
 
     resp = _render(
         "photometry.html",
@@ -391,6 +396,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         sel_run=sel_run or "",
         dates=dates, targets=targets,
         outputs=outputs, previews=previews,
+        nearby_previews=nearby_previews,
         command=command, raw_missing=raw_missing,
         default_bands=phot.DEFAULT_BANDS,
         run_defaults=phot.RUN_DEFAULTS,
