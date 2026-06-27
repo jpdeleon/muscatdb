@@ -304,7 +304,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
     is_narrowband = False
     available_bands: list[str] = []
     if inst and date and target:
-        runs = phot.list_photometry_runs(inst, date, target)
+        runs, run_outputs = phot.list_photometry_runs(inst, date, target)
         if inst == "sinistro":
             if site:
                 runs = [r for r in runs if r.is_legacy or r.site == site]
@@ -322,7 +322,14 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
             sel_run = newest
 
         if sel_run is not None:
-            outputs = phot.list_outputs(inst, date, target, site=site or None, mode=mode or None, run_id=sel_run or None)
+            run_key = sel_run or None  # "" → None for legacy
+            if not (site or mode) and run_key in run_outputs:
+                # Reuse the outputs already computed by list_photometry_runs.
+                # Only skip the cache when sinistro site/mode filters are active,
+                # since those affect which files are selected.
+                outputs = run_outputs[run_key]
+            else:
+                outputs = phot.list_outputs(inst, date, target, site=site or None, mode=mode or None, run_id=sel_run or None)
         else:
             outputs = phot.list_outputs(inst, date, target, site=site or None, mode=mode or None)
         command = phot.command_str(inst, date, target, test_run=False)

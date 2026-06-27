@@ -689,10 +689,22 @@ def _write_run_meta(d: Path, *, inst: str, date: str, target: str, run_id: str, 
         pass
 
 
-def list_photometry_runs(inst: str, date: str, target: str) -> list[RunDescriptor]:
-    """Enumerate legacy and named photometry runs for a target, newest-first."""
+def list_photometry_runs(
+    inst: str, date: str, target: str
+) -> tuple[list[RunDescriptor], dict[str | None, dict]]:
+    """Enumerate legacy and named photometry runs for a target, newest-first.
+
+    Returns ``(runs, run_outputs)`` where ``run_outputs`` maps each run's
+    ``run_id`` (``None`` for the legacy run) to its pre-computed
+    ``list_outputs()`` result.  Callers that need the outputs for the selected
+    run can pull them from the dict instead of calling ``list_outputs()`` again,
+    avoiding a redundant directory scan.
+    """
     runs: list[RunDescriptor] = []
+    run_outputs: dict[str | None, dict] = {}
+
     legacy = list_outputs(inst, date, target)
+    run_outputs[None] = legacy
     legacy_dir = run_output_dir(inst, date, target)
     if legacy.get("has_any"):
         runs.append(RunDescriptor(
@@ -707,12 +719,13 @@ def list_photometry_runs(inst: str, date: str, target: str) -> list[RunDescripto
     try:
         runs_root = results_dir(inst, date) / _RUNS_DIR_NAME / _target_dir_name(target)
     except ValueError:
-        return runs
+        return runs, run_outputs
     if runs_root.is_dir():
         for d in sorted(runs_root.iterdir()):
             if not d.is_dir():
                 continue
             out = list_outputs(inst, date, target, run_id=d.name)
+            run_outputs[d.name] = out
             if not out.get("has_any"):
                 continue
             meta = _read_run_meta(d)
@@ -731,7 +744,7 @@ def list_photometry_runs(inst: str, date: str, target: str) -> list[RunDescripto
                 is_legacy=False,
             ))
     runs.sort(key=lambda r: r.mtime, reverse=True)
-    return runs
+    return runs, run_outputs
 
 
 # --------------------------- safe file serving ---------------------------
@@ -1538,6 +1551,7 @@ def job_status(inst: str, date: str, target: str, run_id: str = "") -> dict:
         "log": _tail(log_path),
         "elapsed": round(elapsed),
         "error_desc": error_desc,
+        "run_type": job.run_type if job else "full",
     }
 
 

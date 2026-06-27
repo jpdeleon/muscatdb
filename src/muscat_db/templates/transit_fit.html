@@ -701,7 +701,7 @@
   var cancelBtn = document.getElementById('cancel-btn');
   var logEl     = document.getElementById('run-log');
   var errEl     = document.getElementById('opt-error');
-  var polling   = null;
+  var pollTimer = null;
 
   function val(id) { var e = document.getElementById(id); return e ? e.value : ''; }
   function chk(id) { var e = document.getElementById(id); return e ? e.checked : false; }
@@ -2010,7 +2010,11 @@
     if (runTestBtn) runTestBtn.disabled = on;
     if (cancelBtn) cancelBtn.style.display = on ? '' : 'none';
   }
-  function stopPolling() { if (polling) { clearInterval(polling); polling = null; } }
+  function stopPolling() { if (pollTimer !== null) { clearTimeout(pollTimer); pollTimer = null; } }
+  function schedulePoll(delayMs) {
+    if (pollTimer !== null) return;
+    pollTimer = setTimeout(function () { pollTimer = null; poll(); }, delayMs);
+  }
   function saveJob() { try { localStorage.setItem(JOB_KEY, JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })); } catch (e) {} }
   function clearJob() { try { localStorage.removeItem(JOB_KEY); } catch (e) {} }
 
@@ -2023,6 +2027,10 @@
         logEl.scrollTop = logEl.scrollHeight;
         try { localStorage.setItem(logKey(), s.log); } catch (e) {}
       }
+      if (s.state === 'running' || s.state === 'cancelling') {
+        setRunning(true);
+        schedulePoll(2000);
+      }
       if (s.state === 'done') {
         stopPolling(); clearJob();
         logEl.textContent += '\n\n✓ done — reloading…';
@@ -2030,7 +2038,8 @@
         if (typeof window.showLoading === 'function') {
           window.showLoading('Reloading…');
         }
-        setTimeout(function () { window.location.reload(); }, 1200);
+        var reloadDelay = (s.run_type === 'test') ? 400 : 1200;
+        setTimeout(function () { window.location.reload(); }, reloadDelay);
       } else if (s.state === 'error') {
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent += '\n\n✗ fit run exited with code ' + s.returncode;
@@ -2047,10 +2056,11 @@
           logEl.style.display = 'block';
           logEl.textContent = '⏳ Queued — waiting for the running full fit to finish…';
         }
+        schedulePoll(7000);
       } else if (s.state === 'none') {
         stopPolling(); setRunning(false); clearJob();
       }
-    }).catch(function () {});
+    }).catch(function () { schedulePoll(5000); });
   }
 
   function launch(testRun) {
@@ -2090,7 +2100,7 @@
       if (res.queued) {
         logEl.textContent = '⏳ Queued — waiting for the running full fit to finish…';
       }
-      if (!polling) polling = setInterval(poll, 2000);
+      stopPolling();
       poll();
     }).catch(function (err) {
       clearJob();
@@ -2147,7 +2157,7 @@
       body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })
     }).then(function (r) { return r.json(); }).then(function () {
       cancelBtn.disabled = false;
-      if (!polling) { polling = setInterval(poll, 2000); poll(); }
+      stopPolling(); poll();
     }).catch(function () { cancelBtn.disabled = false; });
   });
 
@@ -2198,8 +2208,7 @@
           if (saved.run_id !== undefined) runId = saved.run_id;
           setRunning(true);
           if (logEl) logEl.style.display = 'block';
-          if (!polling) polling = setInterval(poll, 2000);
-          poll();
+          stopPolling(); poll();
         } else {
           clearJob();
         }

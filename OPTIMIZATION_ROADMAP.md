@@ -7,34 +7,23 @@
 - Gated the one-time jobs schema migration to fire once per process instead of on every read/write
 - Result: ~1.4× faster `get_persisted_jobs()`; directory caches now survive their 300s TTL
 
+✅ **#4 — Photometry page double directory scan** (photometry.py, web.py)
+- `list_photometry_runs()` now returns `(runs, run_outputs)` — a dict mapping each `run_id` to its pre-computed `list_outputs()` result
+- `photometry_page()` in web.py reuses the pre-computed outputs for the selected run when no sinistro site/mode filter is active, skipping the redundant second directory walk
+- Impact: one fewer `list_outputs()` call (and directory scan) on every photometry page load that is not sinistro-with-active-filter
+
+✅ **#5 — Polling backoff** (templates/photometry.html, transit_fit.html)
+- Replaced `setInterval(poll, 2000)` (fires forever at 2s) with `setTimeout`-based self-scheduling (`schedulePoll(delayMs)`) in both templates
+- Intervals by state: `running/cancelling/finalizing` → 2 s; `pending` → 7 s; network error → 5 s; terminal states stop polling entirely
+- Bonus: Fixed critical bug in transit_fit.html where `running` and `cancelling` states never rescheduled polling
+- Impact: 3–4× fewer requests during queued/pending periods; no behaviour change during active log streaming
+
+✅ **Bonus: Faster reload for test runs** (photometry.py, transit_fit.py, templates)
+- Exposed `run_type` in job_status responses (photometry.py and transit_fit.py)
+- Templates now check `s.run_type` and use 400ms reload delay for test runs vs 1200ms for full runs
+- Impact: test runs reload ~3× faster, improving feedback loop
+
 ## Remaining (Low-Risk, High-ROI)
-
-### #4 — Photometry page double directory scan (web.py:306, 324)
-
-**The issue:** When the photometry page loads, `list_photometry_runs()` (line 306) scans the directory to enumerate runs and their outputs. Then, the page calls `list_outputs()` again (line 324) for the *selected* run. For the selected run, the directory is walked twice.
-
-**The fix:**
-- Have `list_photometry_runs()` return the already-computed `list_outputs()` result for each run in a `RunDescriptor` or separate dict
-- Pass that pre-computed result to the template so line 324 doesn't need a second scan
-- Alternative: memoize `list_outputs()` on `(run_dir_path, mtime)` so the second call is instant
-
-**Impact:** Quick win for page load time when a target has many runs or large directories.
-
----
-
-### #5 — Polling backoff (templates/photometry.html, transit_fit.html)
-
-**The issue:** Both pages poll `/photometry/status` and `/transit-fit/status` every 2 seconds, regardless of job state. During a quick job, this means 50+ unnecessary polls. Combined with #1's reduced redundancy, the remaining cost is small, but backoff still helps.
-
-**The fix:**
-- Widen polling interval when the job is in a quiescent state:
-  - `running` state with advancing log: 2s (follow progress)
-  - `finalizing` state: 2s (prose workers still writing)
-  - `pending` state: 5–10s (waiting for the full-job slot)
-  - No active job: 10–30s (stale job check)
-- Reset to 2s if a new job is launched or state changes
-
-**Impact:** Reduces steady-state load by 5–8× when jobs are queued or during idle periods. Client-side only, no backend changes needed.
 
 ---
 

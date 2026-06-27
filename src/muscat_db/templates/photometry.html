@@ -637,8 +637,7 @@
           if (s.state === 'pending' && !s.log && logEl) {
             logEl.textContent = '⏳ Queued — waiting for the running full reduction to finish…';
           }
-          if (!polling) polling = setInterval(poll, 2000);
-          poll();
+          stopPolling(); poll();
         } else {
           // Terminal or no job: never leave the buttons stuck disabled from a
           // previous run. Reconcile to the server's truth instead of trusting
@@ -977,7 +976,7 @@
     }
   })();
   var hasOptError = false;
-  var polling = null;
+  var pollTimer = null;
   var jobActive = false;
 
   function debounce(fn, ms) {
@@ -1133,7 +1132,11 @@
     var oa = document.getElementById('output-area');
     if (oa) oa.style.display = on ? 'none' : '';
   }
-  function stopPolling() { if (polling) { clearInterval(polling); polling = null; } }
+  function stopPolling() { if (pollTimer !== null) { clearTimeout(pollTimer); pollTimer = null; } }
+  function schedulePoll(delayMs) {
+    if (pollTimer !== null) return;
+    pollTimer = setTimeout(function () { pollTimer = null; poll(); }, delayMs);
+  }
 
   function poll() {
     var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
@@ -1149,6 +1152,7 @@
         // log. Keep polling/streaming (no stopPolling here) so the live log
         // keeps advancing until the server reports a terminal state.
         setRunning(true);
+        schedulePoll(2000);
       }
       if (s.state === 'done') {
         stopPolling(); setRunning(false);
@@ -1157,6 +1161,7 @@
         if (typeof window.showLoading === 'function') {
           window.showLoading('Reloading…');
         }
+        var reloadDelay = (s.run_type === 'test') ? 400 : 1200;
         setTimeout(function () {
           // Navigate to the new run's outputs explicitly (not a bare reload),
           // so the page shows the correct run even if timing makes another run
@@ -1167,7 +1172,7 @@
           if (modeSel && modeSel.value) qs += '&mode=' + encodeURIComponent(modeSel.value);
           window.location.href = '/photometry?' + qs;
           clearJob();
-        }, 1200);
+        }, reloadDelay);
       } else if (s.state === 'error') {
         stopPolling(); setRunning(false);
         logEl.textContent = (s.log || '') + '\n\n✗ pipeline exited with code ' + s.returncode;
@@ -1197,6 +1202,7 @@
           logEl.style.display = 'block';
           logEl.textContent = '⏳ Queued — waiting for the running full reduction to finish…';
         }
+        schedulePoll(7000);
       } else if (s.state === 'none') {
         stopPolling();
         var wasRunning = jobActive;
@@ -1206,7 +1212,7 @@
           window.location.reload();
         }
       }
-    }).catch(function () {});
+    }).catch(function () { schedulePoll(5000); });
   }
 
   function launch(testRun) {
@@ -1240,7 +1246,7 @@
       if (res.queued) {
         logEl.textContent = '⏳ Queued — waiting for the running full reduction to finish…';
       }
-      if (!polling) polling = setInterval(poll, 2000);
+      stopPolling();
       poll();
     }).catch(function (err) {
       clearJob();
@@ -1260,7 +1266,7 @@
       body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })
     }).then(function (r) { return r.json(); }).then(function () {
       cancelBtn.disabled = false;
-      if (!polling) { polling = setInterval(poll, 2000); poll(); }
+      stopPolling(); poll();
     }).catch(function () { cancelBtn.disabled = false; });
   });
 

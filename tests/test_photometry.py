@@ -143,9 +143,10 @@ class TestListOutputs:
 
     def test_list_photometry_runs_includes_legacy_and_named(self, prose_dir):
         _make_run_outputs(prose_dir, "default")
-        runs = phot.list_photometry_runs(INST, DATE, TARGET)
+        runs, run_outputs = phot.list_photometry_runs(INST, DATE, TARGET)
         assert {r.run_id for r in runs} == {"", "default"}
         assert any(r.is_legacy and r.run_name == "legacy" for r in runs)
+        assert None in run_outputs and "default" in run_outputs
 
     def test_discovers_masters_for_muscat(self, prose_dir, tmp_path):
         raw_base = tmp_path / "data"
