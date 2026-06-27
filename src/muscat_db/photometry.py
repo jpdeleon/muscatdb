@@ -563,7 +563,8 @@ def list_outputs(
                     "version": version,
                     "_mtime": mtime,
                 }
-                out["summary_items"].append(item)
+                if key != "nearby_stars":
+                    out["summary_items"].append(item)
                 existing = out["summary"].get(key)
                 if existing is None or mtime > existing.get("_mtime", 0):
                     out["summary"][key] = item
