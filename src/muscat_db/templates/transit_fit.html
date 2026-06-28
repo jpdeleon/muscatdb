@@ -24,10 +24,10 @@
     .fig-grid { grid-template-columns: 1fr; }
   }
   .fig {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
     padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem;
   }
-  .fig img { width: 100%; height: auto; border-radius: 6px; display: block; background: #000; }
+  .fig img { width: 100%; height: auto; border-radius: 6px; display: block; background: var(--input-bg); }
   .fig .cap { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-dim); }
   .result-collapse {
     margin-top: 1.25rem;
@@ -99,7 +99,7 @@
     flex-direction: column;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 10px;
     padding: 0.6rem 0.85rem;
     min-width: 220px;
     transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;

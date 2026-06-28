@@ -18,7 +18,7 @@
         data-search="{{ (j.target + ' ' + (j.run_name or '') + ' ' + j.inst + ' ' + j.date + ' ' + j.type + ' ' + (j.user_name or '')) | lower }}">
       <td><strong><a href="{{ link_url }}">{{ j.target }}</a></strong></td>
       <td class="mono" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ j.run_name or '' }}">{{ j.run_name or '—' }}</td>
-      <td class="inst-cell"><span class="badge badge-blue" style="background:var(--surface2);color:var(--text);">{{ j.inst }}</span></td>
+      <td class="inst-cell"><span class="badge badge-blue">{{ j.inst }}</span></td>
       <td class="mono">{{ j.date }}</td>
       <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">{{ j.user_name or '—' }}</td>
       <td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">
@@ -31,25 +31,25 @@
         {% if j.state == 'done' %}
           <span class="badge badge-green status-badge">Done</span>
         {% elif j.state == 'error' %}
-          <span class="badge status-badge" style="background:var(--red);color:white;">Failed</span>
+          <span class="badge badge-error status-badge">Failed</span>
         {% elif j.state == 'cancelled' %}
-          <span class="badge status-badge" style="background:var(--text-dim);color:white;">Cancelled</span>
+          <span class="badge badge-cancelled status-badge">Cancelled</span>
         {% elif j.state == 'running' %}
           <span class="badge badge-amber status-badge pulse">Running</span>
         {% elif j.state == 'cancelling' %}
-          <span class="badge status-badge" style="background:var(--text-dim);color:white;">Cancelling…</span>
+          <span class="badge badge-cancelled status-badge">Cancelling…</span>
         {% elif j.state == 'pending' %}
-          <span class="badge status-badge" style="background:var(--blue);color:white;">Pending</span>
+          <span class="badge badge-pending status-badge">Pending</span>
         {% else %}
           <span class="badge badge-filter-other status-badge">{{ j.state }}</span>
         {% endif %}
       </td>
       <td class="details-cell" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">
         {% if j.run_type %}
-          <span class="badge {% if j.run_type == 'test' %}badge-amber{% else %}badge-blue{% endif %}" style="font-size:0.7rem;">{{ j.run_type }}</span>
+          <span class="badge {% if j.run_type == 'test' %}badge-amber{% else %}badge-blue{% endif %}">{{ j.run_type }}</span>
         {% endif %}
         {% if j.state == 'error' and j.error_desc %}
-          <span class="error-desc" style="color:var(--red);font-size:0.8rem;font-family:monospace;margin-left:0.3rem;">{{ j.error_desc }}</span>
+          <span class="error-desc mono" style="color:var(--red);margin-left:0.5rem;">{{ j.error_desc }}</span>
         {% endif %}
       </td>
       <td class="job-actions">
