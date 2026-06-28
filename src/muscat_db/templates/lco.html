@@ -77,14 +77,11 @@
 <div class="lco-panel active" id="panel-schedule">
   <div class="lco-section">
     <h3>Proposal</h3>
-    <div class="lco-row">
-      <div class="lco-field" style="flex: 1; min-width: 240px;">
-        <label for="sch-proposal">Proposal ID</label>
-        <select id="sch-proposal"><option value="">— load proposals —</option></select>
-      </div>
-      <button class="btn sm" type="button" id="btn-load-proposals">Load proposals</button>
+    <div class="lco-field" style="max-width: 360px;">
+      <label for="sch-proposal">Proposal ID</label>
+      <select id="sch-proposal"><option value="">— loading proposals —</option></select>
     </div>
-    <div class="lco-msg" id="msg-proposals"></div>
+    <div class="lco-msg" id="msg-proposals" style="margin-top: 0.4rem;"></div>
   </div>
 
   <div class="lco-section">
@@ -362,24 +359,55 @@
   }).catch(function () {});
 
   // ---- proposals ----
-  el('btn-load-proposals').addEventListener('click', function () {
-    msg('msg-proposals', 'Loading…');
-    fetch('/api/lco/proposals').then(function (r) { return r.json(); }).then(function (d) {
-      if (!d.ok) { msg('msg-proposals', d.error || 'failed', 'err'); return; }
-      var sel = el('sch-proposal');
-      var current = sel.value;
-      sel.innerHTML = '<option value="">— select —</option>';
-      (d.results || []).forEach(function (p) {
-        var id = p.id || p;
-        var opt = document.createElement('option');
-        opt.value = id; opt.textContent = id;
-        sel.appendChild(opt);
+  function populateProposals(results) {
+    var sel = el('sch-proposal');
+    if (!sel) return;
+    var current = sel.value;
+    if (!current) {
+      try {
+        var opt = JSON.parse(localStorage.getItem(OPT_KEY) || '{}');
+        current = opt['sch-proposal'] || '';
+      } catch (e) {}
+    }
+    sel.innerHTML = '<option value="">— select —</option>';
+    results.forEach(function (p) {
+      var id = p.id || p;
+      var opt = document.createElement('option');
+      opt.value = id; opt.textContent = id;
+      sel.appendChild(opt);
+    });
+    if (current) sel.value = current;
+  }
+
+  function fetchProposals(silent) {
+    if (!silent) msg('msg-proposals', 'Loading proposals…');
+    fetch('/api/lco/proposals')
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) {
+          if (!silent) msg('msg-proposals', d.error || 'failed', 'err');
+          return;
+        }
+        var list = (d.results || []).map(function (p) { return p.id || p; });
+        populateProposals(list);
+        try { localStorage.setItem('lco:proposals', JSON.stringify(list)); } catch (e) {}
+        if (!silent) msg('msg-proposals', 'Loaded ' + list.length + ' proposals', 'ok');
+      })
+      .catch(function (e) {
+        if (!silent) msg('msg-proposals', String(e), 'err');
       });
-      if (current) sel.value = current;
-      msg('msg-proposals', 'Loaded ' + ((d.results || []).length) + ' proposals', 'ok');
-      saveOptions();
-    }).catch(function (e) { msg('msg-proposals', String(e), 'err'); });
-  });
+  }
+
+  function loadProposals() {
+    var cached = null;
+    try { cached = JSON.parse(localStorage.getItem('lco:proposals')); } catch (e) {}
+    if (cached && Array.isArray(cached) && cached.length > 0) {
+      populateProposals(cached);
+      fetchProposals(true);
+    } else {
+      fetchProposals(false);
+    }
+  }
 
   // ---- fetch ephemeris ----------------------------------------------------
   // Reuses the same endpoints as the Ephemeris page so the source choices match
@@ -800,6 +828,7 @@
   }
 
   // ---- init ----
+  loadProposals();
   restoreOptions();
   applyKind();
   prefillFromView();
