@@ -1185,6 +1185,20 @@ def compute_logp(inst: str, date: str, target: str, options: dict, selected_csvs
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def _fit_reduction_exists(
+    inst: str,
+    date: str,
+    target: str,
+    run_id: str,
+) -> bool:
+    """Check if a transit fit output directory already exists for the given run_id."""
+    try:
+        rdir = fit_output_dir(inst, date, target, run_id)
+    except ValueError:
+        return False
+    return rdir.is_dir()
+
+
 def start_fit(
     inst: str,
     date: str,
@@ -1239,6 +1253,17 @@ def start_fit(
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
+    run_type = "test" if test_run else "full"
+
+    # Validate overwrite for full fits with existing output
+    if run_type == "full":
+        overwrite = options.get("overwrite") == "true"
+        if _fit_reduction_exists(inst, date, target, run_id) and not overwrite:
+            return {
+                "ok": False,
+                "error": "fit results already exist for this target; enable 'Overwrite' to replace",
+            }
+
     # Working directory
     rdir.mkdir(parents=True, exist_ok=True)
 
@@ -1248,7 +1273,6 @@ def start_fit(
     # Full fits always clobber — otherwise timer reuses the cached test-run
     # trace (20 draws) and exits immediately, misleading the user into thinking
     # their full-fit request was silently ignored.
-    run_type = "test" if test_run else "full"
     _write_fit_inputs(rdir, inst, date, target, csvs, options,
                       site=site, mode=mode, run_name=run_name, run_id=run_id,
                       run_type=run_type)
@@ -1264,8 +1288,15 @@ def start_fit(
     )
 
     with _FIT_LOCK:
+        existing = _FIT_JOBS.get(key)
+        # For full fits at capacity, allow queuing even if a job with the same key exists
+        at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
+
+        if existing is not None and existing.proc.poll() is None and not at_capacity:
+            return {"ok": True, "key": key, "already_running": True, "run_id": run_id}
+
         # Queue full jobs when at capacity
-        if run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS:
+        if at_capacity:
             from muscat_db.database import save_job
             try:
                 save_job(

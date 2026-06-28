@@ -1221,6 +1221,20 @@ def log_path(inst: str, date: str, target: str, run_id: str = "") -> Path | None
     return p if p.is_file() else None
 
 
+def _full_reduction_exists(
+    inst: str,
+    date: str,
+    target: str,
+    run_id: str,
+) -> bool:
+    """Check if a full reduction already exists for the given run_id."""
+    try:
+        rdir = run_output_dir(inst, date, target, run_id)
+    except ValueError:
+        return False
+    return rdir.is_dir()
+
+
 def start_run(
     inst: str,
     date: str,
@@ -1250,15 +1264,27 @@ def start_run(
     mode = (opts.get("mode") or "").strip().lower() if inst == "sinistro" else ""
     run_id = build_run_id(inst, site, mode, run_name)
     key = job_key(inst, date, target, run_id)
+    run_type = "test" if test_run else "full"
+
     with _LOCK:
         existing = _JOBS.get(key)
-        if existing is not None and existing.proc.poll() is None:
+        # For full runs at capacity, allow queuing even if a job with the same key exists
+        # (the existing job will be reused if still running; if not, a new one will be queued)
+        at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
+
+        if existing is not None and existing.proc.poll() is None and not at_capacity:
             return {"ok": True, "key": key, "already_running": True, "run_id": run_id}
 
-        run_type = "test" if test_run else "full"
+        if run_type == "full":
+            overwrite = opts.get("overwrite", True)
+            if _full_reduction_exists(inst, date, target, run_id) and not overwrite:
+                return {
+                    "ok": False,
+                    "error": "full reduction already exists for this target; enable 'Overwrite existing products' to replace",
+                }
 
         # Queue full jobs when at capacity
-        if run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS:
+        if at_capacity:
             from muscat_db.database import save_job
             try:
                 save_job(
