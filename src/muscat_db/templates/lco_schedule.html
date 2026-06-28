@@ -87,107 +87,99 @@
 
 <div class="lco-section">
   <h3>Imaging Request</h3>
-  <div class="lco-grid">
+  <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
     <div class="lco-field"><label for="sch-proposal">Proposal ID</label>
-      <input id="sch-proposal" list="sch-proposal-options" type="text" placeholder="none">
-      <datalist id="sch-proposal-options">
-        <option value=""></option>
-      </datalist>
+      <select id="sch-proposal">
+        <option value="">none</option>
+      </select>
     </div>
     <div class="lco-field"><label for="sch-kind">Instrument</label>
       <select id="sch-kind">
-        <option value="muscat3">MuSCAT3 (ogg 2m0)</option>
-        <option value="muscat4">MuSCAT4 (coj 2m0)</option>
-        <option value="sinistro">Sinistro (1m0)</option>
-        <option value="muscat">MuSCAT (2m0 - general)</option>
+        <option value="sinistro">1M0-SCICAM-SINISTRO</option>
+        <option value="muscat">2M0-SCICAM-MUSCAT</option>
       </select>
     </div>
     <div class="lco-field"><label for="sch-name">Request name</label><input id="sch-name" type="text" placeholder="WASP-12b transit"></div>
-    <div class="lco-field"><label for="sch-count" class="muscat-only">Exposure count</label>
-      <input id="sch-count" class="muscat-only" type="number" min="1" value="1"></div>
+    <div class="lco-field muscat-only"><label for="sch-count">Exp count</label>
+      <input id="sch-count" type="number" min="1" value="1"></div>
+    <div class="lco-field sinistro-only"><label for="sch-sin-count">Exp count</label><input id="sch-sin-count" type="number" min="1" value="1"></div>
+    <div class="lco-field muscat-only"><label for="sch-muscat-site">Site</label>
+      <select id="sch-muscat-site">
+        <option value="">— select —</option>
+        <option value="ogg">ogg (M3)</option>
+        <option value="coj">coj (M4)</option>
+      </select></div>
+    <div class="lco-field sinistro-only"><label for="sch-site">Site</label>
+      <select id="sch-site">
+        <option value="">— select —</option>
+        <option value="ogg">ogg</option>
+        <option value="coj">coj</option>
+        <option value="lsc">lsc</option>
+        <option value="cpt">cpt</option>
+        <option value="tfn">tfn</option>
+        <option value="elp">elp</option>
+      </select></div>
   </div>
   <div class="lco-msg" id="msg-proposals" style="margin-top: 0.4rem;"></div>
 
-  <div class="muscat-only" style="margin-top: 0.85rem;">
-    <div class="lco-grid">
-      <div class="lco-field"><label for="sch-exp-g">Exp g (s)</label><input id="sch-exp-g" type="number" step="any" placeholder="30"></div>
-      <div class="lco-field"><label for="sch-exp-r">Exp r (s)</label><input id="sch-exp-r" type="number" step="any" placeholder="30"></div>
-      <div class="lco-field"><label for="sch-exp-i">Exp i (s)</label><input id="sch-exp-i" type="number" step="any" placeholder="30"></div>
-      <div class="lco-field"><label for="sch-exp-z">Exp z (s)</label><input id="sch-exp-z" type="number" step="any" placeholder="30"></div>
-      <div class="lco-field"><label for="sch-exp-mode">Exposure mode</label>
-        <select id="sch-exp-mode"><option value="SYNCHRONOUS">Synchronous</option><option value="ASYNCHRONOUS">Asynchronous</option></select></div>
-      <div class="lco-field"><label for="sch-readout">Confmode (Readout mode)</label><input id="sch-readout" type="text" value="MUSCAT_FAST"></div>
+  <div class="muscat-only" style="margin-top: 0.6rem;">
+    <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dim); margin-bottom: 0.4rem;">Exposure times per band:</div>
+    <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 0.5rem 1rem;">
+      <div class="lco-field"><label for="sch-exp-g">g (s)</label><input id="sch-exp-g" type="number" step="any" placeholder="30"></div>
+      <div class="lco-field"><label for="sch-exp-r">r (s)</label><input id="sch-exp-r" type="number" step="any" placeholder="30"></div>
+      <div class="lco-field"><label for="sch-exp-i">i (s)</label><input id="sch-exp-i" type="number" step="any" placeholder="30"></div>
+      <div class="lco-field"><label for="sch-exp-z">z (s)</label><input id="sch-exp-z" type="number" step="any" placeholder="30"></div>
     </div>
-    <div class="lco-grid" style="margin-top: 0.6rem;">
-      <div class="lco-field"><label for="sch-nb-g">Narrowband g</label><select id="sch-nb-g"><option value="out">out</option><option value="in">in</option></select></div>
-      <div class="lco-field"><label for="sch-nb-r">Narrowband r</label><select id="sch-nb-r"><option value="out">out</option><option value="in">in</option></select></div>
-      <div class="lco-field"><label for="sch-nb-i">Narrowband i</label><select id="sch-nb-i"><option value="out">out</option><option value="in">in</option></select></div>
-      <div class="lco-field"><label for="sch-nb-z">Narrowband z</label><select id="sch-nb-z"><option value="out">out</option><option value="in">in</option></select></div>
+    <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dim); margin-top: 0.6rem; margin-bottom: 0.4rem;">Settings:</div>
+    <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.5rem 1rem;">
+      <div class="lco-field"><label for="sch-exp-mode">Exp mode</label>
+        <select id="sch-exp-mode"><option value="SYNCHRONOUS">Sync</option><option value="ASYNCHRONOUS">Async</option></select></div>
+      <div class="lco-field"><label for="sch-readout">Readout mode</label><input id="sch-readout" type="text" value="MUSCAT_FAST" style="font-size: 0.8rem;"></div>
     </div>
-  </div>
-
-  <div class="sinistro-only" style="margin-top: 0.85rem;">
-    <div class="lco-grid">
-      <div class="lco-field"><label for="sch-sin-count">Exposure count</label><input id="sch-sin-count" type="number" min="1" value="1"></div>
-      <div class="lco-field"><label for="sch-site">Site (optional)</label><input id="sch-site" type="text" placeholder="lsc"></div>
+    <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dim); margin-top: 0.6rem; margin-bottom: 0.4rem;">Narrowband filters:</div>
+    <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap: 0.5rem 1rem;">
+      <div class="lco-field"><label for="sch-nb-g">g</label><select id="sch-nb-g"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-r">r</label><select id="sch-nb-r"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-i">i</label><select id="sch-nb-i"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-z">z</label><select id="sch-nb-z"><option value="out">out</option><option value="in">in</option></select></div>
     </div>
   </div>
 
-  <div class="lco-grid" style="margin-top: 0.85rem;">
+  <div class="lco-grid" style="margin-top: 0.6rem; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
     <div class="lco-field"><label for="sch-max-airmass">Max airmass</label><input id="sch-max-airmass" type="number" step="any" value="1.6"></div>
-    <div class="lco-field"><label for="sch-min-lunar">Min lunar dist (deg)</label><input id="sch-min-lunar" type="number" step="any" value="30"></div>
+    <div class="lco-field"><label for="sch-min-lunar">Min lunar (deg)</label><input id="sch-min-lunar" type="number" step="any" value="30"></div>
     <div class="lco-field"><label for="sch-ipp">IPP value</label><input id="sch-ipp" type="number" step="any" value="1.0"></div>
-  </div>
-
-  <div class="lco-grid" style="margin-top: 0.85rem;">
     <div class="lco-field"><label for="sch-type">Type</label>
       <select id="sch-type">
         <option value="EXPOSE">EXPOSE</option>
-        <option value="ARC">ARC</option>
-        <option value="BIAS">BIAS</option>
-        <option value="DARK">DARK</option>
-        <option value="LAMP">LAMP</option>
-        <option value="SKYFLAT">SKYFLAT</option>
       </select>
     </div>
-    <div class="lco-field"><label for="sch-observation-type">Observation type</label>
+    <div class="lco-field"><label for="sch-observation-type">Obs type</label>
       <select id="sch-observation-type">
         <option value="NORMAL">NORMAL</option>
-        <option value="BIAS">BIAS</option>
-        <option value="DARK">DARK</option>
-        <option value="ARC">ARC</option>
-        <option value="LAMP">LAMP</option>
+        <option value="TIME_CRITICAL">TIME_CRITICAL</option>
       </select>
     </div>
-    <div class="lco-field"><label for="sch-guiding-config">Guiding config</label>
+    <div class="lco-field"><label for="sch-guiding-config">Guiding</label>
       <select id="sch-guiding-config">
         <option value="ON">ON</option>
         <option value="OFF">OFF</option>
       </select>
     </div>
-  </div>
-
-  <div class="lco-grid" style="margin-top: 0.85rem;">
-    <div class="lco-field"><label for="sch-effective-exptime">Exposure time</label><input id="sch-effective-exptime" type="text" inputmode="decimal" placeholder="60"></div>
-    <div class="lco-field"><label for="sch-effective-mode">Mode</label>
+    <div class="lco-field"><label for="sch-effective-exptime">Exp time (s)</label><input id="sch-effective-exptime" type="text" inputmode="decimal" placeholder="60"></div>
+    <div class="lco-field sinistro-only"><label for="sch-effective-mode">Readout</label>
       <select id="sch-effective-mode">
-        <option value="central_2k_2x2">central_2k_2x2</option>
-        <option value="central_1k_1x1">central_1k_1x1</option>
-        <option value="full_frame">full_frame</option>
-        <option value="test">test</option>
+        <option value="central_2k_2x2">2k 2x2</option>
+        <option value="full_frame">full</option>
       </select>
     </div>
-    <div class="lco-field"><label for="sch-effective-filter">Filter</label>
+    <div class="lco-field sinistro-only"><label for="sch-effective-filter">Filter</label>
       <select id="sch-effective-filter">
         <option value="rp">rp</option>
         <option value="up">up</option>
         <option value="gp">gp</option>
         <option value="ip">ip</option>
         <option value="zs">zs</option>
-        <option value="l">l</option>
-        <option value="m">m</option>
-        <option value="diffuser">diffuser</option>
-        <option value="air">air</option>
       </select>
     </div>
   </div>
@@ -199,8 +191,8 @@
   <div class="lco-actions">
     <button class="btn primary" type="button" id="btn-dry-run">Dry-run IPP</button>
     <button class="btn" type="button" id="btn-submit" disabled
-      title="Live submission is disabled in v1. It requires a matching dry-run, an explicit confirm, and MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
-      Submit (disabled)
+      title="Enabled after a successful dry-run. Requires MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
+      Submit
     </button>
     <span class="lco-msg" id="msg-ipp" style="margin: 0;"></span>
   </div>
@@ -267,7 +259,7 @@
     'sch-range-start','sch-range-end','sch-pad-before','sch-pad-after',
     'sch-obs-airmass','sch-twilight','sch-moon-sep','sch-sites','win-filter',
     'sch-kind','sch-name','sch-count','sch-exp-g','sch-exp-r','sch-exp-i','sch-exp-z',
-    'sch-exp-mode','sch-readout','sch-nb-g','sch-nb-r','sch-nb-i','sch-nb-z',
+    'sch-exp-mode','sch-readout','sch-muscat-site','sch-nb-g','sch-nb-r','sch-nb-i','sch-nb-z',
     'sch-sin-count','sch-site',
     'sch-type','sch-observation-type','sch-guiding-config',
     'sch-effective-filter','sch-effective-exptime','sch-effective-mode',
@@ -300,7 +292,11 @@
     if (saved['sch-source']) pendingSource = saved['sch-source'];
   }
   document.addEventListener('change', function (e) {
-    if (e.target && (TEXT_IDS.indexOf(e.target.id) !== -1 || CHECK_IDS.indexOf(e.target.id) !== -1)) saveOptions();
+    if (e.target && (TEXT_IDS.indexOf(e.target.id) !== -1 || CHECK_IDS.indexOf(e.target.id) !== -1)) {
+      saveOptions();
+      el('btn-submit').disabled = true;
+      lastDryRunHash = null;
+    }
   });
 
   // The range is the only required input with no default: when both fields are
@@ -387,8 +383,8 @@
     var muscat = k === 'muscat' || k === 'muscat3' || k === 'muscat4';
     var prevMuscat = lastScheduleKind === 'muscat' || lastScheduleKind === 'muscat3' || lastScheduleKind === 'muscat4';
     if (!prevMuscat) rememberSinistroFields();
-    document.querySelectorAll('.muscat-only').forEach(function (e) { e.style.display = muscat ? '' : 'none'; });
-    document.querySelectorAll('.sinistro-only').forEach(function (e) { e.style.display = muscat ? 'none' : ''; });
+    document.querySelectorAll('.muscat-only').forEach(function (e) { e.style.display = muscat ? 'block' : 'none'; });
+    document.querySelectorAll('.sinistro-only').forEach(function (e) { e.style.display = muscat ? 'none' : 'block'; });
     var effExp = el('sch-effective-exptime');
     var effMode = el('sch-effective-mode');
     var effFilter = el('sch-effective-filter');
@@ -399,9 +395,7 @@
       if (effMode) {
         effMode.innerHTML = 
           '<option value="central_2k_2x2">central_2k_2x2</option>' +
-          '<option value="central_1k_1x1">central_1k_1x1</option>' +
-          '<option value="full_frame">full_frame</option>' +
-          '<option value="test">test</option>';
+          '<option value="full_frame">full_frame</option>'
       }
       if (effFilter) {
         effFilter.innerHTML =
@@ -437,24 +431,24 @@
   });
 
   function populateProposals(results) {
-    var inp = el('sch-proposal');
-    var list = el('sch-proposal-options');
-    if (!inp || !list) return;
-    var current = inp.value;
-    if (!current) {
-      try {
+    var sel = el('sch-proposal');
+    if (!sel) return;
+    var current = sel.value;
+    try {
+      if (!current) {
         var opt = JSON.parse(localStorage.getItem(OPT_KEY) || '{}');
         current = opt['sch-proposal'] || '';
-      } catch (e) {}
-    }
-    list.innerHTML = '<option value=""></option>';
+      }
+    } catch (e) {}
+    sel.innerHTML = '<option value="">none</option>';
     results.forEach(function (p) {
       var id = p.id || p;
       var opt = document.createElement('option');
       opt.value = id;
-      list.appendChild(opt);
+      opt.textContent = id;
+      sel.appendChild(opt);
     });
-    if (current) inp.value = current;
+    if (current) sel.value = current;
   }
 
   function fetchProposals(silent) {
@@ -698,6 +692,29 @@
     return '± ' + uncMin.toFixed(3) + ' min';
   }
 
+  function updateRequestName() {
+    var target = val('sch-target');
+    if (!target) return;
+    var selected = selectedWindows();
+    if (!selected.length) return;
+    var firstWin = selected[0];
+    var dateStr = firstWin.mid || firstWin.start;
+    var yymmdd = (dateStr || '').substring(2, 10).replace(/-/g, '');
+    var kind = val('sch-kind');
+    var name = target + '_' + yymmdd;
+    if (kind === 'muscat3') {
+      name += '_M3';
+    } else if (kind === 'muscat4') {
+      name += '_M4';
+    } else if (kind === 'sinistro') {
+      var site = val('sch-site') || siteForWindow(firstWin) || '';
+      var band = val('sch-effective-filter');
+      if (site) name += '_' + site;
+      if (band) name += '_' + band;
+    }
+    setVal('sch-name', name);
+  }
+
   function renderWindows(selected) {
     var tb = el('windows-body');
     var selectedSet = {};
@@ -734,6 +751,7 @@
     el('windows-table').style.display = lastWindows.length ? '' : 'none';
     el('win-all').checked = selectedWindowIndices().length === lastWindows.length;
     applyWinFilter();
+    updateRequestName();
   }
 
   // Drop any rendered windows so a failed/empty Generate can't leave stale rows
@@ -905,14 +923,24 @@
   el('win-all').addEventListener('change', function () {
     document.querySelectorAll('#windows-body input[type=checkbox]').forEach(function (c) { c.checked = el('win-all').checked; });
     saveScheduleState();
+    updateRequestName();
   });
   el('win-filter').addEventListener('change', function () {
     applyWinFilter();
     saveScheduleState();
   });
   el('windows-body').addEventListener('change', function (e) {
-    if (e.target && e.target.matches('input[type=checkbox]')) saveScheduleState();
+    if (e.target && e.target.matches('input[type=checkbox]')) {
+      saveScheduleState();
+      updateRequestName();
+      el('btn-submit').disabled = true;
+      lastDryRunHash = null;
+    }
   });
+
+  el('sch-target').addEventListener('change', updateRequestName);
+  el('sch-kind').addEventListener('change', updateRequestName);
+  el('sch-effective-filter').addEventListener('change', updateRequestName);
 
   el('btn-gen-windows').addEventListener('click', function () {
     // --- validation ---
@@ -1047,6 +1075,7 @@
       p.exposure_count = num('sch-count') || 1;
       p.readout_mode = val('sch-readout');
       p.narrowband = { g: val('sch-nb-g'), r: val('sch-nb-r'), i: val('sch-nb-i'), z: val('sch-nb-z') };
+      if (val('sch-muscat-site')) p.site = val('sch-muscat-site');
     } else {
       p.filter = val('sch-effective-filter');
       p.exposure_time = num('sch-effective-exptime');
@@ -1057,21 +1086,83 @@
     return p;
   }
 
+  function formatLcoErrors(ipp) {
+    if (!ipp) return null;
+    var messages = [];
+    var errors = ipp.errors;
+    if (!errors) return null;
+
+    var requests = errors.requests || [];
+    requests.forEach(function (req) {
+      if (!req) return;
+      if (req.location && req.location.telescope_class) {
+        messages.push('❌ Missing site: Select a site for your instrument (ogg/coj for 2m, any site for 1m)');
+      }
+      if (req.configurations && Array.isArray(req.configurations)) {
+        req.configurations.forEach(function (cfg) {
+          if (cfg && cfg.instrument_type) {
+            messages.push('❌ Missing instrument type: Ensure instrument is properly selected');
+          }
+        });
+      }
+      if (req.windows && Array.isArray(req.windows)) {
+        req.windows.forEach(function (win) {
+          if (win && win.end) {
+            var endMsg = Array.isArray(win.end) ? win.end[0] : win.end;
+            if (endMsg && endMsg.indexOf && endMsg.indexOf('future') !== -1) {
+              messages.push('❌ Window in the past: Select a future date range and regenerate windows');
+            } else {
+              messages.push('❌ Invalid window: ' + endMsg);
+            }
+          }
+        });
+      }
+    });
+
+    if (errors.requestgroups) {
+      messages.push('❌ Invalid request group format');
+    }
+
+    return messages.length ? messages : null;
+  }
+
   el('btn-dry-run').addEventListener('click', function () {
     if (!selectedWindows().length) { msg('msg-ipp', 'Generate and select at least one window first', 'err'); return; }
+    var kind = val('sch-kind');
+    if (kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4') {
+      var hasExp = false;
+      ['g', 'r', 'i', 'z'].forEach(function (b) { if (num('sch-exp-' + b) !== null) hasExp = true; });
+      if (!hasExp) { msg('msg-ipp', 'Enter at least one exposure time (g, r, i, or z)', 'err'); return; }
+      if (!val('sch-muscat-site')) { msg('msg-ipp', 'Select a site (ogg or coj)', 'err'); return; }
+    } else if (kind === 'sinistro') {
+      if (!val('sch-site')) { msg('msg-ipp', 'Select a site (ogg, coj, lsc, cpt, tfn, or elp)', 'err'); return; }
+    }
     msg('msg-ipp', 'Running dry-run…');
     lastDryRunHash = null;
+    el('btn-submit').disabled = true;
     fetch('/api/lco/ipp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildParams()) })
       .then(function (r) { return r.json(); }).then(function (d) {
         if (!d.ok) { msg('msg-ipp', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
         lastDryRunHash = d.payload_hash;
         el('ipp-result').style.display = '';
         var ipp = d.ipp || {};
-        var allowed = ipp.max_allowable_ipp_value !== undefined ? ipp.max_allowable_ipp_value : JSON.stringify(ipp);
-        el('ipp-summary').textContent = 'Max allowable IPP: ' + allowed + ' · payload hash ' + (d.payload_hash || '').slice(0, 12);
+        var lcoErrors = formatLcoErrors(ipp);
+        if (lcoErrors && lcoErrors.length > 0) {
+          el('btn-submit').disabled = true;
+          lastDryRunHash = null;
+          var errorHtml = '<div style="color: var(--red); font-weight: 600; margin-bottom: 0.5rem;">Validation Errors — Fix these issues:</div><div style="font-size: 0.9rem; line-height: 1.6;">' +
+            lcoErrors.map(function (e) { return e; }).join('<br>') +
+            '</div>';
+          el('ipp-summary').innerHTML = errorHtml;
+          msg('msg-ipp', 'Validation errors found. Fix them and re-run dry-run.', 'err');
+        } else {
+          el('btn-submit').disabled = false;
+          var allowed = ipp.max_allowable_ipp_value !== undefined ? ipp.max_allowable_ipp_value : (ipp.errors ? 'Error in response' : 'OK');
+          el('ipp-summary').textContent = 'Max allowable IPP: ' + allowed + ' · payload hash ' + (d.payload_hash || '').slice(0, 12);
+          msg('msg-ipp', 'Dry-run OK. Submit button enabled.', 'ok');
+        }
         el('payload-pre').textContent = JSON.stringify(d.payload, null, 2);
         saveScheduleState();
-        msg('msg-ipp', 'Dry-run OK. Live submit stays disabled in v1.', 'ok');
       }).catch(function (e) { msg('msg-ipp', String(e), 'err'); });
   });
 

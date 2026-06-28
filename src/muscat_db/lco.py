@@ -230,48 +230,80 @@ def build_requestgroup(kind: str, params: dict) -> dict:
         "dec": params["dec"],
     }
 
+    # These constraints are defined at the request level, but get copied into
+    # the configuration level by this function, as per the LCO examples.
     constraints = {
         "max_airmass": params.get("max_airmass", 1.6),
         "min_lunar_distance": params.get("min_lunar_distance", 30),
     }
 
     configurations = []
+    instrument_type = ""
     if kind in ("muscat", "muscat3", "muscat4"):
         if not params.get("exposure_times"):
             raise LcoError("Exposure times are required for MuSCAT instruments", status=400)
         
+        # For MuSCAT, one instrument_config is created per filter.
         instrument_configs = [
             {
                 "exposure_time": params["exposure_times"].get(b, 0),
                 "exposure_count": params.get("exposure_count", 1),
-                "optical_elements": {"filter": b, "narrow_band": params.get("narrowband", {}).get(b, "out")},
+                "mode": params.get("readout_mode", "MUSCAT_FAST"),
+                "optical_elements": {
+                    "filter": b,
+                    "narrowband_g_position": params.get("narrowband", {}).get("g", "out"),
+                    "narrowband_i_position": params.get("narrowband", {}).get("i", "out"),
+                    "narrowband_r_position": params.get("narrowband", {}).get("r", "out"),
+                    "narrowband_z_position": params.get("narrowband", {}).get("z", "out"),
+                },
+                "extra_params": {
+                    "exposure_mode": params.get("exposure_mode", "ASYNCHRONOUS"),
+                    "exposure_time_g": params["exposure_times"].get("g", 0),
+                    "exposure_time_i": params["exposure_times"].get("i", 0),
+                    "exposure_time_r": params["exposure_times"].get("r", 0),
+                    "exposure_time_z": params["exposure_times"].get("z", 0),
+                },
             } for b in ["g", "r", "i", "z"] if params["exposure_times"].get(b, 0) > 0
         ]
+        instrument_type = "2M0-SCICAM-MUSCAT"
         configurations.append({
-            "type": params.get("type", "EXPOSE"),
-            "observation_type": params.get("observation_type", "NORMAL"),
-            "target": target,
-            "instrument_type": "2M0-SCICAM-MUSCAT",
+            "type": params.get("type", "REPEAT_EXPOSE"),
+            "repeat_duration": params.get("repeat_duration"),
             "instrument_configs": instrument_configs,
-            "acquisition_config": {"mode": "ON"},
-            "guiding_config": {"mode": params.get("guiding_config", "ON")},
-            "constraints": constraints,
+            "acquisition_config": {"mode": "WCS"},
+            "guiding_config": {"mode": params.get("guiding_config", "ON"), "optional": True},
+            "constraints": {
+                "max_airmass": params.get("max_airmass", 2.5),
+                "min_lunar_distance": params.get("min_lunar_distance", 18),
+                "max_seeing": params.get("max_seeing"),
+                "min_transparency": params.get("min_transparency"),
+                "extra_params": {}
+            },
+            "target": target
         })
     elif kind == "sinistro":
+        mode = params.get("readout_mode", "central_2k_2x2")
+        binning = 2 if "2x2" in mode else 1
         instrument_configs = [{
             "exposure_count": params.get("exposure_count", 1),
             "exposure_time": params.get("exposure_time", 60),
+            "mode": mode,
             "optical_elements": {"filter": params.get("filter", "rp")},
+            "extra_params": {
+                "bin_x": binning,
+                "bin_y": binning,
+                "offset_ra": 0,
+                "offset_dec": 0
+            }
         }]
+        instrument_type = "1M0-SCICAM-SINISTRO"
         configurations.append({
             "type": params.get("type", "EXPOSE"),
-            "observation_type": params.get("observation_type", "NORMAL"),
-            "target": target,
-            "instrument_type": "1M0-SCICAM-SINISTRO",
             "instrument_configs": instrument_configs,
-            "acquisition_config": {"mode": "ON"},
-            "guiding_config": {"mode": params.get("guiding_config", "ON")},
+            "acquisition_config": {"mode": "WCS"},
+            "guiding_config": {"mode": params.get("guiding_config", "ON"), "optional": True},
             "constraints": constraints,
+            "target": target
         })
     else:
         raise LcoError(f"Unsupported instrument kind for scheduling: {kind}", status=400)
@@ -280,16 +312,22 @@ def build_requestgroup(kind: str, params: dict) -> dict:
     if params.get("site"):
         location["telescope_class"] = "1m0" if kind == "sinistro" else "2m0"
         location["site"] = params["site"]
+    
+    obs_type = "NORMAL"
 
     return {
         "name": params["name"],
         "proposal": params["proposal"],
         "ipp_value": params.get("ipp_value", 1.0),
         "operator": "SINGLE",
+        "observation_type": params.get("observation_type", obs_type),
         "requests": [{
-            "configurations": configurations,
-            "windows": params.get("windows", []),
+            "target": target,
+            "constraints": constraints,
             "location": location,
+            "windows": params.get("windows", []),
+            "instrument_type": instrument_type,
+            "configurations": configurations,
         }]
     }
 
