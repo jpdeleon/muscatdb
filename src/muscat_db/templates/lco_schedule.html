@@ -1,0 +1,980 @@
+{% extends "base.html" %}
+{% block title %}LCO Schedule — MuSCAT-db{% endblock %}
+{% block content %}
+<script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
+{% set active_lco_page = "schedule" %}
+{% include "_lco_shared.html" %}
+
+<div class="lco-section">
+  <h3>Target &amp; Transit Windows</h3>
+  <div class="lco-grid">
+    <div class="lco-field"><label for="sch-target">Target</label><input id="sch-target" type="text" placeholder="WASP-12"></div>
+    <div class="lco-field"><label for="sch-planet">Planet</label><input id="sch-planet" type="text" placeholder="b" style="max-width: 90px;"></div>
+    <div class="lco-field"><label for="sch-source" title="Where t0 / period come from. 'linear fit' refines the ephemeris across all of this target's completed transit fits; individual datasets use that fit's t0/period directly (same as the Planetary Reference Ephemerides on the Ephemeris page). Click 'Fetch ephemeris' to populate datasets.">Ephemeris source</label>
+      <select id="sch-source">
+        <option value="">Auto</option>
+        <option value="nasa">NASA catalog</option>
+        <option value="toi">TOI catalog</option>
+        <option value="linear">linear fit</option>
+      </select></div>
+    <div class="lco-field"><label for="sch-coords">RA, Dec (deg)</label><input id="sch-coords" type="text" placeholder="e.g. 97.64, 29.67"></div>
+    <div class="lco-field"><label for="sch-range-start">Range start (UTC)</label><input id="sch-range-start" type="date"></div>
+    <div class="lco-field"><label for="sch-range-end">Range end (UTC)</label><input id="sch-range-end" type="date"></div>
+    <div class="lco-field"><label for="sch-t0" title="BJD_TDB. Enter mean,uncertainty. Populated by Fetch ephemeris; editable.">t0 (BJD)</label><input id="sch-t0" type="text" inputmode="decimal" placeholder="e.g. 2459000.5,0.0003"></div>
+    <div class="lco-field"><label for="sch-period">Period (days)</label><input id="sch-period" type="text" inputmode="decimal" placeholder="e.g. 1.0914,0.00001"></div>
+    <div class="lco-field"><label for="sch-duration" title="From the catalog when available; override here. Enter mean,uncertainty.">Duration (hr)</label><input id="sch-duration" type="text" inputmode="decimal" placeholder="e.g. 2.5,0.1"></div>
+    <div class="lco-field"><label for="sch-pad-before">Pad before (min)</label><input id="sch-pad-before" type="number" step="any" value="45"></div>
+    <div class="lco-field"><label for="sch-pad-after">Pad after (min)</label><input id="sch-pad-after" type="number" step="any" value="45"></div>
+    <div class="lco-field"><label for="sch-include-padding" style="margin: 0;" title="When on, the padded baseline (start→end) must also be observable for a transit to rate 'full'. When off, padding is used only for the displayed span and the observability check spans just the transit (mid ± duration/2).">Include padding in obs check</label>
+      <input id="sch-include-padding" type="checkbox"></div>
+  </div>
+  <div class="lco-grid" style="margin-top: 0.6rem;">
+    <div class="lco-field">
+      <label for="sch-sites" title="Site to evaluate for the 'Transit obs' column. 'All sites' evaluates the full LCO network; this is independent of the imaging instrument chosen below.">Site(s)</label>
+      <select id="sch-sites">
+        <option value="">All sites</option>
+        <option value="ogg">ogg (MuSCAT3, 2m)</option>
+        <option value="coj">coj (MuSCAT4, 2m+1m)</option>
+        <option value="lsc">lsc (1m)</option>
+        <option value="cpt">cpt (1m)</option>
+        <option value="tfn">tfn (1m)</option>
+        <option value="elp">elp (1m)</option>
+      </select>
+    </div>
+    <div class="lco-field"><label for="sch-obs-airmass" title="Airmass limit for the observability check and visibility plot (sets the minimum target altitude).">Obs airmass limit</label>
+      <input id="sch-obs-airmass" type="number" step="any" min="1" value="2"></div>
+    <div class="lco-field"><label for="sch-twilight" title="How dark it must be for a transit to count as observable.">Twilight</label>
+      <select id="sch-twilight">
+        <option value="civil">Civil (−6°)</option>
+        <option value="nautical" selected>Nautical (−12°)</option>
+        <option value="astronomical">Astronomical (−18°)</option>
+      </select></div>
+    <div class="lco-field"><label for="sch-moon-sep" title="Reject samples where the Moon is closer than this to the target (0 = ignore).">Min moon sep (deg)</label>
+      <input id="sch-moon-sep" type="number" step="any" min="0" value="30"></div>
+  </div>
+  <div class="lco-actions">
+    <button class="btn" type="button" id="btn-fetch-ephem">Fetch ephemeris</button>
+    <button class="btn primary" type="button" id="btn-gen-windows">Generate windows</button>
+    <label class="lco-field" style="flex-direction: row; align-items: center; gap: 0.4rem;">
+      <span style="font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase;">Show</span>
+      <select id="win-filter" style="padding: 0.35rem 0.5rem;">
+        <option value="all">all</option>
+        <option value="obs">partial + full</option>
+        <option value="full">full only</option>
+      </select>
+    </label>
+    <span class="lco-msg" id="msg-windows" style="margin: 0;"></span>
+  </div>
+  <div class="lco-table-wrap" style="margin-top: 0.75rem;">
+    <table class="lco-table" id="windows-table" style="display: none;">
+      <thead><tr><th><input type="checkbox" id="win-all" checked></th><th>Epoch</th><th>Start (UTC)</th><th>Mid (UTC)</th><th>Mid unc</th><th>End (UTC)</th><th>Transit obs</th><th>Visibility</th></tr></thead>
+      <tbody id="windows-body"></tbody>
+    </table>
+  </div>
+  <div id="vis-figure" style="display: none; margin-top: 0.85rem;">
+    <div class="lco-actions" style="margin-bottom: 0.4rem;">
+      <strong id="vis-caption" style="font-size: 0.85rem;"></strong>
+      <button class="btn" type="button" id="vis-close" style="margin-left: auto;">✕ Hide</button>
+    </div>
+    <div id="vis-plot" style="width: 100%; height: 420px; border: 1px solid var(--border); border-radius: 8px;"></div>
+    <p class="lco-note" style="margin-top: 0.4rem;">
+      Computed with astropy. The shaded band is the full transit; cross-check against the
+      <a id="lco-vis-link" href="#" target="_blank" rel="noopener">LCO visibility figure ↗</a>.
+    </p>
+  </div>
+  <p class="lco-note">Windows are coarse scheduling bounds. t0 is usually BJD_TDB; the ≤8&nbsp;min barycentric offset is absorbed by the padding above.</p>
+</div>
+
+<div class="lco-section">
+  <h3>Imaging Request</h3>
+  <div class="lco-grid">
+    <div class="lco-field"><label for="sch-proposal">Proposal ID</label>
+      <input id="sch-proposal" list="sch-proposal-options" type="text" placeholder="none">
+      <datalist id="sch-proposal-options">
+        <option value=""></option>
+      </datalist>
+    </div>
+    <div class="lco-field"><label for="sch-kind">Instrument</label>
+      <select id="sch-kind">
+        <option value="muscat3">MuSCAT3 (ogg 2m0)</option>
+        <option value="muscat4">MuSCAT4 (coj 2m0)</option>
+        <option value="sinistro">Sinistro (1m0)</option>
+        <option value="muscat">MuSCAT (2m0 - general)</option>
+      </select>
+    </div>
+    <div class="lco-field"><label for="sch-name">Request name</label><input id="sch-name" type="text" placeholder="WASP-12b transit"></div>
+    <div class="lco-field"><label for="sch-count" class="muscat-only">Exposure count</label>
+      <input id="sch-count" class="muscat-only" type="number" min="1" value="1"></div>
+  </div>
+  <div class="lco-msg" id="msg-proposals" style="margin-top: 0.4rem;"></div>
+
+  <div class="muscat-only" style="margin-top: 0.85rem;">
+    <div class="lco-grid">
+      <div class="lco-field"><label for="sch-exp-g">Exp g (s)</label><input id="sch-exp-g" type="number" step="any" placeholder="30"></div>
+      <div class="lco-field"><label for="sch-exp-r">Exp r (s)</label><input id="sch-exp-r" type="number" step="any" placeholder="30"></div>
+      <div class="lco-field"><label for="sch-exp-i">Exp i (s)</label><input id="sch-exp-i" type="number" step="any" placeholder="30"></div>
+      <div class="lco-field"><label for="sch-exp-z">Exp z (s)</label><input id="sch-exp-z" type="number" step="any" placeholder="30"></div>
+      <div class="lco-field"><label for="sch-exp-mode">Exposure mode</label>
+        <select id="sch-exp-mode"><option value="SYNCHRONOUS">Synchronous</option><option value="ASYNCHRONOUS">Asynchronous</option></select></div>
+      <div class="lco-field"><label for="sch-readout">Confmode (Readout mode)</label><input id="sch-readout" type="text" value="MUSCAT_FAST"></div>
+    </div>
+    <div class="lco-grid" style="margin-top: 0.6rem;">
+      <div class="lco-field"><label for="sch-nb-g">Narrowband g</label><select id="sch-nb-g"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-r">Narrowband r</label><select id="sch-nb-r"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-i">Narrowband i</label><select id="sch-nb-i"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-z">Narrowband z</label><select id="sch-nb-z"><option value="out">out</option><option value="in">in</option></select></div>
+    </div>
+  </div>
+
+  <div class="sinistro-only" style="margin-top: 0.85rem;">
+    <div class="lco-grid">
+      <div class="lco-field"><label for="sch-sin-count">Exposure count</label><input id="sch-sin-count" type="number" min="1" value="1"></div>
+      <div class="lco-field"><label for="sch-site">Site (optional)</label><input id="sch-site" type="text" placeholder="lsc"></div>
+    </div>
+  </div>
+
+  <div class="lco-grid" style="margin-top: 0.85rem;">
+    <div class="lco-field"><label for="sch-max-airmass">Max airmass</label><input id="sch-max-airmass" type="number" step="any" value="1.6"></div>
+    <div class="lco-field"><label for="sch-min-lunar">Min lunar dist (deg)</label><input id="sch-min-lunar" type="number" step="any" value="30"></div>
+    <div class="lco-field"><label for="sch-ipp">IPP value</label><input id="sch-ipp" type="number" step="any" value="1.0"></div>
+  </div>
+  <div class="lco-grid" style="margin-top: 0.85rem;">
+    <div class="lco-field"><label for="sch-effective-exptime">Exposure time</label><input id="sch-effective-exptime" type="text" inputmode="decimal" placeholder="60"></div>
+    <div class="lco-field"><label for="sch-effective-mode">Mode</label><input id="sch-effective-mode" type="text" placeholder="central_2k_2x2"></div>
+    <div class="lco-field"><label for="sch-effective-filter">Filter</label><input id="sch-effective-filter" type="text" placeholder="rp"></div>
+  </div>
+  <p class="lco-note">These scheduling inputs are separate from the archive page.</p>
+</div>
+
+<div class="lco-section">
+  <h3>Dry-run &amp; Submit</h3>
+  <div class="lco-actions">
+    <button class="btn primary" type="button" id="btn-dry-run">Dry-run IPP</button>
+    <button class="btn" type="button" id="btn-submit" disabled
+      title="Live submission is disabled in v1. It requires a matching dry-run, an explicit confirm, and MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
+      Submit (disabled)
+    </button>
+    <span class="lco-msg" id="msg-ipp" style="margin: 0;"></span>
+  </div>
+  <div id="ipp-result" style="margin-top: 0.75rem; display: none;">
+    <div class="lco-note" id="ipp-summary"></div>
+    <pre class="lco-pre" id="payload-pre"></pre>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+  var OPT_KEY = 'lco:schedule:options';
+  var STATE_KEY = 'lco:schedule:state';
+  function el(id) { return document.getElementById(id); }
+  function val(id) { var e = el(id); return e ? e.value.trim() : ''; }
+  function num(id) { var v = val(id); return v === '' ? null : Number(v); }
+  function chk(id) { var e = el(id); return e ? !!e.checked : false; }
+  function setVal(id, v) { var e = el(id); if (e && v !== undefined && v !== null) e.value = v; }
+  function setChk(id, v) { var e = el(id); if (e) e.checked = !!v; }
+  function msg(id, text, kind) {
+    var e = el(id); if (!e) return;
+    e.textContent = text || '';
+    e.className = 'lco-msg' + (kind ? ' ' + kind : '');
+  }
+  function parseTupleValue(raw) {
+    var s = (raw || '').trim();
+    if (!s) return { mean: null, unc: null, ok: true };
+    var parts = s.split(',').map(function (x) { return x.trim(); });
+    if (parts.length > 2 || !parts[0]) return { mean: null, unc: null, ok: false };
+    var mean = Number(parts[0]);
+    if (!isFinite(mean)) return { mean: null, unc: null, ok: false };
+    if (parts.length === 1 || parts[1] === '') return { mean: mean, unc: null, ok: true };
+    var unc = Number(parts[1]);
+    if (!isFinite(unc) || unc < 0) return { mean: null, unc: null, ok: false };
+    return { mean: mean, unc: unc, ok: true };
+  }
+  function tupleField(id) { return parseTupleValue(val(id)); }
+  function tupleMean(id) { return tupleField(id).mean; }
+  function tupleUnc(id) { return tupleField(id).unc; }
+  function tupleString(mean, unc) {
+    if (mean === null || mean === undefined || mean === '') return '';
+    return unc === null || unc === undefined || unc === '' ? String(mean) : (String(mean) + ',' + String(unc));
+  }
+
+  function parseCoords() {
+    var raw = (val('sch-coords') || '').trim();
+    if (!raw) return { ra: null, dec: null };
+    var parts = raw.split(/[,\s]+/).map(function (x) { return x.trim(); }).filter(Boolean);
+    if (parts.length < 2) return { ra: null, dec: null };
+    var ra = Number(parts[0]);
+    var dec = Number(parts[1]);
+    return {
+      ra: isFinite(ra) ? ra : null,
+      dec: isFinite(dec) ? dec : null
+    };
+  }
+
+  var TEXT_IDS = [
+    'sch-proposal','sch-target','sch-planet','sch-source','sch-coords',
+    'sch-t0','sch-period','sch-duration',
+    'sch-range-start','sch-range-end','sch-pad-before','sch-pad-after',
+    'sch-obs-airmass','sch-twilight','sch-moon-sep','sch-sites','win-filter',
+    'sch-kind','sch-name','sch-count','sch-exp-g','sch-exp-r','sch-exp-i','sch-exp-z',
+    'sch-exp-mode','sch-readout','sch-nb-g','sch-nb-r','sch-nb-i','sch-nb-z',
+    'sch-effective-filter','sch-effective-exptime','sch-effective-mode',
+    'sch-sin-count','sch-site',
+    'sch-max-airmass','sch-min-lunar','sch-ipp'
+  ];
+
+  var CHECK_IDS = ['sch-include-padding'];
+
+  // Site chosen for the Transit obs column; '' (All sites) => full LCO network.
+  function selectedSites() {
+    var s = val('sch-sites');
+    return s ? [s] : [];
+  }
+
+  function collectOptions() {
+    var o = {};
+    TEXT_IDS.forEach(function (id) { o[id] = val(id); });
+    CHECK_IDS.forEach(function (id) { o[id] = chk(id); });
+    return o;
+  }
+  function saveOptions() {
+    try { localStorage.setItem(OPT_KEY, JSON.stringify(collectOptions())); } catch (e) {}
+  }
+  function restoreOptions() {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved) return;
+    TEXT_IDS.forEach(function (id) { if (saved[id] !== undefined && saved[id] !== '') setVal(id, saved[id]); });
+    CHECK_IDS.forEach(function (id) { if (saved[id] !== undefined) setChk(id, saved[id]); });
+    if (saved['sch-source']) pendingSource = saved['sch-source'];
+  }
+  document.addEventListener('change', function (e) {
+    if (e.target && (TEXT_IDS.indexOf(e.target.id) !== -1 || CHECK_IDS.indexOf(e.target.id) !== -1)) saveOptions();
+  });
+
+  // The range is the only required input with no default: when both fields are
+  // blank the windows request fails with "missing date/time value" and the
+  // table never updates. Seed a sensible default (today → +DEFAULT_RANGE_DAYS,
+  // UTC) so a first click always produces windows.
+  var DEFAULT_RANGE_DAYS = 60;
+  function ymdUTC(date) { return date.toISOString().slice(0, 10); }
+  function ensureDefaultRange() {
+    var changed = false;
+    if (!val('sch-range-start')) { setVal('sch-range-start', ymdUTC(new Date())); changed = true; }
+    if (!val('sch-range-end')) {
+      var end = new Date();
+      end.setUTCDate(end.getUTCDate() + DEFAULT_RANGE_DAYS);
+      setVal('sch-range-end', ymdUTC(end));
+      changed = true;
+    }
+    if (changed) saveOptions();
+  }
+
+  var lastSinistroFields = { exptime: '60', mode: 'central_2k_2x2', filter: 'rp' };
+  var lastScheduleKind = '';
+  var lastTargetInfo = null;
+  var lastInfoTarget = '';
+  var pendingSource = null;
+  var targetRefreshTimer = null;
+  var lastWindows = [];
+  var lastDryRunHash = null;
+
+  function setDot(id, ok) { var e = el(id); if (e) e.className = 'dot ' + (ok ? 'ok' : 'no'); }
+  fetch('/api/lco/config').then(function (r) { return r.json(); }).then(function (d) {
+    if (!d.ok) return;
+    setDot('cfg-token', d.token_configured);
+    setDot('cfg-root', d.download_root_configured);
+    setDot('cfg-submit', d.submit_allowed);
+  }).catch(function () {});
+
+  function rememberSinistroFields() {
+    if (val('sch-effective-exptime')) lastSinistroFields.exptime = val('sch-effective-exptime');
+    if (val('sch-effective-mode')) lastSinistroFields.mode = val('sch-effective-mode');
+    if (val('sch-effective-filter')) lastSinistroFields.filter = val('sch-effective-filter');
+  }
+
+  function updateScheduleFields() {
+    var kind = val('sch-kind');
+    var isMuscat = kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4';
+    if (isMuscat) {
+      var bands = [];
+      var maxExp = null;
+      ['g', 'r', 'i', 'z'].forEach(function (band) {
+        var v = num('sch-exp-' + band);
+        if (v !== null) {
+          bands.push(band + '=' + v + ' s');
+          maxExp = maxExp === null ? v : Math.max(maxExp, v);
+        }
+      });
+      setVal('sch-effective-exptime', maxExp === null ? '' : String(maxExp));
+      setVal('sch-effective-mode', val('sch-readout'));
+      setVal('sch-effective-filter', bands.join(', '));
+    }
+  }
+
+  function applyKind() {
+    var k = val('sch-kind');
+    var muscat = k === 'muscat' || k === 'muscat3' || k === 'muscat4';
+    var prevMuscat = lastScheduleKind === 'muscat' || lastScheduleKind === 'muscat3' || lastScheduleKind === 'muscat4';
+    if (!prevMuscat) rememberSinistroFields();
+    document.querySelectorAll('.muscat-only').forEach(function (e) { e.style.display = muscat ? '' : 'none'; });
+    document.querySelectorAll('.sinistro-only').forEach(function (e) { e.style.display = muscat ? 'none' : ''; });
+    var effExp = el('sch-effective-exptime');
+    var effMode = el('sch-effective-mode');
+    var effFilter = el('sch-effective-filter');
+    if (effExp) effExp.readOnly = muscat;
+    if (effMode) effMode.readOnly = muscat;
+    if (effFilter) effFilter.readOnly = muscat;
+    if (!muscat) {
+      setVal('sch-effective-exptime', lastSinistroFields.exptime);
+      setVal('sch-effective-mode', lastSinistroFields.mode);
+      setVal('sch-effective-filter', lastSinistroFields.filter);
+    }
+    updateScheduleFields();
+    lastScheduleKind = k;
+  }
+  el('sch-kind').addEventListener('change', applyKind);
+  ['sch-exp-g', 'sch-exp-r', 'sch-exp-i', 'sch-exp-z', 'sch-readout'].forEach(function (id) {
+    var node = el(id);
+    if (!node) return;
+    node.addEventListener('input', updateScheduleFields);
+    node.addEventListener('change', updateScheduleFields);
+  });
+  ['sch-effective-exptime', 'sch-effective-mode', 'sch-effective-filter'].forEach(function (id) {
+    var node = el(id);
+    if (!node) return;
+    node.addEventListener('input', rememberSinistroFields);
+    node.addEventListener('change', rememberSinistroFields);
+  });
+
+  function populateProposals(results) {
+    var inp = el('sch-proposal');
+    var list = el('sch-proposal-options');
+    if (!inp || !list) return;
+    var current = inp.value;
+    if (!current) {
+      try {
+        var opt = JSON.parse(localStorage.getItem(OPT_KEY) || '{}');
+        current = opt['sch-proposal'] || '';
+      } catch (e) {}
+    }
+    list.innerHTML = '<option value=""></option>';
+    results.forEach(function (p) {
+      var id = p.id || p;
+      var opt = document.createElement('option');
+      opt.value = id;
+      list.appendChild(opt);
+    });
+    if (current) inp.value = current;
+  }
+
+  function fetchProposals(silent) {
+    if (!silent) msg('msg-proposals', 'Loading proposals…');
+    fetch('/api/lco/proposals')
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) {
+          if (!silent) msg('msg-proposals', d.error || 'failed', 'err');
+          return;
+        }
+        var list = (d.results || []).map(function (p) { return p.id || p; });
+        populateProposals(list);
+        try { localStorage.setItem('lco:proposals', JSON.stringify(list)); } catch (e) {}
+        if (!silent) msg('msg-proposals', 'Loaded ' + list.length + ' proposals', 'ok');
+      })
+      .catch(function (e) {
+        if (!silent) msg('msg-proposals', String(e), 'err');
+      });
+  }
+
+  function loadProposals() {
+    var cached = null;
+    try { cached = JSON.parse(localStorage.getItem('lco:proposals')); } catch (e) {}
+    if (cached && Array.isArray(cached) && cached.length > 0) {
+      populateProposals(cached);
+      fetchProposals(true);
+    } else {
+      fetchProposals(false);
+    }
+  }
+
+  function datasetLabel(d) {
+    return d.instrument + ' ' + d.date + ': ' + (d.run_name || d.run_id || 'legacy');
+  }
+
+  function populateSourceOptions(info) {
+    var sel = el('sch-source');
+    var planet = (val('sch-planet') || 'b').toLowerCase();
+    var prev = pendingSource || sel.value;
+    pendingSource = null;
+    sel.innerHTML =
+      '<option value="">Auto</option>' +
+      '<option value="nasa">NASA catalog</option>' +
+      '<option value="toi">TOI catalog</option>' +
+      '<option value="linear">linear fit</option>';
+    (info.datasets || []).forEach(function (d, i) {
+      if (d.planets_fitted && d.planets_fitted.indexOf(planet) !== -1) {
+        var opt = document.createElement('option');
+        opt.value = 'dataset_' + i;
+        opt.textContent = datasetLabel(d);
+        sel.appendChild(opt);
+      }
+    });
+    var has = Array.prototype.some.call(sel.options, function (o) { return o.value === prev; });
+    sel.value = has ? prev : '';
+  }
+
+  function fetchTargetInfo(target) {
+    if (lastTargetInfo && lastInfoTarget === target) return Promise.resolve(lastTargetInfo);
+    return fetch('/api/ephemeris/target-info?target=' + encodeURIComponent(target))
+      .then(function (r) { return r.json(); })
+      .then(function (info) { if (info.ok) { lastTargetInfo = info; lastInfoTarget = target; } return info; });
+  }
+
+  function populateCoordinates(info, opts) {
+    opts = opts || {};
+    var coords = info && info.coordinates;
+    if (!coords || coords.ra == null || coords.dec == null) {
+      setVal('sch-coords', '');
+      saveOptions();
+      throw new Error('Coordinates not found for ' + (info && info.target ? info.target : 'that target'));
+    }
+    if (opts.isInitialLoad && val('sch-coords')) {
+      return;
+    }
+    setVal('sch-coords', coords.ra.toFixed(5) + ', ' + coords.dec.toFixed(5));
+    saveOptions();
+  }
+
+  function autoEphemerisForPlanet(info, planet) {
+    var ref = (info.reference_ephemeris || {})[planet] || {};
+    var nasa = (info.nasa_ephemeris || {})[planet] || {};
+    var toi = (info.toi_ephemeris || {})[planet] || {};
+    if (ref.t0 != null && ref.period != null) return { label: 'AUTO', data: ref };
+    if (nasa.t0 != null && nasa.period != null) return { label: 'NASA', data: nasa };
+    if (toi.t0 != null && toi.period != null) return { label: 'TOI', data: toi };
+    return null;
+  }
+
+  function applySource(info) {
+    var planet = (val('sch-planet') || 'b').toLowerCase();
+    var source = val('sch-source');
+    var ref = (info.reference_ephemeris || {})[planet] || {};
+    var nasa = (info.nasa_ephemeris || {})[planet] || {};
+    var toi = (info.toi_ephemeris || {})[planet] || {};
+    // Duration follows the selected catalog when it provides one (toi -> TOI,
+    // nasa -> NASA); other sources (auto / dataset / linear) have no duration of
+    // their own, so fall back to NASA then TOI.
+    var dur = null, durUnc = null;
+    if (source === 'toi' && toi.duration != null) { dur = toi.duration; durUnc = toi.duration_unc; }
+    else if (source === 'nasa' && nasa.duration != null) { dur = nasa.duration; durUnc = nasa.duration_unc; }
+    else if (nasa.duration != null) { dur = nasa.duration; durUnc = nasa.duration_unc; }
+    else if (toi.duration != null) { dur = toi.duration; durUnc = toi.duration_unc; }
+    if (dur != null) setVal('sch-duration', tupleString(dur, durUnc));
+
+    if (!source) {
+      var auto = autoEphemerisForPlanet(info, planet);
+      if (!auto) { msg('msg-windows', 'No ephemeris found for ' + planet, 'err'); return; }
+      setVal('sch-t0', tupleString(auto.data.t0, auto.data.t0_unc));
+      setVal('sch-period', tupleString(auto.data.period, auto.data.period_unc));
+      saveOptions();
+      msg('msg-windows', auto.label + ': t0=' + auto.data.t0 + ', P=' + auto.data.period + ' d' + (dur != null ? ', dur=' + dur + ' h' : ''), 'ok');
+      return;
+    }
+
+    if (source === 'nasa' || source === 'toi') {
+      var ephem = source === 'nasa' ? nasa : toi;
+      if (ephem.t0 == null || ephem.period == null) { msg('msg-windows', 'No ' + source.toUpperCase() + ' ephemeris for ' + planet, 'err'); return; }
+      setVal('sch-t0', tupleString(ephem.t0, ephem.t0_unc));
+      setVal('sch-period', tupleString(ephem.period, ephem.period_unc));
+      saveOptions();
+      msg('msg-windows', source.toUpperCase() + ': t0=' + ephem.t0 + ', P=' + ephem.period + ' d' + (dur != null ? ', dur=' + dur + ' h' : ''), 'ok');
+      return;
+    }
+
+    if (source.indexOf('dataset_') === 0) {
+      var idx = parseInt(source.split('_')[1], 10);
+      var ds = (info.datasets || [])[idx];
+      var pe = ds && ds.planets_ephem ? ds.planets_ephem[planet] : null;
+      if (!pe) { msg('msg-windows', 'No fitted ephemeris for ' + planet + ' in that dataset', 'err'); return; }
+      setVal('sch-t0', tupleString(pe.t0, pe.t0_unc));
+      setVal('sch-period', tupleString(pe.period, pe.period_unc));
+      // Prefer the fit's own duration (hours); otherwise keep the catalog value
+      // already set above.
+      if (pe.duration != null) { dur = pe.duration; setVal('sch-duration', tupleString(pe.duration, pe.duration_unc)); }
+      saveOptions();
+      msg('msg-windows', datasetLabel(ds) + ': t0=' + pe.t0 + ', P=' + pe.period + ' d' + (dur != null ? ', dur=' + dur + ' h' : ''), 'ok');
+      return;
+    }
+
+    var datasets = info.datasets || [];
+    if (!datasets.length) { msg('msg-windows', 'No completed transit fits for ' + lastInfoTarget, 'err'); return; }
+    var seed = ref.t0 != null && ref.period != null ? ref : (nasa.t0 != null && nasa.period != null ? nasa : toi);
+    if (!seed || seed.t0 == null || seed.period == null) { msg('msg-windows', 'No seed ephemeris to anchor the linear fit', 'err'); return; }
+    var calcBody = {
+      target: lastInfoTarget, fit_method: 'unweighted', planets_ephem: {},
+      datasets: datasets.map(function (d) {
+        return { target: d.target, instrument: d.instrument, date: d.date, run_id: d.run_id || '', checked: true };
+      })
+    };
+    calcBody.planets_ephem[planet] = { t0: seed.t0, period: seed.period };
+    fetch('/api/ephemeris/calculate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(calcBody) })
+      .then(function (r) { return r.json(); })
+      .then(function (cd) {
+        var res = cd.ok && cd.results ? cd.results[planet] : null;
+        if (!res) { msg('msg-windows', 'Linear fit unavailable for ' + planet, 'err'); return; }
+        setVal('sch-t0', tupleString(res.t0_fit, res.t0_fit_unc));
+        setVal('sch-period', tupleString(res.period_fit, res.period_fit_unc));
+        saveOptions();
+        var nfit = (res.points || []).filter(function (p) { return p.checked; }).length;
+        msg('msg-windows', (res.was_fit ? 'Linear fit' : 'Seed (need ≥2 epochs)') + ': t0=' + res.t0_fit + ', P=' + res.period_fit + ' d (' + nfit + ' epochs)', 'ok');
+      }).catch(function (e) { msg('msg-windows', String(e), 'err'); });
+  }
+
+  function refreshTargetFields(opts) {
+    opts = opts || {};
+    var target = val('sch-target');
+    if (!target) return Promise.resolve();
+    if (!opts.silent) msg('msg-windows', 'Fetching target info…');
+    return fetchTargetInfo(target).then(function (info) {
+      if (!info.ok) {
+        msg('msg-windows', info.error || 'lookup failed', 'err');
+        return;
+      }
+      populateSourceOptions(info);
+      var coordErr = null;
+      try {
+        populateCoordinates(info, opts);
+      } catch (e) {
+        coordErr = String(e.message || e);
+      }
+      applySource(info);
+      if (coordErr) msg('msg-windows', coordErr, 'err');
+    }).catch(function (e) {
+      msg('msg-windows', String(e), 'err');
+    });
+  }
+
+  function sitesBestFirst(o) {
+    var sites = (o && o.sites ? o.sites.slice() : []);
+    if (o && o.best_site) {
+      sites = [o.best_site].concat(sites.filter(function (s) { return s !== o.best_site; }));
+    }
+    return sites;
+  }
+
+  function obsCellHtml(o) {
+    if (!o || !o.rating || o.rating === 'none') return '<span style="color: var(--text-dim);">—</span>';
+    var sites = sitesBestFirst(o);
+    var label = (o.rating === 'full' ? 'Full' : 'Partial') + (sites.length ? ' @ ' + sites.join(', ') : '');
+    var color = o.rating === 'full' ? '#2ecc71' : '#e0a23b';
+    return '<span style="color: ' + color + '; font-weight: 600;">' + label + '</span>';
+  }
+
+  function selectedWindowIndices() {
+    var out = [];
+    document.querySelectorAll('#windows-body input[type=checkbox]').forEach(function (c) {
+      if (c.checked) out.push(+c.dataset.i);
+    });
+    return out;
+  }
+
+  function selectedWindows() {
+    var out = [];
+    document.querySelectorAll('#windows-body input[type=checkbox]').forEach(function (c) {
+      if (c.checked) {
+        var w = lastWindows[+c.dataset.i];
+        if (w) out.push({ start: w.start, end: w.end });
+      }
+    });
+    return out;
+  }
+
+  function applyWinFilter() {
+    var mode = val('win-filter');
+    document.querySelectorAll('#windows-body tr').forEach(function (tr) {
+      var rating = tr.getAttribute('data-rating') || 'none';
+      var show = mode === 'all' ||
+        (mode === 'obs' && rating !== 'none') ||
+        (mode === 'full' && rating === 'full');
+      tr.style.display = show ? '' : 'none';
+    });
+  }
+
+  function formatUnc(uncMin) {
+    if (uncMin === 0) return '± 0 min';
+    if (uncMin >= 100) return '± ' + uncMin.toFixed(0) + ' min';
+    if (uncMin >= 10) return '± ' + uncMin.toFixed(1) + ' min';
+    if (uncMin >= 1) return '± ' + uncMin.toFixed(2) + ' min';
+    return '± ' + uncMin.toFixed(3) + ' min';
+  }
+
+  function renderWindows(selected) {
+    var tb = el('windows-body');
+    var selectedSet = {};
+    var hasExplicitSelection = Array.isArray(selected);
+    (selected || []).forEach(function (idx) { selectedSet[idx] = true; });
+    tb.innerHTML = '';
+
+    // Get the current inputs' uncertainty:
+    var t0Tuple = tupleField('sch-t0');
+    var periodTuple = tupleField('sch-period');
+    var showUnc = t0Tuple.ok && periodTuple.ok && (t0Tuple.unc !== null || periodTuple.unc !== null);
+
+    lastWindows.forEach(function (w, i) {
+      var o = w.observability;
+      var checked = hasExplicitSelection ? !!selectedSet[i] : !!(o && o.rating === 'full');
+      var tr = document.createElement('tr');
+      tr.setAttribute('data-rating', (o && o.rating) || 'none');
+
+      var uncText = '-';
+      if (showUnc) {
+        var t0_unc = t0Tuple.unc || 0;
+        var period_unc = periodTuple.unc || 0;
+        var uncDays = Math.sqrt(t0_unc * t0_unc + w.epoch * w.epoch * period_unc * period_unc);
+        var uncMin = uncDays * 1440.0;
+        uncText = formatUnc(uncMin);
+      }
+
+      tr.innerHTML = '<td><input type="checkbox" data-i="' + i + '"' + (checked ? ' checked' : '') + '></td>' +
+        '<td>' + w.epoch + '</td><td>' + w.start + '</td><td>' + w.mid + '</td><td>' + uncText + '</td><td>' + w.end + '</td>' +
+        '<td>' + obsCellHtml(o) + '</td>' +
+        '<td><a href="#" class="vis-link" data-i="' + i + '" title="Show the astropy visibility plot for this transit below the table">show plot</a></td>';
+      tb.appendChild(tr);
+    });
+    el('windows-table').style.display = lastWindows.length ? '' : 'none';
+    el('win-all').checked = selectedWindowIndices().length === lastWindows.length;
+    applyWinFilter();
+  }
+
+  // Drop any rendered windows so a failed/empty Generate can't leave stale rows
+  // on screen pretending to be current results.
+  function clearWindows() {
+    lastWindows = [];
+    renderWindows();
+    saveScheduleState();
+  }
+
+  function saveScheduleState(extra) {
+    var state = {
+      windows: lastWindows,
+      selected: selectedWindowIndices(),
+      dry_run_hash: lastDryRunHash,
+      ipp_summary: el('ipp-summary').textContent,
+      payload_pre: el('payload-pre').textContent,
+      ipp_visible: el('ipp-result').style.display !== 'none'
+    };
+    if (extra) {
+      Object.keys(extra).forEach(function (key) { state[key] = extra[key]; });
+    }
+    try { localStorage.setItem(STATE_KEY, JSON.stringify(state)); } catch (e) {}
+  }
+
+  function restoreScheduleState() {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(STATE_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved) return;
+    lastWindows = Array.isArray(saved.windows) ? saved.windows : [];
+    lastDryRunHash = saved.dry_run_hash || null;
+    if (lastWindows.length) renderWindows(saved.selected || []);
+    if (saved.ipp_visible) {
+      el('ipp-result').style.display = '';
+      el('ipp-summary').textContent = saved.ipp_summary || '';
+      el('payload-pre').textContent = saved.payload_pre || '';
+    }
+  }
+
+  function siteForWindow(w) {
+    if (w.observability && w.observability.best_site) return w.observability.best_site;
+    var sites = { muscat: 'ogg', muscat3: 'ogg', muscat4: 'coj', sinistro: 'lsc' };
+    return sites[val('sch-kind')] || 'ogg';
+  }
+
+  var SITE_COLORS = {
+    ogg: '#6c8cff', coj: '#45d6b5', lsc: '#e0a23b',
+    cpt: '#c879e0', tfn: '#e07b53', elp: '#7ad17a'
+  };
+  var SITE_COLOR_CYCLE = ['#6c8cff', '#45d6b5', '#e0a23b', '#c879e0', '#e07b53', '#7ad17a'];
+  function siteColor(site, idx) {
+    return SITE_COLORS[site] || SITE_COLOR_CYCLE[idx % SITE_COLOR_CYCLE.length];
+  }
+
+  // ``series`` is an array of { site, data } (data = /api/lco/visibility payload).
+  // Target altitude is drawn once per site (faint full track + bold during that
+  // site's night); Moon/Sun context is drawn for the primary (first) site only.
+  function renderVisibility(series, w) {
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var fg = isDark ? '#e1e4ed' : '#1a1c22';
+    var grid = isDark ? '#2a2e3a' : '#e6e8ee';
+    var primary = series[0].data;
+
+    var traces = [];
+    var darkIndices = [];
+    series.forEach(function (s, i) {
+      var d = s.data;
+      var color = siteColor(s.site, i);
+      var targetAltNight = d.target_alt.map(function (value, idx) {
+        return d.sun_alt[idx] < d.sun_alt_limit ? value : null;
+      });
+      traces.push({ x: d.times, y: d.target_alt, name: s.site.toUpperCase(), mode: 'lines', line: { color: color, width: 1.2, dash: 'dot' }, showlegend: false, hoverinfo: 'skip' });
+      traces.push({ x: d.times, y: targetAltNight, name: s.site.toUpperCase(), mode: 'lines', line: { color: color, width: 3 } });
+      d.sun_alt.forEach(function (alt, idx) { if (alt < d.sun_alt_limit) darkIndices.push(idx); });
+    });
+    traces.push({ x: primary.times, y: primary.moon_alt, name: 'Moon (' + series[0].site + ')', mode: 'lines', line: { color: '#bfa14a', width: 1.5, dash: 'dash' } });
+    traces.push({ x: primary.times, y: primary.sun_alt, name: 'Sun (' + series[0].site + ')', mode: 'lines', line: { color: '#e07b53', width: 1, dash: 'dot' } });
+
+    // x-range = union of every site's night across the window.
+    var xMin = primary.times[0];
+    var xMax = primary.times[primary.times.length - 1];
+    if (darkIndices.length > 0) {
+      var lo = Math.min.apply(null, darkIndices);
+      var hi = Math.max.apply(null, darkIndices);
+      xMin = primary.times[lo];
+      xMax = primary.times[hi];
+    }
+
+    var x0 = primary.times[0];
+    var x1 = primary.times[primary.times.length - 1];
+    var shapes = [
+      { type: 'rect', xref: 'x', yref: 'paper', x0: primary.ingress, x1: primary.egress, y0: 0, y1: 1, fillcolor: '#45d6b5', opacity: 0.18, line: { width: 0 }, layer: 'below' },
+      { type: 'rect', xref: 'x', yref: 'paper', x0: w.start, x1: primary.ingress, y0: 0, y1: 1, fillcolor: '#45d6b5', opacity: 0.07, line: { width: 0 }, layer: 'below' },
+      { type: 'rect', xref: 'x', yref: 'paper', x0: primary.egress, x1: w.end, y0: 0, y1: 1, fillcolor: '#45d6b5', opacity: 0.07, line: { width: 0 }, layer: 'below' },
+      { type: 'line', xref: 'x', yref: 'y', x0: x0, x1: x1, y0: primary.alt_limit, y1: primary.alt_limit, line: { color: '#45d6b5', width: 1, dash: 'dot' } },
+      { type: 'line', xref: 'x', yref: 'y', x0: x0, x1: x1, y0: primary.sun_alt_limit, y1: primary.sun_alt_limit, line: { color: '#e07b53', width: 1, dash: 'dot' } },
+      { type: 'line', xref: 'x', yref: 'y', x0: x0, x1: x1, y0: 0, y1: 0, line: { color: grid, width: 1 } }
+    ];
+    var layout = {
+      margin: { l: 45, r: 12, t: 10, b: 36 },
+      paper_bgcolor: 'rgba(0,0,0,0)',
+      plot_bgcolor: 'rgba(0,0,0,0)',
+      font: { color: fg, size: 11 },
+      xaxis: { gridcolor: grid, title: 'UTC', range: [xMin, xMax] },
+      yaxis: { gridcolor: grid, title: 'Altitude (deg)', range: [primary.alt_limit, 90], zeroline: false },
+      legend: { orientation: 'h', y: 1.12 },
+      shapes: shapes,
+      annotations: [
+        { x: primary.ingress, y: 90, xref: 'x', yref: 'y', text: 'transit', showarrow: false, font: { color: '#45d6b5', size: 10 }, xanchor: 'left', yanchor: 'top' },
+        { x: 0.99, y: 0.02, xref: 'paper', yref: 'paper', xanchor: 'right', yanchor: 'bottom', showarrow: false, font: { color: fg, size: 10 }, text: 'alt≥' + primary.alt_limit + '° · sun<' + primary.sun_alt_limit + '°' }
+      ]
+    };
+    Plotly.newPlot('vis-plot', traces, layout, { responsive: true, displayModeBar: false });
+  }
+
+  el('btn-fetch-ephem').addEventListener('click', function () {
+    var target = val('sch-target');
+    if (!target) { msg('msg-windows', 'Enter a target first', 'err'); return; }
+    refreshTargetFields();
+  });
+
+  function scheduleTargetRefresh() {
+    if (targetRefreshTimer) window.clearTimeout(targetRefreshTimer);
+    targetRefreshTimer = window.setTimeout(function () {
+      refreshTargetFields({ silent: true });
+    }, 250);
+  }
+  el('sch-target').addEventListener('input', scheduleTargetRefresh);
+  el('sch-target').addEventListener('change', function () { refreshTargetFields({ silent: true }); });
+  el('sch-target').addEventListener('blur', function () { refreshTargetFields({ silent: true }); });
+  el('sch-source').addEventListener('change', function () {
+    var target = val('sch-target');
+    if (lastTargetInfo && lastInfoTarget === target) {
+      // Info already loaded for this target: re-apply the chosen source so
+      // t0 / period / duration reflect the new selection immediately.
+      applySource(lastTargetInfo);
+    } else if (target) {
+      // Stale or missing info (e.g. target edited without re-fetching): fetch
+      // it first; refreshTargetFields keeps the current source selection and
+      // then calls applySource to populate the fields.
+      refreshTargetFields({ silent: true });
+    } else {
+      msg('msg-windows', 'Enter a target (and click "Fetch ephemeris") to load t0 / period / duration', 'err');
+    }
+  });
+  el('sch-planet').addEventListener('change', function () {
+    if (lastTargetInfo && lastInfoTarget === val('sch-target')) {
+      populateSourceOptions(lastTargetInfo);
+      applySource(lastTargetInfo);
+    }
+  });
+
+  el('win-all').addEventListener('change', function () {
+    document.querySelectorAll('#windows-body input[type=checkbox]').forEach(function (c) { c.checked = el('win-all').checked; });
+    saveScheduleState();
+  });
+  el('win-filter').addEventListener('change', function () {
+    applyWinFilter();
+    saveScheduleState();
+  });
+  el('windows-body').addEventListener('change', function (e) {
+    if (e.target && e.target.matches('input[type=checkbox]')) saveScheduleState();
+  });
+
+  el('btn-gen-windows').addEventListener('click', function () {
+    var t0Tuple = tupleField('sch-t0');
+    var periodTuple = tupleField('sch-period');
+    var durationTuple = tupleField('sch-duration');
+    if (!t0Tuple.ok) { msg('msg-windows', 't0 must be "mean" or "mean,uncertainty"', 'err'); return; }
+    if (!periodTuple.ok) { msg('msg-windows', 'Period must be "mean" or "mean,uncertainty"', 'err'); return; }
+    if (!durationTuple.ok) { msg('msg-windows', 'Duration must be "mean" or "mean,uncertainty"', 'err'); return; }
+    msg('msg-windows', 'Generating…');
+    var body = {
+      target: val('sch-target'), planet: val('sch-planet'), source: val('sch-source'),
+      t0: t0Tuple.mean, period: periodTuple.mean, duration: durationTuple.mean,
+      range_start: val('sch-range-start'), range_end: val('sch-range-end'),
+      pad_before_min: num('sch-pad-before') || 0, pad_after_min: num('sch-pad-after') || 0,
+      kind: val('sch-kind'), ra: parseCoords().ra, dec: parseCoords().dec,
+      obs_airmass: num('sch-obs-airmass') || 2, twilight: val('sch-twilight'),
+      moon_sep_min: num('sch-moon-sep') || 0,
+      include_padding: chk('sch-include-padding'),
+      sites: selectedSites()
+    };
+    fetch('/api/lco/windows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) { clearWindows(); msg('msg-windows', d.error || 'failed', 'err'); return; }
+        lastWindows = d.windows || [];
+        if (d.duration && !val('sch-duration')) setVal('sch-duration', tupleString(d.duration, null));
+        renderWindows();
+        saveScheduleState();
+        var nObs = lastWindows.filter(function (w) { return w.observability && w.observability.rating !== 'none'; }).length;
+        var extra = d.obs_error ? ' — obs: ' + d.obs_error : (lastWindows.length ? ' — ' + nObs + ' observable' : '');
+        msg('msg-windows', lastWindows.length + ' windows (t0=' + d.t0 + ', P=' + d.period + ' d)' + extra, 'ok');
+      }).catch(function (e) { clearWindows(); msg('msg-windows', String(e), 'err'); });
+  });
+
+  el('windows-body').addEventListener('click', function (e) {
+    var link = e.target.closest('.vis-link');
+    if (!link) return;
+    e.preventDefault();
+    var coords = parseCoords();
+    var ra = coords.ra;
+    var dec = coords.dec;
+    var dur = tupleMean('sch-duration');
+    if (ra == null || dec == null) { msg('msg-windows', 'Enter RA and Dec to view the visibility plot', 'err'); return; }
+    if (!dur) { msg('msg-windows', 'Set the transit duration first', 'err'); return; }
+    var w = lastWindows[+link.getAttribute('data-i')];
+    if (!w) return;
+    // Plot every site that can see this transit (best first); fall back to the
+    // kind's default site when there's no observability info.
+    var sites = (w.observability ? sitesBestFirst(w.observability) : []);
+    if (!sites.length) sites = [siteForWindow(w)];
+    var lcoParams = new URLSearchParams({
+      season: 'false', ra: ra, dec: dec,
+      airmass: val('sch-obs-airmass') || '2', date: w.mid.slice(0, 10), aperture: 'all'
+    });
+    el('lco-vis-link').href = 'https://visibility.lco.global/visibility.png?' + lcoParams.toString();
+    el('vis-caption').textContent = 'Loading visibility…';
+    el('vis-figure').style.display = '';
+    el('vis-figure').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    Promise.all(sites.map(function (s) {
+      var q = new URLSearchParams({
+        ra: ra, dec: dec, mid: w.mid, duration: String(dur), site: s,
+        obs_airmass: val('sch-obs-airmass') || '2', twilight: val('sch-twilight'),
+        moon_sep_min: val('sch-moon-sep') || '0'
+      });
+      return fetch('/api/lco/visibility?' + q.toString())
+        .then(function (r) { return r.json(); })
+        .then(function (d) { return { site: s, data: d }; });
+    })).then(function (results) {
+      var ok = results.filter(function (r) { return r.data && r.data.ok; });
+      if (!ok.length) {
+        el('vis-caption').textContent = '';
+        var first = results[0] && results[0].data;
+        msg('msg-windows', (first && first.error) || 'visibility failed', 'err');
+        return;
+      }
+      var rating = w.observability ? w.observability.rating : '';
+      var siteLabel = ok.map(function (r) { return r.site.toUpperCase(); }).join(', ');
+      el('vis-caption').textContent = (val('sch-target') || 'target') + ' @ ' + siteLabel + ' — ' + w.mid.slice(0, 10) + (rating ? ' (' + rating + ')' : '');
+      renderVisibility(ok, w);
+    }).catch(function (e) { msg('msg-windows', String(e), 'err'); });
+  });
+  el('vis-close').addEventListener('click', function () {
+    el('vis-figure').style.display = 'none';
+    if (window.Plotly) Plotly.purge('vis-plot');
+  });
+
+  function buildParams() {
+    var kind = val('sch-kind');
+    var coords = parseCoords();
+    var p = {
+      kind: kind, name: val('sch-name'), proposal: val('sch-proposal'),
+      target_name: val('sch-target'), ra: coords.ra, dec: coords.dec,
+      max_airmass: num('sch-max-airmass'), min_lunar_distance: num('sch-min-lunar'),
+      ipp_value: num('sch-ipp'), windows: selectedWindows()
+    };
+    if (kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4') {
+      p.exposure_times = {};
+      ['g', 'r', 'i', 'z'].forEach(function (b) { var v = num('sch-exp-' + b); if (v !== null) p.exposure_times[b] = v; });
+      p.exposure_mode = val('sch-exp-mode');
+      p.exposure_count = num('sch-count') || 1;
+      p.readout_mode = val('sch-readout');
+      p.narrowband = { g: val('sch-nb-g'), r: val('sch-nb-r'), i: val('sch-nb-i'), z: val('sch-nb-z') };
+    } else {
+      p.filter = val('sch-effective-filter');
+      p.exposure_time = num('sch-effective-exptime');
+      p.exposure_count = num('sch-sin-count') || 1;
+      p.readout_mode = val('sch-effective-mode');
+      if (val('sch-site')) p.site = val('sch-site');
+    }
+    return p;
+  }
+
+  el('btn-dry-run').addEventListener('click', function () {
+    if (!selectedWindows().length) { msg('msg-ipp', 'Generate and select at least one window first', 'err'); return; }
+    msg('msg-ipp', 'Running dry-run…');
+    lastDryRunHash = null;
+    fetch('/api/lco/ipp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildParams()) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) { msg('msg-ipp', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
+        lastDryRunHash = d.payload_hash;
+        el('ipp-result').style.display = '';
+        var ipp = d.ipp || {};
+        var allowed = ipp.max_allowable_ipp_value !== undefined ? ipp.max_allowable_ipp_value : JSON.stringify(ipp);
+        el('ipp-summary').textContent = 'Max allowable IPP: ' + allowed + ' · payload hash ' + (d.payload_hash || '').slice(0, 12);
+        el('payload-pre').textContent = JSON.stringify(d.payload, null, 2);
+        saveScheduleState();
+        msg('msg-ipp', 'Dry-run OK. Live submit stays disabled in v1.', 'ok');
+      }).catch(function (e) { msg('msg-ipp', String(e), 'err'); });
+  });
+
+  el('btn-submit').addEventListener('click', function () {
+    if (!lastDryRunHash) { msg('msg-ipp', 'Run a dry-run first', 'err'); return; }
+    if (!window.confirm('Submit this request to LCO? This consumes real telescope time.')) return;
+    var body = buildParams();
+    body.confirm = true;
+    body.dry_run_hash = lastDryRunHash;
+    msg('msg-ipp', 'Submitting…');
+    fetch('/api/lco/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) { msg('msg-ipp', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
+        msg('msg-ipp', 'Submitted: ' + JSON.stringify(d.result && d.result.id ? d.result.id : d.result), 'ok');
+      }).catch(function (e) { msg('msg-ipp', String(e), 'err'); });
+  });
+
+  function prefillFromView() {
+    var slug = new URLSearchParams(window.location.search).get('view');
+    if (!slug) return;
+    fetch('/api/ephemeris/view/' + encodeURIComponent(slug)).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d.ok || !d.state) return;
+      var targets = d.state.targets || [];
+      if (targets.length && !val('sch-target')) {
+        setVal('sch-target', targets[0]);
+        saveOptions();
+        refreshTargetFields({ silent: true });
+      }
+    }).catch(function () {});
+  }
+
+  loadProposals();
+  restoreOptions();
+  ensureDefaultRange();
+  applyKind();
+  updateScheduleFields();
+  restoreScheduleState();
+  if (val('sch-target')) refreshTargetFields({ silent: true, isInitialLoad: true });
+  prefillFromView();
+})();
+</script>
+{% endblock %}

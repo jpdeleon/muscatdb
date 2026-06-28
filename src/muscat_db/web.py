@@ -18,7 +18,7 @@ import io
 
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 from contextlib import asynccontextmanager
@@ -1149,9 +1149,19 @@ def _lco_error_response(e: "lco.LcoError") -> JSONResponse:
     return JSONResponse(e.to_dict(), status_code=e.status)
 
 
-@app.get("/lco", response_class=HTMLResponse)
+@app.get("/lco")
 def lco_page():
-    return _render("lco.html")
+    return RedirectResponse(url="/lco/schedule", status_code=307)
+
+
+@app.get("/lco/schedule", response_class=HTMLResponse)
+def lco_schedule_page():
+    return _render("lco_schedule.html")
+
+
+@app.get("/lco/archive", response_class=HTMLResponse)
+def lco_archive_page():
+    return _render("lco_archive.html")
 
 
 @app.get("/api/lco/config", response_class=JSONResponse)
@@ -1250,14 +1260,19 @@ def api_lco_windows(payload: dict = Body(...)):
         # gracefully (windows still returned) if astropy/observability fails.
         ra = payload.get("ra")
         dec = payload.get("dec")
-        kind = payload.get("kind")
-        if windows and ra not in (None, "") and dec not in (None, "") and kind:
+        # The windows table is site-driven, independent of the imaging instrument:
+        # an explicit ``sites`` list restricts the check; empty/omitted evaluates
+        # the full LCO network (kind is intentionally not used as a fallback here).
+        sites = payload.get("sites") or None
+        if windows and ra not in (None, "") and dec not in (None, ""):
             try:
                 obs = transit_obs.classify_transits(
-                    float(ra), float(dec), windows, kind, float(duration),
+                    float(ra), float(dec), windows, None, float(duration),
                     max_airmass=float(payload.get("obs_airmass") or 2.0),
                     twilight=payload.get("twilight") or transit_obs.DEFAULT_TWILIGHT,
                     moon_sep_min=float(payload.get("moon_sep_min") or 0.0),
+                    include_padding=bool(payload.get("include_padding")),
+                    sites=sites,
                 )
                 for w, o in zip(windows, obs):
                     w["observability"] = o
@@ -1372,7 +1387,7 @@ def api_lco_archive_frames(
             result = dict(result)
             result["results"] = rows
             result["count"] = len(rows)
-        if instrument in INSTRUMENTS and isinstance(rows, list):
+        if isinstance(rows, list):
             annotated, dataset_count = _annotate_lco_archive_results(instrument, rows)
             result = dict(result)
             result["results"] = annotated
@@ -1385,13 +1400,10 @@ def api_lco_archive_frames(
 @app.post("/api/lco/archive/download", response_class=JSONResponse)
 def api_lco_archive_download(payload: dict = Body(...)):
     try:
-        inst = (payload.get("instrument") or "").strip()
-        if inst not in INSTRUMENTS:
-            return JSONResponse({"ok": False, "error": "unknown instrument"}, status_code=400)
         frames = payload.get("frames")
         if not isinstance(frames, list) or not frames:
             return JSONResponse({"ok": False, "error": "no frames selected"}, status_code=400)
-        results = lco.download_frames(inst, frames, overwrite=bool(payload.get("overwrite")))
+        results = lco.download_frames(frames, overwrite=bool(payload.get("overwrite")))
         return JSONResponse({"ok": True, "results": results})
     except lco.LcoError as e:
         return _lco_error_response(e)
@@ -1417,6 +1429,20 @@ def _safe_float(value) -> float | None:
         return float(s)
     except (TypeError, ValueError):
         return None
+
+
+def _get_err(row: dict, key_base: str) -> float | None:
+    """Extract and average positive and negative uncertainties if available, or return one."""
+    err1 = _safe_float(row.get(key_base + "err1"))
+    err2 = _safe_float(row.get(key_base + "err2"))
+    if err1 is not None and err2 is not None:
+        return (abs(err1) + abs(err2)) / 2.0
+    if err1 is not None:
+        return abs(err1)
+    if err2 is not None:
+        return abs(err2)
+    return None
+
 
 
 def _query_target_planets_nasa(target: str) -> dict:
@@ -1456,6 +1482,16 @@ def _query_target_planets_nasa(target: str) -> dict:
                             dur = _safe_float(row.get("pl_trandur"))  # hours
                             if dur is not None:
                                 entry["duration"] = dur
+                            # Extract uncertainties
+                            t0_unc = _get_err(row, "pl_tranmid")
+                            per_unc = _get_err(row, "pl_orbper")
+                            dur_unc = _get_err(row, "pl_trandur")
+                            if t0_unc is not None:
+                                entry["t0_unc"] = t0_unc
+                            if per_unc is not None:
+                                entry["period_unc"] = per_unc
+                            if dur_unc is not None:
+                                entry["duration_unc"] = dur_unc
                             results[pl_letter] = entry
     except Exception:
         pass
@@ -1467,7 +1503,11 @@ def _query_target_planets_nasa(target: str) -> dict:
         if len(host) > 2 and host[-2] == " " and host[-1].lower() in "bcdefgh":
             host = host[:-2].strip()
             
-        cols = ["pl_name", "pl_tranmid", "pl_orbper", "pl_trandur"]
+        cols = [
+            "pl_name", "pl_tranmid", "pl_tranmiderr1", "pl_tranmiderr2",
+            "pl_orbper", "pl_orbpererr1", "pl_orbpererr2",
+            "pl_trandur", "pl_trandurerr1", "pl_trandurerr2"
+        ]
         col_str = ", ".join(cols)
         q = f"SELECT {col_str} FROM pscomppars WHERE hostname = {_adql_literal(host)} OR hostname LIKE {_adql_literal(host + '%')}"
         url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
@@ -1486,6 +1526,16 @@ def _query_target_planets_nasa(target: str) -> dict:
                             dur = _safe_float(row.get("pl_trandur"))  # hours
                             if dur is not None:
                                 entry["duration"] = dur
+                            # Extract uncertainties
+                            t0_unc = _get_err(row, "pl_tranmid")
+                            per_unc = _get_err(row, "pl_orbper")
+                            dur_unc = _get_err(row, "pl_trandur")
+                            if t0_unc is not None:
+                                entry["t0_unc"] = t0_unc
+                            if per_unc is not None:
+                                entry["period_unc"] = per_unc
+                            if dur_unc is not None:
+                                entry["duration_unc"] = dur_unc
                             results[letter] = entry
         except Exception:
             pass
@@ -1743,9 +1793,16 @@ def _annotate_lco_archive_results(inst: str, results: list[dict]) -> tuple[list[
             group_idx_by_key[identity] = len(group_idx_by_key) + 1
         group_id = f"{observing_date or 'unknown'}:{group_idx_by_key[identity]}"
         if group_id not in dataset_meta:
+            inferred_inst = inst if inst in INSTRUMENTS else ""
+            if not inferred_inst:
+                try:
+                    inferred_inst = lco.infer_archive_instrument(row)
+                except lco.LcoError:
+                    inferred_inst = ""
             dataset_meta[group_id] = {
                 "dataset_id": group_id,
                 "dataset_date": observing_date,
+                "instrument": inferred_inst,
                 "object": str(row.get("OBJECT") or ""),
                 "site": str(row.get("SITEID") or ""),
                 "telescope": str(row.get("TELID") or ""),
@@ -1768,19 +1825,28 @@ def _annotate_lco_archive_results(inst: str, results: list[dict]) -> tuple[list[
                 meta["archive_ra_deg"] = ra_deg
                 meta["archive_dec_deg"] = dec_deg
 
-    local_cache: dict[tuple[str, str], list[dict]] = {}
+    local_cache: dict[tuple[str, str, str], list[dict]] = {}
     for meta in dataset_meta.values():
+        inst_name = str(meta.get("instrument") or "")
         obsdate = (meta.get("dataset_date") or "").replace("-", "")[2:8]
         site = str(meta.get("site") or "").lower()
-        if not obsdate or not site:
+        if not inst_name or not obsdate or not site:
             continue
-        key = (obsdate, site)
+        key = (inst_name, obsdate, site)
         if key not in local_cache:
-            local_cache[key] = _local_lco_datasets(inst, obsdate, site)
+            local_cache[key] = _local_lco_datasets(inst_name, obsdate, site)
 
         archive_ra = meta.get("archive_ra_deg")
         archive_dec = meta.get("archive_dec_deg")
         if archive_ra is None or archive_dec is None:
+            archive_name = _normalize_target_name(str(meta.get("object") or ""))
+            if not archive_name:
+                continue
+            for cand in local_cache[key]:
+                if _normalize_target_name(str(cand.get("object") or "")) == archive_name:
+                    meta["existing_count"] = int(cand.get("nframes") or 0)
+                    meta["matched_object"] = str(cand.get("object") or "")
+                    break
             continue
 
         best_match = None
@@ -1806,11 +1872,24 @@ def _annotate_lco_archive_results(inst: str, results: list[dict]) -> tuple[list[
         meta = dataset_meta.get(gid, {})
         row["dataset_id"] = gid
         row["dataset_date"] = meta.get("dataset_date", "")
+        row["archive_instrument"] = meta.get("instrument", "")
         row["dataset_exists"] = bool(meta.get("existing_count"))
         row["dataset_existing_count"] = int(meta.get("existing_count", 0))
         row["dataset_frame_count"] = int(meta.get("frame_count", 0))
         row["dataset_matched_object"] = meta.get("matched_object", "")
         row["dataset_match_sep_arcsec"] = meta.get("match_sep_arcsec")
+        
+        # Check if frame is saved locally
+        inferred_inst = meta.get("instrument") or ""
+        obsdate = (meta.get("dataset_date") or "").replace("-", "")[2:8]
+        row["saved_locally"] = False
+        if inferred_inst and obsdate and fname:
+            try:
+                dest = lco.frame_dest(inferred_inst, obsdate, fname)
+                if dest.exists() and dest.stat().st_size > 0:
+                    row["saved_locally"] = True
+            except Exception:
+                pass
         out.append(row)
     return out, len(dataset_meta)
 
@@ -1866,6 +1945,16 @@ def _query_target_planets_toi(target: str) -> dict:
                             dur = _safe_float(row.get("Duration (hours)"))
                             if dur is not None:
                                 entry["duration"] = dur
+                            # Extract uncertainties
+                            t0_unc = _safe_float(row.get("Epoch (BJD) err"))
+                            per_unc = _safe_float(row.get("Period (days) err"))
+                            dur_unc = _safe_float(row.get("Duration (hours) err"))
+                            if t0_unc is not None:
+                                entry["t0_unc"] = t0_unc
+                            if per_unc is not None:
+                                entry["period_unc"] = per_unc
+                            if dur_unc is not None:
+                                entry["duration_unc"] = dur_unc
                             results[letter] = entry
     except Exception:
         pass
@@ -1876,7 +1965,7 @@ def _query_target_planets_toi(target: str) -> dict:
         if len(host) > 2 and host[-2] == " " and host[-1].lower() in "bcdefgh":
             host = host[:-2].strip()
         clean_target = host.replace("TOI", "").replace("toi", "").replace("-", "").replace(" ", "").lstrip("0").split(".")[0].strip()
-        q = f"SELECT toidisplay, pl_tranmid, pl_orbper, pl_trandurh FROM toi WHERE toidisplay LIKE {_adql_literal(host + '%')}"
+        q = f"SELECT toidisplay, pl_tranmid, pl_tranmiderr1, pl_tranmiderr2, pl_orbper, pl_orbpererr1, pl_orbpererr2, pl_trandurh, pl_trandurherr1, pl_trandurherr2 FROM toi WHERE toidisplay LIKE {_adql_literal(host + '%')}"
         url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         try:
@@ -1898,6 +1987,16 @@ def _query_target_planets_toi(target: str) -> dict:
                             dur = _safe_float(row.get("pl_trandurh"))  # hours
                             if dur is not None:
                                 entry["duration"] = dur
+                            # Extract uncertainties
+                            t0_unc = _get_err(row, "pl_tranmid")
+                            per_unc = _get_err(row, "pl_orbper")
+                            dur_unc = _get_err(row, "pl_trandurh")
+                            if t0_unc is not None:
+                                entry["t0_unc"] = t0_unc
+                            if per_unc is not None:
+                                entry["period_unc"] = per_unc
+                            if dur_unc is not None:
+                                entry["duration_unc"] = dur_unc
                             results[letter] = entry
         except Exception:
             pass
@@ -1961,64 +2060,90 @@ def _query_target_planets_catalog(target: str) -> dict:
 
 
 # Helper to fetch fitted transit centers for a run
-def _get_run_transit_centers(inst: str, date: str, target: str, run_id: str | None) -> dict:
+def _get_run_fitted_params(inst: str, date: str, target: str, run_id: str | None) -> dict:
+    """Per-planet fitted ephemeris from a run's outputs (the Fitted Parameters
+    Summary), not the input ``sys.yaml`` priors.
+
+    Returns ``{planet: {"tc", "unc", "dur", "dur_unc"}}`` with whatever is
+    available. The transit center (``tc``, BJD) comes from ``out/tc.txt`` when
+    present, otherwise from ``out/summary.csv`` (``t0[idx]`` + the run's
+    reference time). The transit duration (``dur``, hours) comes from
+    ``summary.csv`` (``dur[idx]``, stored in days). ``period`` is deliberately
+    not read here: it is held fixed in the fit and never appears in the summary.
+    """
+    import csv
     import yaml
-    fitted_tcs = {}
+    fitted: dict[str, dict] = {}
     try:
         rdir = fit.fit_output_dir(inst, date, target, run_id or None)
-        tc_txt = rdir / "out" / "tc.txt"
+        out_dir = rdir / "out"
+
+        # Index -> planet letter mapping (summary rows are keyed e.g. "dur[0]").
+        planets_fitted = "b"
+        fit_yaml = rdir / "fit.yaml"
+        if fit_yaml.is_file():
+            with open(fit_yaml) as f:
+                cfg = yaml.safe_load(f) or {}
+                planets_fitted = str(cfg.get("planets", "b"))
+
+        # Transit centers from tc.txt take precedence for t0 when present.
+        tc_txt = out_dir / "tc.txt"
         if tc_txt.is_file():
             with open(tc_txt) as f:
                 for line in f:
                     parts = line.strip().split()
                     if len(parts) >= 3:
                         pl = parts[0]
-                        kepler_val = float(parts[1])
-                        unc = float(parts[2])
-                        bjd_val = kepler_val + 2454833.0
-                        fitted_tcs[pl] = {"tc": bjd_val, "unc": unc}
-        else:
-            summary_csv = rdir / "out" / "summary.csv"
-            if summary_csv.is_file():
-                fit_yaml = rdir / "fit.yaml"
-                planets_fitted = "b"
-                if fit_yaml.is_file():
-                    with open(fit_yaml) as f:
-                        cfg = yaml.safe_load(f) or {}
-                        planets_fitted = str(cfg.get("planets", "b"))
-                
-                ref_time = None
-                log_file = rdir / "timer-fit.log"
-                if log_file.is_file():
-                    with open(log_file) as lf:
-                        for line in lf:
-                            if "ref. time:" in line:
+                        entry = fitted.setdefault(pl, {})
+                        entry["tc"] = float(parts[1]) + 2454833.0  # Kepler -> BJD
+                        entry["unc"] = float(parts[2])
+
+        # Fitted Parameters Summary: t0[idx] (if not already from tc.txt) and dur[idx].
+        summary_csv = out_dir / "summary.csv"
+        if summary_csv.is_file():
+            ref_time = None
+            log_file = rdir / "timer-fit.log"
+            if log_file.is_file():
+                with open(log_file) as lf:
+                    for line in lf:
+                        if "ref. time:" in line:
+                            try:
                                 ref_time = int(line.split("ref. time:")[-1].strip())
-                                break
-                
-                if ref_time is not None:
-                    import csv
-                    with open(summary_csv) as f:
-                        reader = csv.reader(f)
-                        headers = next(reader)
-                        headers[0] = "parameter"
-                        for row in reader:
-                            if row:
-                                row_dict = dict(zip(headers, row))
-                                param = row_dict["parameter"]
-                                if param.startswith("t0[") and param.endswith("]"):
-                                    try:
-                                        idx = int(param[3:-1])
-                                        if idx < len(planets_fitted):
-                                            pl = planets_fitted[idx]
-                                            val = float(row_dict["mean"]) + ref_time
-                                            unc = float(row_dict["sd"])
-                                            fitted_tcs[pl] = {"tc": val, "unc": unc}
-                                    except Exception:
-                                        pass
+                            except ValueError:
+                                ref_time = None
+                            break
+            with open(summary_csv) as f:
+                reader = csv.reader(f)
+                headers = next(reader)
+                headers[0] = "parameter"
+                for row in reader:
+                    if not row:
+                        continue
+                    rd = dict(zip(headers, row))
+                    param = rd.get("parameter", "")
+                    if "[" not in param or not param.endswith("]"):
+                        continue
+                    base, _, idx_str = param[:-1].partition("[")
+                    try:
+                        idx = int(idx_str)
+                    except ValueError:
+                        continue
+                    if idx >= len(planets_fitted):
+                        continue
+                    pl = planets_fitted[idx]
+                    entry = fitted.setdefault(pl, {})
+                    try:
+                        if base == "t0" and "tc" not in entry and ref_time is not None:
+                            entry["tc"] = float(rd["mean"]) + ref_time
+                            entry["unc"] = float(rd["sd"])
+                        elif base == "dur":
+                            entry["dur"] = float(rd["mean"]) * 24.0  # days -> hours
+                            entry["dur_unc"] = float(rd["sd"]) * 24.0
+                    except (ValueError, KeyError):
+                        pass
     except Exception:
         pass
-    return fitted_tcs
+    return fitted
 
 
 @app.get("/api/ephemeris/targets", response_class=JSONResponse)
@@ -2076,11 +2201,32 @@ def api_ephemeris_target_info(target: str):
                     sys_cfg = yaml.safe_load(f) or {}
                     planets_data = sys_cfg.get("planets", {})
                     for pl, pl_params in planets_data.items():
-                        t0_val = pl_params.get("t0", [2450000.0, 0.0])[0]
-                        period_val = pl_params.get("period", [1.0, 0.0])[0]
+                        t0_list = pl_params.get("t0", [2450000.0, 0.0])
+                        if isinstance(t0_list, (list, tuple)):
+                            t0_mean = t0_list[0] if len(t0_list) > 0 else 2450000.0
+                            t0_unc = t0_list[1] if len(t0_list) > 1 else None
+                        else:
+                            t0_mean = t0_list
+                            t0_unc = None
+
+                        period_list = pl_params.get("period", [1.0, 0.0])
+                        if isinstance(period_list, (list, tuple)):
+                            period_mean = period_list[0] if len(period_list) > 0 else 1.0
+                            period_unc = period_list[1] if len(period_list) > 1 else None
+                        else:
+                            period_mean = period_list
+                            period_unc = None
+
+                        # t0 and duration are overridden below from the Fitted
+                        # Parameters Summary; period stays from sys.yaml (it is
+                        # held fixed in the fit and absent from the summary).
                         planets_ephem[pl] = {
-                            "t0": float(t0_val),
-                            "period": float(period_val)
+                            "t0": float(t0_mean),
+                            "t0_unc": float(t0_unc) if t0_unc is not None else None,
+                            "period": float(period_mean),
+                            "period_unc": float(period_unc) if period_unc is not None else None,
+                            "duration": None,
+                            "duration_unc": None,
                         }
             fit_yaml = rdir / "fit.yaml"
             if fit_yaml.is_file():
@@ -2095,11 +2241,20 @@ def api_ephemeris_target_info(target: str):
             if pl not in planets_ephem:
                 planets_ephem[pl] = {"t0": 2450000.0, "period": 1.0}
             
-        tcs = _get_run_transit_centers(inst, date, j["target"], run_id)
-        # Override planets_ephem t0 with fitted tc if available
+        # Override t0 and duration with the run's Fitted Parameters Summary.
+        fitted = _get_run_fitted_params(inst, date, j["target"], run_id)
         for pl in planets_fitted:
-            if pl in tcs and tcs[pl].get("tc") is not None:
-                planets_ephem[pl]["t0"] = float(tcs[pl]["tc"])
+            fp = fitted.get(pl)
+            if not fp:
+                continue
+            if fp.get("tc") is not None:
+                planets_ephem[pl]["t0"] = float(fp["tc"])
+                if fp.get("unc") is not None:
+                    planets_ephem[pl]["t0_unc"] = float(fp["unc"])
+            if fp.get("dur") is not None:
+                planets_ephem[pl]["duration"] = float(fp["dur"])
+                if fp.get("dur_unc") is not None:
+                    planets_ephem[pl]["duration_unc"] = float(fp["dur_unc"])
         
         datasets_list.append({
             "instrument": inst,
@@ -2108,7 +2263,7 @@ def api_ephemeris_target_info(target: str):
             "run_name": j.get("run_name") or (run_id if run_id else "legacy"),
             "target": j["target"],
             "planets_fitted": planets_fitted,
-            "fitted_tcs": tcs,
+            "fitted_tcs": fitted,
             "planets_ephem": planets_ephem,
             "run_type": j.get("run_type") or ""
         })
@@ -2194,10 +2349,10 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
             run_id = j.get("run_id") or ""
             
             # Fetch transit centers
-            tcs = _get_run_transit_centers(inst, date, j["target"], run_id)
-            if pl in tcs:
+            tcs = _get_run_fitted_params(inst, date, j["target"], run_id)
+            if pl in tcs and tcs[pl].get("tc") is not None:
                 val = tcs[pl]["tc"]
-                unc = tcs[pl]["unc"]
+                unc = tcs[pl].get("unc")
                 
                 # Check status: target-specific lookup first, fallback to targetless
                 norm_tgt = _normalize_target_name(j["target"])
@@ -2227,7 +2382,7 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
                 })
                 
         # Perform straight line fit if possible
-        fit_points = [p for p in points if p["checked"] and p["unc"] > 0]
+        fit_points = [p for p in points if p["checked"] and p["unc"] is not None and p["unc"] > 0]
         was_fit = False
         t0_fit = T0
         period_fit = P

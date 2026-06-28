@@ -81,6 +81,27 @@ def sites_for_kind(kind: str) -> list[str]:
     return sites
 
 
+def resolve_site_list(
+    sites: list[str] | None = None, kind: str | None = None
+) -> list[str]:
+    """Sites to evaluate, in priority order: an explicit ``sites`` list when
+    given, else the selected instrument ``kind``'s sites, else the full LCO
+    network. Site codes are normalised and de-duplicated; unknown codes raise.
+    """
+    if sites:
+        out: list[str] = []
+        for s in sites:
+            key = (s or "").strip().lower()
+            if key not in LCO_SITES:
+                raise TransitObsError(f"unknown site: {key!r}", 400)
+            if key not in out:
+                out.append(key)
+        return out
+    if kind:
+        return sites_for_kind(kind)
+    return list(LCO_SITES)
+
+
 def _earth_location(site: str):
     from astropy.coordinates import EarthLocation
     import astropy.units as u
@@ -138,12 +159,21 @@ def classify_transits(
     max_airmass: float = 2.0,
     twilight: str = DEFAULT_TWILIGHT,
     moon_sep_min: float = 30.0,
+    include_padding: bool = False,
+    sites: list[str] | None = None,
 ) -> list[dict]:
-    """Classify each window's transit as full / partial / none across the kind's
-    LCO sites. Returns a list aligned with ``windows``; each entry is
+    """Classify each window's transit as full / partial / none across a set of
+    LCO sites. The sites are resolved by :func:`resolve_site_list`: an explicit
+    ``sites`` list takes priority, else the instrument ``kind``'s sites, else the
+    full LCO network. Returns a list aligned with ``windows``; each entry is
     ``{"rating", "sites", "best_site"}`` where ``sites`` lists sites with at
     least partial coverage and ``best_site`` is a full site if any, else the
     most-covered partial site.
+
+    By default the observability check spans only the transit itself
+    (``mid ± duration/2``); the padded ``start``/``end`` are used purely for the
+    table/plot span. Set ``include_padding=True`` to require the padded baseline
+    (``start``..``end``) to be observable too, which makes ``full`` stricter.
     """
     import numpy as np
     import astropy.units as u
@@ -157,21 +187,41 @@ def classify_transits(
         raise TransitObsError("duration must be positive", 400)
     alt_min = alt_limit_from_airmass(max_airmass)
     sun_alt_max = twilight_limit(twilight)
-    sites = sites_for_kind(kind)
+    site_list = resolve_site_list(sites, kind)
     target = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg)
     half = (duration_hours / 24.0) / 2.0  # days
 
-    # Per-transit time grids (ingress..egress), concatenated for one transform
-    # per site. n_samp samples per transit at ~_CLASSIFY_STEP_MIN cadence.
-    n_samp = max(5, int(round(duration_hours * 60.0 / _CLASSIFY_STEP_MIN)) + 1)
-    mids = np.array([Time(_parse_iso_utc(w["mid"])).jd for w in windows])
-    offsets = np.linspace(-half, half, n_samp)
-    all_jd = (mids[:, None] + offsets[None, :]).ravel()
+    # Per-transit time grids, concatenated for one transform per site. Unless
+    # ``include_padding`` is set, the grid covers only the bare transit
+    # (mid ± duration/2); the padded start/end are span metadata, not part of
+    # the observability test.
+    starts = []
+    ends = []
+    for w in windows:
+        if include_padding and "start" in w and "end" in w:
+            starts.append(Time(_parse_iso_utc(w["start"])).jd)
+            ends.append(Time(_parse_iso_utc(w["end"])).jd)
+        elif "mid" in w:
+            mid_jd = Time(_parse_iso_utc(w["mid"])).jd
+            starts.append(mid_jd - half)
+            ends.append(mid_jd + half)
+        elif "start" in w and "end" in w:
+            starts.append(Time(_parse_iso_utc(w["start"])).jd)
+            ends.append(Time(_parse_iso_utc(w["end"])).jd)
+        else:
+            raise TransitObsError("window needs 'mid' or 'start'/'end'", 400)
+    starts = np.asarray(starts)
+    ends = np.asarray(ends)
+
+    max_duration = float(np.max((ends - starts) * 24.0))
+    n_samp = max(5, int(round(max_duration * 60.0 / _CLASSIFY_STEP_MIN)) + 1)
+    offsets = np.linspace(0.0, 1.0, n_samp)
+    all_jd = (starts[:, None] + (ends[:, None] - starts[:, None]) * offsets[None, :]).ravel()
     grid = Time(all_jd, format="jd", scale="utc")
 
     # site -> per-transit observable fraction
     frac = {}
-    for site in sites:
+    for site in site_list:
         mask, *_ = _observable_mask(
             target, _earth_location(site), grid, alt_min, sun_alt_max, moon_sep_min
         )
@@ -179,8 +229,8 @@ def classify_transits(
 
     results = []
     for i in range(len(windows)):
-        full_sites = [s for s in sites if frac[s][i] >= 0.999]
-        partial_sites = [s for s in sites if 0.0 < frac[s][i] < 0.999]
+        full_sites = [s for s in site_list if frac[s][i] >= 0.999]
+        partial_sites = [s for s in site_list if 0.0 < frac[s][i] < 0.999]
         if full_sites:
             rating, best = "full", full_sites[0]
         elif partial_sites:

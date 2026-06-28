@@ -357,7 +357,7 @@
     window.history.replaceState(null, '', url);
     const lcoLink = document.getElementById('lco-schedule-link');
     if (lcoLink) {
-      lcoLink.href = `/lco?view=${encodeURIComponent(slug)}`;
+      lcoLink.href = `/lco/schedule?view=${encodeURIComponent(slug)}`;
       lcoLink.style.display = 'inline-flex';
     }
   }

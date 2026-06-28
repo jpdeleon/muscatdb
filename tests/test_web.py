@@ -148,13 +148,16 @@ def test_validate_no_duplicate_datasets():
 # --------------------------------------------------------------------------- #
 
 
-def test_lco_page_renders_and_nav_links_it():
+def test_lco_pages_render_and_nav_links_it():
     client = TestClient(app)
     page = client.get("/lco")
     assert page.status_code == 200
-    assert "Schedule Observations" in page.text and "Download LCO Data" in page.text
-    # Nav (from base.html) links to /lco on every page.
-    assert ">LCO<" in client.get("/logs").text
+    assert "Schedule Observations" in page.text
+    archive = client.get("/lco/archive")
+    assert archive.status_code == 200
+    assert "Search LCO Archive" in archive.text and "Download selected" in archive.text
+    # Nav (from base.html) links to /lco/schedule on every page.
+    assert 'href="/lco/schedule"' in client.get("/logs").text
 
 
 def test_lco_config_reports_booleans_and_hides_token(monkeypatch):
@@ -256,11 +259,12 @@ def test_lco_submit_succeeds_with_matching_hash(monkeypatch):
 def test_lco_archive_frames_search(monkeypatch):
     monkeypatch.setattr(
         "muscat_db.lco.archive_search",
-        lambda filters, token=None: {"count": 1, "results": [{"filename": "f.fits.fz", "SITEID": "ogg"}]},
+        lambda filters, token=None: {"count": 1, "results": [{"filename": "ogg2m001-ep05-20260102-0001-e91.fits.fz", "SITEID": "ogg", "TELID": "2m0a"}]},
     )
     r = TestClient(app).get("/api/lco/archive/frames", params={"OBJECT": "WASP-12", "limit": "10"})
     assert r.status_code == 200
     assert r.json()["results"][0]["SITEID"] == "ogg"
+    assert r.json()["results"][0]["archive_instrument"] == "muscat3"
 
 
 def test_lco_archive_frames_telescope_class_filters_locally(monkeypatch):
@@ -407,34 +411,46 @@ def test_lco_archive_dataset_exists_matches_by_coordinates_not_name(mock_db):
 def test_lco_archive_download_per_file_results(monkeypatch):
     monkeypatch.setattr(
         "muscat_db.lco.download_frames",
-        lambda inst, frames, overwrite=False: [{"filename": "f.fits", "status": "downloaded", "bytes": 1024}],
+        lambda frames, overwrite=False: [{"filename": "f.fits", "instrument": "muscat3", "status": "downloaded", "bytes": 1024}],
     )
     r = TestClient(app).post("/api/lco/archive/download", json={
-        "instrument": "muscat3",
-        "frames": [{"filename": "f.fits", "url": "https://x/y", "DAY_OBS": "2026-01-01"}],
+        "frames": [{"filename": "ogg2m001-ep05-20260102-0001-e91.fits.fz", "SITEID": "ogg", "TELID": "2m0a", "url": "https://x/y", "DAY_OBS": "2026-01-01"}],
     })
     assert r.status_code == 200
     assert r.json()["results"][0]["status"] == "downloaded"
+    assert r.json()["results"][0]["instrument"] == "muscat3"
 
 
-def test_lco_page_has_obs_column_constraints_and_plotly_figure():
-    page = TestClient(app).get("/lco").text
+def test_lco_schedule_page_has_obs_column_constraints_plotly_and_persistence():
+    page = TestClient(app).get("/lco/schedule").text
     # Observability column + filter.
     assert "<th>Transit obs</th>" in page and "<th>Visibility</th>" in page
     assert 'id="win-filter"' in page
-    # Configurable constraints.
+    # Configurable constraints and coordinates.
     assert 'id="sch-obs-airmass"' in page and 'id="sch-twilight"' in page and 'id="sch-moon-sep"' in page
+    assert 'id="sch-coords"' in page
     # Inline astropy figure drawn with Plotly.
     assert "plotly-2.24.1" in page and 'id="vis-plot"' in page and "/api/lco/visibility" in page
     # Dynamic cross-check link to the LCO-generated visibility PNG (target/date-specific).
     assert "visibility.lco.global/visibility.png" in page
     assert 'id="lco-vis-link"' in page and 'target="_blank"' in page
+    # Schedule state persists across reloads.
+    assert "lco:schedule:options" in page and "lco:schedule:state" in page
 
 
-def test_lco_archive_download_rejects_unknown_instrument():
+def test_lco_archive_page_has_archive_persistence():
+    page = TestClient(app).get("/lco/archive").text
+    assert "Search LCO Archive" in page and "Download selected" in page
+    assert "lco:archive:options" in page and "lco:archive:state" in page
+    assert "Save under instrument" not in page
+
+
+def test_lco_archive_download_rejects_unknown_inferred_instrument():
     r = TestClient(app).post("/api/lco/archive/download",
-                             json={"instrument": "hubble", "frames": [{"filename": "f"}]})
-    assert r.status_code == 400
+                             json={"frames": [{"filename": "mystery.fits", "url": "https://x/y", "DAY_OBS": "2026-01-01"}]})
+    assert r.status_code == 200
+    assert r.json()["results"][0]["status"] == "error"
+    assert "infer destination instrument" in r.json()["results"][0]["error"]
 
 
 def test_lco_windows_source_nasa_uses_nasa_catalog(monkeypatch):
