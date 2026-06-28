@@ -575,26 +575,55 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
         csv_path = pathlib.Path(HERE.parent.parent / "data" / "TOIs.csv")
         if not csv_path.is_file():
             return None
-            
-        target_clean = re.sub(r"[^0-9a-zA-Z]", "", target).lower()
+
+        def extract_number(s: str) -> int | None:
+            """Extract the numeric part and return as int to normalize leading zeros."""
+            match = re.search(r'\d+', s)
+            return int(match.group(0)) if match else None
+
+        target_lower = target.lower()
+        target_num = extract_number(target_lower)
         best_row = None
-        
+
         with open(csv_path, mode='r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
                 toi = (row.get("TOI") or "").strip()
                 planet_name = (row.get("Planet Name") or "").strip()
                 tic_id = (row.get("TIC ID") or "").strip()
-                
-                toi_clean = re.sub(r"[^0-9a-zA-Z]", "", toi).lower()
-                planet_clean = re.sub(r"[^0-9a-zA-Z]", "", planet_name).lower()
-                tic_clean = re.sub(r"[^0-9a-zA-Z]", "", tic_id).lower()
-                
-                if (toi_clean and (target_clean in (toi_clean, f"toi{toi_clean}") or toi_clean in target_clean)) or \
-                   (planet_clean and (target_clean == planet_clean or planet_clean in target_clean or target_clean in planet_clean)) or \
-                   (tic_clean and (target_clean in (tic_clean, f"tic{tic_clean}") or tic_clean in target_clean)):
-                    best_row = row
-                    break
+
+                # Match TOI by numeric value (handles leading zeros like toi02688 vs TOI-688)
+                if toi:
+                    toi_num = extract_number(toi)
+                    if target_num and toi_num and target_num == toi_num:
+                        best_row = row
+                        break
+                    # Also try exact prefix match for formats like toi688 or toi-688
+                    target_clean = re.sub(r"[^0-9a-zA-Z]", "", target_lower)
+                    toi_clean = re.sub(r"[^0-9a-zA-Z]", "", toi.lower())
+                    if target_clean == toi_clean or (toi_num and target_clean == f"toi{toi_num}"):
+                        best_row = row
+                        break
+
+                # Match planet name (exact or prefix)
+                if planet_name:
+                    target_clean = re.sub(r"[^0-9a-zA-Z]", "", target_lower)
+                    planet_clean = re.sub(r"[^0-9a-zA-Z]", "", planet_name.lower())
+                    if target_clean == planet_clean:
+                        best_row = row
+                        break
+
+                # Match TIC ID by numeric value
+                if tic_id:
+                    tic_num = extract_number(tic_id)
+                    if target_num and tic_num and target_num == tic_num:
+                        best_row = row
+                        break
+                    target_clean = re.sub(r"[^0-9a-zA-Z]", "", target_lower)
+                    tic_clean = re.sub(r"[^0-9a-zA-Z]", "", tic_id.lower())
+                    if target_clean == tic_clean or (tic_num and target_clean == f"tic{tic_num}"):
+                        best_row = row
+                        break
                     
         if not best_row:
             return None

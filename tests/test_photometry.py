@@ -1539,6 +1539,28 @@ class TestRoutes:
         assert data2["params"]["teff"] == 5600.0
         assert data2["params"]["period"] == 1.43036994965074
 
+    def test_transit_fit_query_archive_toi_zero_padding(self, client):
+        """Test that TOI queries handle zero-padding correctly (toi02688.01 != toi00688.01)."""
+        # Query with zero-padded format should find TOI-101.01 (not any substring match)
+        r = client.get("/transit-fit/query-archive?target=toi0101.01&source=toi")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert "TOI-101.01" in data["pl_name"]
+
+        # Also test with different padding styles
+        r2 = client.get("/transit-fit/query-archive?target=TOI-101.01&source=toi")
+        assert r2.status_code == 200
+        data2 = r2.json()
+        assert data2["ok"] is True
+        assert data2["pl_name"] == data["pl_name"]  # Should get same result
+
+        r3 = client.get("/transit-fit/query-archive?target=toi101.01&source=toi")
+        assert r3.status_code == 200
+        data3 = r3.json()
+        assert data3["ok"] is True
+        assert data3["pl_name"] == data["pl_name"]  # Should get same result
+
     def test_jobs_page(self, client, monkeypatch):
         mock_jobs = [
             {
