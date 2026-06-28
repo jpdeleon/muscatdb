@@ -103,30 +103,36 @@
     <div class="lco-field muscat-only"><label for="sch-count">Exp count</label>
       <input id="sch-count" type="number" min="1" value="1"></div>
     <div class="lco-field sinistro-only"><label for="sch-sin-count">Exp count</label><input id="sch-sin-count" type="number" min="1" value="1"></div>
-    <div class="lco-field muscat-only"><label for="sch-muscat-site">Site</label>
-      <select id="sch-muscat-site">
-        <option value="">— select —</option>
-        <option value="ogg">ogg (M3)</option>
-        <option value="coj">coj (M4)</option>
-      </select></div>
-    <div class="lco-field sinistro-only"><label for="sch-site">Site</label>
-      <select id="sch-site">
-        <option value="">— select —</option>
-        <option value="ogg">ogg</option>
-        <option value="coj">coj</option>
-        <option value="lsc">lsc</option>
-        <option value="cpt">cpt</option>
-        <option value="tfn">tfn</option>
-        <option value="elp">elp</option>
-      </select></div>
-    <div class="lco-field sinistro-only"><label for="sch-effective-filter">Filter</label>
+    <div class="lco-field"><label>Site</label>
+      <div class="muscat-only" style="display: none;">
+        <select id="sch-muscat-site">
+          <option value="">— select —</option>
+          <option value="ogg">ogg (M3)</option>
+          <option value="coj">coj (M4)</option>
+        </select>
+      </div>
+      <div class="sinistro-only" style="display: none;">
+        <select id="sch-site">
+          <option value="">— select —</option>
+          <option value="ogg">ogg</option>
+          <option value="coj">coj</option>
+          <option value="lsc">lsc</option>
+          <option value="cpt">cpt</option>
+          <option value="tfn">tfn</option>
+          <option value="elp">elp</option>
+        </select>
+      </div>
+    </div>
+    <div class="lco-field sinistro-only" style="display: none;">
+      <label for="sch-effective-filter">Filter</label>
       <select id="sch-effective-filter">
         <option value="rp">rp</option>
         <option value="up">up</option>
         <option value="gp">gp</option>
         <option value="ip">ip</option>
         <option value="zs">zs</option>
-      </select></div>
+      </select>
+    </div>
   </div>
   <div class="lco-msg" id="msg-proposals" style="margin-top: 0.4rem;"></div>
 
