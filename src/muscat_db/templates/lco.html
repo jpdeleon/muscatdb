@@ -75,14 +75,7 @@
 
 <!-- ============================ SCHEDULE ============================ -->
 <div class="lco-panel active" id="panel-schedule">
-  <div class="lco-section">
-    <h3>Proposal</h3>
-    <div class="lco-field" style="max-width: 360px;">
-      <label for="sch-proposal">Proposal ID</label>
-      <select id="sch-proposal"><option value="">— loading proposals —</option></select>
-    </div>
-    <div class="lco-msg" id="msg-proposals" style="margin-top: 0.4rem;"></div>
-  </div>
+
 
   <div class="lco-section">
     <h3>Target &amp; Transit Windows</h3>
@@ -153,6 +146,9 @@
   <div class="lco-section">
     <h3>Imaging Request</h3>
     <div class="lco-grid">
+      <div class="lco-field"><label for="sch-proposal">Proposal ID</label>
+        <select id="sch-proposal"><option value="">— loading proposals —</option></select>
+      </div>
       <div class="lco-field"><label for="sch-kind">Instrument</label>
         <select id="sch-kind">
           <option value="muscat3">MuSCAT3 (ogg 2m0)</option>
@@ -165,6 +161,7 @@
       <div class="lco-field"><label for="sch-count" class="muscat-only">Exposure count</label>
         <input id="sch-count" class="muscat-only" type="number" min="1" value="1"></div>
     </div>
+    <div class="lco-msg" id="msg-proposals" style="margin-top: 0.4rem;"></div>
 
     <!-- MUSCAT -->
     <div class="muscat-only" style="margin-top: 0.85rem;">
