@@ -81,6 +81,11 @@
     <div id="loader" style="display: none; align-items: center;">
       <div class="spinner" title="Calculating fit"></div>
     </div>
+    <a class="btn sm" id="lco-schedule-link" href="#"
+       title="Open this saved view on the LCO scheduling & download page"
+       style="display: none; align-items: center; gap: 0.35rem; font-weight: 500;">
+      🔭 Schedule on LCO
+    </a>
   </div>
 </div>
 
@@ -350,6 +355,11 @@
     const targetsParam = loadedTargets.slice().sort().map(encodeURIComponent).join('+');
     const url = `${window.location.pathname}?targets=${targetsParam}&view=${encodeURIComponent(slug)}`;
     window.history.replaceState(null, '', url);
+    const lcoLink = document.getElementById('lco-schedule-link');
+    if (lcoLink) {
+      lcoLink.href = `/lco?view=${encodeURIComponent(slug)}`;
+      lcoLink.style.display = 'inline-flex';
+    }
   }
 
   function scheduleSaveView(delay = 600) {

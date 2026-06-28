@@ -54,6 +54,26 @@ ENV_VARS: tuple[EnvVar, ...] = (
         "or for BANZAI muscat3/muscat4/sinistro)",
         secret=True,
     ),
+    EnvVar(
+        "LCO_API_TOKEN",
+        None,
+        "LCO Observation Portal API token (live scheduling / IPP dry-run on the /lco page). "
+        "Server-side only; never sent to the browser.",
+        secret=True,
+    ),
+    EnvVar(
+        "MUSCAT_LCO_DIR",
+        None,
+        "Root directory for LCO archive downloads (<root>/<instrument>/<date>/). "
+        "Falls back to MUSCAT_DATA_DIR's per-instrument layout when unset.",
+    ),
+    EnvVar(
+        "MUSCAT_LCO_ALLOW_SUBMIT",
+        "0",
+        "Server-side safety gate for live LCO observation submission. While '0' "
+        "(default), /api/lco/submit refuses even with a valid dry-run + confirm; "
+        "set to '1' only when intentionally going live.",
+    ),
 )
 
 
