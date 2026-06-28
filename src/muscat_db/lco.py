@@ -80,6 +80,25 @@ class LcoError(RuntimeError):
         return out
 
 
+def infer_archive_instrument(frame: dict) -> str:
+    """Infer the muscat-db instrument for an LCO archive frame."""
+    filename = str(frame.get("filename") or frame.get("basename") or "").strip().lower()
+    site = str(frame.get("SITEID") or "").strip().lower()
+    tel = str(frame.get("TELID") or "").strip().lower()
+
+    if filename.startswith("ogg2m001-"):
+        return "muscat3"
+    if filename.startswith("coj2m002-"):
+        return "muscat4"
+    if tel.startswith("1m0") or (site and "1m0" in filename):
+        return "sinistro"
+    if tel.startswith("2m0") and site == "ogg":
+        return "muscat3"
+    if tel.startswith("2m0") and site == "coj":
+        return "muscat4"
+    raise LcoError("could not infer destination instrument from archive metadata", 400)
+
+
 # --------------------------------------------------------------------------- #
 # Token / config
 # --------------------------------------------------------------------------- #
@@ -375,7 +394,7 @@ def download_frame(url: str, dest: pathlib.Path, overwrite: bool = False) -> dic
     return {"status": "downloaded", "path": str(dest), "bytes": dest.stat().st_size}
 
 
-def download_frames(inst: str, frames: list[dict], overwrite: bool = False) -> list[dict]:
+def download_frames(frames: list[dict], overwrite: bool = False) -> list[dict]:
     """Download a batch, one per-file result each (errors captured, not raised)."""
     results = []
     for frame in frames or []:
@@ -383,9 +402,11 @@ def download_frames(inst: str, frames: list[dict], overwrite: bool = False) -> l
         url = frame.get("url")
         entry = {"filename": filename}
         try:
+            inst = infer_archive_instrument(frame)
             date = frame_date_dir(frame)
             dest = frame_dest(inst, date, filename)
             res = download_frame(url, dest, overwrite=overwrite)
+            entry["instrument"] = inst
             entry.update(res)
         except LcoError as e:
             entry.update({"status": "error", "error": str(e)})

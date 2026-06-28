@@ -44,6 +44,21 @@ def test_sites_for_kind():
         T.sites_for_kind("hubble")
 
 
+def test_resolve_site_list_priority():
+    # Explicit sites win, normalised and de-duplicated.
+    assert T.resolve_site_list(["COJ", "ogg", "coj"]) == ["coj", "ogg"]
+    # Falls back to the kind when no sites are given.
+    assert T.resolve_site_list(None, "muscat4") == ["coj"]
+    # Empty/omitted with no kind => the full LCO network.
+    assert T.resolve_site_list() == list(T.LCO_SITES)
+    assert T.resolve_site_list([], None) == list(T.LCO_SITES)
+
+
+def test_resolve_site_list_rejects_unknown_site():
+    with pytest.raises(T.TransitObsError):
+        T.resolve_site_list(["ogg", "atlantis"])
+
+
 # --------------------------------------------------------------------------- #
 # classify_transits
 # --------------------------------------------------------------------------- #
@@ -87,6 +102,51 @@ def test_classify_is_monotonic_in_strictness():
 
 def test_classify_empty_windows():
     assert T.classify_transits(97.64, 29.67, [], "muscat", 2.5) == []
+
+
+def test_classify_explicit_sites_override_kind():
+    # Passing ``sites`` restricts the evaluation regardless of ``kind``.
+    wins = _windows(6)
+    res = T.classify_transits(97.64, 29.67, wins, "muscat", 2.5, sites=["lsc"])
+    for r in res:
+        assert set(r["sites"]).issubset({"lsc"})
+
+
+def test_classify_full_network_default_when_no_sites_or_kind():
+    # kind=None and no sites => the full LCO network is considered, so reported
+    # sites can include codes outside any single instrument kind.
+    wins = _windows(8, start_hour=0)
+    res = T.classify_transits(97.64, 29.67, wins, None, 2.5, max_airmass=40,
+                              twilight="civil", moon_sep_min=0, sites=None)
+    seen = set()
+    for r in res:
+        seen.update(r["sites"])
+    assert seen.issubset(set(T.LCO_SITES))
+
+
+def test_classify_checks_padding_observability():
+    # A window that is rated "full" on the bare transit:
+    wins = [{"epoch": 0, "mid": "2026-03-15T07:30:00"}]
+    res_no_pad = T.classify_transits(97.64, 29.67, wins, "muscat", 2.0)
+    assert res_no_pad[0]["rating"] == "full"
+
+    # Add a start time in the middle of the day (20 UTC / 9:30 AM local), when
+    # the sun is up, making the padded baseline unobservable.
+    wins_with_bad_pad = [{
+        "epoch": 0,
+        "start": "2026-03-15T20:00:00",
+        "mid": "2026-03-15T07:30:00",
+        "end": "2026-03-15T08:30:00",
+    }]
+    # Default: padding is span-only metadata, so the bare transit still rates "full".
+    res_default = T.classify_transits(97.64, 29.67, wins_with_bad_pad, "muscat", 2.0)
+    assert res_default[0]["rating"] == "full"
+
+    # include_padding=True: the unobservable baseline demotes it below "full".
+    res_with_bad_pad = T.classify_transits(
+        97.64, 29.67, wins_with_bad_pad, "muscat", 2.0, include_padding=True
+    )
+    assert res_with_bad_pad[0]["rating"] != "full"
 
 
 # --------------------------------------------------------------------------- #

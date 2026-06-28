@@ -301,13 +301,13 @@ def test_download_frame_rejects_bad_url(tmp_path):
 def test_download_frames_captures_per_file_errors(monkeypatch, tmp_path):
     monkeypatch.setenv("MUSCAT_LCO_DIR", str(tmp_path))
     frames = [
-        {"filename": "../evil.fits", "url": "https://x/y", "DAY_OBS": "2026-01-01"},
-        {"filename": "ok-20260101-0001-e91.fits", "url": "https://x/y", "DAY_OBS": "2026-01-01"},
+        {"filename": "../evil.fits", "url": "https://x/y", "DAY_OBS": "2026-01-01", "TELID": "2m0", "SITEID": "ogg"},
+        {"filename": "ok-20260101-0001-e91.fits", "url": "https://x/y", "DAY_OBS": "2026-01-01", "TELID": "2m0", "SITEID": "ogg"},
     ]
     # Pre-create the "ok" file so download short-circuits to "exists" (no network).
     (tmp_path / "muscat3" / "260101").mkdir(parents=True)
     (tmp_path / "muscat3" / "260101" / "ok-20260101-0001-e91.fits").write_text("x")
-    results = lco.download_frames("muscat3", frames, overwrite=False)
+    results = lco.download_frames(frames, overwrite=False)
     assert results[0]["status"] == "error"
     assert results[1]["status"] == "exists"
 
