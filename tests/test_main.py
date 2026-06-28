@@ -596,6 +596,97 @@ class TestDatabase:
         finally:
             os.unlink(db_path)
 
+    def test_ingest_date_adds_new_date_without_rebuild(self, tmp_obslog):
+        from muscat_db.database import build_db, ingest_date, get_dates
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            build_db(db_path)
+            _make_csv(
+                f"{tmp_obslog}/muscat/260102/obslog-muscat-260102-ccd0.csv",
+                ["FRAME", "OBJECT", "JD-STRT", "UT-STRT",
+                 "EXPTIME (s)", "READ_MODE", "FILTER",
+                 "RA", "DEC", "SECZ", "FOCUS (mm)", "PA (deg)"],
+                [{"FRAME": "MSCT0_2601020001", "OBJECT": "M42",
+                  "JD-STRT": "60001.1", "UT-STRT": "02:00:00",
+                  "EXPTIME (s)": "20", "READ_MODE": "high",
+                  "FILTER": "r", "RA": "05:35:17", "DEC": "-05:23:28",
+                  "SECZ": "1.1", "FOCUS (mm)": "-38.6", "PA (deg)": "44.0"}],
+            )
+
+            count = ingest_date(db_path, "muscat", "260102")
+            assert count == 1
+
+            dates = get_dates(db_path, "muscat")
+            assert [row["obsdate"] for row in dates][:2] == ["260102", "260101"]
+
+            conn = sqlite3.connect(db_path)
+            nframes = conn.execute(
+                "SELECT COUNT(*) FROM frames WHERE instrument = ? AND obsdate = ?",
+                ("muscat", "260102"),
+            ).fetchone()[0]
+            target = conn.execute(
+                "SELECT n_dates, n_frames FROM targets WHERE object = ?",
+                ("M42",),
+            ).fetchone()
+            conn.close()
+
+            assert nframes == 1
+            assert target == (1, 1)
+        finally:
+            os.unlink(db_path)
+
+    def test_ingest_date_replaces_existing_date_and_refreshes_targets(self, tmp_obslog):
+        from muscat_db.database import build_db, ingest_date
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            build_db(db_path)
+            for ccd in range(3):
+                csv_path = f"{tmp_obslog}/muscat/260101/obslog-muscat-260101-ccd{ccd}.csv"
+                if os.path.exists(csv_path):
+                    os.unlink(csv_path)
+            _make_csv(
+                f"{tmp_obslog}/muscat/260101/obslog-muscat-260101-ccd0.csv",
+                ["FRAME", "OBJECT", "JD-STRT", "UT-STRT",
+                 "EXPTIME (s)", "READ_MODE", "FILTER",
+                 "RA", "DEC", "SECZ", "FOCUS (mm)", "PA (deg)"],
+                [{"FRAME": "MSCT0_2601010009", "OBJECT": "M42",
+                  "JD-STRT": "60000.9", "UT-STRT": "09:00:00",
+                  "EXPTIME (s)": "30", "READ_MODE": "slow",
+                  "FILTER": "i", "RA": "05:35:17", "DEC": "-05:23:28",
+                  "SECZ": "1.2", "FOCUS (mm)": "-38.7", "PA (deg)": "46.0"}],
+            )
+
+            count = ingest_date(db_path, "muscat", "260101")
+            assert count == 1
+
+            conn = sqlite3.connect(db_path)
+            frames = conn.execute(
+                "SELECT COUNT(*) FROM frames WHERE instrument = ? AND obsdate = ?",
+                ("muscat", "260101"),
+            ).fetchone()[0]
+            old_target = conn.execute(
+                "SELECT COUNT(*) FROM targets WHERE object = ?",
+                ("M67",),
+            ).fetchone()[0]
+            new_target = conn.execute(
+                "SELECT n_dates, n_frames FROM targets WHERE object = ?",
+                ("M42",),
+            ).fetchone()
+            untouched = conn.execute(
+                "SELECT COUNT(*) FROM targets WHERE object = ?",
+                ("WASP-12",),
+            ).fetchone()[0]
+            conn.close()
+
+            assert frames == 1
+            assert old_target == 0
+            assert new_target == (1, 1)
+            assert untouched == 1
+        finally:
+            os.unlink(db_path)
+
 
 # ── Tests: CLI ───────────────────────────────────────────────────────────────
 
@@ -613,6 +704,7 @@ class TestCLI:
         assert "scan" in r.output
         assert "summary" in r.output
         assert "build-db" in r.output
+        assert "ingest-date" in r.output
         assert "serve" in r.output
 
     def test_no_args_shows_help(self):
@@ -639,6 +731,11 @@ class TestCLI:
         assert r.exit_code == 0
         assert "frames" in r.output or "Database built" in r.output
 
+    def test_ingest_date_no_csvs(self, tmp_obslog):
+        r = self._invoke("ingest-date", "muscat", "260101", "--db", "/tmp/__test_ingest.db")
+        assert r.exit_code != 0
+        assert "No obslog CSVs found" in r.output
+
     def test_serve_help(self):
         r = self._invoke("serve", "--help")
         assert r.exit_code == 0
@@ -647,6 +744,7 @@ class TestCLI:
     def test_all_commands_have_help(self):
         for cmd in ["scan", "scan-missing", "scan-all",
                       "scan-yesterday-cmd", "summary",
+                      "ingest-date",
                       "build-db", "serve"]:
             r = self._invoke(cmd, "--help")
             assert r.exit_code == 0, f"{cmd} --help failed: {r.output}"

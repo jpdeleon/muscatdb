@@ -265,6 +265,37 @@ def build_db(
     console.print(f"[green]Database built: {count} frames indexed in {db}[/]")
 
 
+@app.command(cls=_Cmd)
+def ingest_date(
+    instrument: str = typer.Argument(
+        ..., help="Instrument name", autocompletion=_complete_instrument,
+        click_type=_INST_CHOICES,
+    ),
+    obsdate: str = typer.Argument(
+        ..., help="Observation date (yymmdd)", autocompletion=_complete_obsdate,
+        callback=_obsdate_callback,
+    ),
+    db: str = typer.Option("muscat.db", "--db", help="SQLite database path"),
+):
+    """Ingest one instrument/date from obslog CSVs into the database."""
+    _log_startup_banner(f"ingest-date {instrument} {obsdate} --db {db}")
+    from muscat_db.database import ingest_date as _ingest_date
+    console.print(f"[cyan]Refreshing {instrument} {obsdate} from obslog CSVs...[/]")
+    try:
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[bold]{task.fields[filename]}"),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            count = _ingest_date(db, instrument, obsdate, progress=progress)
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/]")
+        raise typer.Exit(1)
+    console.print(f"[green]Ingested {count} frames for {instrument} {obsdate} into {db}[/]")
+
+
 def _pids_listening_on(port: int) -> list[int]:
     """PIDs of processes holding a LISTEN socket on ``port`` (Linux /proc).
 

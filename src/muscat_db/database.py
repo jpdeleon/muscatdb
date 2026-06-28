@@ -172,6 +172,188 @@ def ephemeris_view_slug(state: dict) -> tuple[str, str, str]:
     return slug, state_hash, state_json
 
 
+def _discover_csv_jobs(instrument: str | None = None, obsdate: str | None = None) -> list[tuple[str, str, str, int]]:
+    """Return obslog CSV jobs as ``(inst, obsdate, path, ccd)`` tuples."""
+    csv_jobs: list[tuple[str, str, str, int]] = []
+    instruments = [instrument] if instrument else list(INSTRUMENTS)
+    for inst_name in instruments:
+        inst_dir = f"{OBSLOG_BASE}/{inst_name}"
+        if not os.path.isdir(inst_dir):
+            continue
+        date_entries = [obsdate] if obsdate else sorted(os.listdir(inst_dir))
+        for entry in date_entries:
+            obsdir = f"{inst_dir}/{entry}"
+            if (
+                not os.path.isdir(obsdir)
+                or entry in ("csv", "html", "muscat", "muscat2", "muscat3", "muscat4", "sinistro")
+            ):
+                continue
+            for fname in sorted(os.listdir(obsdir)):
+                if not fname.endswith(".csv") or not fname.startswith("obslog-"):
+                    continue
+                try:
+                    ccd = int(fname.rstrip(".csv").rsplit("-ccd", 1)[1])
+                except (IndexError, ValueError):
+                    continue
+                csv_jobs.append((inst_name, entry, f"{obsdir}/{fname}", ccd))
+    return csv_jobs
+
+
+def _read_frame_rows(inst_name: str, obsdate: str, csv_path: str, ccd: int) -> list[tuple]:
+    inst_cfg = INSTRUMENTS[inst_name]
+    airmass_key = inst_cfg.airmass_key
+    focus_key = inst_cfg.focus_label
+    pa_key = "PA (deg)" if inst_cfg.has_pa else None
+
+    rows_to_insert = []
+    with open(csv_path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows_to_insert.append((
+                inst_name, obsdate, ccd,
+                row.get("FRAME", ""),
+                row.get("OBJECT", ""),
+                _safe_float(row.get("JD-STRT", "0")),
+                row.get("UT-STRT", ""),
+                _safe_float(row.get("EXPTIME (s)", "0")),
+                row.get("READ_MODE", ""),
+                row.get("FILTER", ""),
+                row.get("RA", ""),
+                row.get("DEC", ""),
+                _safe_float(row.get(airmass_key, "0")),
+                _safe_float(row.get(focus_key, "0")),
+                _safe_float(row.get(pa_key, "0")) if pa_key else None,
+            ))
+    return rows_to_insert
+
+
+def _ingest_csv_jobs(conn: sqlite3.Connection, csv_jobs: list[tuple[str, str, str, int]], progress=None) -> int:
+    ingest_task = None
+    if progress is not None:
+        ingest_task = progress.add_task(
+            "[cyan]Ingesting CSVs[/]", total=len(csv_jobs), filename="",
+        )
+
+    count = 0
+    for inst_name, obsdate, csv_path, ccd in csv_jobs:
+        rows_to_insert = _read_frame_rows(inst_name, obsdate, csv_path, ccd)
+        if rows_to_insert:
+            conn.executemany(
+                """INSERT INTO frames
+                   (instrument, obsdate, ccd, filename, object, jd_start, ut_start,
+                    exptime, read_mode, filter, ra, declination, airmass, focus, pa)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                rows_to_insert,
+            )
+            count += len(rows_to_insert)
+        if progress is not None:
+            progress.update(ingest_task, advance=1, filename=os.path.basename(csv_path))
+    return count
+
+
+def _summary_rows(conn: sqlite3.Connection, *, instrument: str | None = None, obsdate: str | None = None) -> list[tuple]:
+    where = []
+    params: list[str] = []
+    if instrument is not None:
+        where.append("instrument = ?")
+        params.append(instrument)
+    if obsdate is not None:
+        where.append("obsdate = ?")
+        params.append(obsdate)
+    where_sql = f" WHERE {' AND '.join(where)}" if where else ""
+    raw = conn.execute(
+        f"""SELECT instrument, obsdate, ccd, object, exptime, read_mode,
+                  MIN(filename), MAX(filename),
+                  MIN(ut_start), MAX(ut_start), COUNT(*),
+                  MAX(filter), coord_repr(ra, declination),
+                  MIN(NULLIF(airmass, 0)), MAX(NULLIF(airmass, 0))
+           FROM frames
+           {where_sql}
+           GROUP BY instrument, obsdate, ccd, object, exptime, read_mode""",
+        params,
+    ).fetchall()
+    return [(*r[:12], *_unpack_coord(r[12]), r[13], r[14]) for r in raw]
+
+
+def _insert_summary_rows(conn: sqlite3.Connection, rows: list[tuple]) -> None:
+    if not rows:
+        return
+    conn.executemany(
+        """INSERT INTO summaries
+           (instrument, obsdate, ccd, object, exptime, read_mode,
+            frame_start, frame_end, ut_start, ut_end, nframes,
+            filter, ra, declination, airmass_min, airmass_max)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        rows,
+    )
+
+
+def _target_rows(conn: sqlite3.Connection, objects: set[str] | None = None) -> list[tuple]:
+    where = [
+        "object IS NOT NULL",
+        "TRIM(object) <> ''",
+        f"LOWER(TRIM(object)) NOT IN ({_TARGET_EXACT_CLAUSE})",
+        "LOWER(TRIM(object)) NOT LIKE '%flat%'",
+        "LOWER(TRIM(object)) NOT LIKE 'dark%'",
+        "LOWER(TRIM(object)) NOT LIKE 'bias%'",
+        "LOWER(TRIM(object)) NOT LIKE 'muscat commission%'",
+        "LOWER(TRIM(object)) NOT LIKE '%test%'",
+        "LOWER(TRIM(object)) NOT LIKE '%pinhole%'",
+        "LOWER(TRIM(object)) NOT LIKE '%pointing%'",
+        "LOWER(TRIM(object)) NOT LIKE '%dust_spot%'",
+        "LOWER(TRIM(object)) NOT LIKE '%dust spot%'",
+        "LOWER(TRIM(object)) NOT LIKE '%domeflat%'",
+        "LOWER(TRIM(object)) NOT LIKE '%dome flat%'",
+        "TRIM(object) NOT GLOB '*:*:*'",
+        "TRIM(object) NOT GLOB '[0-9]*.[0-9]*'",
+        "TRIM(object) NOT GLOB '[Pp][0-9]'",
+        "TRIM(object) NOT GLOB '[Pp][0-9][0-9]'",
+        "TRIM(object) NOT GLOB '[Pp][0-9][0-9][0-9]'",
+        "TRIM(object) NOT GLOB '[Pp][0-9][0-9][0-9][0-9]'",
+    ]
+    params: list[str] = []
+    if objects:
+        where.append(f"object IN ({', '.join('?' for _ in objects)})")
+        params.extend(sorted(objects))
+    cur = conn.execute(
+        f"""SELECT
+              object,
+              COUNT(DISTINCT obsdate)            AS n_dates,
+              SUM(nframes)                       AS n_frames,
+              GROUP_CONCAT(DISTINCT instrument)  AS instruments,
+              GROUP_CONCAT(DISTINCT obsdate)     AS dates,
+              GROUP_CONCAT(DISTINCT instrument || ':' || obsdate) AS inst_dates,
+              GROUP_CONCAT(DISTINCT filter)      AS filters,
+              SUM(COALESCE(exptime * nframes, 0)) AS total_exptime,
+              coord_repr(ra, declination)        AS coord,
+              MIN(NULLIF(airmass_min, 0))        AS airmass_min,
+              MAX(NULLIF(airmass_max, 0))        AS airmass_max,
+              CASE WHEN object GLOB '*[A-Za-z]*' THEN 1 ELSE 0 END
+                                                 AS is_identified
+           FROM summaries
+           WHERE {' AND '.join(where)}
+           GROUP BY object""",
+        params,
+    )
+    return [(*r[:8], *_unpack_coord(r[8]), r[9], r[10], r[11]) for r in cur.fetchall()]
+
+
+def _replace_target_rows(conn: sqlite3.Connection, objects: set[str]) -> None:
+    if not objects:
+        return
+    conn.executemany("DELETE FROM targets WHERE object = ?", [(obj,) for obj in sorted(objects)])
+    rows = _target_rows(conn, objects)
+    if rows:
+        conn.executemany(
+            """INSERT INTO targets
+               (object, n_dates, n_frames, instruments, dates, inst_dates,
+                filters, total_exptime, ra, declination, airmass_min, airmass_max,
+                is_identified)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            rows,
+        )
+
+
 def build_db(db_path: str, progress=None) -> int:
     """Rebuild the SQLite database from obslog CSVs.
 
@@ -201,23 +383,7 @@ def build_db(db_path: str, progress=None) -> int:
             pass
 
     # Phase 1: discover all CSVs (cheap walk so we can size the progress bar).
-    csv_jobs: list[tuple[str, str, str, int]] = []  # (inst, obsdate, csv_path, ccd)
-    for inst_name in INSTRUMENTS:
-        inst_dir = f"{OBSLOG_BASE}/{inst_name}"
-        if not os.path.isdir(inst_dir):
-            continue
-        for entry in sorted(os.listdir(inst_dir)):
-            obsdir = f"{inst_dir}/{entry}"
-            if not os.path.isdir(obsdir) or entry in ("csv", "html", "muscat", "muscat2", "muscat3", "muscat4", "sinistro"):
-                continue
-            for fname in sorted(os.listdir(obsdir)):
-                if not fname.endswith(".csv") or not fname.startswith("obslog-"):
-                    continue
-                try:
-                    ccd = int(fname.rstrip(".csv").rsplit("-ccd", 1)[1])
-                except (IndexError, ValueError):
-                    continue
-                csv_jobs.append((inst_name, entry, f"{obsdir}/{fname}", ccd))
+    csv_jobs = _discover_csv_jobs()
 
     try:
         conn = sqlite3.connect(tmp_path)
@@ -240,43 +406,7 @@ def build_db(db_path: str, progress=None) -> int:
                 "[cyan]Ingesting CSVs[/]", total=len(csv_jobs), filename="",
             )
 
-        count = 0
-        for inst_name, obsdate, csv_path, ccd in csv_jobs:
-            inst_cfg = INSTRUMENTS[inst_name]
-            airmass_key = inst_cfg.airmass_key
-            focus_key = inst_cfg.focus_label
-            pa_key = "PA (deg)" if inst_cfg.has_pa else None
-
-            rows_to_insert = []
-            with open(csv_path) as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    rows_to_insert.append((
-                        inst_name, obsdate, ccd,
-                        row.get("FRAME", ""),
-                        row.get("OBJECT", ""),
-                        _safe_float(row.get("JD-STRT", "0")),
-                        row.get("UT-STRT", ""),
-                        _safe_float(row.get("EXPTIME (s)", "0")),
-                        row.get("READ_MODE", ""),
-                        row.get("FILTER", ""),
-                        row.get("RA", ""),
-                        row.get("DEC", ""),
-                        _safe_float(row.get(airmass_key, "0")),
-                        _safe_float(row.get(focus_key, "0")),
-                        _safe_float(row.get(pa_key, "0")) if pa_key else None,
-                    ))
-            if rows_to_insert:
-                conn.executemany(
-                    """INSERT INTO frames
-                       (instrument, obsdate, ccd, filename, object, jd_start, ut_start,
-                        exptime, read_mode, filter, ra, declination, airmass, focus, pa)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    rows_to_insert,
-                )
-                count += len(rows_to_insert)
-            if progress is not None:
-                progress.update(ingest_task, advance=1, filename=os.path.basename(csv_path))
+        count = _ingest_csv_jobs(conn, csv_jobs, progress=progress)
         conn.commit()
 
         # Phase 3: build summaries.
@@ -285,29 +415,10 @@ def build_db(db_path: str, progress=None) -> int:
             summary_task = progress.add_task(
                 "[cyan]Building summaries[/]", total=None, filename="",
             )
-        raw = conn.execute(
-            """SELECT instrument, obsdate, ccd, object, exptime, read_mode,
-                      MIN(filename), MAX(filename),
-                      MIN(ut_start), MAX(ut_start), COUNT(*),
-                      MAX(filter), coord_repr(ra, declination),
-                      MIN(NULLIF(airmass, 0)), MAX(NULLIF(airmass, 0))
-               FROM frames
-               GROUP BY instrument, obsdate, ccd, object, exptime, read_mode"""
-        ).fetchall()
-        # Split the packed coord (col 12) back into (ra, declination) so the
-        # INSERT column layout below is unchanged.
-        rows = [(*r[:12], *_unpack_coord(r[12]), r[13], r[14]) for r in raw]
+        rows = _summary_rows(conn)
         if progress is not None:
             progress.update(summary_task, total=len(rows))
-        if rows:
-            conn.executemany(
-                """INSERT INTO summaries
-                   (instrument, obsdate, ccd, object, exptime, read_mode,
-                    frame_start, frame_end, ut_start, ut_end, nframes,
-                    filter, ra, declination, airmass_min, airmass_max)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                rows,
-            )
+        _insert_summary_rows(conn, rows)
         if progress is not None:
             progress.update(summary_task, completed=len(rows))
         conn.commit()
@@ -392,61 +503,84 @@ _TARGET_EXCLUDE_EXACT = (
     "muscat", "muscat_fast", "test", "tic", "dark", "bias",
     "movie", "misc", "misc.", "focus_adjust", "fov",
 )
+_TARGET_EXACT_CLAUSE = ", ".join(f"'{s}'" for s in _TARGET_EXCLUDE_EXACT)
 
 
 def _populate_targets(conn: sqlite3.Connection) -> None:
     """Aggregate per-target summary into the targets table."""
-    cur = conn.execute(
-        """SELECT
-              object,
-              COUNT(DISTINCT obsdate)            AS n_dates,
-              SUM(nframes)                       AS n_frames,
-              GROUP_CONCAT(DISTINCT instrument)  AS instruments,
-              GROUP_CONCAT(DISTINCT obsdate)     AS dates,
-              GROUP_CONCAT(DISTINCT instrument || ':' || obsdate) AS inst_dates,
-              GROUP_CONCAT(DISTINCT filter)      AS filters,
-              SUM(COALESCE(exptime * nframes, 0)) AS total_exptime,
-              coord_repr(ra, declination)        AS coord,
-              MIN(NULLIF(airmass_min, 0))        AS airmass_min,
-              MAX(NULLIF(airmass_max, 0))        AS airmass_max,
-              CASE WHEN object GLOB '*[A-Za-z]*' THEN 1 ELSE 0 END
-                                                 AS is_identified
-           FROM summaries
-           WHERE object IS NOT NULL
-             AND TRIM(object) <> ''
-             AND LOWER(TRIM(object)) NOT IN ({exact})
-             AND LOWER(TRIM(object)) NOT LIKE '%flat%'
-             AND LOWER(TRIM(object)) NOT LIKE 'dark%'
-             AND LOWER(TRIM(object)) NOT LIKE 'bias%'
-             AND LOWER(TRIM(object)) NOT LIKE 'muscat commission%'
-             AND LOWER(TRIM(object)) NOT LIKE '%test%'
-             AND LOWER(TRIM(object)) NOT LIKE '%pinhole%'
-             AND LOWER(TRIM(object)) NOT LIKE '%pointing%'
-             AND LOWER(TRIM(object)) NOT LIKE '%dust_spot%'
-             AND LOWER(TRIM(object)) NOT LIKE '%dust spot%'
-             AND LOWER(TRIM(object)) NOT LIKE '%domeflat%'
-             AND LOWER(TRIM(object)) NOT LIKE '%dome flat%'
-             AND TRIM(object) NOT GLOB '*:*:*'
-             AND TRIM(object) NOT GLOB '[0-9]*.[0-9]*'
-             -- Exclude pointing-frame names: pure P<digits>, length 1-4 digits.
-             AND TRIM(object) NOT GLOB '[Pp][0-9]'
-             AND TRIM(object) NOT GLOB '[Pp][0-9][0-9]'
-             AND TRIM(object) NOT GLOB '[Pp][0-9][0-9][0-9]'
-             AND TRIM(object) NOT GLOB '[Pp][0-9][0-9][0-9][0-9]'
-           GROUP BY object""".format(
-            exact=", ".join(f"'{s}'" for s in _TARGET_EXCLUDE_EXACT),
+    rows = _target_rows(conn)
+    if rows:
+        conn.executemany(
+            """INSERT INTO targets
+               (object, n_dates, n_frames, instruments, dates, inst_dates,
+                filters, total_exptime, ra, declination, airmass_min, airmass_max,
+                is_identified)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            rows,
         )
-    )
-    # Split the packed coord (col 8) back into (ra, declination).
-    rows = [(*r[:8], *_unpack_coord(r[8]), r[9], r[10], r[11]) for r in cur.fetchall()]
-    conn.executemany(
-        """INSERT INTO targets
-           (object, n_dates, n_frames, instruments, dates, inst_dates,
-            filters, total_exptime, ra, declination, airmass_min, airmass_max,
-            is_identified)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        rows,
-    )
+
+
+def ingest_date(db_path: str, instrument: str, obsdate: str, progress=None) -> int:
+    """Ingest one instrument/date from obslog CSVs into an existing database."""
+    csv_jobs = _discover_csv_jobs(instrument, obsdate)
+    if not csv_jobs:
+        raise FileNotFoundError(f"No obslog CSVs found for {instrument} {obsdate}")
+
+    conn = sqlite3.connect(db_path, timeout=30)
+    try:
+        conn.create_aggregate("coord_repr", 2, CoordRepr)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=OFF;")
+        conn.execute("PRAGMA cache_size=100000;")
+        conn.executescript(SCHEMA)
+
+        old_objects = {
+            row[0] for row in conn.execute(
+                "SELECT DISTINCT object FROM summaries WHERE instrument = ? AND obsdate = ?",
+                (instrument, obsdate),
+            ).fetchall()
+            if row[0] is not None
+        }
+
+        conn.execute("DELETE FROM frames WHERE instrument = ? AND obsdate = ?", (instrument, obsdate))
+        conn.execute("DELETE FROM summaries WHERE instrument = ? AND obsdate = ?", (instrument, obsdate))
+
+        count = _ingest_csv_jobs(conn, csv_jobs, progress=progress)
+        summary_rows = _summary_rows(conn, instrument=instrument, obsdate=obsdate)
+
+        summary_task = None
+        if progress is not None:
+            summary_task = progress.add_task(
+                "[cyan]Building summaries[/]", total=len(summary_rows), filename=f"{instrument} {obsdate}",
+            )
+        _insert_summary_rows(conn, summary_rows)
+        if progress is not None:
+            progress.update(summary_task, completed=len(summary_rows))
+
+        new_objects = {
+            row[0] for row in conn.execute(
+                "SELECT DISTINCT object FROM summaries WHERE instrument = ? AND obsdate = ?",
+                (instrument, obsdate),
+            ).fetchall()
+            if row[0] is not None
+        }
+        _replace_target_rows(conn, old_objects | new_objects)
+
+        now = datetime.datetime.now().isoformat()
+        conn.execute(
+            "INSERT OR REPLACE INTO db_meta (key, value) VALUES ('last_build_at', ?)",
+            (now,),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO db_meta (key, value) VALUES ('last_ingest_at', ?)",
+            (now,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    clear_all_caches()
+    return count
 
 
 def _safe_float(v: str) -> float | None:
@@ -470,8 +604,6 @@ def get_instruments_summary(db_path: str, min_frames: int = 1000) -> list[dict]:
     Filters science targets to only count those with at least min_frames frames.
     """
     conn = sqlite3.connect(db_path)
-    exact_clause = ", ".join(f"'{s}'" for s in _TARGET_EXCLUDE_EXACT)
-    
     # Get total dates and frames per instrument
     base_stats = conn.execute(
         """SELECT instrument, COUNT(DISTINCT obsdate), SUM(nframes)
@@ -488,7 +620,7 @@ def get_instruments_summary(db_path: str, min_frames: int = 1000) -> list[dict]:
                 FROM summaries
                 WHERE object IS NOT NULL
                   AND TRIM(object) <> ''
-                  AND LOWER(TRIM(object)) NOT IN ({exact_clause})
+                  AND LOWER(TRIM(object)) NOT IN ({_TARGET_EXACT_CLAUSE})
                   AND LOWER(TRIM(object)) NOT LIKE '%flat%'
                   AND LOWER(TRIM(object)) NOT LIKE 'dark%'
                   AND LOWER(TRIM(object)) NOT LIKE 'bias%'
