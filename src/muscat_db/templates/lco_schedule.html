@@ -119,6 +119,14 @@
         <option value="tfn">tfn</option>
         <option value="elp">elp</option>
       </select></div>
+    <div class="lco-field sinistro-only"><label for="sch-effective-filter">Filter</label>
+      <select id="sch-effective-filter">
+        <option value="rp">rp</option>
+        <option value="up">up</option>
+        <option value="gp">gp</option>
+        <option value="ip">ip</option>
+        <option value="zs">zs</option>
+      </select></div>
   </div>
   <div class="lco-msg" id="msg-proposals" style="margin-top: 0.4rem;"></div>
 
@@ -171,15 +179,6 @@
       <select id="sch-effective-mode">
         <option value="central_2k_2x2">2k 2x2</option>
         <option value="full_frame">full</option>
-      </select>
-    </div>
-    <div class="lco-field sinistro-only"><label for="sch-effective-filter">Filter</label>
-      <select id="sch-effective-filter">
-        <option value="rp">rp</option>
-        <option value="up">up</option>
-        <option value="gp">gp</option>
-        <option value="ip">ip</option>
-        <option value="zs">zs</option>
       </select>
     </div>
   </div>
@@ -359,6 +358,40 @@
     e.value = v;
   }
 
+  function getWindowDuration() {
+    var selected = selectedWindows();
+    if (!selected.length) return 0;
+    var first = selected[0];
+    try {
+      var start = new Date(first.start).getTime();
+      var end = new Date(first.end).getTime();
+      return (end - start) / 1000;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  function updateExposureCount() {
+    var kind = val('sch-kind');
+    var windowSec = getWindowDuration();
+    if (!windowSec) return;
+
+    if (kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4') {
+      var times = [num('sch-exp-g'), num('sch-exp-r'), num('sch-exp-i'), num('sch-exp-z')];
+      var maxExpTime = Math.max.apply(null, times.filter(function (v) { return v !== null; }));
+      if (maxExpTime === -Infinity || !maxExpTime) return;
+      var overhead = 5;
+      var count = Math.floor((windowSec - 60) / (maxExpTime + overhead));
+      if (count >= 1) setVal('sch-count', String(Math.max(1, count)));
+    } else if (kind === 'sinistro') {
+      var expTime = num('sch-effective-exptime');
+      if (!expTime) return;
+      var overhead = 3;
+      var count = Math.floor((windowSec - 30) / (expTime + overhead));
+      if (count >= 1) setVal('sch-sin-count', String(Math.max(1, count)));
+    }
+  }
+
   function updateScheduleFields() {
     var kind = val('sch-kind');
     var isMuscat = kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4';
@@ -375,6 +408,7 @@
       setVal('sch-effective-exptime', maxExp === null ? '' : String(maxExp));
       setSelectValue('sch-effective-mode', val('sch-readout'));
       setSelectValue('sch-effective-filter', bands.join(', '));
+      updateExposureCount();
     }
   }
 
@@ -933,6 +967,7 @@
     if (e.target && e.target.matches('input[type=checkbox]')) {
       saveScheduleState();
       updateRequestName();
+      updateExposureCount();
       el('btn-submit').disabled = true;
       lastDryRunHash = null;
     }
@@ -941,6 +976,14 @@
   el('sch-target').addEventListener('change', updateRequestName);
   el('sch-kind').addEventListener('change', updateRequestName);
   el('sch-effective-filter').addEventListener('change', updateRequestName);
+
+  ['sch-effective-exptime'].forEach(function (id) {
+    var node = el(id);
+    if (node) {
+      node.addEventListener('input', updateExposureCount);
+      node.addEventListener('change', updateExposureCount);
+    }
+  });
 
   el('btn-gen-windows').addEventListener('click', function () {
     // --- validation ---
