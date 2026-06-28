@@ -138,10 +138,58 @@
     <div class="lco-field"><label for="sch-min-lunar">Min lunar dist (deg)</label><input id="sch-min-lunar" type="number" step="any" value="30"></div>
     <div class="lco-field"><label for="sch-ipp">IPP value</label><input id="sch-ipp" type="number" step="any" value="1.0"></div>
   </div>
+
+  <div class="lco-grid" style="margin-top: 0.85rem;">
+    <div class="lco-field"><label for="sch-type">Type</label>
+      <select id="sch-type">
+        <option value="EXPOSE">EXPOSE</option>
+        <option value="ARC">ARC</option>
+        <option value="BIAS">BIAS</option>
+        <option value="DARK">DARK</option>
+        <option value="LAMP">LAMP</option>
+        <option value="SKYFLAT">SKYFLAT</option>
+      </select>
+    </div>
+    <div class="lco-field"><label for="sch-observation-type">Observation type</label>
+      <select id="sch-observation-type">
+        <option value="NORMAL">NORMAL</option>
+        <option value="BIAS">BIAS</option>
+        <option value="DARK">DARK</option>
+        <option value="ARC">ARC</option>
+        <option value="LAMP">LAMP</option>
+      </select>
+    </div>
+    <div class="lco-field"><label for="sch-guiding-config">Guiding config</label>
+      <select id="sch-guiding-config">
+        <option value="ON">ON</option>
+        <option value="OFF">OFF</option>
+      </select>
+    </div>
+  </div>
+
   <div class="lco-grid" style="margin-top: 0.85rem;">
     <div class="lco-field"><label for="sch-effective-exptime">Exposure time</label><input id="sch-effective-exptime" type="text" inputmode="decimal" placeholder="60"></div>
-    <div class="lco-field"><label for="sch-effective-mode">Mode</label><input id="sch-effective-mode" type="text" placeholder="central_2k_2x2"></div>
-    <div class="lco-field"><label for="sch-effective-filter">Filter</label><input id="sch-effective-filter" type="text" placeholder="rp"></div>
+    <div class="lco-field"><label for="sch-effective-mode">Mode</label>
+      <select id="sch-effective-mode">
+        <option value="central_2k_2x2">central_2k_2x2</option>
+        <option value="central_1k_1x1">central_1k_1x1</option>
+        <option value="full_frame">full_frame</option>
+        <option value="test">test</option>
+      </select>
+    </div>
+    <div class="lco-field"><label for="sch-effective-filter">Filter</label>
+      <select id="sch-effective-filter">
+        <option value="rp">rp</option>
+        <option value="up">up</option>
+        <option value="gp">gp</option>
+        <option value="ip">ip</option>
+        <option value="zs">zs</option>
+        <option value="l">l</option>
+        <option value="m">m</option>
+        <option value="diffuser">diffuser</option>
+        <option value="air">air</option>
+      </select>
+    </div>
   </div>
   <p class="lco-note">These scheduling inputs are separate from the archive page.</p>
 </div>
@@ -220,8 +268,9 @@
     'sch-obs-airmass','sch-twilight','sch-moon-sep','sch-sites','win-filter',
     'sch-kind','sch-name','sch-count','sch-exp-g','sch-exp-r','sch-exp-i','sch-exp-z',
     'sch-exp-mode','sch-readout','sch-nb-g','sch-nb-r','sch-nb-i','sch-nb-z',
-    'sch-effective-filter','sch-effective-exptime','sch-effective-mode',
     'sch-sin-count','sch-site',
+    'sch-type','sch-observation-type','sch-guiding-config',
+    'sch-effective-filter','sch-effective-exptime','sch-effective-mode',
     'sch-max-airmass','sch-min-lunar','sch-ipp'
   ];
 
@@ -295,6 +344,25 @@
     if (val('sch-effective-filter')) lastSinistroFields.filter = val('sch-effective-filter');
   }
 
+  function setSelectValue(id, v) {
+    var e = el(id);
+    if (!e) return;
+    var found = false;
+    for (var i = 0; i < e.options.length; i++) {
+      if (e.options[i].value === v) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      var opt = document.createElement('option');
+      opt.value = v;
+      opt.textContent = v;
+      e.appendChild(opt);
+    }
+    e.value = v;
+  }
+
   function updateScheduleFields() {
     var kind = val('sch-kind');
     var isMuscat = kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4';
@@ -309,8 +377,8 @@
         }
       });
       setVal('sch-effective-exptime', maxExp === null ? '' : String(maxExp));
-      setVal('sch-effective-mode', val('sch-readout'));
-      setVal('sch-effective-filter', bands.join(', '));
+      setSelectValue('sch-effective-mode', val('sch-readout'));
+      setSelectValue('sch-effective-filter', bands.join(', '));
     }
   }
 
@@ -325,9 +393,28 @@
     var effMode = el('sch-effective-mode');
     var effFilter = el('sch-effective-filter');
     if (effExp) effExp.readOnly = muscat;
-    if (effMode) effMode.readOnly = muscat;
-    if (effFilter) effFilter.readOnly = muscat;
+    if (effMode) effMode.disabled = muscat;
+    if (effFilter) effFilter.disabled = muscat;
     if (!muscat) {
+      if (effMode) {
+        effMode.innerHTML = 
+          '<option value="central_2k_2x2">central_2k_2x2</option>' +
+          '<option value="central_1k_1x1">central_1k_1x1</option>' +
+          '<option value="full_frame">full_frame</option>' +
+          '<option value="test">test</option>';
+      }
+      if (effFilter) {
+        effFilter.innerHTML =
+          '<option value="rp">rp</option>' +
+          '<option value="up">up</option>' +
+          '<option value="gp">gp</option>' +
+          '<option value="ip">ip</option>' +
+          '<option value="zs">zs</option>' +
+          '<option value="l">l</option>' +
+          '<option value="m">m</option>' +
+          '<option value="diffuser">diffuser</option>' +
+          '<option value="air">air</option>';
+      }
       setVal('sch-effective-exptime', lastSinistroFields.exptime);
       setVal('sch-effective-mode', lastSinistroFields.mode);
       setVal('sch-effective-filter', lastSinistroFields.filter);
@@ -718,12 +805,28 @@
       var targetAltNight = d.target_alt.map(function (value, idx) {
         return d.sun_alt[idx] < d.sun_alt_limit ? value : null;
       });
-      traces.push({ x: d.times, y: d.target_alt, name: s.site.toUpperCase(), mode: 'lines', line: { color: color, width: 1.2, dash: 'dot' }, showlegend: false, hoverinfo: 'skip' });
-      traces.push({ x: d.times, y: targetAltNight, name: s.site.toUpperCase(), mode: 'lines', line: { color: color, width: 3 } });
+      // Per-sample extras for the hover label: [moon_sep, airmass, moon_alt, sun_alt].
+      // Airmass = sec(z) = 1/sin(alt) above the horizon, null otherwise.
+      var customTarget = d.target_alt.map(function (alt, idx) {
+        var am = alt > 0 ? 1.0 / Math.sin(alt * Math.PI / 180.0) : null;
+        return [d.moon_sep[idx], am, d.moon_alt[idx], d.sun_alt[idx]];
+      });
+      var targetHover = '%{x|%Y-%m-%d %H:%M} UTC<br>' +
+        'Altitude: %{y:.1f}°<br>' +
+        'Airmass: %{customdata[1]:.2f}<br>' +
+        'Moon sep: %{customdata[0]:.1f}°<br>' +
+        'Moon alt: %{customdata[2]:.1f}°<br>' +
+        'Sun alt: %{customdata[3]:.1f}°' +
+        '<extra>' + s.site.toUpperCase() + '</extra>';
+      // Hover lives on the full-track (faint) trace so it works across the whole
+      // time range; the bold night overlay is visual only (skips hover to avoid
+      // duplicate tooltips where the two lines coincide).
+      traces.push({ x: d.times, y: d.target_alt, name: s.site.toUpperCase(), mode: 'lines', line: { color: color, width: 1.2, dash: 'dot' }, showlegend: false, customdata: customTarget, hovertemplate: targetHover });
+      traces.push({ x: d.times, y: targetAltNight, name: s.site.toUpperCase(), mode: 'lines', line: { color: color, width: 3 }, hoverinfo: 'skip' });
       d.sun_alt.forEach(function (alt, idx) { if (alt < d.sun_alt_limit) darkIndices.push(idx); });
     });
-    traces.push({ x: primary.times, y: primary.moon_alt, name: 'Moon (' + series[0].site + ')', mode: 'lines', line: { color: '#bfa14a', width: 1.5, dash: 'dash' } });
-    traces.push({ x: primary.times, y: primary.sun_alt, name: 'Sun (' + series[0].site + ')', mode: 'lines', line: { color: '#e07b53', width: 1, dash: 'dot' } });
+    traces.push({ x: primary.times, y: primary.moon_alt, name: 'Moon (' + series[0].site + ')', mode: 'lines', line: { color: 'black', width: 1.5, dash: 'dash' }, hovertemplate: '%{x|%H:%M} UTC<br>Moon alt: %{y:.1f}°<extra>Moon</extra>' });
+    traces.push({ x: primary.times, y: primary.sun_alt, name: 'Sun (' + series[0].site + ')', mode: 'lines', line: { color: '#e07b53', width: 1, dash: 'dot' }, hovertemplate: '%{x|%H:%M} UTC<br>Sun alt: %{y:.1f}°<extra>Sun</extra>' });
 
     // x-range = union of every site's night across the window.
     var xMin = primary.times[0];
@@ -812,9 +915,39 @@
   });
 
   el('btn-gen-windows').addEventListener('click', function () {
+    // --- validation ---
+    var start = val('sch-range-start');
+    var end = val('sch-range-end');
+    if (!start || !end || !/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+      msg('msg-windows', 'A valid start and end date are required.', 'err'); return;
+    }
+    if (end < start) {
+      msg('msg-windows', 'End date must be after start date.', 'err'); return;
+    }
     var t0Tuple = tupleField('sch-t0');
     var periodTuple = tupleField('sch-period');
     var durationTuple = tupleField('sch-duration');
+
+    if (!val('sch-target') && (t0Tuple.mean === null || periodTuple.mean === null)) {
+      msg('msg-windows', 't0 and Period are required when no target is specified for lookup.', 'err'); return;
+    }
+    if (durationTuple.mean === null || durationTuple.mean <= 0) {
+      msg('msg-windows', 'A positive transit duration (hr) is required.', 'err'); return;
+    }
+    var padBefore = num('sch-pad-before');
+    var padAfter = num('sch-pad-after');
+    if (padBefore === null || padBefore < 0 || padAfter === null || padAfter < 0) {
+      msg('msg-windows', 'Padding values must be zero or greater.', 'err'); return;
+    }
+    var airmass = num('sch-obs-airmass');
+    if (airmass === null || airmass < 1) {
+      msg('msg-windows', 'Airmass limit must be ≥ 1.', 'err'); return;
+    }
+    var moonSep = num('sch-moon-sep');
+    if (moonSep === null || moonSep < 0) {
+      msg('msg-windows', 'Minimum moon separation must be ≥ 0.', 'err'); return;
+    }
+
     if (!t0Tuple.ok) { msg('msg-windows', 't0 must be "mean" or "mean,uncertainty"', 'err'); return; }
     if (!periodTuple.ok) { msg('msg-windows', 'Period must be "mean" or "mean,uncertainty"', 'err'); return; }
     if (!durationTuple.ok) { msg('msg-windows', 'Duration must be "mean" or "mean,uncertainty"', 'err'); return; }
@@ -902,7 +1035,10 @@
       kind: kind, name: val('sch-name'), proposal: val('sch-proposal'),
       target_name: val('sch-target'), ra: coords.ra, dec: coords.dec,
       max_airmass: num('sch-max-airmass'), min_lunar_distance: num('sch-min-lunar'),
-      ipp_value: num('sch-ipp'), windows: selectedWindows()
+      ipp_value: num('sch-ipp'), windows: selectedWindows(),
+      type: val('sch-type'),
+      observation_type: val('sch-observation-type'),
+      guiding_config: val('sch-guiding-config')
     };
     if (kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4') {
       p.exposure_times = {};

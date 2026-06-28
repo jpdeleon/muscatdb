@@ -2,11 +2,11 @@
 
 ## Summary
 
-Add a new `/lco` page for LCO archive downloads and observation submission,
-integrated with `ephemeris.html` via saved ephemeris view links. Keep the
-feature inside muscat-db for now because its inputs come from ephemeris-derived
-targets, but isolate LCO API logic in a small backend module so it can be split
-out later.
+Add a new `/lco` page for LCO archive downloads and a complete observation
+submission workflow (from ephemeris → IPP dry-run → live submission). The
+feature is integrated with `ephemeris.html` via saved ephemeris view links and
+isolates all LCO API logic in a small backend module so it can be split out
+later.
 
 References: LCO example repo `observation-portal-api-examples`, especially
 MUSCAT requestgroup submission and proposal/requestgroup/IPP examples; LCO
@@ -21,6 +21,7 @@ archive frames endpoint `https://archive-api.lco.global/frames/`.
 - Add env vars to `config.py` and `.env.example`:
   - `LCO_API_TOKEN`, secret, required for live LCO portal calls.
   - `MUSCAT_LCO_DIR`, optional download root.
+  - `MUSCAT_LCO_ALLOW_SUBMIT`, safety gate for live submission.
 - If `MUSCAT_LCO_DIR` is set, save downloads under
   `<MUSCAT_LCO_DIR>/<instrument>/<date>/`.
 - If `MUSCAT_LCO_DIR` is unset, save downloads under `/data/<instrument>/<date>/`
@@ -49,8 +50,8 @@ archive frames endpoint `https://archive-api.lco.global/frames/`.
   - `POST /api/lco/ipp`: builds the requestgroup payload and calls
     `requestgroups/max_allowable_ipp/`.
   - `POST /api/lco/submit`: submits the same validated payload to
-    `requestgroups/`; disabled until a successful dry-run IPP response exists
-    client-side.
+    `requestgroups/`. The UI disables the submit button until a successful
+    dry-run IPP response exists for the current payload.
   - `GET /api/lco/archive/frames`: searches
     `https://archive-api.lco.global/frames/` with user-selected filters.
   - `POST /api/lco/archive/download`: downloads selected frame URLs to the
@@ -77,11 +78,12 @@ archive frames endpoint `https://archive-api.lco.global/frames/`.
   - `target`, `constraints`, `configurations`, `instrument_configs`, `windows`,
     `location`, `proposal`, `ipp_value`, `operator`, and `observation_type`.
 - Require dry-run first:
-  - user builds payload
-  - page calls max allowable IPP endpoint
-  - page shows payload and IPP response
-  - final submit button remains disabled until the dry-run succeeds and inputs
-    have not changed.
+  - user builds payload.
+  - page calls max allowable IPP endpoint for a dry-run.
+  - page shows payload and IPP response.
+  - final submit button is enabled only after the dry-run succeeds and inputs
+    have not changed. Live submission also requires the server to be configured
+    with `MUSCAT_LCO_ALLOW_SUBMIT=1`.
 
 ## Test Plan
 
@@ -90,7 +92,8 @@ archive frames endpoint `https://archive-api.lco.global/frames/`.
 - Add tests for missing `LCO_API_TOKEN`, invalid payloads, invalid paths,
   existing file handling, and archive download path resolution.
 - Add FastAPI route tests with mocked LCO HTTP responses for proposals, IPP
-  dry-run, submit, archive search, and download.
+  dry-run, submit, archive search, and download. Test that live submission is
+  rejected when the `MUSCAT_LCO_ALLOW_SUBMIT` gate is not enabled.
 - Add template/route smoke test that `/lco` renders and nav includes the page.
 - Add ephemeris integration test that saved view URLs can produce
   `/lco?view=<slug>` links.
@@ -101,7 +104,7 @@ archive frames endpoint `https://archive-api.lco.global/frames/`.
 
 - LCO token is server-side only via `LCO_API_TOKEN`; users will not paste or
   persist tokens in the browser.
-- v1 downloads files to server storage but does not automatically import them
+- Downloads save files to server storage but do not automatically import them
   into muscat.db or launch photometry.
 - Batch windows are generated from ephemeris `t0` and `period` over a
   user-selected UTC date range, with user-configurable pre/post padding.
