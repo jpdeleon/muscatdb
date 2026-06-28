@@ -20,15 +20,45 @@ class LcoTest(unittest.TestCase):
             "exposure_times": {"g": 30, "r": 30, "i": 30, "z": 30},
             "exposure_count": 2,
             "windows": [{"start": "2026-07-01T00:00:00Z", "end": "2026-07-01T01:00:00Z"}],
+            "readout_mode": "MUSCAT_FAST",
+            "narrowband": {"g": "in"},
+            "repeat_duration": 18179,
+            "exposure_mode": "ASYNCHRONOUS",
+            "max_airmass": 2.5,
+            "min_lunar_distance": 18,
+            "max_seeing": 2.0,
+            "min_transparency": "Clear",
+            "guiding_config": "OFF",
         }
         rg = lco.build_requestgroup("muscat3", params)
         self.assertEqual(rg["name"], "Test MUSCAT Request")
-        self.assertEqual(len(rg["requests"][0]["configurations"]), 1)
-        config = rg["requests"][0]["configurations"][0]
-        self.assertEqual(config["instrument_type"], "2M0-SCICAM-MUSCAT")
+        self.assertEqual(rg["observation_type"], "IMAGING") # Now at top level
+        
+        request = rg["requests"][0]
+        self.assertEqual(request["instrument_type"], "2M0-SCICAM-MUSCAT")
+        self.assertIn("target", request)
+        self.assertEqual(request["target"]["name"], "WASP-12")
+        self.assertIn("constraints", request) # Constraints are still here
+        self.assertNotIn("observation_type", request) # Moved to top level
+
+        config = request["configurations"][0]
+        self.assertEqual(config["type"], "REPEAT_EXPOSE") # Default type changed
+        self.assertEqual(config["repeat_duration"], 18179)
+        self.assertIn("target", config) # Target also in config now
+        self.assertIn("constraints", config) # Constraints also in config now
+        self.assertEqual(config["constraints"]["max_airmass"], 2.5)
+        self.assertEqual(config["constraints"]["min_lunar_distance"], 18)
+
         self.assertEqual(len(config["instrument_configs"]), 4)
-        self.assertEqual(config["instrument_configs"][0]["exposure_time"], 30)
-        self.assertEqual(config["instrument_configs"][0]["exposure_count"], 2)
+        instrument_config = config["instrument_configs"][0]
+        self.assertEqual(instrument_config["exposure_time"], 30)
+        self.assertEqual(instrument_config["exposure_count"], 2)
+        self.assertEqual(instrument_config["mode"], "MUSCAT_FAST")
+        self.assertEqual(instrument_config["optical_elements"]["filter"], "g")
+        self.assertEqual(instrument_config["optical_elements"]["narrowband_g_position"], "in")
+        self.assertIn("extra_params", instrument_config)
+        self.assertEqual(instrument_config["extra_params"]["exposure_mode"], "ASYNCHRONOUS")
+        self.assertEqual(instrument_config["extra_params"]["exposure_time_g"], 30)
 
     def test_build_requestgroup_sinistro(self):
         params = {
@@ -42,15 +72,33 @@ class LcoTest(unittest.TestCase):
             "exposure_count": 5,
             "filter": "rp",
             "windows": [{"start": "2026-07-01T00:00:00Z", "end": "2026-07-01T01:00:00Z"}],
+            "max_airmass": 1.8, # Different default from MUSCAT
+            "readout_mode": "central_2k_2x2",
         }
         rg = lco.build_requestgroup("sinistro", params)
         self.assertEqual(rg["name"], "Test Sinistro Request")
-        config = rg["requests"][0]["configurations"][0]
-        self.assertEqual(config["instrument_type"], "1M0-SCICAM-SINISTRO")
+        self.assertEqual(rg["observation_type"], "NORMAL") # Sinistro default is NORMAL
+
+        request = rg["requests"][0]
+        self.assertEqual(request["instrument_type"], "1M0-SCICAM-SINISTRO")
+        self.assertIn("target", request)
+        self.assertEqual(request["constraints"]["max_airmass"], 1.8)
+        
+        config = request["configurations"][0]
+        self.assertEqual(config["type"], "EXPOSE")
+        self.assertIn("target", config)
+        self.assertIn("constraints", config)
+        self.assertEqual(config["acquisition_config"]["mode"], "OFF")
+        self.assertTrue(config["guiding_config"]["optional"])
+
         self.assertEqual(len(config["instrument_configs"]), 1)
-        self.assertEqual(config["instrument_configs"][0]["exposure_time"], 60)
-        self.assertEqual(config["instrument_configs"][0]["exposure_count"], 5)
-        self.assertEqual(config["instrument_configs"][0]["optical_elements"]["filter"], "rp")
+        inst_config = config["instrument_configs"][0]
+        self.assertEqual(inst_config["exposure_time"], 60)
+        self.assertEqual(inst_config["optical_elements"]["filter"], "rp")
+        self.assertEqual(inst_config["mode"], "central_2k_2x2")
+        self.assertIn("extra_params", inst_config)
+        self.assertEqual(inst_config["extra_params"]["bin_x"], 2)
+        self.assertEqual(inst_config["extra_params"]["bin_y"], 2)
 
     def test_build_requestgroup_invalid_payload(self):
         with self.assertRaises(lco.LcoError):
