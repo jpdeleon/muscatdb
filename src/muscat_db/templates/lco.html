@@ -599,7 +599,7 @@
       paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
       font: { color: fg, size: 11 },
       xaxis: { gridcolor: grid, title: 'UTC' },
-      yaxis: { gridcolor: grid, title: 'Altitude (deg)', range: [-25, 90], zeroline: false },
+      yaxis: { gridcolor: grid, title: 'Altitude (deg)', range: [d.alt_limit, 90], zeroline: false },
       legend: { orientation: 'h', y: 1.12 },
       shapes: shapes,
       annotations: [
