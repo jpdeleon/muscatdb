@@ -1,0 +1,516 @@
+{% extends "base.html" %}
+{% block title %}LCO — MuSCAT-db{% endblock %}
+{% block content %}
+<style>
+  .lco-banner {
+    display: flex; flex-wrap: wrap; gap: 1rem; align-items: center;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 1.25rem;
+    font-size: 0.85rem;
+  }
+  .lco-banner .pill { display: inline-flex; align-items: center; gap: 0.35rem; }
+  .lco-banner .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-dim); }
+  .lco-banner .dot.ok { background: #2ecc71; }
+  .lco-banner .dot.no { background: #e07b53; }
+
+  .lco-tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+  .lco-tab {
+    background: var(--surface); color: var(--text-dim);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.5rem 1rem; cursor: pointer; font-size: 0.9rem; font-weight: 500;
+  }
+  .lco-tab.active { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .lco-panel { display: none; }
+  .lco-panel.active { display: block; }
+
+  .lco-section { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.1rem 1.25rem; margin-bottom: 1.1rem; }
+  .lco-section > h3 {
+    font-size: 0.7rem; color: var(--text-dim); margin-bottom: 0.85rem;
+    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
+    display: flex; align-items: center; gap: 0.45rem;
+  }
+  .lco-section > h3::before { content: ''; width: 3px; height: 0.85rem; background: var(--accent2); border-radius: 2px; }
+
+  .lco-grid { display: grid; gap: 0.85rem; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+  .lco-field { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
+  .lco-field label { font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+  .lco-field input, .lco-field select {
+    background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 0.45rem 0.6rem; font-size: 0.88rem; font-family: inherit; min-width: 0;
+  }
+  .lco-field input:focus, .lco-field select:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  .lco-row { display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap; }
+  .lco-actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-top: 0.4rem; }
+  .lco-note { font-size: 0.78rem; color: var(--text-dim); margin-top: 0.5rem; }
+  .lco-msg { font-size: 0.82rem; margin-top: 0.5rem; min-height: 1em; }
+  .lco-msg.err { color: #e07b53; }
+  .lco-msg.ok { color: #2ecc71; }
+
+  .lco-table-wrap { overflow-x: auto; }
+  table.lco-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  table.lco-table th, table.lco-table td { padding: 0.4rem 0.55rem; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+  table.lco-table th { color: var(--text-dim); font-weight: 600; font-size: 0.72rem; text-transform: uppercase; }
+  pre.lco-pre { background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px; padding: 0.8rem; font-size: 0.78rem; overflow-x: auto; max-height: 360px; }
+  .muscat-only, .sinistro-only { display: none; }
+</style>
+
+<h2 style="margin-bottom: 0.75rem;">LCO Scheduling &amp; Archive</h2>
+
+<div class="lco-banner" id="lco-config-banner">
+  <span class="pill"><span class="dot" id="cfg-token"></span> API token</span>
+  <span class="pill"><span class="dot" id="cfg-root"></span> Download root</span>
+  <span class="pill"><span class="dot" id="cfg-submit"></span> Live submit</span>
+  <span class="lco-note" style="margin: 0;">Tokens stay server-side. v1 stops at the IPP dry-run; live submission is gated.</span>
+</div>
+
+<div class="lco-tabs">
+  <button class="lco-tab active" type="button" data-tab="schedule">Schedule Observations</button>
+  <button class="lco-tab" type="button" data-tab="download">Download LCO Data</button>
+</div>
+
+<!-- ============================ SCHEDULE ============================ -->
+<div class="lco-panel active" id="panel-schedule">
+  <div class="lco-section">
+    <h3>Proposal</h3>
+    <div class="lco-row">
+      <div class="lco-field" style="flex: 1; min-width: 240px;">
+        <label for="sch-proposal">Proposal ID</label>
+        <select id="sch-proposal"><option value="">— load proposals —</option></select>
+      </div>
+      <button class="btn sm" type="button" id="btn-load-proposals">Load proposals</button>
+    </div>
+    <div class="lco-msg" id="msg-proposals"></div>
+  </div>
+
+  <div class="lco-section">
+    <h3>Target &amp; Transit Windows</h3>
+    <div class="lco-grid">
+      <div class="lco-field"><label for="sch-target">Target</label><input id="sch-target" type="text" placeholder="WASP-12"></div>
+      <div class="lco-field"><label for="sch-planet">Planet</label><input id="sch-planet" type="text" placeholder="b" style="max-width: 90px;"></div>
+      <div class="lco-field"><label for="sch-ra">RA (deg)</label><input id="sch-ra" type="number" step="any" placeholder="97.64"></div>
+      <div class="lco-field"><label for="sch-dec">Dec (deg)</label><input id="sch-dec" type="number" step="any" placeholder="29.67"></div>
+      <div class="lco-field"><label for="sch-duration" title="From the catalog when available; override here.">Duration (hr)</label><input id="sch-duration" type="number" step="any" placeholder="2.5"></div>
+      <div class="lco-field"><label for="sch-range-start">Range start (UTC)</label><input id="sch-range-start" type="date"></div>
+      <div class="lco-field"><label for="sch-range-end">Range end (UTC)</label><input id="sch-range-end" type="date"></div>
+      <div class="lco-field"><label for="sch-pad-before">Pad before (min)</label><input id="sch-pad-before" type="number" step="any" value="45"></div>
+      <div class="lco-field"><label for="sch-pad-after">Pad after (min)</label><input id="sch-pad-after" type="number" step="any" value="45"></div>
+    </div>
+    <div class="lco-actions">
+      <button class="btn sm primary" type="button" id="btn-gen-windows">Generate windows</button>
+      <span class="lco-msg" id="msg-windows" style="margin: 0;"></span>
+    </div>
+    <div class="lco-table-wrap" style="margin-top: 0.75rem;">
+      <table class="lco-table" id="windows-table" style="display: none;">
+        <thead><tr><th><input type="checkbox" id="win-all" checked></th><th>Epoch</th><th>Start (UTC)</th><th>Mid (UTC)</th><th>End (UTC)</th></tr></thead>
+        <tbody id="windows-body"></tbody>
+      </table>
+    </div>
+    <p class="lco-note">Windows are coarse scheduling bounds. t0 is usually BJD_TDB; the ≤8&nbsp;min barycentric offset is absorbed by the padding above.</p>
+  </div>
+
+  <div class="lco-section">
+    <h3>Imaging Request</h3>
+    <div class="lco-grid">
+      <div class="lco-field"><label for="sch-kind">Instrument</label>
+        <select id="sch-kind"><option value="muscat">MuSCAT (2m0)</option><option value="sinistro">Sinistro (1m0)</option></select>
+      </div>
+      <div class="lco-field"><label for="sch-name">Request name</label><input id="sch-name" type="text" placeholder="WASP-12b transit"></div>
+      <div class="lco-field"><label for="sch-count" class="muscat-only">Exposure count</label>
+        <input id="sch-count" class="muscat-only" type="number" min="1" value="1"></div>
+    </div>
+
+    <!-- MUSCAT -->
+    <div class="muscat-only" style="margin-top: 0.85rem;">
+      <div class="lco-grid">
+        <div class="lco-field"><label for="sch-exp-g">Exp g (s)</label><input id="sch-exp-g" type="number" step="any" placeholder="30"></div>
+        <div class="lco-field"><label for="sch-exp-r">Exp r (s)</label><input id="sch-exp-r" type="number" step="any" placeholder="30"></div>
+        <div class="lco-field"><label for="sch-exp-i">Exp i (s)</label><input id="sch-exp-i" type="number" step="any" placeholder="30"></div>
+        <div class="lco-field"><label for="sch-exp-z">Exp z (s)</label><input id="sch-exp-z" type="number" step="any" placeholder="30"></div>
+        <div class="lco-field"><label for="sch-exp-mode">Exposure mode</label>
+          <select id="sch-exp-mode"><option value="SYNCHRONOUS">Synchronous</option><option value="ASYNCHRONOUS">Asynchronous</option></select></div>
+        <div class="lco-field"><label for="sch-readout">Readout mode</label><input id="sch-readout" type="text" value="MUSCAT_FAST"></div>
+      </div>
+      <div class="lco-grid" style="margin-top: 0.6rem;">
+        <div class="lco-field"><label for="sch-nb-g">Narrowband g</label><select id="sch-nb-g"><option value="out">out</option><option value="in">in</option></select></div>
+        <div class="lco-field"><label for="sch-nb-r">Narrowband r</label><select id="sch-nb-r"><option value="out">out</option><option value="in">in</option></select></div>
+        <div class="lco-field"><label for="sch-nb-i">Narrowband i</label><select id="sch-nb-i"><option value="out">out</option><option value="in">in</option></select></div>
+        <div class="lco-field"><label for="sch-nb-z">Narrowband z</label><select id="sch-nb-z"><option value="out">out</option><option value="in">in</option></select></div>
+      </div>
+    </div>
+
+    <!-- SINISTRO -->
+    <div class="sinistro-only" style="margin-top: 0.85rem;">
+      <div class="lco-grid">
+        <div class="lco-field"><label for="sch-filter">Filter</label><input id="sch-filter" type="text" placeholder="rp"></div>
+        <div class="lco-field"><label for="sch-exptime">Exposure time (s)</label><input id="sch-exptime" type="number" step="any" placeholder="60"></div>
+        <div class="lco-field"><label for="sch-sin-count">Exposure count</label><input id="sch-sin-count" type="number" min="1" value="1"></div>
+        <div class="lco-field"><label for="sch-readout-sin">Readout mode</label><input id="sch-readout-sin" type="text" value="central_2k_2x2"></div>
+        <div class="lco-field"><label for="sch-site">Site (optional)</label><input id="sch-site" type="text" placeholder="lsc"></div>
+      </div>
+    </div>
+
+    <div class="lco-grid" style="margin-top: 0.85rem;">
+      <div class="lco-field"><label for="sch-max-airmass">Max airmass</label><input id="sch-max-airmass" type="number" step="any" value="1.6"></div>
+      <div class="lco-field"><label for="sch-min-lunar">Min lunar dist (deg)</label><input id="sch-min-lunar" type="number" step="any" value="30"></div>
+      <div class="lco-field"><label for="sch-ipp">IPP value</label><input id="sch-ipp" type="number" step="any" value="1.0"></div>
+    </div>
+  </div>
+
+  <div class="lco-section">
+    <h3>Dry-run &amp; Submit</h3>
+    <div class="lco-actions">
+      <button class="btn sm primary" type="button" id="btn-dry-run">Dry-run IPP</button>
+      <button class="btn sm" type="button" id="btn-submit" disabled
+        title="Live submission is disabled in v1. It requires a matching dry-run, an explicit confirm, and MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
+        Submit (disabled)
+      </button>
+      <span class="lco-msg" id="msg-ipp" style="margin: 0;"></span>
+    </div>
+    <div id="ipp-result" style="margin-top: 0.75rem; display: none;">
+      <div class="lco-note" id="ipp-summary"></div>
+      <pre class="lco-pre" id="payload-pre"></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ DOWNLOAD ============================ -->
+<div class="lco-panel" id="panel-download">
+  <div class="lco-section">
+    <h3>Archive Filters</h3>
+    <div class="lco-grid">
+      <div class="lco-field"><label for="dl-instrument">Save under instrument</label>
+        <select id="dl-instrument">
+          <option value="muscat3">muscat3</option>
+          <option value="muscat4">muscat4</option>
+          <option value="sinistro">sinistro</option>
+          <option value="muscat">muscat</option>
+          <option value="muscat2">muscat2</option>
+        </select></div>
+      <div class="lco-field"><label for="dl-proposal">Proposal ID</label><input id="dl-proposal" type="text" placeholder="LCO2026A-001"></div>
+      <div class="lco-field"><label for="dl-object">Object</label><input id="dl-object" type="text" placeholder="WASP-12"></div>
+      <div class="lco-field"><label for="dl-site">Site</label><input id="dl-site" type="text" placeholder="ogg / coj / lsc"></div>
+      <div class="lco-field"><label for="dl-tel">Telescope</label><input id="dl-tel" type="text" placeholder="2m0a"></div>
+      <div class="lco-field"><label for="dl-instrume">Instrument (header)</label><input id="dl-instrume" type="text" placeholder="ep05 / fa..."></div>
+      <div class="lco-field"><label for="dl-filter">Filter</label><input id="dl-filter" type="text" placeholder="rp"></div>
+      <div class="lco-field"><label for="dl-rlevel">Reduction level</label>
+        <select id="dl-rlevel"><option value="">any</option><option value="91">91 (reduced)</option><option value="0">0 (raw)</option></select></div>
+      <div class="lco-field"><label for="dl-start">Start (UTC)</label><input id="dl-start" type="date"></div>
+      <div class="lco-field"><label for="dl-end">End (UTC)</label><input id="dl-end" type="date"></div>
+      <div class="lco-field"><label for="dl-limit">Limit</label><input id="dl-limit" type="number" min="1" max="1000" value="50"></div>
+    </div>
+    <div class="lco-actions">
+      <button class="btn sm primary" type="button" id="btn-search">Search frames</button>
+      <label class="lco-field" style="flex-direction: row; align-items: center; gap: 0.4rem;">
+        <input type="checkbox" id="dl-overwrite"> <span style="font-size: 0.82rem;">Overwrite existing</span>
+      </label>
+      <span class="lco-msg" id="msg-search" style="margin: 0;"></span>
+    </div>
+    <p class="lco-note">Files save to <code>&lt;MUSCAT_LCO_DIR&gt;/&lt;instrument&gt;/&lt;date&gt;/</code> (or the instrument's data dir). Sinistro frames from several sites share one date dir; filenames are globally unique, so they don't collide — the SITE column shows their origin.</p>
+  </div>
+
+  <div class="lco-section">
+    <h3>Results</h3>
+    <div class="lco-actions" style="margin-bottom: 0.6rem;">
+      <button class="btn sm primary" type="button" id="btn-download" disabled>Download selected</button>
+      <span class="lco-msg" id="msg-download" style="margin: 0;"></span>
+    </div>
+    <div class="lco-table-wrap">
+      <table class="lco-table" id="frames-table" style="display: none;">
+        <thead><tr>
+          <th><input type="checkbox" id="frame-all"></th>
+          <th>Filename</th><th>Site</th><th>Tel</th><th>Instr</th><th>Filter</th><th>RLvl</th><th>Date-Obs</th><th>Status</th>
+        </tr></thead>
+        <tbody id="frames-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+  var OPT_KEY = 'lco:options';
+  function el(id) { return document.getElementById(id); }
+  function val(id) { var e = el(id); return e ? e.value.trim() : ''; }
+  function num(id) { var v = val(id); return v === '' ? null : Number(v); }
+  function chk(id) { var e = el(id); return e ? !!e.checked : false; }
+  function setVal(id, v) { var e = el(id); if (e && v !== undefined && v !== null) e.value = v; }
+  function setChk(id, v) { var e = el(id); if (e) e.checked = !!v; }
+  function msg(id, text, kind) {
+    var e = el(id); if (!e) return;
+    e.textContent = text || '';
+    e.className = 'lco-msg' + (kind ? ' ' + kind : '');
+  }
+
+  // ---- persisted form fields (CLAUDE.md: keep collect/restore/defaults in sync) ----
+  var TEXT_IDS = [
+    'sch-proposal','sch-target','sch-planet','sch-ra','sch-dec','sch-duration',
+    'sch-range-start','sch-range-end','sch-pad-before','sch-pad-after',
+    'sch-kind','sch-name','sch-count','sch-exp-g','sch-exp-r','sch-exp-i','sch-exp-z',
+    'sch-exp-mode','sch-readout','sch-nb-g','sch-nb-r','sch-nb-i','sch-nb-z',
+    'sch-filter','sch-exptime','sch-sin-count','sch-readout-sin','sch-site',
+    'sch-max-airmass','sch-min-lunar','sch-ipp',
+    'dl-instrument','dl-proposal','dl-object','dl-site','dl-tel','dl-instrume',
+    'dl-filter','dl-rlevel','dl-start','dl-end','dl-limit'
+  ];
+  var CHECK_IDS = ['dl-overwrite'];
+
+  function collectOptions() {
+    var o = {};
+    TEXT_IDS.forEach(function (id) { o[id] = val(id); });
+    CHECK_IDS.forEach(function (id) { o[id] = chk(id); });
+    return o;
+  }
+  function saveOptions() {
+    try { localStorage.setItem(OPT_KEY, JSON.stringify(collectOptions())); } catch (e) {}
+  }
+  function restoreOptions() {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved) return;
+    TEXT_IDS.forEach(function (id) { if (saved[id] !== undefined && saved[id] !== '') setVal(id, saved[id]); });
+    CHECK_IDS.forEach(function (id) { if (saved[id] !== undefined) setChk(id, saved[id]); });
+  }
+  // Persist on any change.
+  document.addEventListener('change', function (e) {
+    if (e.target && (TEXT_IDS.indexOf(e.target.id) !== -1 || CHECK_IDS.indexOf(e.target.id) !== -1)) saveOptions();
+  });
+
+  // ---- tabs ----
+  document.querySelectorAll('.lco-tab').forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      document.querySelectorAll('.lco-tab').forEach(function (t) { t.classList.remove('active'); });
+      document.querySelectorAll('.lco-panel').forEach(function (p) { p.classList.remove('active'); });
+      tab.classList.add('active');
+      el('panel-' + tab.dataset.tab).classList.add('active');
+    });
+  });
+
+  // ---- instrument kind toggle ----
+  function applyKind() {
+    var muscat = val('sch-kind') === 'muscat';
+    document.querySelectorAll('.muscat-only').forEach(function (e) { e.style.display = muscat ? '' : 'none'; });
+    document.querySelectorAll('.sinistro-only').forEach(function (e) { e.style.display = muscat ? 'none' : ''; });
+  }
+  el('sch-kind').addEventListener('change', applyKind);
+
+  // ---- config banner ----
+  function setDot(id, ok) { var e = el(id); if (e) e.className = 'dot ' + (ok ? 'ok' : 'no'); }
+  fetch('/api/lco/config').then(function (r) { return r.json(); }).then(function (d) {
+    if (!d.ok) return;
+    setDot('cfg-token', d.token_configured);
+    setDot('cfg-root', d.download_root_configured);
+    setDot('cfg-submit', d.submit_allowed);
+  }).catch(function () {});
+
+  // ---- proposals ----
+  el('btn-load-proposals').addEventListener('click', function () {
+    msg('msg-proposals', 'Loading…');
+    fetch('/api/lco/proposals').then(function (r) { return r.json(); }).then(function (d) {
+      if (!d.ok) { msg('msg-proposals', d.error || 'failed', 'err'); return; }
+      var sel = el('sch-proposal');
+      var current = sel.value;
+      sel.innerHTML = '<option value="">— select —</option>';
+      (d.results || []).forEach(function (p) {
+        var id = p.id || p;
+        var opt = document.createElement('option');
+        opt.value = id; opt.textContent = id;
+        sel.appendChild(opt);
+      });
+      if (current) sel.value = current;
+      msg('msg-proposals', 'Loaded ' + ((d.results || []).length) + ' proposals', 'ok');
+      saveOptions();
+    }).catch(function (e) { msg('msg-proposals', String(e), 'err'); });
+  });
+
+  // ---- windows ----
+  var lastWindows = [];
+  el('win-all').addEventListener('change', function () {
+    document.querySelectorAll('#windows-body input[type=checkbox]').forEach(function (c) { c.checked = el('win-all').checked; });
+  });
+  el('btn-gen-windows').addEventListener('click', function () {
+    msg('msg-windows', 'Generating…');
+    var body = {
+      target: val('sch-target'), planet: val('sch-planet'),
+      duration: num('sch-duration'),
+      range_start: val('sch-range-start'), range_end: val('sch-range-end'),
+      pad_before_min: num('sch-pad-before') || 0, pad_after_min: num('sch-pad-after') || 0
+    };
+    fetch('/api/lco/windows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) { msg('msg-windows', d.error || 'failed', 'err'); return; }
+        lastWindows = d.windows || [];
+        if (d.duration && !val('sch-duration')) setVal('sch-duration', d.duration);
+        var tb = el('windows-body'); tb.innerHTML = '';
+        lastWindows.forEach(function (w, i) {
+          var tr = document.createElement('tr');
+          tr.innerHTML = '<td><input type="checkbox" data-i="' + i + '" checked></td>' +
+            '<td>' + w.epoch + '</td><td>' + w.start + '</td><td>' + w.mid + '</td><td>' + w.end + '</td>';
+          tb.appendChild(tr);
+        });
+        el('windows-table').style.display = lastWindows.length ? '' : 'none';
+        msg('msg-windows', lastWindows.length + ' windows (t0=' + d.t0 + ', P=' + d.period + ' d)', 'ok');
+      }).catch(function (e) { msg('msg-windows', String(e), 'err'); });
+  });
+
+  function selectedWindows() {
+    var out = [];
+    document.querySelectorAll('#windows-body input[type=checkbox]').forEach(function (c) {
+      if (c.checked) { var w = lastWindows[+c.dataset.i]; if (w) out.push({ start: w.start, end: w.end }); }
+    });
+    return out;
+  }
+
+  // ---- build payload params from the form ----
+  function buildParams() {
+    var kind = val('sch-kind');
+    var p = {
+      kind: kind, name: val('sch-name'), proposal: val('sch-proposal'),
+      target_name: val('sch-target'), ra: num('sch-ra'), dec: num('sch-dec'),
+      max_airmass: num('sch-max-airmass'), min_lunar_distance: num('sch-min-lunar'),
+      ipp_value: num('sch-ipp'), windows: selectedWindows()
+    };
+    if (kind === 'muscat') {
+      p.exposure_times = {};
+      ['g', 'r', 'i', 'z'].forEach(function (b) { var v = num('sch-exp-' + b); if (v !== null) p.exposure_times[b] = v; });
+      p.exposure_mode = val('sch-exp-mode');
+      p.exposure_count = num('sch-count') || 1;
+      p.readout_mode = val('sch-readout');
+      p.narrowband = { g: val('sch-nb-g'), r: val('sch-nb-r'), i: val('sch-nb-i'), z: val('sch-nb-z') };
+    } else {
+      p.filter = val('sch-filter');
+      p.exposure_time = num('sch-exptime');
+      p.exposure_count = num('sch-sin-count') || 1;
+      p.readout_mode = val('sch-readout-sin');
+      if (val('sch-site')) p.site = val('sch-site');
+    }
+    return p;
+  }
+
+  // ---- dry-run ----
+  var lastDryRunHash = null;
+  el('btn-dry-run').addEventListener('click', function () {
+    if (!selectedWindows().length) { msg('msg-ipp', 'Generate and select at least one window first', 'err'); return; }
+    msg('msg-ipp', 'Running dry-run…');
+    lastDryRunHash = null;
+    fetch('/api/lco/ipp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildParams()) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) { msg('msg-ipp', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
+        lastDryRunHash = d.payload_hash;
+        el('ipp-result').style.display = '';
+        var ipp = d.ipp || {};
+        var allowed = ipp.max_allowable_ipp_value !== undefined ? ipp.max_allowable_ipp_value : JSON.stringify(ipp);
+        el('ipp-summary').textContent = 'Max allowable IPP: ' + allowed + ' · payload hash ' + (d.payload_hash || '').slice(0, 12);
+        el('payload-pre').textContent = JSON.stringify(d.payload, null, 2);
+        msg('msg-ipp', 'Dry-run OK. Live submit stays disabled in v1.', 'ok');
+      }).catch(function (e) { msg('msg-ipp', String(e), 'err'); });
+  });
+
+  // ---- submit (Phase B; button stays disabled in v1) ----
+  // To go live later: drop the `disabled` attribute on #btn-submit. The server
+  // still enforces confirm + matching dry-run hash + MUSCAT_LCO_ALLOW_SUBMIT.
+  el('btn-submit').addEventListener('click', function () {
+    if (!lastDryRunHash) { msg('msg-ipp', 'Run a dry-run first', 'err'); return; }
+    if (!window.confirm('Submit this request to LCO? This consumes real telescope time.')) return;
+    var body = buildParams();
+    body.confirm = true;
+    body.dry_run_hash = lastDryRunHash;
+    msg('msg-ipp', 'Submitting…');
+    fetch('/api/lco/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) { msg('msg-ipp', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
+        msg('msg-ipp', 'Submitted: ' + JSON.stringify(d.result && d.result.id ? d.result.id : d.result), 'ok');
+      }).catch(function (e) { msg('msg-ipp', String(e), 'err'); });
+  });
+
+  // ---- archive search ----
+  var lastFrames = [];
+  el('frame-all').addEventListener('change', function () {
+    document.querySelectorAll('#frames-body input[type=checkbox]').forEach(function (c) { c.checked = el('frame-all').checked; });
+  });
+  el('btn-search').addEventListener('click', function () {
+    msg('msg-search', 'Searching…');
+    var q = new URLSearchParams();
+    var map = {
+      proposal_id: 'dl-proposal', OBJECT: 'dl-object', SITEID: 'dl-site', TELID: 'dl-tel',
+      INSTRUME: 'dl-instrume', FILTER: 'dl-filter', reduction_level: 'dl-rlevel',
+      start: 'dl-start', end: 'dl-end', limit: 'dl-limit'
+    };
+    Object.keys(map).forEach(function (k) { var v = val(map[k]); if (v) q.set(k, v); });
+    fetch('/api/lco/archive/frames?' + q.toString()).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d.ok) { msg('msg-search', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
+      lastFrames = d.results || [];
+      var tb = el('frames-body'); tb.innerHTML = '';
+      lastFrames.forEach(function (f, i) {
+        var tr = document.createElement('tr');
+        tr.innerHTML = '<td><input type="checkbox" data-i="' + i + '"></td>' +
+          '<td>' + esc(f.filename || f.basename || '') + '</td>' +
+          '<td>' + esc(f.SITEID || '') + '</td><td>' + esc(f.TELID || '') + '</td>' +
+          '<td>' + esc(f.INSTRUME || '') + '</td><td>' + esc(f.FILTER || '') + '</td>' +
+          '<td>' + esc(f.RLEVEL !== undefined ? f.RLEVEL : (f.reduction_level || '')) + '</td>' +
+          '<td>' + esc(f.DATE_OBS || f.observation_date || '') + '</td>' +
+          '<td class="frame-status" data-i="' + i + '"></td>';
+        tb.appendChild(tr);
+      });
+      el('frames-table').style.display = lastFrames.length ? '' : 'none';
+      el('btn-download').disabled = !lastFrames.length;
+      msg('msg-search', 'Found ' + (d.count !== undefined ? d.count : lastFrames.length) + ' frames (showing ' + lastFrames.length + ')', 'ok');
+    }).catch(function (e) { msg('msg-search', String(e), 'err'); });
+  });
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  // ---- download ----
+  el('btn-download').addEventListener('click', function () {
+    var picked = [];
+    document.querySelectorAll('#frames-body input[type=checkbox]:checked').forEach(function (c) {
+      var f = lastFrames[+c.dataset.i]; if (f) picked.push(f);
+    });
+    if (!picked.length) { msg('msg-download', 'Select frames first', 'err'); return; }
+    msg('msg-download', 'Downloading ' + picked.length + ' frames…');
+    var body = { instrument: val('dl-instrument'), overwrite: chk('dl-overwrite'), frames: picked };
+    fetch('/api/lco/archive/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) { msg('msg-download', d.error || 'failed', 'err'); return; }
+        var byName = {};
+        (d.results || []).forEach(function (r) { byName[r.filename] = r; });
+        document.querySelectorAll('#frames-body .frame-status').forEach(function (cell) {
+          var f = lastFrames[+cell.dataset.i]; if (!f) return;
+          var r = byName[f.filename || f.basename]; if (!r) return;
+          cell.textContent = r.status + (r.bytes ? ' (' + Math.round(r.bytes / 1024) + ' KB)' : '') + (r.error ? ': ' + r.error : '');
+        });
+        var ok = (d.results || []).filter(function (r) { return r.status === 'downloaded'; }).length;
+        var ex = (d.results || []).filter(function (r) { return r.status === 'exists'; }).length;
+        var er = (d.results || []).filter(function (r) { return r.status === 'error'; }).length;
+        msg('msg-download', 'Done: ' + ok + ' downloaded, ' + ex + ' already present, ' + er + ' errors', er ? 'err' : 'ok');
+      }).catch(function (e) { msg('msg-download', String(e), 'err'); });
+  });
+
+  // ---- view prefill (?view=slug) ----
+  function prefillFromView() {
+    var slug = new URLSearchParams(window.location.search).get('view');
+    if (!slug) return;
+    fetch('/api/ephemeris/view/' + encodeURIComponent(slug)).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d.ok || !d.state) return;
+      var targets = d.state.targets || [];
+      if (targets.length && !val('sch-target')) { setVal('sch-target', targets[0]); setVal('dl-object', targets[0]); saveOptions(); }
+    }).catch(function () {});
+  }
+
+  // ---- init ----
+  restoreOptions();
+  applyKind();
+  prefillFromView();
+})();
+</script>
+{% endblock %}

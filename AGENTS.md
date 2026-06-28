@@ -51,3 +51,6 @@ The pipeline is launched with `start_new_session=True` and prose spawns multipro
 * The default suite is fast: `pyproject.toml` sets `addopts = "-m 'not slow'"`, so anything marked `@pytest.mark.slow` is deselected unless you opt in with `pytest -m slow`.
 * `tests/test_slow_runs.py` holds heavyweight full-pipeline runtime-profiling runs (real `prose`/`timer` conda tools + real data on the production host). They `pytest.skip` cleanly when raw data, CSV lightcurves, or the external conda envs are absent, so they collect/skip safely anywhere and only do real work on the host. Run them on the host with `uv run pytest -m slow`.
 
+## Prompt
+Ask questions for clarifications if prompt is vague or confusing.
+Verify non-obvious assumptions before implementing edit.

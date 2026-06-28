@@ -24,6 +24,7 @@ from contextlib import asynccontextmanager
 from muscat_db import photometry as phot
 from muscat_db import exposure as exp_calc
 from muscat_db import transit_fit as fit
+from muscat_db import lco
 from muscat_db.database import (
     SCHEMA,
     delete_note as _delete_note,
@@ -308,9 +309,9 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         runs, run_outputs = phot.list_photometry_runs(inst, date, target)
         if inst == "sinistro":
             if site:
-                runs = [r for r in runs if r.is_legacy or r.site == site]
+                runs = [r for r in runs if r.is_legacy or r.site == site or not r.site]
             if mode:
-                runs = [r for r in runs if r.is_legacy or r.mode == mode]
+                runs = [r for r in runs if r.is_legacy or r.mode == mode or not r.mode]
         run_ids = {r.run_id for r in runs}
         newest = runs[0].run_id if runs else None
         if not run:
@@ -491,9 +492,9 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
         runs = fit.list_fit_runs(inst, date, target)
         if inst == "sinistro":
             if sel_site:
-                runs = [r for r in runs if r.site == sel_site]
+                runs = [r for r in runs if r.is_legacy or r.site == sel_site or not r.site]
             if sel_mode:
-                runs = [r for r in runs if r.mode == sel_mode]
+                runs = [r for r in runs if r.is_legacy or r.mode == sel_mode or not r.mode]
 
         run_ids = {r.run_id for r in runs}
         newest = runs[0].run_id if runs else None
@@ -1118,6 +1119,187 @@ def api_ephemeris_view_get(slug: str):
     return JSONResponse({"ok": True, **view})
 
 
+# ---------------------------------------------------------------------------
+# LCO scheduling & archive download (see muscat_db/lco.py)
+# ---------------------------------------------------------------------------
+
+
+def _lco_error_response(e: "lco.LcoError") -> JSONResponse:
+    return JSONResponse(e.to_dict(), status_code=e.status)
+
+
+@app.get("/lco", response_class=HTMLResponse)
+def lco_page():
+    return _render("lco.html")
+
+
+@app.get("/api/lco/config", response_class=JSONResponse)
+def api_lco_config():
+    """Report whether the token/download-root/submit gate are configured. No secrets."""
+    return JSONResponse({"ok": True, **lco.config_state()})
+
+
+@app.get("/api/lco/proposals", response_class=JSONResponse)
+def api_lco_proposals():
+    try:
+        return JSONResponse({"ok": True, **lco.get_proposals()})
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+
+
+@app.get("/api/lco/requestgroups", response_class=JSONResponse)
+def api_lco_requestgroups(proposal: str = ""):
+    try:
+        return JSONResponse({"ok": True, **lco.get_requestgroups(proposal)})
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+
+
+@app.post("/api/lco/windows", response_class=JSONResponse)
+def api_lco_windows(payload: dict = Body(...)):
+    """Generate transit windows from explicit t0/period/duration or a catalog lookup."""
+    try:
+        t0 = payload.get("t0")
+        period = payload.get("period")
+        duration = payload.get("duration")
+        target = (payload.get("target") or "").strip()
+        planet = (payload.get("planet") or "").strip().lower()
+
+        if t0 in (None, "") or period in (None, ""):
+            if not target:
+                return JSONResponse(
+                    {"ok": False, "error": "provide t0+period, or a target to look up"},
+                    status_code=400,
+                )
+            planets = _query_target_planets_catalog(target)
+            key = planet if planet in planets else (next(iter(planets)) if planets else None)
+            ephem = planets.get(key) if key else None
+            if not ephem:
+                return JSONResponse(
+                    {"ok": False, "error": f"no ephemeris found for {target} {planet}".strip()},
+                    status_code=404,
+                )
+            t0 = ephem.get("t0")
+            period = ephem.get("period")
+            if duration in (None, "") and ephem.get("duration") is not None:
+                duration = ephem.get("duration")
+            planet = key
+
+        if duration in (None, ""):
+            return JSONResponse(
+                {"ok": False, "error": "transit duration (hours) is required (none in catalog)"},
+                status_code=400,
+            )
+
+        windows = lco.generate_windows(
+            float(t0),
+            float(period),
+            float(duration),
+            payload.get("range_start"),
+            payload.get("range_end"),
+            float(payload.get("pad_before_min") or 0),
+            float(payload.get("pad_after_min") or 0),
+        )
+        return JSONResponse(
+            {
+                "ok": True,
+                "windows": windows,
+                "planet": planet,
+                "t0": float(t0),
+                "period": float(period),
+                "duration": float(duration),
+            }
+        )
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+    except (TypeError, ValueError) as e:
+        return JSONResponse({"ok": False, "error": f"invalid numeric input: {e}"}, status_code=400)
+
+
+@app.post("/api/lco/ipp", response_class=JSONResponse)
+def api_lco_ipp(payload: dict = Body(...)):
+    """Build the requestgroup and run the max-allowable-IPP dry-run."""
+    try:
+        rg = lco.build_requestgroup(payload.get("kind"), payload)
+        ipp = lco.max_allowable_ipp(rg)
+        return JSONResponse(
+            {"ok": True, "payload": rg, "payload_hash": lco.payload_hash(rg), "ipp": ipp}
+        )
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+
+
+@app.post("/api/lco/submit", response_class=JSONResponse)
+def api_lco_submit(payload: dict = Body(...)):
+    """Live submission. Guarded: requires explicit confirm AND a payload hash that
+    matches a prior successful dry-run, plus the server-side submit switch."""
+    try:
+        if not payload.get("confirm"):
+            return JSONResponse(
+                {"ok": False, "error": "submission requires explicit confirm"}, status_code=400
+            )
+        rg = lco.build_requestgroup(payload.get("kind"), payload)
+        expected = payload.get("dry_run_hash")
+        if not expected or expected != lco.payload_hash(rg):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "no matching IPP dry-run for this payload; run the dry-run again",
+                },
+                status_code=409,
+            )
+        result = lco.submit_requestgroup(rg)
+        return JSONResponse({"ok": True, "result": result})
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+
+
+@app.get("/api/lco/archive/frames", response_class=JSONResponse)
+def api_lco_archive_frames(
+    proposal_id: str = "",
+    OBJECT: str = "",
+    SITEID: str = "",
+    TELID: str = "",
+    INSTRUME: str = "",
+    FILTER: str = "",
+    reduction_level: str = "",
+    start: str = "",
+    end: str = "",
+    limit: str = "50",
+):
+    filters = {
+        "proposal_id": proposal_id,
+        "OBJECT": OBJECT,
+        "SITEID": SITEID,
+        "TELID": TELID,
+        "INSTRUME": INSTRUME,
+        "FILTER": FILTER,
+        "reduction_level": reduction_level,
+        "start": start,
+        "end": end,
+        "limit": limit,
+    }
+    try:
+        return JSONResponse({"ok": True, **lco.archive_search(filters)})
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+
+
+@app.post("/api/lco/archive/download", response_class=JSONResponse)
+def api_lco_archive_download(payload: dict = Body(...)):
+    try:
+        inst = (payload.get("instrument") or "").strip()
+        if inst not in INSTRUMENTS:
+            return JSONResponse({"ok": False, "error": "unknown instrument"}, status_code=400)
+        frames = payload.get("frames")
+        if not isinstance(frames, list) or not frames:
+            return JSONResponse({"ok": False, "error": "no frames selected"}, status_code=400)
+        results = lco.download_frames(inst, frames, overwrite=bool(payload.get("overwrite")))
+        return JSONResponse({"ok": True, "results": results})
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+
+
 # Helper to normalize target names for comparison
 def _normalize_target_name(t: str) -> str:
     s = t.strip().upper().replace(" ", "").replace("-", "").replace("_", "")
@@ -1125,6 +1307,19 @@ def _normalize_target_name(t: str) -> str:
     if len(s) > 2 and s[-1] in "BCDEFGH":
         return s[:-1]
     return s
+
+
+def _safe_float(value) -> float | None:
+    """Parse a value to float, returning None for blanks/invalid input."""
+    if value is None:
+        return None
+    try:
+        s = str(value).strip()
+        if not s:
+            return None
+        return float(s)
+    except (TypeError, ValueError):
+        return None
 
 
 def _query_target_planets_nasa(target: str) -> dict:
@@ -1158,9 +1353,13 @@ def _query_target_planets_nasa(target: str) -> dict:
                         per = row.get("pl_orbper")
                         if pl_letter and t0 is not None and per is not None:
                             try:
-                                results[pl_letter] = {"t0": float(t0), "period": float(per)}
+                                entry = {"t0": float(t0), "period": float(per)}
                             except ValueError:
-                                pass
+                                continue
+                            dur = _safe_float(row.get("pl_trandur"))  # hours
+                            if dur is not None:
+                                entry["duration"] = dur
+                            results[pl_letter] = entry
     except Exception:
         pass
 
@@ -1171,7 +1370,7 @@ def _query_target_planets_nasa(target: str) -> dict:
         if len(host) > 2 and host[-2] == " " and host[-1].lower() in "bcdefgh":
             host = host[:-2].strip()
             
-        cols = ["pl_name", "pl_tranmid", "pl_orbper"]
+        cols = ["pl_name", "pl_tranmid", "pl_orbper", "pl_trandur"]
         col_str = ", ".join(cols)
         q = f"SELECT {col_str} FROM pscomppars WHERE hostname = {_adql_literal(host)} OR hostname LIKE {_adql_literal(host + '%')}"
         url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
@@ -1186,7 +1385,11 @@ def _query_target_planets_nasa(target: str) -> dict:
                         t0 = row.get("pl_tranmid")
                         per = row.get("pl_orbper")
                         if letter and t0 is not None and per is not None:
-                            results[letter] = {"t0": float(t0), "period": float(per)}
+                            entry = {"t0": float(t0), "period": float(per)}
+                            dur = _safe_float(row.get("pl_trandur"))  # hours
+                            if dur is not None:
+                                entry["duration"] = dur
+                            results[letter] = entry
         except Exception:
             pass
 
@@ -1239,9 +1442,13 @@ def _query_target_planets_toi(target: str) -> dict:
                         per = row.get("Period (days)")
                         if t0 is not None and per is not None:
                             try:
-                                results[letter] = {"t0": float(t0), "period": float(per)}
+                                entry = {"t0": float(t0), "period": float(per)}
                             except ValueError:
-                                pass
+                                continue
+                            dur = _safe_float(row.get("Duration (hours)"))
+                            if dur is not None:
+                                entry["duration"] = dur
+                            results[letter] = entry
     except Exception:
         pass
 
@@ -1251,7 +1458,7 @@ def _query_target_planets_toi(target: str) -> dict:
         if len(host) > 2 and host[-2] == " " and host[-1].lower() in "bcdefgh":
             host = host[:-2].strip()
         clean_target = host.replace("TOI", "").replace("toi", "").replace("-", "").replace(" ", "").lstrip("0").split(".")[0].strip()
-        q = f"SELECT toidisplay, pl_tranmid, pl_orbper FROM toi WHERE toidisplay LIKE {_adql_literal(host + '%')}"
+        q = f"SELECT toidisplay, pl_tranmid, pl_orbper, pl_trandurh FROM toi WHERE toidisplay LIKE {_adql_literal(host + '%')}"
         url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         try:
@@ -1267,9 +1474,13 @@ def _query_target_planets_toi(target: str) -> dict:
                             try:
                                 candidate_num = int(parts[1])
                                 letter = chr(ord('b') + candidate_num - 1)
-                                results[letter] = {"t0": float(t0), "period": float(per)}
+                                entry = {"t0": float(t0), "period": float(per)}
                             except Exception:
-                                pass
+                                continue
+                            dur = _safe_float(row.get("pl_trandurh"))  # hours
+                            if dur is not None:
+                                entry["duration"] = dur
+                            results[letter] = entry
         except Exception:
             pass
 
