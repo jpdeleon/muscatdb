@@ -575,8 +575,12 @@
   function renderVisibility(d, w, site) {
     var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
     var fg = isDark ? '#e1e4ed' : '#1a1c22', grid = isDark ? '#2a2e3a' : '#e6e8ee';
+    var target_alt_night = d.target_alt.map(function(val, idx) {
+      return (d.sun_alt[idx] < d.sun_alt_limit) ? val : null;
+    });
     var traces = [
-      { x: d.times, y: d.target_alt, name: 'Target', mode: 'lines', line: { color: '#6c8cff', width: 2 } },
+      { x: d.times, y: d.target_alt, name: 'Target', mode: 'lines', line: { color: '#6c8cff', width: 1.5, dash: 'dot' }, showlegend: false },
+      { x: d.times, y: target_alt_night, name: 'Target', mode: 'lines', line: { color: '#6c8cff', width: 3.5 } },
       { x: d.times, y: d.moon_alt, name: 'Moon', mode: 'lines', line: { color: '#bfa14a', width: 1.5, dash: 'dash' } },
       { x: d.times, y: d.sun_alt, name: 'Sun', mode: 'lines', line: { color: '#e07b53', width: 1, dash: 'dot' } }
     ];
