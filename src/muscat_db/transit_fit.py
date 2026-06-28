@@ -306,7 +306,7 @@ def get_csv_lightcurves(inst: str, date: str, target: str) -> list[pathlib.Path]
     inst_token = f"_{inst.lower()}_"
 
     def matches_lightcurve(f: pathlib.Path) -> bool:
-        if f.name.startswith("_") or "summary" in f.name:
+        if f.name.startswith("_") or "summary" in f.name or "nearby_stars" in f.name:
             return False
         fname = f.name.lower()
         if inst_token not in fname:
