@@ -690,31 +690,7 @@
         }
       }).catch(function () { setRunning(false); });
     }
-    // Cross-page banner for a DIFFERENT target that still has a saved job.
-    var saved;
-    try { saved = JSON.parse(localStorage.getItem(JOB_KEY) || 'null'); } catch (e) { saved = null; }
-    if (!saved || !saved.inst) return;
-    if (saved.inst === inst && saved.date === date && saved.target === target && (saved.run_id || '') === (runId || '')) return;
-    var banner = document.getElementById('job-banner');
-    var bannerMsg = document.getElementById('job-banner-msg');
-    var bannerLink = document.getElementById('job-banner-link');
-    if (!banner) return;
-    (function pollBanner() {
-      var qs = 'inst=' + encodeURIComponent(saved.inst) + '&date=' + encodeURIComponent(saved.date) + '&target=' + encodeURIComponent(saved.target);
-      if (saved.run_id) qs += '&run=' + encodeURIComponent(saved.run_id);
-      fetch('/photometry/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
-        if (s.state === 'none') { clearJob(); banner.style.display = 'none'; return; }
-        banner.style.display = '';
-        bannerMsg.textContent = '⚡ ' + saved.target + ' @ ' + saved.inst + '/' + saved.date + ' — ' + s.state;
-        bannerLink.href = '/photometry?inst=' + encodeURIComponent(saved.inst) + '&date=' + encodeURIComponent(saved.date) + '&target=' + encodeURIComponent(saved.target) + (saved.run_id ? '&run=' + encodeURIComponent(saved.run_id) : '');
-        if (s.state === 'done' || s.state === 'error' || s.state === 'cancelled') {
-          clearJob();
-          setTimeout(function () { banner.style.display = 'none'; }, 15000);
-          return;
-        }
-        setTimeout(pollBanner, 3000);
-      }).catch(function () { setTimeout(pollBanner, 5000); });
-    })();
+    // Banner for background jobs will be updated by the unified polling system
   }
 
   // ----- cascading selectors: navigate on change -----
@@ -1022,6 +998,22 @@
   var pollTimer = null;
   var jobActive = false;
 
+  // ----- centralized active job tracking for batch polling -----
+  function getActiveJobs() {
+    var jobs = [];
+    // Current target's job
+    if (inst && date && target && jobActive) {
+      jobs.push({ inst: inst, date: date, target: target, run: runId || '' });
+    }
+    // Background job(s) from saved state
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(JOB_KEY) || 'null'); } catch (e) { saved = null; }
+    if (saved && saved.inst && !(saved.inst === inst && saved.date === date && saved.target === target)) {
+      jobs.push({ inst: saved.inst, date: saved.date, target: saved.target, run: saved.run_id || '' });
+    }
+    return jobs;
+  }
+
   function debounce(fn, ms) {
     var t; return function () { clearTimeout(t); t = setTimeout(fn, ms); };
   }
@@ -1182,23 +1174,77 @@
   }
 
   function poll() {
-    var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
-    if (runId) qs += '&run=' + encodeURIComponent(runId);
+    var jobs = getActiveJobs();
+    if (jobs.length === 0) {
+      stopPolling();
+      return;
+    }
+
+    // Use batch endpoint if monitoring multiple jobs, single if just one
+    if (jobs.length === 1) {
+      pollSingle(jobs[0]);
+    } else {
+      pollBatch(jobs);
+    }
+
+    // Schedule next poll unless explicitly stopped by a terminal state
+    // (scheduling is handled in handleStatusResponse for the current job)
+  }
+
+  function pollSingle(jobSpec) {
+    nextPollDelay = null;
+    var qs = 'inst=' + encodeURIComponent(jobSpec.inst) + '&date=' + encodeURIComponent(jobSpec.date) + '&target=' + encodeURIComponent(jobSpec.target);
+    if (jobSpec.run) qs += '&run=' + encodeURIComponent(jobSpec.run);
     fetch('/photometry/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
+      handleStatusResponse(jobSpec, s);
+      // Schedule next poll based on accumulated delay or default
+      if (nextPollDelay !== null) {
+        schedulePoll(nextPollDelay);
+      } else if (getActiveJobs().length > 0) {
+        schedulePoll(5000);
+      } else {
+        stopPolling();
+      }
+    }).catch(function () { schedulePoll(5000); });
+  }
+
+  function pollBatch(jobsList) {
+    nextPollDelay = null;
+    fetch('/photometry/status-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobs: jobsList })
+    }).then(function (r) { return r.json(); }).then(function (response) {
+      var jobs = response.jobs || [];
+      jobs.forEach(function (status) {
+        handleStatusResponse(status, status);
+      });
+      // Schedule next poll based on accumulated delay or default
+      if (nextPollDelay !== null) {
+        schedulePoll(nextPollDelay);
+      } else if (getActiveJobs().length > 0) {
+        schedulePoll(5000);
+      } else {
+        stopPolling();
+      }
+    }).catch(function () { schedulePoll(5000); });
+  }
+
+  var nextPollDelay = null;
+
+  function handleStatusResponse(jobSpec, s) {
+    // Update current target's log if this is the job we're monitoring on this page
+    if (jobSpec.inst === inst && jobSpec.date === date && jobSpec.target === target && (jobSpec.run || '') === (runId || '')) {
       if (s.log) {
         logEl.textContent = s.log;
         logEl.scrollTop = logEl.scrollHeight;
         try { localStorage.setItem(logKey(), s.log); } catch (e) {}
       }
       if (s.state === 'running' || s.state === 'cancelling' || s.state === 'finalizing') {
-        // 'finalizing': parent exited but prose workers are still writing the
-        // log. Keep polling/streaming (no stopPolling here) so the live log
-        // keeps advancing until the server reports a terminal state.
         setRunning(true);
-        schedulePoll(2000);
-      }
-      if (s.state === 'done') {
-        stopPolling(); setRunning(false);
+        nextPollDelay = Math.min(nextPollDelay || 2000, 2000);
+      } else if (s.state === 'done') {
+        setRunning(false);
         logEl.textContent = (s.log || '') + '\n\n✓ done (' + s.elapsed + 's) — reloading…';
         try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
         if (typeof window.showLoading === 'function') {
@@ -1206,9 +1252,6 @@
         }
         var reloadDelay = (s.run_type === 'test') ? 400 : 1200;
         setTimeout(function () {
-          // Navigate to the new run's outputs explicitly (not a bare reload),
-          // so the page shows the correct run even if timing makes another run
-          // look "newer" by mtime. Keep current site/mode filters if present.
           var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
           if (runId) qs += '&run=' + encodeURIComponent(runId);
           if (siteSel && siteSel.value) qs += '&site=' + encodeURIComponent(siteSel.value);
@@ -1217,7 +1260,7 @@
           clearJob();
         }, reloadDelay);
       } else if (s.state === 'error') {
-        stopPolling(); setRunning(false);
+        setRunning(false);
         logEl.textContent = (s.log || '') + '\n\n✗ pipeline exited with code ' + s.returncode;
         try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
         if (typeof window.showLoading === 'function') {
@@ -1232,7 +1275,7 @@
           clearJob();
         }, 1200);
       } else if (s.state === 'cancelled') {
-        stopPolling(); setRunning(false); clearJob();
+        setRunning(false); clearJob();
         logEl.textContent = (s.log || '') + '\n\n■ cancelled';
         try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
         if (typeof window.showLoading === 'function') {
@@ -1245,9 +1288,8 @@
           logEl.style.display = 'block';
           logEl.textContent = '⏳ Queued — waiting for the running full reduction to finish…';
         }
-        schedulePoll(7000);
+        nextPollDelay = Math.min(nextPollDelay || 7000, 7000);
       } else if (s.state === 'none') {
-        stopPolling();
         var wasRunning = jobActive;
         setRunning(false);
         clearJob();
@@ -1255,7 +1297,36 @@
           window.location.reload();
         }
       }
-    }).catch(function () { schedulePoll(5000); });
+    } else {
+      // This is a background job (different target) - update the banner
+      updateBannerFromStatus(jobSpec, s);
+    }
+  }
+
+  function updateBannerFromStatus(jobSpec, s) {
+    var banner = document.getElementById('job-banner');
+    var bannerMsg = document.getElementById('job-banner-msg');
+    var bannerLink = document.getElementById('job-banner-link');
+    if (!banner || !bannerMsg || !bannerLink) return;
+
+    if (s.state === 'none') {
+      clearJob();
+      banner.style.display = 'none';
+      return;
+    }
+
+    banner.style.display = '';
+    bannerMsg.textContent = '⚡ ' + jobSpec.target + ' @ ' + jobSpec.inst + '/' + jobSpec.date + ' — ' + s.state;
+    bannerLink.href = '/photometry?inst=' + encodeURIComponent(jobSpec.inst) + '&date=' + encodeURIComponent(jobSpec.date) + '&target=' + encodeURIComponent(jobSpec.target) + (jobSpec.run ? '&run=' + encodeURIComponent(jobSpec.run) : '');
+
+    if (s.state === 'running' || s.state === 'cancelling' || s.state === 'finalizing') {
+      nextPollDelay = Math.min(nextPollDelay || 2000, 2000);
+    } else if (s.state === 'pending') {
+      nextPollDelay = Math.min(nextPollDelay || 7000, 7000);
+    } else if (s.state === 'done' || s.state === 'error' || s.state === 'cancelled') {
+      clearJob();
+      setTimeout(function () { banner.style.display = 'none'; }, 15000);
+    }
   }
 
   function launch(testRun) {

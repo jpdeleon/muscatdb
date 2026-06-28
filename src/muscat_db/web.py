@@ -2674,6 +2674,57 @@ def photometry_status(inst: str, date: str, target: str, run: str = ""):
     return JSONResponse(phot.job_status(inst, date, target, run_id=(run or "").strip()))
 
 
+@app.post("/photometry/status-batch")
+def photometry_status_batch(payload: dict = Body(...)):
+    """Poll multiple jobs in a single request. Reduces polling overhead when monitoring many jobs.
+
+    Request body:
+    {
+      "jobs": [
+        {"inst": "muscat2", "date": "260307", "target": "TOI05646.01", "run": "run_name"},
+        ...
+      ]
+    }
+
+    Response:
+    {
+      "jobs": [
+        {
+          "inst": "muscat2", "date": "260307", "target": "TOI05646.01", "run": "run_name",
+          "state": "running", "log": "...", "elapsed": 123, ...
+        },
+        ...
+      ]
+    }
+    """
+    phot.sync_jobs()
+    jobs = payload.get("jobs") or []
+    if not isinstance(jobs, list):
+        return JSONResponse({"error": "jobs must be a list"}, status_code=400)
+
+    results = []
+    for job_spec in jobs:
+        inst = (job_spec.get("inst") or "").strip()
+        date = (job_spec.get("date") or "").strip()
+        target = (job_spec.get("target") or "").strip()
+        run = (job_spec.get("run") or "").strip()
+
+        if not all([inst, date, target]):
+            results.append({"error": "inst, date, and target are required"})
+            continue
+
+        status = phot.job_status(inst, date, target, run_id=run)
+        results.append({
+            "inst": inst,
+            "date": date,
+            "target": target,
+            "run": run,
+            **status
+        })
+
+    return JSONResponse({"jobs": results})
+
+
 @app.post("/photometry/cancel")
 def photometry_cancel(payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()

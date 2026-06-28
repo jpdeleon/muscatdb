@@ -1123,6 +1123,35 @@ class TestRoutes:
         assert r.status_code == 200
         assert r.json()["state"] == "none"
 
+    def test_status_batch_route(self, client):
+        r = client.post("/photometry/status-batch", json={
+            "jobs": [
+                {"inst": INST, "date": "111111", "target": "Nobody", "run": ""},
+                {"inst": "muscat2", "date": "220521", "target": "TOI04030.01", "run": "default"},
+            ]
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert "jobs" in data
+        assert len(data["jobs"]) == 2
+        assert data["jobs"][0]["state"] == "none"
+        assert data["jobs"][1]["state"] == "none"
+        assert data["jobs"][0]["inst"] == INST
+        assert data["jobs"][1]["inst"] == "muscat2"
+
+    def test_status_batch_route_rejects_bad_input(self, client):
+        r = client.post("/photometry/status-batch", json={"jobs": "not_a_list"})
+        assert r.status_code == 400
+        assert "must be a list" in r.json()["error"]
+
+    def test_status_batch_route_missing_fields(self, client):
+        r = client.post("/photometry/status-batch", json={
+            "jobs": [{"inst": INST}]
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert "error" in data["jobs"][0]
+
     def test_run_route_rejects_missing_raw(self, client, tmp_path, monkeypatch):
         # raw data dir for date 111111 won't exist
         r = client.post("/photometry/run", json={
