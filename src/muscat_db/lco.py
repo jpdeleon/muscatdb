@@ -269,6 +269,7 @@ def build_requestgroup(kind: str, params: dict) -> dict:
         configurations.append({
             "type": params.get("type", "REPEAT_EXPOSE"),
             "repeat_duration": params.get("repeat_duration"),
+            "instrument_type": instrument_type,
             "instrument_configs": instrument_configs,
             "acquisition_config": {"mode": "WCS"},
             "guiding_config": {"mode": params.get("guiding_config", "ON"), "optional": True},
@@ -299,6 +300,7 @@ def build_requestgroup(kind: str, params: dict) -> dict:
         instrument_type = "1M0-SCICAM-SINISTRO"
         configurations.append({
             "type": params.get("type", "EXPOSE"),
+            "instrument_type": instrument_type,
             "instrument_configs": instrument_configs,
             "acquisition_config": {"mode": "WCS"},
             "guiding_config": {"mode": params.get("guiding_config", "ON"), "optional": True},
