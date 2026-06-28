@@ -25,6 +25,7 @@ from muscat_db import photometry as phot
 from muscat_db import exposure as exp_calc
 from muscat_db import transit_fit as fit
 from muscat_db import lco
+from muscat_db import transit_obs
 from muscat_db.database import (
     SCHEMA,
     delete_note as _delete_note,
@@ -1164,6 +1165,7 @@ def api_lco_windows(payload: dict = Body(...)):
         duration = payload.get("duration")
         target = (payload.get("target") or "").strip()
         planet = (payload.get("planet") or "").strip().lower()
+        source = (payload.get("source") or "catalog").strip().lower()
 
         if t0 in (None, "") or period in (None, ""):
             if not target:
@@ -1171,7 +1173,21 @@ def api_lco_windows(payload: dict = Body(...)):
                     {"ok": False, "error": "provide t0+period, or a target to look up"},
                     status_code=400,
                 )
-            planets = _query_target_planets_catalog(target)
+            # Only catalog sources resolve server-side. The "linear" fit and
+            # individual "dataset_*" sources are computed on the client (via
+            # /api/ephemeris/calculate or target-info) and must populate t0/period
+            # first, so they can't be looked up here.
+            if source == "nasa":
+                planets = _query_target_planets_nasa(target)
+            elif source == "toi":
+                planets = _query_target_planets_toi(target)
+            elif source in ("", "catalog"):
+                planets = _query_target_planets_catalog(target)
+            else:
+                return JSONResponse(
+                    {"ok": False, "error": f"click 'Fetch ephemeris' first for the '{source}' source"},
+                    status_code=400,
+                )
             key = planet if planet in planets else (next(iter(planets)) if planets else None)
             ephem = planets.get(key) if key else None
             if not ephem:
@@ -1200,20 +1216,67 @@ def api_lco_windows(payload: dict = Body(...)):
             float(payload.get("pad_before_min") or 0),
             float(payload.get("pad_after_min") or 0),
         )
-        return JSONResponse(
-            {
-                "ok": True,
-                "windows": windows,
-                "planet": planet,
-                "t0": float(t0),
-                "period": float(period),
-                "duration": float(duration),
-            }
-        )
+        result = {
+            "ok": True,
+            "windows": windows,
+            "planet": planet,
+            "t0": float(t0),
+            "period": float(period),
+            "duration": float(duration),
+        }
+
+        # Optional: classify each transit's observability across the instrument's
+        # LCO sites when coordinates + instrument kind are supplied. Degrades
+        # gracefully (windows still returned) if astropy/observability fails.
+        ra = payload.get("ra")
+        dec = payload.get("dec")
+        kind = payload.get("kind")
+        if windows and ra not in (None, "") and dec not in (None, "") and kind:
+            try:
+                obs = transit_obs.classify_transits(
+                    float(ra), float(dec), windows, kind, float(duration),
+                    max_airmass=float(payload.get("obs_airmass") or 2.0),
+                    twilight=payload.get("twilight") or transit_obs.DEFAULT_TWILIGHT,
+                    moon_sep_min=float(payload.get("moon_sep_min") or 0.0),
+                )
+                for w, o in zip(windows, obs):
+                    w["observability"] = o
+            except transit_obs.TransitObsError as e:
+                result["obs_error"] = str(e)
+            except Exception as e:  # never let plotting/astropy break window listing
+                result["obs_error"] = f"observability unavailable: {e}"
+
+        return JSONResponse(result)
     except lco.LcoError as e:
         return _lco_error_response(e)
     except (TypeError, ValueError) as e:
         return JSONResponse({"ok": False, "error": f"invalid numeric input: {e}"}, status_code=400)
+
+
+@app.get("/api/lco/visibility", response_class=JSONResponse)
+def api_lco_visibility(
+    ra: float,
+    dec: float,
+    mid: str,
+    duration: float,
+    site: str,
+    obs_airmass: float = 2.0,
+    twilight: str = transit_obs.DEFAULT_TWILIGHT,
+    moon_sep_min: float = 0.0,
+):
+    """Time-series for the inline visibility plot of one transit at one site
+    (target + moon altitude, twilight, airmass limit, shaded transit interval)."""
+    try:
+        series = transit_obs.visibility_series(
+            float(ra), float(dec), mid, float(duration), site,
+            max_airmass=float(obs_airmass), twilight=twilight,
+            moon_sep_min=float(moon_sep_min),
+        )
+        return JSONResponse({"ok": True, **series})
+    except transit_obs.TransitObsError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=e.status)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"visibility unavailable: {e}"}, status_code=500)
 
 
 @app.post("/api/lco/ipp", response_class=JSONResponse)

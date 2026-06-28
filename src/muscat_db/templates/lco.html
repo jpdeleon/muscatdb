@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}LCO — MuSCAT-db{% endblock %}
 {% block content %}
+<script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
 <style>
   .lco-banner {
     display: flex; flex-wrap: wrap; gap: 1rem; align-items: center;
@@ -91,23 +92,63 @@
     <div class="lco-grid">
       <div class="lco-field"><label for="sch-target">Target</label><input id="sch-target" type="text" placeholder="WASP-12"></div>
       <div class="lco-field"><label for="sch-planet">Planet</label><input id="sch-planet" type="text" placeholder="b" style="max-width: 90px;"></div>
+      <div class="lco-field"><label for="sch-source" title="Where t0 / period come from. 'linear fit' refines the ephemeris across all of this target's completed transit fits; individual datasets use that fit's t0/period directly (same as the Planetary Reference Ephemerides on the Ephemeris page). Click 'Fetch ephemeris' to populate datasets.">Ephemeris source</label>
+        <select id="sch-source">
+          <option value="nasa">NASA catalog</option>
+          <option value="toi">TOI catalog</option>
+          <option value="linear">linear fit</option>
+        </select></div>
       <div class="lco-field"><label for="sch-ra">RA (deg)</label><input id="sch-ra" type="number" step="any" placeholder="97.64"></div>
       <div class="lco-field"><label for="sch-dec">Dec (deg)</label><input id="sch-dec" type="number" step="any" placeholder="29.67"></div>
+      <div class="lco-field"><label for="sch-t0" title="BJD_TDB. Populated by Fetch ephemeris; editable.">t0 (BJD)</label><input id="sch-t0" type="number" step="any" placeholder="2459000.5"></div>
+      <div class="lco-field"><label for="sch-period">Period (days)</label><input id="sch-period" type="number" step="any" placeholder="1.0914"></div>
       <div class="lco-field"><label for="sch-duration" title="From the catalog when available; override here.">Duration (hr)</label><input id="sch-duration" type="number" step="any" placeholder="2.5"></div>
       <div class="lco-field"><label for="sch-range-start">Range start (UTC)</label><input id="sch-range-start" type="date"></div>
       <div class="lco-field"><label for="sch-range-end">Range end (UTC)</label><input id="sch-range-end" type="date"></div>
       <div class="lco-field"><label for="sch-pad-before">Pad before (min)</label><input id="sch-pad-before" type="number" step="any" value="45"></div>
       <div class="lco-field"><label for="sch-pad-after">Pad after (min)</label><input id="sch-pad-after" type="number" step="any" value="45"></div>
     </div>
+    <div class="lco-grid" style="margin-top: 0.6rem;">
+      <div class="lco-field"><label for="sch-obs-airmass" title="Airmass limit for the observability check and visibility plot (sets the minimum target altitude).">Obs airmass limit</label>
+        <input id="sch-obs-airmass" type="number" step="any" min="1" value="2"></div>
+      <div class="lco-field"><label for="sch-twilight" title="How dark it must be for a transit to count as observable.">Twilight</label>
+        <select id="sch-twilight">
+          <option value="civil">Civil (−6°)</option>
+          <option value="nautical" selected>Nautical (−12°)</option>
+          <option value="astronomical">Astronomical (−18°)</option>
+        </select></div>
+      <div class="lco-field"><label for="sch-moon-sep" title="Reject samples where the Moon is closer than this to the target (0 = ignore).">Min moon sep (deg)</label>
+        <input id="sch-moon-sep" type="number" step="any" min="0" value="30"></div>
+    </div>
     <div class="lco-actions">
+      <button class="btn sm" type="button" id="btn-fetch-ephem">Fetch ephemeris</button>
       <button class="btn sm primary" type="button" id="btn-gen-windows">Generate windows</button>
+      <label class="lco-field" style="flex-direction: row; align-items: center; gap: 0.4rem;">
+        <span style="font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase;">Show</span>
+        <select id="win-filter" style="padding: 0.35rem 0.5rem;">
+          <option value="all">all</option>
+          <option value="obs">partial + full</option>
+          <option value="full">full only</option>
+        </select>
+      </label>
       <span class="lco-msg" id="msg-windows" style="margin: 0;"></span>
     </div>
     <div class="lco-table-wrap" style="margin-top: 0.75rem;">
       <table class="lco-table" id="windows-table" style="display: none;">
-        <thead><tr><th><input type="checkbox" id="win-all" checked></th><th>Epoch</th><th>Start (UTC)</th><th>Mid (UTC)</th><th>End (UTC)</th></tr></thead>
+        <thead><tr><th><input type="checkbox" id="win-all" checked></th><th>Epoch</th><th>Start (UTC)</th><th>Mid (UTC)</th><th>End (UTC)</th><th>Transit obs</th><th>Visibility</th></tr></thead>
         <tbody id="windows-body"></tbody>
       </table>
+    </div>
+    <div id="vis-figure" style="display: none; margin-top: 0.85rem;">
+      <div class="lco-actions" style="margin-bottom: 0.4rem;">
+        <strong id="vis-caption" style="font-size: 0.85rem;"></strong>
+        <button class="btn sm" type="button" id="vis-close" style="margin-left: auto;">✕ Hide</button>
+      </div>
+      <div id="vis-plot" style="width: 100%; height: 420px; border: 1px solid var(--border); border-radius: 8px;"></div>
+      <p class="lco-note" style="margin-top: 0.4rem;">
+        Computed with astropy. The shaded band is the full transit; cross-check against the
+        <a id="lco-vis-link" href="#" target="_blank" rel="noopener">LCO visibility figure ↗</a>.
+      </p>
     </div>
     <p class="lco-note">Windows are coarse scheduling bounds. t0 is usually BJD_TDB; the ≤8&nbsp;min barycentric offset is absorbed by the padding above.</p>
   </div>
@@ -250,8 +291,10 @@
 
   // ---- persisted form fields (CLAUDE.md: keep collect/restore/defaults in sync) ----
   var TEXT_IDS = [
-    'sch-proposal','sch-target','sch-planet','sch-ra','sch-dec','sch-duration',
+    'sch-proposal','sch-target','sch-planet','sch-source','sch-ra','sch-dec',
+    'sch-t0','sch-period','sch-duration',
     'sch-range-start','sch-range-end','sch-pad-before','sch-pad-after',
+    'sch-obs-airmass','sch-twilight','sch-moon-sep','win-filter',
     'sch-kind','sch-name','sch-count','sch-exp-g','sch-exp-r','sch-exp-i','sch-exp-z',
     'sch-exp-mode','sch-readout','sch-nb-g','sch-nb-r','sch-nb-i','sch-nb-z',
     'sch-filter','sch-exptime','sch-sin-count','sch-readout-sin','sch-site',
@@ -276,6 +319,9 @@
     if (!saved) return;
     TEXT_IDS.forEach(function (id) { if (saved[id] !== undefined && saved[id] !== '') setVal(id, saved[id]); });
     CHECK_IDS.forEach(function (id) { if (saved[id] !== undefined) setChk(id, saved[id]); });
+    // Dataset options don't exist until a fetch; remember the persisted choice so
+    // populateSourceOptions can reselect it (e.g. "dataset_2") after fetching.
+    if (saved['sch-source']) pendingSource = saved['sch-source'];
   }
   // Persist on any change.
   document.addEventListener('change', function (e) {
@@ -329,18 +375,154 @@
     }).catch(function (e) { msg('msg-proposals', String(e), 'err'); });
   });
 
+  // ---- fetch ephemeris ----------------------------------------------------
+  // Reuses the same endpoints as the Ephemeris page so the source choices match
+  // the Planetary Reference Ephemerides: NASA / TOI catalogs, a combined
+  // "linear fit" over all of this target's transit fits, and one option per
+  // individual fit dataset (instrument date: run name).
+  var lastTargetInfo = null;
+  var lastInfoTarget = '';
+  var pendingSource = null;  // restore a persisted dataset selection after fetch
+
+  function datasetLabel(d) {
+    return d.instrument + ' ' + d.date + ': ' + (d.run_name || d.run_id || 'legacy');
+  }
+
+  function populateSourceOptions(info) {
+    var sel = el('sch-source');
+    var planet = (val('sch-planet') || 'b').toLowerCase();
+    var prev = pendingSource || sel.value;
+    pendingSource = null;
+    sel.innerHTML =
+      '<option value="nasa">NASA catalog</option>' +
+      '<option value="toi">TOI catalog</option>' +
+      '<option value="linear">linear fit</option>';
+    (info.datasets || []).forEach(function (d, i) {
+      if (d.planets_fitted && d.planets_fitted.indexOf(planet) !== -1) {
+        var opt = document.createElement('option');
+        opt.value = 'dataset_' + i;
+        opt.textContent = datasetLabel(d);
+        sel.appendChild(opt);
+      }
+    });
+    var has = Array.prototype.some.call(sel.options, function (o) { return o.value === prev; });
+    sel.value = has ? prev : 'nasa';
+  }
+
+  function fetchTargetInfo(target) {
+    if (lastTargetInfo && lastInfoTarget === target) return Promise.resolve(lastTargetInfo);
+    return fetch('/api/ephemeris/target-info?target=' + encodeURIComponent(target))
+      .then(function (r) { return r.json(); })
+      .then(function (info) { if (info.ok) { lastTargetInfo = info; lastInfoTarget = target; } return info; });
+  }
+
+  function applySource(info) {
+    var planet = (val('sch-planet') || 'b').toLowerCase();
+    var source = val('sch-source');
+    var nasa = (info.nasa_ephemeris || {})[planet] || {};
+    var toi = (info.toi_ephemeris || {})[planet] || {};
+    // Duration only lives in the catalogs; prefer NASA then TOI.
+    var dur = (nasa.duration != null ? nasa.duration : (toi.duration != null ? toi.duration : null));
+    if (dur != null && !val('sch-duration')) setVal('sch-duration', dur);
+
+    if (source === 'nasa' || source === 'toi') {
+      var e = source === 'nasa' ? nasa : toi;
+      if (e.t0 == null || e.period == null) { msg('msg-windows', 'No ' + source.toUpperCase() + ' ephemeris for ' + planet, 'err'); return; }
+      setVal('sch-t0', e.t0); setVal('sch-period', e.period); saveOptions();
+      msg('msg-windows', source.toUpperCase() + ': t0=' + e.t0 + ', P=' + e.period + ' d' + (dur != null ? ', dur=' + dur + ' h' : ''), 'ok');
+      return;
+    }
+
+    if (source.indexOf('dataset_') === 0) {
+      var idx = parseInt(source.split('_')[1], 10);
+      var ds = (info.datasets || [])[idx];
+      var pe = ds && ds.planets_ephem ? ds.planets_ephem[planet] : null;
+      if (!pe) { msg('msg-windows', 'No fitted ephemeris for ' + planet + ' in that dataset', 'err'); return; }
+      setVal('sch-t0', pe.t0); setVal('sch-period', pe.period); saveOptions();
+      msg('msg-windows', datasetLabel(ds) + ': t0=' + pe.t0 + ', P=' + pe.period + ' d', 'ok');
+      return;
+    }
+
+    // 'linear': refine via the O-C linear fit over all of this target's fits.
+    var datasets = info.datasets || [];
+    if (!datasets.length) { msg('msg-windows', 'No completed transit fits for ' + lastInfoTarget, 'err'); return; }
+    var seed = (info.reference_ephemeris || {})[planet] || nasa || toi;
+    if (!seed || seed.t0 == null || seed.period == null) { msg('msg-windows', 'No seed ephemeris to anchor the linear fit', 'err'); return; }
+    var calcBody = {
+      target: lastInfoTarget, fit_method: 'unweighted', planets_ephem: {},
+      datasets: datasets.map(function (d) {
+        return { target: d.target, instrument: d.instrument, date: d.date, run_id: d.run_id || '', checked: true };
+      })
+    };
+    calcBody.planets_ephem[planet] = { t0: seed.t0, period: seed.period };
+    fetch('/api/ephemeris/calculate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(calcBody) })
+      .then(function (r) { return r.json(); })
+      .then(function (cd) {
+        var res = cd.ok && cd.results ? cd.results[planet] : null;
+        if (!res) { msg('msg-windows', 'Linear fit unavailable for ' + planet, 'err'); return; }
+        setVal('sch-t0', res.t0_fit); setVal('sch-period', res.period_fit); saveOptions();
+        var nfit = (res.points || []).filter(function (p) { return p.checked; }).length;
+        msg('msg-windows', (res.was_fit ? 'Linear fit' : 'Seed (need ≥2 epochs)') + ': t0=' + res.t0_fit + ', P=' + res.period_fit + ' d (' + nfit + ' epochs)', 'ok');
+      }).catch(function (e) { msg('msg-windows', String(e), 'err'); });
+  }
+
+  el('btn-fetch-ephem').addEventListener('click', function () {
+    var target = val('sch-target');
+    if (!target) { msg('msg-windows', 'Enter a target first', 'err'); return; }
+    msg('msg-windows', 'Fetching ephemeris…');
+    fetchTargetInfo(target).then(function (info) {
+      if (!info.ok) { msg('msg-windows', info.error || 'lookup failed', 'err'); return; }
+      populateSourceOptions(info);
+      applySource(info);
+    }).catch(function (e) { msg('msg-windows', String(e), 'err'); });
+  });
+
+  // Changing the source (after a fetch) resolves immediately from cached info.
+  el('sch-source').addEventListener('change', function () {
+    if (lastTargetInfo && lastInfoTarget === val('sch-target')) applySource(lastTargetInfo);
+  });
+  // Changing the planet re-filters the dataset options and re-resolves.
+  el('sch-planet').addEventListener('change', function () {
+    if (lastTargetInfo && lastInfoTarget === val('sch-target')) {
+      populateSourceOptions(lastTargetInfo);
+      applySource(lastTargetInfo);
+    }
+  });
+
   // ---- windows ----
   var lastWindows = [];
   el('win-all').addEventListener('change', function () {
     document.querySelectorAll('#windows-body input[type=checkbox]').forEach(function (c) { c.checked = el('win-all').checked; });
   });
+  function obsCellHtml(o) {
+    if (!o || !o.rating || o.rating === 'none') return '<span style="color: var(--text-dim);">—</span>';
+    var label = (o.rating === 'full' ? 'Full' : 'Partial') + (o.best_site ? ' @ ' + o.best_site : '');
+    var color = o.rating === 'full' ? '#2ecc71' : '#e0a23b';
+    return '<span style="color: ' + color + '; font-weight: 600;">' + label + '</span>';
+  }
+  function applyWinFilter() {
+    var mode = val('win-filter');
+    document.querySelectorAll('#windows-body tr').forEach(function (tr) {
+      var rating = tr.getAttribute('data-rating') || 'none';
+      var show = mode === 'all' ||
+        (mode === 'obs' && rating !== 'none') ||
+        (mode === 'full' && rating === 'full');
+      tr.style.display = show ? '' : 'none';
+    });
+  }
+  el('win-filter').addEventListener('change', applyWinFilter);
+
   el('btn-gen-windows').addEventListener('click', function () {
     msg('msg-windows', 'Generating…');
     var body = {
-      target: val('sch-target'), planet: val('sch-planet'),
-      duration: num('sch-duration'),
+      target: val('sch-target'), planet: val('sch-planet'), source: val('sch-source'),
+      t0: num('sch-t0'), period: num('sch-period'), duration: num('sch-duration'),
       range_start: val('sch-range-start'), range_end: val('sch-range-end'),
-      pad_before_min: num('sch-pad-before') || 0, pad_after_min: num('sch-pad-after') || 0
+      pad_before_min: num('sch-pad-before') || 0, pad_after_min: num('sch-pad-after') || 0,
+      // Observability inputs (server classifies each transit across the kind's LCO sites).
+      kind: val('sch-kind'), ra: num('sch-ra'), dec: num('sch-dec'),
+      obs_airmass: num('sch-obs-airmass') || 2, twilight: val('sch-twilight'),
+      moon_sep_min: num('sch-moon-sep') || 0
     };
     fetch('/api/lco/windows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       .then(function (r) { return r.json(); }).then(function (d) {
@@ -349,13 +531,21 @@
         if (d.duration && !val('sch-duration')) setVal('sch-duration', d.duration);
         var tb = el('windows-body'); tb.innerHTML = '';
         lastWindows.forEach(function (w, i) {
+          var o = w.observability;
           var tr = document.createElement('tr');
+          tr.setAttribute('data-rating', (o && o.rating) || 'none');
           tr.innerHTML = '<td><input type="checkbox" data-i="' + i + '" checked></td>' +
-            '<td>' + w.epoch + '</td><td>' + w.start + '</td><td>' + w.mid + '</td><td>' + w.end + '</td>';
+            '<td>' + w.epoch + '</td><td>' + w.start + '</td><td>' + w.mid + '</td><td>' + w.end + '</td>' +
+            '<td>' + obsCellHtml(o) + '</td>' +
+            '<td><a href="#" class="vis-link" data-i="' + i +
+            '" title="Show the astropy visibility plot for this transit below the table">show plot</a></td>';
           tb.appendChild(tr);
         });
         el('windows-table').style.display = lastWindows.length ? '' : 'none';
-        msg('msg-windows', lastWindows.length + ' windows (t0=' + d.t0 + ', P=' + d.period + ' d)', 'ok');
+        applyWinFilter();
+        var nObs = lastWindows.filter(function (w) { return w.observability && w.observability.rating !== 'none'; }).length;
+        var extra = d.obs_error ? ' — obs: ' + d.obs_error : (lastWindows.length ? ' — ' + nObs + ' observable' : '');
+        msg('msg-windows', lastWindows.length + ' windows (t0=' + d.t0 + ', P=' + d.period + ' d)' + extra, 'ok');
       }).catch(function (e) { msg('msg-windows', String(e), 'err'); });
   });
 
@@ -366,6 +556,91 @@
     });
     return out;
   }
+
+  // ---- per-row visibility plot (astropy time-series, drawn with Plotly) -----
+  // Shows target + moon altitude over the transit night for the best site, with
+  // the full transit shaded (axvspan), the airmass-altitude limit and twilight
+  // lines, and the moon-separation annotation.
+  function siteForWindow(w) {
+    if (w.observability && w.observability.best_site) return w.observability.best_site;
+    var sites = { muscat: 'ogg', sinistro: 'lsc' };
+    return sites[val('sch-kind')] || 'ogg';
+  }
+  function renderVisibility(d, w, site) {
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var fg = isDark ? '#e1e4ed' : '#1a1c22', grid = isDark ? '#2a2e3a' : '#e6e8ee';
+    var traces = [
+      { x: d.times, y: d.target_alt, name: 'Target', mode: 'lines', line: { color: '#6c8cff', width: 2 } },
+      { x: d.times, y: d.moon_alt, name: 'Moon', mode: 'lines', line: { color: '#bfa14a', width: 1.5, dash: 'dash' } },
+      { x: d.times, y: d.sun_alt, name: 'Sun', mode: 'lines', line: { color: '#e07b53', width: 1, dash: 'dot' } }
+    ];
+    var x0 = d.times[0], x1 = d.times[d.times.length - 1];
+    var shapes = [
+      // Full transit (axvspan).
+      { type: 'rect', xref: 'x', yref: 'paper', x0: d.ingress, x1: d.egress, y0: 0, y1: 1,
+        fillcolor: '#45d6b5', opacity: 0.18, line: { width: 0 }, layer: 'below' },
+      // Airmass-altitude limit.
+      { type: 'line', xref: 'x', yref: 'y', x0: x0, x1: x1, y0: d.alt_limit, y1: d.alt_limit,
+        line: { color: '#45d6b5', width: 1, dash: 'dot' } },
+      // Twilight (sun altitude limit) + horizon.
+      { type: 'line', xref: 'x', yref: 'y', x0: x0, x1: x1, y0: d.sun_alt_limit, y1: d.sun_alt_limit,
+        line: { color: '#e07b53', width: 1, dash: 'dot' } },
+      { type: 'line', xref: 'x', yref: 'y', x0: x0, x1: x1, y0: 0, y1: 0,
+        line: { color: grid, width: 1 } }
+    ];
+    var layout = {
+      margin: { l: 45, r: 12, t: 10, b: 36 },
+      paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+      font: { color: fg, size: 11 },
+      xaxis: { gridcolor: grid, title: 'UTC' },
+      yaxis: { gridcolor: grid, title: 'Altitude (deg)', range: [-25, 90], zeroline: false },
+      legend: { orientation: 'h', y: 1.12 },
+      annotations: [
+        { x: d.ingress, y: 90, xref: 'x', yref: 'y', text: 'transit', showarrow: false,
+          font: { color: '#45d6b5', size: 10 }, xanchor: 'left', yanchor: 'top' },
+        { x: 0.99, y: 0.02, xref: 'paper', yref: 'paper', xanchor: 'right', yanchor: 'bottom',
+          showarrow: false, font: { color: fg, size: 10 },
+          text: 'Moon sep ' + d.moon_sep_mid + '° · alt≥' + d.alt_limit + '° · sun<' + d.sun_alt_limit + '°' }
+      ]
+    };
+    Plotly.newPlot('vis-plot', traces, layout, { responsive: true, displayModeBar: false });
+  }
+  el('windows-body').addEventListener('click', function (e) {
+    var link = e.target.closest('.vis-link');
+    if (!link) return;
+    e.preventDefault();
+    var ra = val('sch-ra'), dec = val('sch-dec'), dur = val('sch-duration');
+    if (!ra || !dec) { msg('msg-windows', 'Enter RA and Dec to view the visibility plot', 'err'); return; }
+    if (!dur) { msg('msg-windows', 'Set the transit duration first', 'err'); return; }
+    var w = lastWindows[+link.getAttribute('data-i')];
+    if (!w) return;
+    var site = siteForWindow(w);
+    // Cross-check link: the LCO-generated visibility PNG for this target/date.
+    var lcoParams = new URLSearchParams({
+      season: 'false', ra: ra, dec: dec,
+      airmass: val('sch-obs-airmass') || '2', date: w.mid.slice(0, 10), aperture: 'all'
+    });
+    el('lco-vis-link').href = 'https://visibility.lco.global/visibility.png?' + lcoParams.toString();
+    el('vis-caption').textContent = 'Loading visibility…';
+    el('vis-figure').style.display = '';
+    el('vis-figure').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    var q = new URLSearchParams({
+      ra: ra, dec: dec, mid: w.mid, duration: dur, site: site,
+      obs_airmass: val('sch-obs-airmass') || '2', twilight: val('sch-twilight'),
+      moon_sep_min: val('sch-moon-sep') || '0'
+    });
+    fetch('/api/lco/visibility?' + q.toString()).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d.ok) { el('vis-caption').textContent = ''; msg('msg-windows', d.error || 'visibility failed', 'err'); return; }
+      var rating = w.observability ? w.observability.rating : '';
+      el('vis-caption').textContent = (val('sch-target') || 'target') + ' @ ' + site.toUpperCase() +
+        ' — ' + w.mid.slice(0, 10) + (rating ? ' (' + rating + ')' : '');
+      renderVisibility(d, w, site);
+    }).catch(function (e) { msg('msg-windows', String(e), 'err'); });
+  });
+  el('vis-close').addEventListener('click', function () {
+    el('vis-figure').style.display = 'none';
+    if (window.Plotly) Plotly.purge('vis-plot');
+  });
 
   // ---- build payload params from the form ----
   function buildParams() {

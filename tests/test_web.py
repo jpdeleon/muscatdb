@@ -276,7 +276,138 @@ def test_lco_archive_download_per_file_results(monkeypatch):
     assert r.json()["results"][0]["status"] == "downloaded"
 
 
+def test_lco_page_has_obs_column_constraints_and_plotly_figure():
+    page = TestClient(app).get("/lco").text
+    # Observability column + filter.
+    assert "<th>Transit obs</th>" in page and "<th>Visibility</th>" in page
+    assert 'id="win-filter"' in page
+    # Configurable constraints.
+    assert 'id="sch-obs-airmass"' in page and 'id="sch-twilight"' in page and 'id="sch-moon-sep"' in page
+    # Inline astropy figure drawn with Plotly.
+    assert "plotly-2.24.1" in page and 'id="vis-plot"' in page and "/api/lco/visibility" in page
+    # Dynamic cross-check link to the LCO-generated visibility PNG (target/date-specific).
+    assert "visibility.lco.global/visibility.png" in page
+    assert 'id="lco-vis-link"' in page and 'target="_blank"' in page
+
+
 def test_lco_archive_download_rejects_unknown_instrument():
     r = TestClient(app).post("/api/lco/archive/download",
                              json={"instrument": "hubble", "frames": [{"filename": "f"}]})
     assert r.status_code == 400
+
+
+def test_lco_windows_source_nasa_uses_nasa_catalog(monkeypatch):
+    called = {}
+    def fake_nasa(target):
+        called["nasa"] = True
+        return {"b": {"t0": 2459000.5, "period": 1.09, "duration": 3.0}}
+    monkeypatch.setattr("muscat_db.web._query_target_planets_nasa", fake_nasa)
+    monkeypatch.setattr("muscat_db.web._query_target_planets_toi",
+                        lambda t: pytest.fail("TOI must not be queried for source=nasa"))
+    r = TestClient(app).post("/api/lco/windows", json={
+        "target": "X", "planet": "b", "source": "nasa",
+        "range_start": "2026-01-01", "range_end": "2026-01-05",
+    })
+    assert r.status_code == 200 and r.json()["ok"]
+    assert called.get("nasa") and r.json()["duration"] == 3.0
+
+
+@pytest.mark.parametrize("source", ["linear", "dataset_0"])
+def test_lco_windows_fit_sources_require_prefetched_ephemeris(source):
+    # The linear fit and individual datasets are resolved client-side; without
+    # t0/period the endpoint must guide the user to Fetch first rather than
+    # silently falling back to a catalog.
+    r = TestClient(app).post("/api/lco/windows", json={
+        "target": "X", "planet": "b", "source": source,
+        "range_start": "2026-01-01", "range_end": "2026-01-05",
+    })
+    assert r.status_code == 400
+    assert "fetch ephemeris" in r.json()["error"].lower()
+
+
+def test_lco_windows_explicit_t0_period_bypasses_source(monkeypatch):
+    monkeypatch.setattr("muscat_db.web._query_target_planets_catalog",
+                        lambda t: pytest.fail("catalog must not be queried when t0/period given"))
+    r = TestClient(app).post("/api/lco/windows", json={
+        "t0": 2459000.5, "period": 2.0, "duration": 2.0, "source": "linear",
+        "range_start": "2026-01-01", "range_end": "2026-01-10",
+    })
+    assert r.status_code == 200 and r.json()["ok"]
+    assert len(r.json()["windows"]) >= 1
+
+
+# --------------------------------------------------------------------------- #
+# Transit observability (astropy) + visibility plot endpoint
+# --------------------------------------------------------------------------- #
+
+
+def test_lco_windows_attaches_observability(monkeypatch):
+    monkeypatch.setattr(
+        "muscat_db.web._query_target_planets_catalog",
+        lambda target: {"b": {"t0": 2461080.0, "period": 1.0, "duration": 2.5}},
+    )
+    r = TestClient(app).post("/api/lco/windows", json={
+        "target": "X", "planet": "b", "source": "catalog", "kind": "muscat",
+        "ra": 97.64, "dec": 29.67, "range_start": "2026-03-15", "range_end": "2026-03-18",
+        "obs_airmass": 2.0, "twilight": "nautical", "moon_sep_min": 30,
+    })
+    assert r.status_code == 200
+    wins = r.json()["windows"]
+    assert wins and all("observability" in w for w in wins)
+    for w in wins:
+        assert w["observability"]["rating"] in ("full", "partial", "none")
+
+
+def test_lco_windows_omits_observability_without_radec(monkeypatch):
+    monkeypatch.setattr(
+        "muscat_db.web._query_target_planets_catalog",
+        lambda target: {"b": {"t0": 2461080.0, "period": 1.0, "duration": 2.5}},
+    )
+    r = TestClient(app).post("/api/lco/windows", json={
+        "target": "X", "planet": "b", "source": "catalog",
+        "range_start": "2026-03-15", "range_end": "2026-03-17",
+    })
+    assert r.status_code == 200
+    assert all("observability" not in w for w in r.json()["windows"])
+
+
+def test_lco_windows_degrades_gracefully_on_obs_error(monkeypatch):
+    monkeypatch.setattr(
+        "muscat_db.web._query_target_planets_catalog",
+        lambda target: {"b": {"t0": 2461080.0, "period": 1.0, "duration": 2.5}},
+    )
+
+    def boom(*a, **k):
+        raise RuntimeError("astropy exploded")
+
+    monkeypatch.setattr("muscat_db.transit_obs.classify_transits", boom)
+    r = TestClient(app).post("/api/lco/windows", json={
+        "target": "X", "planet": "b", "source": "catalog", "kind": "muscat",
+        "ra": 97.64, "dec": 29.67, "range_start": "2026-03-15", "range_end": "2026-03-17",
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["windows"] and "obs_error" in body  # windows still returned
+
+
+def test_lco_visibility_endpoint_returns_series():
+    r = TestClient(app).get("/api/lco/visibility", params={
+        "ra": 97.64, "dec": 29.67, "mid": "2026-03-15T10:00:00",
+        "duration": 2.5, "site": "ogg", "obs_airmass": 2.0,
+        "twilight": "nautical", "moon_sep_min": 30,
+    })
+    assert r.status_code == 200
+    d = r.json()
+    assert d["ok"] and d["site"] == "ogg"
+    n = len(d["times"])
+    assert n > 100 and len(d["target_alt"]) == n and len(d["moon_alt"]) == n
+    assert d["ingress"] < d["egress"] and d["alt_limit"] == 30.0
+
+
+def test_lco_visibility_endpoint_rejects_unknown_site():
+    r = TestClient(app).get("/api/lco/visibility", params={
+        "ra": 97.64, "dec": 29.67, "mid": "2026-03-15T10:00:00",
+        "duration": 2.5, "site": "jwst",
+    })
+    assert r.status_code == 400
+    assert "site" in r.json()["error"].lower()
