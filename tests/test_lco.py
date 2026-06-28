@@ -98,6 +98,56 @@ def test_build_requestgroup_muscat_shape():
     assert rg["operator"] == "SINGLE" and rg["observation_type"] == "NORMAL"
 
 
+def test_build_requestgroup_muscat3_and_muscat4():
+    # muscat3 defaults site to ogg
+    rg3 = lco.build_requestgroup(
+        "muscat3",
+        {
+            "name": "wasp12",
+            "proposal": "TEST2026A",
+            "target_name": "WASP-12 b",
+            "ra": 97.64,
+            "dec": 29.67,
+            "exposure_times": {"g": 30},
+            "windows": _windows(),
+        },
+    )
+    assert rg3["requests"][0]["configurations"][0]["instrument_type"] == "2M0-SCICAM-MUSCAT"
+    assert rg3["requests"][0]["location"]["site"] == "ogg"
+
+    # muscat4 defaults site to coj
+    rg4 = lco.build_requestgroup(
+        "muscat4",
+        {
+            "name": "wasp12",
+            "proposal": "TEST2026A",
+            "target_name": "WASP-12 b",
+            "ra": 97.64,
+            "dec": 29.67,
+            "exposure_times": {"g": 30},
+            "windows": _windows(),
+        },
+    )
+    assert rg4["requests"][0]["configurations"][0]["instrument_type"] == "2M0-SCICAM-MUSCAT"
+    assert rg4["requests"][0]["location"]["site"] == "coj"
+
+    # explicit site is preserved
+    rg_explicit = lco.build_requestgroup(
+        "muscat4",
+        {
+            "name": "wasp12",
+            "proposal": "TEST2026A",
+            "target_name": "WASP-12 b",
+            "ra": 97.64,
+            "dec": 29.67,
+            "exposure_times": {"g": 30},
+            "windows": _windows(),
+            "site": "lsc",
+        },
+    )
+    assert rg_explicit["requests"][0]["location"]["site"] == "lsc"
+
+
 def test_build_requestgroup_sinistro_shape():
     rg = lco.build_requestgroup(
         "sinistro",

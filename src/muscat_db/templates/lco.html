@@ -157,7 +157,12 @@
     <h3>Imaging Request</h3>
     <div class="lco-grid">
       <div class="lco-field"><label for="sch-kind">Instrument</label>
-        <select id="sch-kind"><option value="muscat">MuSCAT (2m0)</option><option value="sinistro">Sinistro (1m0)</option></select>
+        <select id="sch-kind">
+          <option value="muscat3">MuSCAT3 (ogg 2m0)</option>
+          <option value="muscat4">MuSCAT4 (coj 2m0)</option>
+          <option value="sinistro">Sinistro (1m0)</option>
+          <option value="muscat">MuSCAT (2m0 - general)</option>
+        </select>
       </div>
       <div class="lco-field"><label for="sch-name">Request name</label><input id="sch-name" type="text" placeholder="WASP-12b transit"></div>
       <div class="lco-field"><label for="sch-count" class="muscat-only">Exposure count</label>
@@ -173,7 +178,7 @@
         <div class="lco-field"><label for="sch-exp-z">Exp z (s)</label><input id="sch-exp-z" type="number" step="any" placeholder="30"></div>
         <div class="lco-field"><label for="sch-exp-mode">Exposure mode</label>
           <select id="sch-exp-mode"><option value="SYNCHRONOUS">Synchronous</option><option value="ASYNCHRONOUS">Asynchronous</option></select></div>
-        <div class="lco-field"><label for="sch-readout">Readout mode</label><input id="sch-readout" type="text" value="MUSCAT_FAST"></div>
+        <div class="lco-field"><label for="sch-readout">Confmode (Readout mode)</label><input id="sch-readout" type="text" value="MUSCAT_FAST"></div>
       </div>
       <div class="lco-grid" style="margin-top: 0.6rem;">
         <div class="lco-field"><label for="sch-nb-g">Narrowband g</label><select id="sch-nb-g"><option value="out">out</option><option value="in">in</option></select></div>
@@ -189,7 +194,7 @@
         <div class="lco-field"><label for="sch-filter">Filter</label><input id="sch-filter" type="text" placeholder="rp"></div>
         <div class="lco-field"><label for="sch-exptime">Exposure time (s)</label><input id="sch-exptime" type="number" step="any" placeholder="60"></div>
         <div class="lco-field"><label for="sch-sin-count">Exposure count</label><input id="sch-sin-count" type="number" min="1" value="1"></div>
-        <div class="lco-field"><label for="sch-readout-sin">Readout mode</label><input id="sch-readout-sin" type="text" value="central_2k_2x2"></div>
+        <div class="lco-field"><label for="sch-readout-sin">Confmode (Readout mode)</label><input id="sch-readout-sin" type="text" value="central_2k_2x2"></div>
         <div class="lco-field"><label for="sch-site">Site (optional)</label><input id="sch-site" type="text" placeholder="lsc"></div>
       </div>
     </div>
@@ -340,7 +345,8 @@
 
   // ---- instrument kind toggle ----
   function applyKind() {
-    var muscat = val('sch-kind') === 'muscat';
+    var k = val('sch-kind');
+    var muscat = k === 'muscat' || k === 'muscat3' || k === 'muscat4';
     document.querySelectorAll('.muscat-only').forEach(function (e) { e.style.display = muscat ? '' : 'none'; });
     document.querySelectorAll('.sinistro-only').forEach(function (e) { e.style.display = muscat ? 'none' : ''; });
   }
@@ -563,7 +569,7 @@
   // lines, and the moon-separation annotation.
   function siteForWindow(w) {
     if (w.observability && w.observability.best_site) return w.observability.best_site;
-    var sites = { muscat: 'ogg', sinistro: 'lsc' };
+    var sites = { muscat: 'ogg', muscat3: 'ogg', muscat4: 'coj', sinistro: 'lsc' };
     return sites[val('sch-kind')] || 'ogg';
   }
   function renderVisibility(d, w, site) {
@@ -651,7 +657,7 @@
       max_airmass: num('sch-max-airmass'), min_lunar_distance: num('sch-min-lunar'),
       ipp_value: num('sch-ipp'), windows: selectedWindows()
     };
-    if (kind === 'muscat') {
+    if (kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4') {
       p.exposure_times = {};
       ['g', 'r', 'i', 'z'].forEach(function (b) { var v = num('sch-exp-' + b); if (v !== null) p.exposure_times[b] = v; });
       p.exposure_mode = val('sch-exp-mode');
