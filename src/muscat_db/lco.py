@@ -149,6 +149,8 @@ def _req_str(value, field: str, lo: int, hi: int) -> str:
 
 def _req_token(value, field: str) -> str:
     s = ("" if value is None else str(value)).strip()
+    if not s:
+        raise LcoError(f"{field} is required", 400)
     if not _TOKEN_RE.match(s):
         raise LcoError(f"{field} has an invalid value", 400)
     return s
