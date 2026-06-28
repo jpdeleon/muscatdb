@@ -705,6 +705,6 @@ th.drag-over-right {
 }
 
 /* ---------- LCO Schedule page ---------- */
-.muscat-only { display: none; }
-.sinistro-only { display: none; }
+.muscat-only { display: none !important; }
+.sinistro-only { display: none !important; }
 
