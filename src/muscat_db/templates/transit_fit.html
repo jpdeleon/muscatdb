@@ -2378,7 +2378,9 @@
       if (!res.ok) {
         clearJob();
         setRunning(false);
+        logEl.style.display = 'block';
         logEl.textContent = 'Error: ' + (res.error || 'failed to start');
+        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
         return;
       }
       // Track the launched run so polling/log/cancel target it.
@@ -2387,13 +2389,16 @@
       try { localStorage.removeItem(logKey()); } catch (e) {}
       if (res.queued) {
         logEl.textContent = '⏳ Queued — waiting for the running full fit to finish…';
+        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
       }
       stopPolling();
       poll();
     }).catch(function (err) {
       clearJob();
       setRunning(false);
+      logEl.style.display = 'block';
       logEl.textContent = 'Error: ' + err.message;
+      try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
     });
   }
 
