@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from muscat_db.database import save_job, db_path, get_persisted_jobs
-from muscat_db.web import app
+from muscat_db.web import app, _annotate_lco_archive_results
 
 @pytest.fixture
 def mock_db(monkeypatch):
@@ -261,6 +261,147 @@ def test_lco_archive_frames_search(monkeypatch):
     r = TestClient(app).get("/api/lco/archive/frames", params={"OBJECT": "WASP-12", "limit": "10"})
     assert r.status_code == 200
     assert r.json()["results"][0]["SITEID"] == "ogg"
+
+
+def test_lco_archive_frames_telescope_class_filters_locally(monkeypatch):
+    monkeypatch.setattr(
+        "muscat_db.lco.archive_search",
+        lambda filters, token=None: {
+            "count": 2,
+            "results": [
+                {"filename": "a.fits.fz", "SITEID": "ogg", "TELID": "2m0a"},
+                {"filename": "b.fits.fz", "SITEID": "ogg", "TELID": "1m0a"},
+            ],
+        },
+    )
+    r = TestClient(app).get("/api/lco/archive/frames", params={"TELID": "2m0"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["count"] == 1
+    assert data["results"][0]["TELID"] == "2m0a"
+
+
+def test_lco_archive_frames_groups_overnight_dataset_and_marks_existing(mock_db, monkeypatch):
+    conn = sqlite3.connect(mock_db)
+    conn.execute(
+        "INSERT INTO frames (instrument, obsdate, ccd, filename, object) VALUES (?, ?, ?, ?, ?)",
+        ("muscat3", "260101", 0, "ogg2m001-ep05-20260102-0001-e91.fits.fz", "WASP-12"),
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(
+        "muscat_db.lco.archive_search",
+        lambda filters, token=None: {
+            "count": 2,
+            "results": [
+                {
+                    "filename": "ogg2m001-ep05-20260102-0001-e91.fits.fz",
+                    "OBJECT": "WASP-12",
+                    "SITEID": "ogg",
+                    "TELID": "2m0a",
+                    "INSTRUME": "ep05",
+                    "DATE_OBS": "2026-01-02T08:00:00Z",
+                },
+                {
+                    "filename": "ogg2m001-ep05-20260102-0002-e91.fits.fz",
+                    "OBJECT": "WASP-12",
+                    "SITEID": "ogg",
+                    "TELID": "2m0a",
+                    "INSTRUME": "ep05",
+                    "DATE_OBS": "2026-01-02T10:00:00Z",
+                },
+            ],
+        },
+    )
+
+    r = TestClient(app).get(
+        "/api/lco/archive/frames",
+        params={"instrument": "muscat3", "OBJECT": "WASP-12", "limit": "10"},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["dataset_count"] == 1
+    assert data["results"][0]["dataset_date"] == "2026-01-01"
+    assert data["results"][0]["dataset_id"] == data["results"][1]["dataset_id"]
+    assert data["results"][0]["dataset_exists"] is True
+    assert data["results"][0]["dataset_existing_count"] == 1
+    assert data["results"][0]["dataset_frame_count"] == 2
+
+
+def test_lco_archive_frames_same_date_same_target_same_site_stay_one_dataset(mock_db, monkeypatch):
+    monkeypatch.setattr(
+        "muscat_db.lco.archive_search",
+        lambda filters, token=None: {
+            "count": 3,
+            "results": [
+                {
+                    "filename": "lsc1m001-fa01-20260102-0001-e91.fits.fz",
+                    "OBJECT": "WASP-12",
+                    "SITEID": "lsc",
+                    "TELID": "1m0a",
+                    "INSTRUME": "fa01",
+                    "DATE_OBS": "2026-01-02T01:00:00Z",
+                },
+                {
+                    "filename": "lsc1m002-fa02-20260102-0002-e91.fits.fz",
+                    "OBJECT": "WASP-12",
+                    "SITEID": "lsc",
+                    "TELID": "1m0b",
+                    "INSTRUME": "fa02",
+                    "DATE_OBS": "2026-01-02T02:00:00Z",
+                },
+                {
+                    "filename": "lsc1m001-fa01-20260102-0003-e91.fits.fz",
+                    "OBJECT": "WASP-12",
+                    "SITEID": "lsc",
+                    "TELID": "1m0a",
+                    "INSTRUME": "fa01",
+                    "DATE_OBS": "2026-01-02T09:00:00Z",
+                },
+            ],
+        },
+    )
+
+    r = TestClient(app).get(
+        "/api/lco/archive/frames",
+        params={"instrument": "sinistro", "OBJECT": "WASP-12", "limit": "10"},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["dataset_count"] == 1
+    ids = {row["dataset_id"] for row in data["results"]}
+    assert len(ids) == 1
+
+
+def test_lco_archive_dataset_exists_matches_by_coordinates_not_name(mock_db):
+    conn = sqlite3.connect(mock_db)
+    conn.execute(
+        "INSERT INTO frames (instrument, obsdate, ccd, filename, object, ra, declination) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("muscat3", "260101", 0, "ogg2m001-ep05-20260101-0009-e91.fits.fz", "Alias Target", "06:30:00", "+29:40:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    out, n = _annotate_lco_archive_results(
+        "muscat3",
+        [
+            {
+                "filename": "ogg2m001-ep05-20260102-0001-e91.fits.fz",
+                "OBJECT": "WASP-12",
+                "SITEID": "ogg",
+                "TELID": "2m0a",
+                "INSTRUME": "ep05",
+                "DATE_OBS": "2026-01-02T08:00:00Z",
+                "RA": 97.5,
+                "DEC": 29.6666667,
+            }
+        ],
+    )
+    assert n == 1
+    assert out[0]["dataset_exists"] is True
+    assert out[0]["dataset_existing_count"] == 1
+    assert out[0]["dataset_matched_object"] == "Alias Target"
 
 
 def test_lco_archive_download_per_file_results(monkeypatch):

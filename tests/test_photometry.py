@@ -1582,6 +1582,7 @@ class TestRoutes:
         assert "nasa_ephemeris" in res
         assert "toi_ephemeris" in res
         assert "datasets" in res
+        assert res["coordinates"] is None
         assert res["reference_ephemeris"] == {"b": {"t0": 2450000.0, "period": 1.0}}
         assert res["nasa_ephemeris"] == {"b": {"t0": 2450000.0, "period": 1.0}}
         assert res["toi_ephemeris"] == {"b": {"t0": 2450000.0, "period": 1.0}}
@@ -1607,6 +1608,8 @@ class TestRoutes:
         assert res4["ok"] is True
         ref_ephem4 = res4["reference_ephemeris"]
         toi_ephem4 = res4["toi_ephemeris"]
+        assert res4["coordinates"]["ra"] == pytest.approx(165.6905, rel=0, abs=1e-9)
+        assert res4["coordinates"]["dec"] == pytest.approx(-16.406444444444443, rel=0, abs=1e-9)
         assert "b" in ref_ephem4
         assert "c" in ref_ephem4
         assert "b" in toi_ephem4

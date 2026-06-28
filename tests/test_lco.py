@@ -336,10 +336,27 @@ class _FakeResp:
 
 def test_request_success(monkeypatch):
     monkeypatch.setenv("LCO_API_TOKEN", "tok")
+    lco._GET_CACHE.clear()
     monkeypatch.setattr(lco.urllib.request, "urlopen",
                         lambda req, timeout=None: _FakeResp('{"results": [1, 2]}'))
     out = lco._request("GET", lco.OBS_PORTAL_BASE + "/proposals/")
     assert out["results"] == [1, 2]
+
+
+def test_request_caches_identical_gets(monkeypatch):
+    monkeypatch.setenv("LCO_API_TOKEN", "tok")
+    lco._GET_CACHE.clear()
+    calls = {"n": 0}
+
+    def fake(req, timeout=None):
+        calls["n"] += 1
+        return _FakeResp('{"results": [1, 2]}')
+
+    monkeypatch.setattr(lco.urllib.request, "urlopen", fake)
+    a = lco._request("GET", lco.OBS_PORTAL_BASE + "/proposals/")
+    b = lco._request("GET", lco.OBS_PORTAL_BASE + "/proposals/")
+    assert a == b
+    assert calls["n"] == 1
 
 
 def test_request_4xx_is_not_retried(monkeypatch):
