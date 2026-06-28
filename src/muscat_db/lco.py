@@ -576,16 +576,22 @@ def build_requestgroup(kind: str, params: dict) -> dict:
     if not (0.5 <= ipp <= 2.0):
         raise LcoError("ipp_value must be in [0.5, 2.0]", 400)
 
-    if kind == "muscat":
+    kind = (kind or "").strip().lower()
+    if kind in ("muscat", "muscat3", "muscat4"):
         instrument_type = _MUSCAT_INSTRUMENT_TYPE
         telescope_class = "2m0"
         instrument_configs = _muscat_instrument_configs(params)
+        if not params.get("site"):
+            if kind == "muscat3":
+                params["site"] = "ogg"
+            elif kind == "muscat4":
+                params["site"] = "coj"
     elif kind == "sinistro":
         instrument_type = _SINISTRO_INSTRUMENT_TYPE
         telescope_class = "1m0"
         instrument_configs = _sinistro_instrument_configs(params)
     else:
-        raise LcoError("imaging kind must be 'muscat' or 'sinistro'", 400)
+        raise LcoError("imaging kind must be 'muscat', 'muscat3', 'muscat4', or 'sinistro'", 400)
 
     configuration = {
         "type": "EXPOSE",

@@ -30,6 +30,8 @@ LCO_SITES: dict[str, tuple[float, float, float]] = {
 # Which sites host each schedulable instrument kind.
 SITES_FOR_KIND: dict[str, list[str]] = {
     "muscat": ["ogg", "coj"],                       # 2M0-SCICAM-MUSCAT (MuSCAT3/4)
+    "muscat3": ["ogg"],
+    "muscat4": ["coj"],
     "sinistro": ["lsc", "cpt", "coj", "tfn", "elp"],  # 1m network
 }
 
