@@ -50,13 +50,36 @@
   .lco-msg { font-size: 0.82rem; margin-top: 0.5rem; min-height: 1em; }
   .lco-msg.err { color: #e07b53; }
   .lco-msg.ok { color: #2ecc71; }
-
   .lco-table-wrap { overflow-x: auto; }
   table.lco-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
   table.lco-table th, table.lco-table td { padding: 0.4rem 0.55rem; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
   table.lco-table th { color: var(--text-dim); font-weight: 600; font-size: 0.72rem; text-transform: uppercase; }
   pre.lco-pre { background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px; padding: 0.8rem; font-size: 0.78rem; overflow-x: auto; max-height: 360px; }
   .muscat-only, .sinistro-only { display: none; }
+  details.lco-dataset {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    margin-bottom: 0.7rem;
+    overflow: hidden;
+  }
+  details.lco-dataset summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 0.7rem 0.9rem;
+  }
+  details.lco-dataset summary::-webkit-details-marker { display: none; }
+  .lco-dataset-head {
+    display: flex;
+    gap: 0.8rem;
+    flex-wrap: wrap;
+    align-items: center;
+    font-size: 0.83rem;
+  }
+  .lco-dataset-body {
+    border-top: 1px solid var(--border);
+    padding: 0.2rem 0.7rem 0.55rem;
+  }
 </style>
 
 <h2 style="margin-bottom: 0.75rem;">LCO Scheduling &amp; Archive</h2>
@@ -84,6 +107,7 @@
       <div class="lco-field"><label for="sch-planet">Planet</label><input id="sch-planet" type="text" placeholder="b" style="max-width: 90px;"></div>
       <div class="lco-field"><label for="sch-source" title="Where t0 / period come from. 'linear fit' refines the ephemeris across all of this target's completed transit fits; individual datasets use that fit's t0/period directly (same as the Planetary Reference Ephemerides on the Ephemeris page). Click 'Fetch ephemeris' to populate datasets.">Ephemeris source</label>
         <select id="sch-source">
+          <option value="">Auto</option>
           <option value="nasa">NASA catalog</option>
           <option value="toi">TOI catalog</option>
           <option value="linear">linear fit</option>
@@ -147,7 +171,10 @@
     <h3>Imaging Request</h3>
     <div class="lco-grid">
       <div class="lco-field"><label for="sch-proposal">Proposal ID</label>
-        <select id="sch-proposal"><option value="">— loading proposals —</option></select>
+        <input id="sch-proposal" list="sch-proposal-options" type="text" placeholder="none">
+        <datalist id="sch-proposal-options">
+          <option value=""></option>
+        </datalist>
       </div>
       <div class="lco-field"><label for="sch-kind">Instrument</label>
         <select id="sch-kind">
@@ -185,10 +212,7 @@
     <!-- SINISTRO -->
     <div class="sinistro-only" style="margin-top: 0.85rem;">
       <div class="lco-grid">
-        <div class="lco-field"><label for="sch-filter">Filter</label><input id="sch-filter" type="text" value="rp" placeholder="rp"></div>
-        <div class="lco-field"><label for="sch-exptime">Exposure time (s)</label><input id="sch-exptime" type="number" step="any" value="60" placeholder="60"></div>
         <div class="lco-field"><label for="sch-sin-count">Exposure count</label><input id="sch-sin-count" type="number" min="1" value="1"></div>
-        <div class="lco-field"><label for="sch-readout-sin">Confmode (Readout mode)</label><input id="sch-readout-sin" type="text" value="central_2k_2x2"></div>
         <div class="lco-field"><label for="sch-site">Site (optional)</label><input id="sch-site" type="text" placeholder="lsc"></div>
       </div>
     </div>
@@ -198,6 +222,12 @@
       <div class="lco-field"><label for="sch-min-lunar">Min lunar dist (deg)</label><input id="sch-min-lunar" type="number" step="any" value="30"></div>
       <div class="lco-field"><label for="sch-ipp">IPP value</label><input id="sch-ipp" type="number" step="any" value="1.0"></div>
     </div>
+    <div class="lco-grid" style="margin-top: 0.85rem;">
+      <div class="lco-field"><label for="sch-effective-exptime">Exposure time</label><input id="sch-effective-exptime" type="text" inputmode="decimal" placeholder="60"></div>
+      <div class="lco-field"><label for="sch-effective-mode">Mode</label><input id="sch-effective-mode" type="text" placeholder="central_2k_2x2"></div>
+      <div class="lco-field"><label for="sch-effective-filter">Filter</label><input id="sch-effective-filter" type="text" placeholder="rp"></div>
+    </div>
+    <p class="lco-note">These scheduling inputs are separate from the Download LCO Data below.</p>
   </div>
 
   <div class="lco-section">
@@ -220,7 +250,7 @@
 <!-- ============================ DOWNLOAD ============================ -->
 <div class="lco-panel" id="panel-download">
   <div class="lco-section">
-    <h3>Archive Filters</h3>
+    <h3>Search LCO Archive</h3>
     <div class="lco-grid">
       <div class="lco-field"><label for="dl-instrument">Save under instrument</label>
         <select id="dl-instrument">
@@ -232,8 +262,15 @@
         </select></div>
       <div class="lco-field"><label for="dl-proposal">Proposal ID</label><input id="dl-proposal" type="text" placeholder="LCO2026A-001"></div>
       <div class="lco-field"><label for="dl-object">Object</label><input id="dl-object" type="text" placeholder="WASP-12"></div>
-      <div class="lco-field"><label for="dl-site">Site</label><input id="dl-site" type="text" placeholder="ogg / coj / lsc"></div>
-      <div class="lco-field"><label for="dl-tel">Telescope</label><input id="dl-tel" type="text" placeholder="2m0a"></div>
+      <div class="lco-field"><label for="dl-tel">Telescope</label>
+        <select id="dl-tel">
+          <option value="">none</option>
+          <option value="0m4">0.4m</option>
+          <option value="1m0">1m</option>
+          <option value="2m0">2m</option>
+        </select></div>
+      <div class="lco-field"><label for="dl-site">Site</label>
+        <select id="dl-site"><option value="">none</option></select></div>
       <div class="lco-field"><label for="dl-instrume">Instrument (header)</label><input id="dl-instrume" type="text" placeholder="ep05 / fa..."></div>
       <div class="lco-field"><label for="dl-filter">Filter</label><input id="dl-filter" type="text" placeholder="rp"></div>
       <div class="lco-field"><label for="dl-rlevel">Reduction level</label>
@@ -244,9 +281,6 @@
     </div>
     <div class="lco-actions">
       <button class="btn sm primary" type="button" id="btn-search">Search frames</button>
-      <label class="lco-field" style="flex-direction: row; align-items: center; gap: 0.4rem;">
-        <input type="checkbox" id="dl-overwrite"> <span style="font-size: 0.82rem;">Overwrite existing</span>
-      </label>
       <span class="lco-msg" id="msg-search" style="margin: 0;"></span>
     </div>
     <p class="lco-note">Files save to <code>&lt;MUSCAT_LCO_DIR&gt;/&lt;instrument&gt;/&lt;date&gt;/</code> (or the instrument's data dir). Sinistro frames from several sites share one date dir; filenames are globally unique, so they don't collide — the SITE column shows their origin.</p>
@@ -256,17 +290,12 @@
     <h3>Results</h3>
     <div class="lco-actions" style="margin-bottom: 0.6rem;">
       <button class="btn sm primary" type="button" id="btn-download" disabled>Download selected</button>
+      <label class="lco-field" style="flex-direction: row; align-items: center; gap: 0.4rem; margin: 0;">
+        <input type="checkbox" id="dl-overwrite"> <span style="font-size: 0.82rem;">Overwrite existing</span>
+      </label>
       <span class="lco-msg" id="msg-download" style="margin: 0;"></span>
     </div>
-    <div class="lco-table-wrap">
-      <table class="lco-table" id="frames-table" style="display: none;">
-        <thead><tr>
-          <th><input type="checkbox" id="frame-all"></th>
-          <th>Filename</th><th>Site</th><th>Tel</th><th>Instr</th><th>Filter</th><th>RLvl</th><th>Date-Obs</th><th>Status</th>
-        </tr></thead>
-        <tbody id="frames-body"></tbody>
-      </table>
-    </div>
+    <div id="frames-groups" style="display: none;"></div>
   </div>
 </div>
 {% endblock %}
@@ -296,7 +325,8 @@
     'sch-obs-airmass','sch-twilight','sch-moon-sep','win-filter',
     'sch-kind','sch-name','sch-count','sch-exp-g','sch-exp-r','sch-exp-i','sch-exp-z',
     'sch-exp-mode','sch-readout','sch-nb-g','sch-nb-r','sch-nb-i','sch-nb-z',
-    'sch-filter','sch-exptime','sch-sin-count','sch-readout-sin','sch-site',
+    'sch-effective-filter','sch-effective-exptime','sch-effective-mode',
+    'sch-sin-count','sch-site',
     'sch-max-airmass','sch-min-lunar','sch-ipp',
     'dl-instrument','dl-proposal','dl-object','dl-site','dl-tel','dl-instrume',
     'dl-filter','dl-rlevel','dl-start','dl-end','dl-limit'
@@ -338,13 +368,72 @@
   });
 
   // ---- instrument kind toggle ----
+  var lastSinistroFields = { exptime: '60', mode: 'central_2k_2x2', filter: 'rp' };
+  var lastScheduleKind = '';
+
+  function rememberSinistroFields() {
+    if (val('sch-effective-exptime')) lastSinistroFields.exptime = val('sch-effective-exptime');
+    if (val('sch-effective-mode')) lastSinistroFields.mode = val('sch-effective-mode');
+    if (val('sch-effective-filter')) lastSinistroFields.filter = val('sch-effective-filter');
+  }
+
   function applyKind() {
     var k = val('sch-kind');
     var muscat = k === 'muscat' || k === 'muscat3' || k === 'muscat4';
+    var prevMuscat = lastScheduleKind === 'muscat' || lastScheduleKind === 'muscat3' || lastScheduleKind === 'muscat4';
+    if (!prevMuscat) rememberSinistroFields();
     document.querySelectorAll('.muscat-only').forEach(function (e) { e.style.display = muscat ? '' : 'none'; });
     document.querySelectorAll('.sinistro-only').forEach(function (e) { e.style.display = muscat ? 'none' : ''; });
+    var effExp = el('sch-effective-exptime');
+    var effMode = el('sch-effective-mode');
+    var effFilter = el('sch-effective-filter');
+    if (effExp) effExp.readOnly = muscat;
+    if (effMode) effMode.readOnly = muscat;
+    if (effFilter) effFilter.readOnly = muscat;
+    if (!muscat) {
+      setVal('sch-effective-exptime', lastSinistroFields.exptime);
+      setVal('sch-effective-mode', lastSinistroFields.mode);
+      setVal('sch-effective-filter', lastSinistroFields.filter);
+    }
+    updateScheduleFields();
+    lastScheduleKind = k;
+  }
+
+  function updateScheduleFields() {
+    var kind = val('sch-kind');
+    var isMuscat = kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4';
+    if (isMuscat) {
+      var bands = [];
+      var maxExp = null;
+      ['g', 'r', 'i', 'z'].forEach(function (band) {
+        var v = num('sch-exp-' + band);
+        if (v !== null) {
+          bands.push(band + '=' + v + ' s');
+          maxExp = maxExp === null ? v : Math.max(maxExp, v);
+        }
+      });
+      setVal('sch-effective-exptime', maxExp === null ? '' : String(maxExp));
+      setVal('sch-effective-mode', val('sch-readout'));
+      setVal('sch-effective-filter', bands.join(', '));
+    }
   }
   el('sch-kind').addEventListener('change', applyKind);
+
+  [
+    'sch-exp-g', 'sch-exp-r', 'sch-exp-i', 'sch-exp-z',
+    'sch-readout'
+  ].forEach(function (id) {
+    var node = el(id);
+    if (!node) return;
+    node.addEventListener('input', updateScheduleFields);
+    node.addEventListener('change', updateScheduleFields);
+  });
+  ['sch-effective-exptime', 'sch-effective-mode', 'sch-effective-filter'].forEach(function (id) {
+    var node = el(id);
+    if (!node) return;
+    node.addEventListener('input', rememberSinistroFields);
+    node.addEventListener('change', rememberSinistroFields);
+  });
 
   // ---- config banner ----
   function setDot(id, ok) { var e = el(id); if (e) e.className = 'dot ' + (ok ? 'ok' : 'no'); }
@@ -357,23 +446,24 @@
 
   // ---- proposals ----
   function populateProposals(results) {
-    var sel = el('sch-proposal');
-    if (!sel) return;
-    var current = sel.value;
+    var inp = el('sch-proposal');
+    var list = el('sch-proposal-options');
+    if (!inp || !list) return;
+    var current = inp.value;
     if (!current) {
       try {
         var opt = JSON.parse(localStorage.getItem(OPT_KEY) || '{}');
         current = opt['sch-proposal'] || '';
       } catch (e) {}
     }
-    sel.innerHTML = '<option value="">— select —</option>';
+    list.innerHTML = '<option value=""></option>';
     results.forEach(function (p) {
       var id = p.id || p;
       var opt = document.createElement('option');
-      opt.value = id; opt.textContent = id;
-      sel.appendChild(opt);
+      opt.value = id;
+      list.appendChild(opt);
     });
-    if (current) sel.value = current;
+    if (current) inp.value = current;
   }
 
   function fetchProposals(silent) {
@@ -395,6 +485,37 @@
       });
   }
 
+  // ---- download archive filter dropdowns ----
+  var DL_SITE_OPTIONS = {
+    '': [],
+    '0m4': ['ogg', 'coj', 'lsc', 'cpt', 'tfn', 'elp'],
+    '1m0': ['ogg', 'coj', 'lsc', 'cpt', 'tfn', 'elp'],
+    '2m0': ['ogg', 'coj']
+  };
+
+  function setSelectOptions(id, values, current) {
+    var sel = el(id);
+    if (!sel) return;
+    sel.innerHTML = '';
+    var none = document.createElement('option');
+    none.value = '';
+    none.textContent = 'none';
+    sel.appendChild(none);
+    (values || []).forEach(function (value) {
+      var opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = value;
+      sel.appendChild(opt);
+    });
+    sel.value = current && (values || []).indexOf(current) !== -1 ? current : '';
+  }
+
+  function applyDownloadSiteOptions() {
+    var tel = val('dl-tel');
+    var currentSite = val('dl-site');
+    setSelectOptions('dl-site', DL_SITE_OPTIONS[tel] || [], currentSite);
+  }
+
   function loadProposals() {
     var cached = null;
     try { cached = JSON.parse(localStorage.getItem('lco:proposals')); } catch (e) {}
@@ -405,6 +526,7 @@
       fetchProposals(false);
     }
   }
+  el('dl-tel').addEventListener('change', applyDownloadSiteOptions);
 
   // ---- fetch ephemeris ----------------------------------------------------
   // Reuses the same endpoints as the Ephemeris page so the source choices match
@@ -414,6 +536,7 @@
   var lastTargetInfo = null;
   var lastInfoTarget = '';
   var pendingSource = null;  // restore a persisted dataset selection after fetch
+  var targetRefreshTimer = null;
 
   function datasetLabel(d) {
     return d.instrument + ' ' + d.date + ': ' + (d.run_name || d.run_id || 'legacy');
@@ -425,6 +548,7 @@
     var prev = pendingSource || sel.value;
     pendingSource = null;
     sel.innerHTML =
+      '<option value="">Auto</option>' +
       '<option value="nasa">NASA catalog</option>' +
       '<option value="toi">TOI catalog</option>' +
       '<option value="linear">linear fit</option>';
@@ -437,7 +561,7 @@
       }
     });
     var has = Array.prototype.some.call(sel.options, function (o) { return o.value === prev; });
-    sel.value = has ? prev : 'nasa';
+    sel.value = has ? prev : '';
   }
 
   function fetchTargetInfo(target) {
@@ -447,14 +571,46 @@
       .then(function (info) { if (info.ok) { lastTargetInfo = info; lastInfoTarget = target; } return info; });
   }
 
+  function populateCoordinates(info) {
+    var coords = info && info.coordinates;
+    if (!coords || coords.ra == null || coords.dec == null) {
+      setVal('sch-ra', '');
+      setVal('sch-dec', '');
+      throw new Error('Coordinates not found for ' + (info && info.target ? info.target : 'that target'));
+    }
+    setVal('sch-ra', coords.ra);
+    setVal('sch-dec', coords.dec);
+  }
+
+  function autoEphemerisForPlanet(info, planet) {
+    var ref = (info.reference_ephemeris || {})[planet] || {};
+    var nasa = (info.nasa_ephemeris || {})[planet] || {};
+    var toi = (info.toi_ephemeris || {})[planet] || {};
+    if (ref.t0 != null && ref.period != null) return { label: 'AUTO', data: ref };
+    if (nasa.t0 != null && nasa.period != null) return { label: 'NASA', data: nasa };
+    if (toi.t0 != null && toi.period != null) return { label: 'TOI', data: toi };
+    return null;
+  }
+
   function applySource(info) {
     var planet = (val('sch-planet') || 'b').toLowerCase();
     var source = val('sch-source');
+    var ref = (info.reference_ephemeris || {})[planet] || {};
     var nasa = (info.nasa_ephemeris || {})[planet] || {};
     var toi = (info.toi_ephemeris || {})[planet] || {};
     // Duration only lives in the catalogs; prefer NASA then TOI.
     var dur = (nasa.duration != null ? nasa.duration : (toi.duration != null ? toi.duration : null));
-    if (dur != null && !val('sch-duration')) setVal('sch-duration', dur);
+    if (dur != null) setVal('sch-duration', dur);
+
+    if (!source) {
+      var auto = autoEphemerisForPlanet(info, planet);
+      if (!auto) { msg('msg-windows', 'No ephemeris found for ' + planet, 'err'); return; }
+      setVal('sch-t0', auto.data.t0);
+      setVal('sch-period', auto.data.period);
+      saveOptions();
+      msg('msg-windows', auto.label + ': t0=' + auto.data.t0 + ', P=' + auto.data.period + ' d' + (dur != null ? ', dur=' + dur + ' h' : ''), 'ok');
+      return;
+    }
 
     if (source === 'nasa' || source === 'toi') {
       var e = source === 'nasa' ? nasa : toi;
@@ -477,7 +633,7 @@
     // 'linear': refine via the O-C linear fit over all of this target's fits.
     var datasets = info.datasets || [];
     if (!datasets.length) { msg('msg-windows', 'No completed transit fits for ' + lastInfoTarget, 'err'); return; }
-    var seed = (info.reference_ephemeris || {})[planet] || nasa || toi;
+    var seed = ref.t0 != null && ref.period != null ? ref : (nasa.t0 != null && nasa.period != null ? nasa : toi);
     if (!seed || seed.t0 == null || seed.period == null) { msg('msg-windows', 'No seed ephemeris to anchor the linear fit', 'err'); return; }
     var calcBody = {
       target: lastInfoTarget, fit_method: 'unweighted', planets_ephem: {},
@@ -497,16 +653,45 @@
       }).catch(function (e) { msg('msg-windows', String(e), 'err'); });
   }
 
+  function refreshTargetFields(opts) {
+    opts = opts || {};
+    var target = val('sch-target');
+    if (!target) return Promise.resolve();
+    if (!opts.silent) msg('msg-windows', 'Fetching target info…');
+    return fetchTargetInfo(target).then(function (info) {
+      if (!info.ok) {
+        msg('msg-windows', info.error || 'lookup failed', 'err');
+        return;
+      }
+      populateSourceOptions(info);
+      var coordErr = null;
+      try {
+        populateCoordinates(info);
+      } catch (e) {
+        coordErr = String(e.message || e);
+      }
+      applySource(info);
+      if (coordErr) msg('msg-windows', coordErr, 'err');
+    }).catch(function (e) {
+      msg('msg-windows', String(e), 'err');
+    });
+  }
+
   el('btn-fetch-ephem').addEventListener('click', function () {
     var target = val('sch-target');
     if (!target) { msg('msg-windows', 'Enter a target first', 'err'); return; }
-    msg('msg-windows', 'Fetching ephemeris…');
-    fetchTargetInfo(target).then(function (info) {
-      if (!info.ok) { msg('msg-windows', info.error || 'lookup failed', 'err'); return; }
-      populateSourceOptions(info);
-      applySource(info);
-    }).catch(function (e) { msg('msg-windows', String(e), 'err'); });
+    refreshTargetFields();
   });
+
+  function scheduleTargetRefresh() {
+    if (targetRefreshTimer) window.clearTimeout(targetRefreshTimer);
+    targetRefreshTimer = window.setTimeout(function () {
+      refreshTargetFields({ silent: true });
+    }, 250);
+  }
+  el('sch-target').addEventListener('input', scheduleTargetRefresh);
+  el('sch-target').addEventListener('change', function () { refreshTargetFields({ silent: true }); });
+  el('sch-target').addEventListener('blur', function () { refreshTargetFields({ silent: true }); });
 
   // Changing the source (after a fetch) resolves immediately from cached info.
   el('sch-source').addEventListener('change', function () {
@@ -701,10 +886,10 @@
       p.readout_mode = val('sch-readout');
       p.narrowband = { g: val('sch-nb-g'), r: val('sch-nb-r'), i: val('sch-nb-i'), z: val('sch-nb-z') };
     } else {
-      p.filter = val('sch-filter');
-      p.exposure_time = num('sch-exptime');
+      p.filter = val('sch-effective-filter');
+      p.exposure_time = num('sch-effective-exptime');
       p.exposure_count = num('sch-sin-count') || 1;
-      p.readout_mode = val('sch-readout-sin');
+      p.readout_mode = val('sch-effective-mode');
       if (val('sch-site')) p.site = val('sch-site');
     }
     return p;
@@ -748,13 +933,89 @@
 
   // ---- archive search ----
   var lastFrames = [];
-  el('frame-all').addEventListener('change', function () {
-    document.querySelectorAll('#frames-body input[type=checkbox]').forEach(function (c) { c.checked = el('frame-all').checked; });
+
+  function frameRowHtml(f, i) {
+    return '<tr>' +
+      '<td><input type="checkbox" data-i="' + i + '"></td>' +
+      '<td>' + esc(f.filename || f.basename || '') + '</td>' +
+      '<td>' + esc(f.SITEID || '') + '</td>' +
+      '<td>' + esc(f.TELID || '') + '</td>' +
+      '<td>' + esc(f.INSTRUME || '') + '</td>' +
+      '<td>' + esc(f.FILTER || '') + '</td>' +
+      '<td>' + esc(f.RLEVEL !== undefined ? f.RLEVEL : (f.reduction_level || '')) + '</td>' +
+      '<td>' + esc(f.DATE_OBS || f.observation_date || '') + '</td>' +
+      '<td class="frame-status" data-i="' + i + '"></td>' +
+      '</tr>';
+  }
+
+  function renderFrameGroups() {
+    var host = el('frames-groups');
+    host.innerHTML = '';
+    if (!lastFrames.length) {
+      host.style.display = 'none';
+      return;
+    }
+    var groups = [];
+    var byId = {};
+    lastFrames.forEach(function (f, i) {
+      var id = f.dataset_id || ('ungrouped:' + i);
+      if (!byId[id]) {
+        byId[id] = { id: id, rows: [], first: f };
+        groups.push(byId[id]);
+      }
+      byId[id].rows.push({ frame: f, index: i });
+    });
+
+    groups.forEach(function (g) {
+      var f = g.first;
+      var existing = (f.dataset_existing_count || 0) > 0;
+      var existingText = existing
+        ? ('already in muscat-db (' + f.dataset_existing_count + '/' + (f.dataset_frame_count || 0) + ' frames)')
+        : 'not in muscat-db';
+      var matchBits = '';
+      if (existing && f.dataset_matched_object) {
+        matchBits += '<span>Matched: ' + esc(f.dataset_matched_object) + '</span>';
+      }
+      if (existing && f.dataset_match_sep_arcsec !== null && f.dataset_match_sep_arcsec !== undefined) {
+        matchBits += '<span>Sep: ' + esc(String(f.dataset_match_sep_arcsec)) + ' arcsec</span>';
+      }
+      var details = document.createElement('details');
+      details.className = 'lco-dataset';
+      details.open = true;
+      details.innerHTML =
+        '<summary><div class="lco-dataset-head">' +
+        '<span>Dataset date: ' + esc(f.dataset_date || 'unknown') + '</span>' +
+        (f.OBJECT ? '<span>Target: ' + esc(f.OBJECT) + '</span>' : '') +
+        (f.SITEID ? '<span>Site: ' + esc(f.SITEID) + '</span>' : '') +
+        '<span>Frames: ' + esc(String(f.dataset_frame_count || g.rows.length)) + '</span>' +
+        '<span style="color:' + (existing ? '#2ecc71' : 'var(--text-dim)') + ';">' + esc(existingText) + '</span>' +
+        matchBits +
+        '</div></summary>' +
+        '<div class="lco-dataset-body">' +
+        '<div class="lco-table-wrap">' +
+        '<table class="lco-table"><thead><tr>' +
+        '<th><input type="checkbox" class="frame-group-all" data-group="' + esc(g.id) + '"></th>' +
+        '<th>Filename</th><th>Site</th><th>Tel</th><th>Instr</th><th>Filter</th><th>RLvl</th><th>Date-Obs</th><th>Status</th>' +
+        '</tr></thead><tbody>' +
+        g.rows.map(function (row) { return frameRowHtml(row.frame, row.index); }).join('') +
+        '</tbody></table></div></div>';
+      host.appendChild(details);
+    });
+    host.style.display = '';
+  }
+
+  el('frames-groups').addEventListener('change', function (e) {
+    var box = e.target.closest('.frame-group-all');
+    if (!box) return;
+    var details = box.closest('details');
+    if (!details) return;
+    details.querySelectorAll('tbody input[type=checkbox]').forEach(function (c) { c.checked = box.checked; });
   });
   el('btn-search').addEventListener('click', function () {
     msg('msg-search', 'Searching…');
     var q = new URLSearchParams();
     var map = {
+      instrument: 'dl-instrument',
       proposal_id: 'dl-proposal', OBJECT: 'dl-object', SITEID: 'dl-site', TELID: 'dl-tel',
       INSTRUME: 'dl-instrume', FILTER: 'dl-filter', reduction_level: 'dl-rlevel',
       start: 'dl-start', end: 'dl-end', limit: 'dl-limit'
@@ -763,21 +1024,10 @@
     fetch('/api/lco/archive/frames?' + q.toString()).then(function (r) { return r.json(); }).then(function (d) {
       if (!d.ok) { msg('msg-search', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
       lastFrames = d.results || [];
-      var tb = el('frames-body'); tb.innerHTML = '';
-      lastFrames.forEach(function (f, i) {
-        var tr = document.createElement('tr');
-        tr.innerHTML = '<td><input type="checkbox" data-i="' + i + '"></td>' +
-          '<td>' + esc(f.filename || f.basename || '') + '</td>' +
-          '<td>' + esc(f.SITEID || '') + '</td><td>' + esc(f.TELID || '') + '</td>' +
-          '<td>' + esc(f.INSTRUME || '') + '</td><td>' + esc(f.FILTER || '') + '</td>' +
-          '<td>' + esc(f.RLEVEL !== undefined ? f.RLEVEL : (f.reduction_level || '')) + '</td>' +
-          '<td>' + esc(f.DATE_OBS || f.observation_date || '') + '</td>' +
-          '<td class="frame-status" data-i="' + i + '"></td>';
-        tb.appendChild(tr);
-      });
-      el('frames-table').style.display = lastFrames.length ? '' : 'none';
+      renderFrameGroups();
       el('btn-download').disabled = !lastFrames.length;
-      msg('msg-search', 'Found ' + (d.count !== undefined ? d.count : lastFrames.length) + ' frames (showing ' + lastFrames.length + ')', 'ok');
+      var datasetMsg = d.dataset_count !== undefined ? (' across ' + d.dataset_count + ' dataset' + (d.dataset_count === 1 ? '' : 's')) : '';
+      msg('msg-search', 'Found ' + (d.count !== undefined ? d.count : lastFrames.length) + ' frames (showing ' + lastFrames.length + ')' + datasetMsg, 'ok');
     }).catch(function (e) { msg('msg-search', String(e), 'err'); });
   });
 
@@ -790,7 +1040,7 @@
   // ---- download ----
   el('btn-download').addEventListener('click', function () {
     var picked = [];
-    document.querySelectorAll('#frames-body input[type=checkbox]:checked').forEach(function (c) {
+    document.querySelectorAll('#frames-groups tbody input[type=checkbox]:checked').forEach(function (c) {
       var f = lastFrames[+c.dataset.i]; if (f) picked.push(f);
     });
     if (!picked.length) { msg('msg-download', 'Select frames first', 'err'); return; }
@@ -801,7 +1051,7 @@
         if (!d.ok) { msg('msg-download', d.error || 'failed', 'err'); return; }
         var byName = {};
         (d.results || []).forEach(function (r) { byName[r.filename] = r; });
-        document.querySelectorAll('#frames-body .frame-status').forEach(function (cell) {
+        document.querySelectorAll('#frames-groups .frame-status').forEach(function (cell) {
           var f = lastFrames[+cell.dataset.i]; if (!f) return;
           var r = byName[f.filename || f.basename]; if (!r) return;
           cell.textContent = r.status + (r.bytes ? ' (' + Math.round(r.bytes / 1024) + ' KB)' : '') + (r.error ? ': ' + r.error : '');
@@ -820,14 +1070,22 @@
     fetch('/api/ephemeris/view/' + encodeURIComponent(slug)).then(function (r) { return r.json(); }).then(function (d) {
       if (!d.ok || !d.state) return;
       var targets = d.state.targets || [];
-      if (targets.length && !val('sch-target')) { setVal('sch-target', targets[0]); setVal('dl-object', targets[0]); saveOptions(); }
+      if (targets.length && !val('sch-target')) {
+        setVal('sch-target', targets[0]);
+        setVal('dl-object', targets[0]);
+        saveOptions();
+        refreshTargetFields({ silent: true });
+      }
     }).catch(function () {});
   }
 
   // ---- init ----
   loadProposals();
   restoreOptions();
+  applyDownloadSiteOptions();
   applyKind();
+  updateScheduleFields();
+  if (val('sch-target')) refreshTargetFields({ silent: true });
   prefillFromView();
 })();
 </script>

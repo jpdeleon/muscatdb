@@ -19,6 +19,7 @@ Design notes:
 from __future__ import annotations
 
 import datetime
+import copy
 import hashlib
 import json
 import math
@@ -26,6 +27,7 @@ import os
 import pathlib
 import re
 import shutil
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -47,6 +49,8 @@ _DOWNLOAD_TIMEOUT_S = 180.0
 _RETRIES = 3
 _BACKOFF_S = 1.0
 _MAX_WINDOWS = 1000  # guard against absurd date ranges
+_GET_CACHE_TTL_S = 60.0
+_GET_CACHE_MAX = 128
 
 # Instrument-type strings on the LCO network.
 _MUSCAT_INSTRUMENT_TYPE = "2M0-SCICAM-MUSCAT"
@@ -56,6 +60,9 @@ _MUSCAT_BANDS = ("g", "r", "i", "z")
 _PROPOSAL_RE = re.compile(r"^[A-Za-z0-9._\-]{1,64}$")
 _FILENAME_RE = re.compile(r"^[A-Za-z0-9._\-]{1,200}$")
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9._\-]{1,64}$")
+
+_GET_CACHE_LOCK = threading.Lock()
+_GET_CACHE: dict[tuple, tuple[float, dict]] = {}
 
 
 class LcoError(RuntimeError):
@@ -197,14 +204,30 @@ def _request(
         clean = {k: v for k, v in params.items() if v not in (None, "")}
         if clean:
             url = url + ("&" if "?" in url else "?") + urllib.parse.urlencode(clean)
+    else:
+        clean = None
 
     headers = {"User-Agent": _USER_AGENT, "Accept": "application/json"}
+    token_value = None
     if auth:
-        headers["Authorization"] = f"Token {token or load_token()}"
+        token_value = token or load_token()
+        headers["Authorization"] = f"Token {token_value}"
     data = None
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
+
+    cache_key = None
+    if method.upper() == "GET" and body is None:
+        token_digest = hashlib.sha256((token_value or "").encode("utf-8")).hexdigest()[:16]
+        cache_key = (method.upper(), url, bool(auth), token_digest)
+        now = time.time()
+        with _GET_CACHE_LOCK:
+            hit = _GET_CACHE.get(cache_key)
+            if hit and (now - hit[0]) <= _GET_CACHE_TTL_S:
+                return copy.deepcopy(hit[1])
+            if hit:
+                _GET_CACHE.pop(cache_key, None)
 
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     last: LcoError | None = None
@@ -212,7 +235,14 @@ def _request(
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read().decode("utf-8")
-                return json.loads(raw) if raw.strip() else {}
+                out = json.loads(raw) if raw.strip() else {}
+                if cache_key is not None:
+                    with _GET_CACHE_LOCK:
+                        _GET_CACHE[cache_key] = (time.time(), copy.deepcopy(out))
+                        if len(_GET_CACHE) > _GET_CACHE_MAX:
+                            oldest = min(_GET_CACHE.items(), key=lambda kv: kv[1][0])[0]
+                            _GET_CACHE.pop(oldest, None)
+                return out
         except urllib.error.HTTPError as e:
             detail = ""
             try:
