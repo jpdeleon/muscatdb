@@ -264,6 +264,10 @@
         <span>s</span>
         <button class="btn" type="button" id="calc-peak-btn">Calculate peak counts</button>
       </div>
+      <div style="display:flex; align-items:center; gap:0.6rem; margin-top:0.75rem; padding-top:0.75rem; border-top:1px dashed var(--border); font-size:0.8rem;">
+        <input type="checkbox" id="show-narrow" style="width:1.1em; height:1.1em; cursor:pointer;">
+        <label for="show-narrow" style="cursor:pointer; flex:1; margin:0;">Also show narrowband filters (scaled by filter width ratios)</label>
+      </div>
       <span id="calc-status" class="msg dim"></span>
     </div>
   </div>
@@ -340,6 +344,7 @@
   var calcBtn = document.getElementById('calc-btn');
   var calcPeakBtn = document.getElementById('calc-peak-btn');
   var calcStatus = document.getElementById('calc-status');
+  var showNarrow = document.getElementById('show-narrow');
   var resultsBody = document.getElementById('results-body');
   var resultsContent = document.getElementById('results-content');
   var resultsPlaceholder = document.getElementById('results-placeholder');
@@ -406,7 +411,8 @@
       magInputs.forEach(function (inp) { if (inp.value !== '') mags[inp.dataset.band] = inp.value; });
       localStorage.setItem(STORE_KEY, JSON.stringify({
         inst: selInst.value, confmode: selConfmode.value, target: targetName.value, mags: mags,
-        focus: focusMm.value, airmass: airmass.value, satFrac: satFrac.value, customAdu: customAdu.value
+        focus: focusMm.value, airmass: airmass.value, satFrac: satFrac.value, customAdu: customAdu.value,
+        showNarrow: showNarrow.checked
       }));
     } catch (e) {}
   }
@@ -422,6 +428,7 @@
     if (s.airmass !== undefined) airmass.value = s.airmass;
     if (s.satFrac) { satFrac.value = s.satFrac; customAduField.style.display = s.satFrac === 'custom' ? '' : 'none'; }
     if (s.customAdu) customAdu.value = s.customAdu;
+    if (s.showNarrow !== undefined) showNarrow.checked = s.showNarrow;
     syncFocus(); syncAirmass();
   }
 
@@ -438,6 +445,10 @@
   selInst.addEventListener('change', function () { updateConfmodeVisibility(); saveState(); });
   selConfmode.addEventListener('change', saveState);
   targetName.addEventListener('input', saveState);
+  showNarrow.addEventListener('change', function () {
+    saveState();
+    if (renderResults.lastData) renderResults(renderResults.lastData, renderResults.lastMode);
+  });
 
   // ---- Lookup magnitudes ----
   function doLookup() {
@@ -539,12 +550,24 @@
   function fwClass(pct) { return pct >= 100 ? 'sat' : (pct >= 70 ? 'warn' : 'safe'); }
 
   function renderResults(data, mode) {
+    // Save for re-render on checkbox toggle
+    renderResults.lastData = data;
+    renderResults.lastMode = mode;
+
     resultsPlaceholder.style.display = 'none';
     resultsContent.style.display = 'block';
     resultsBody.innerHTML = '';
     colPrimary.textContent = mode === 'exptime' ? 'Exp (s)' : 'Exp (s)';
 
     var rows = data.results || [];
+    var broadBands = ['gp', 'rp', 'ip', 'zs'];
+
+    // Filter rows based on showNarrow checkbox
+    rows = rows.filter(function (r) {
+      if (broadBands.indexOf(r.band) !== -1) return true;  // Always show broadband
+      return showNarrow.checked;  // Show narrowband only if checked
+    });
+
     var minExp = mode === 'exptime' && rows.length
       ? Math.min.apply(null, rows.map(function (r) { return r.exptime; })) : null;
 
@@ -569,6 +592,23 @@
         '<td><span class="stat-pill ' + pill + '">' + pillTxt + '</span></td>';
       resultsBody.appendChild(tr);
     });
+
+    // Add narrowband legend if showing narrowband filters
+    if (showNarrow.checked && rows.some(function (r) { return ['g_narrow', 'i_narrow', 'z_narrow', 'Na_D'].indexOf(r.band) !== -1; })) {
+      var note = document.createElement('div');
+      note.style.marginTop = '1rem';
+      note.style.padding = '0.75rem';
+      note.style.backgroundColor = 'color-mix(in srgb, var(--accent2) 8%, transparent)';
+      note.style.borderLeft = '3px solid var(--accent2)';
+      note.style.borderRadius = '6px';
+      note.style.fontSize = '0.75rem';
+      note.style.color = 'var(--text-dim)';
+      note.innerHTML = '<strong style="color:var(--text);">Narrowband filter width ratios:</strong><br>' +
+        'g_narrow: 10nm / 140nm ≈ 0.07  •  i_narrow: 5nm / 100nm = 0.05  •  ' +
+        'z_narrow: 5nm / 100nm = 0.05  •  Na_D: 5nm / 100nm = 0.05<br>' +
+        '<span style="margin-top:0.3rem; display:block;">Narrower filters transmit fewer photons, requiring longer exposures or brighter targets to reach the same peak counts.</span>';
+      resultsBody.parentElement.appendChild(note);
+    }
 
     if (mode === 'exptime' && data.recommended_exptime) {
       recBox.style.display = 'flex';
