@@ -3,6 +3,14 @@
 {% block content %}
 <h1>Jobs</h1>
 
+<div class="jobs-summary" id="type-summary">
+  <span class="job-count" data-type="photometry" onclick="toggleType(this, 'photometry')">Photometry</span>
+  <span class="job-count" data-type="transit_fit" onclick="toggleType(this, 'transit_fit')">Transit Fit</span>
+</div>
+<div class="jobs-summary" id="time-summary">
+  <span class="job-count" data-time="recent" onclick="toggleRecent(this)">Today</span>
+</div>
+
 {% set status_order = ['running', 'pending', 'done', 'error', 'cancelled'] %}
 {% set status_labels = {'running': 'Running', 'pending': 'Pending', 'done': 'Done', 'error': 'Failed', 'cancelled': 'Cancelled'} %}
 {% macro render_job_rows(job_list) -%}
@@ -100,13 +108,6 @@
   <span class="job-count job-count-clear" id="clear-filter" style="display:none;cursor:pointer;opacity:0.6;" onclick="clearFilter()">✕ Clear filter</span>
 </div>
 
-<div class="jobs-summary" id="type-summary">
-  <span class="job-count" data-type="photometry" onclick="toggleType(this, 'photometry')">Photometry</span>
-  <span class="job-count" data-type="transit_fit" onclick="toggleType(this, 'transit_fit')">Transit Fit</span>
-</div>
-<div class="jobs-summary" id="time-summary">
-  <span class="job-count" data-time="recent" onclick="toggleRecent(this)">Today</span>
-</div>
 <div class="jobs-summary" id="inst-summary"></div>
 
 <div class="search-bar">
