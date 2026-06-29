@@ -1232,6 +1232,73 @@ erDiagram
           </div>
         </div>
 
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does timer compare to the MuSCAT2 transit pipeline?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The <code>timer</code> transit fitting pipeline used here is distinct from the <a href="https://github.com/hpparvi/MuSCAT2_transit_pipeline" target="_blank" rel="noopener noreferrer">MuSCAT2 transit pipeline</a> (Parvi et al.). Key differences:</p>
+            <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem; margin-top: 0.5rem;">
+              <thead>
+                <tr style="border-bottom: 2px solid var(--border);">
+                  <th style="text-align: left; padding: 0.5rem; color: var(--text-dim); font-weight: 600;">Aspect</th>
+                  <th style="text-align: left; padding: 0.5rem; color: var(--text-dim); font-weight: 600;">timer (MuSCAT-db)</th>
+                  <th style="text-align: left; padding: 0.5rem; color: var(--text-dim); font-weight: 600;">MuSCAT2 Pipeline</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Sampling engine</td>
+                  <td style="padding: 0.5rem;"><strong>PyMC (v3 or v4)</strong> with NUTS sampler</td>
+                  <td style="padding: 0.5rem;"><strong>emcee</strong> ensemble sampler</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Transit model</td>
+                  <td style="padding: 0.5rem;">batman or starry (flexible)</td>
+                  <td style="padding: 0.5rem;">Custom analytical model</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Limb darkening</td>
+                  <td style="padding: 0.5rem;">Quadratic, nonlinear, fixed, or priors</td>
+                  <td style="padding: 0.5rem;">Fixed from stellar parameters</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Systematics model</td>
+                  <td style="padding: 0.5rem;">Linear regression or Gaussian process</td>
+                  <td style="padding: 0.5rem;">Airmass + centroid polynomial</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Configuration</td>
+                  <td style="padding: 0.5rem;">YAML files (<code>fit.yaml</code>, <code>sys.yaml</code>)</td>
+                  <td style="padding: 0.5rem;">Python scripts</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Web integration</td>
+                  <td style="padding: 0.5rem;"><strong>Native</strong> — runs via web UI, persists results in DB</td>
+                  <td style="padding: 0.5rem;">Standalone — independent command-line tool</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Archive integration</td>
+                  <td style="padding: 0.5rem;">Loads photometry CSVs from prose pipeline</td>
+                  <td style="padding: 0.5rem;">Works with raw MuSCAT2 observations</td>
+                </tr>
+                <tr>
+                  <td style="padding: 0.5rem;">Output</td>
+                  <td style="padding: 0.5rem;">Posterior samples, corner/trace/LD/fit plots, O-C analysis</td>
+                  <td style="padding: 0.5rem;">Posterior samples and publication-quality plots</td>
+                </tr>
+              </tbody>
+            </table>
+            <p style="margin-top: 1rem;"><strong>When to use each:</strong></p>
+            <ul>
+              <li><strong>timer (here)</strong> — for rapid, reproducible multi-band transit analysis integrated with the MuSCAT-db photometry pipeline, with flexible detrending and modern Bayesian inference.</li>
+              <li><strong>MuSCAT2 pipeline</strong> — for standalone MuSCAT2-specific analysis, or when custom analytical models or emcee-specific workflows are preferred.</li>
+            </ul>
+            <p>Both pipelines produce scientifically rigorous results; the choice depends on your data source and workflow integration needs.</p>
+          </div>
+        </div>
+
       </div>
     </div>
 
