@@ -35,8 +35,9 @@ cp .env.example .env   # then edit
 Variables the app and the jobs it spawns inherit include `MUSCAT_DB_PATH`,
 `MUSCAT_DATA_DIR`, `MUSCAT_PROSE_DIR`, `MUSCAT_PROSE_PROJECT`,
 `MUSCAT_PROSE_CONDA_ENV`, `MUSCAT_TIMER_DIR`, the `MUSCAT_PHOT_*` job-lifecycle
-timeouts, `MUSCAT_TMPDIR`, and `ASTROMETRY_NET_API_KEY` (see below). At startup
-the server prints each variable's status (`set` / `default` / `unset`).
+timeouts, `MUSCAT_TMPDIR`, `ASTROMETRY_NET_API_KEY`, `LCO_API_TOKEN`,
+`MUSCAT_LCO_DIR`, and `MUSCAT_LCO_ALLOW_SUBMIT` (see below). At startup the 
+server prints each variable's status (`set` / `default` / `unset`).
 
 `MUSCAT_TMPDIR` (default `/raid_ut2/home/jerome/tmp`) routes the temp files of
 spawned pipeline jobs (`TMPDIR`/`TMP`/`TEMP`) onto a roomy raid-backed directory,
@@ -61,6 +62,38 @@ If `nova` is selected without the key set, calibration fails fast with a message
 pointing you to `--wcs_method twirl`. BANZAI-reduced **muscat3 / muscat4 /
 sinistro** already carry WCS in their headers and skip solving entirely, so the
 API key is irrelevant for those instruments.
+
+### LCO Scheduling and Archive Downloads
+
+The `/lco` page integrates with the LCO Observation Portal for scheduling
+MUSCAT and Sinistro observations and downloading reduced data from the LCO
+archive. The feature is split into two workflows:
+
+- **Schedule Observations**: Load your proposals, select target and planet, 
+  generate batch transit windows across a UTC date range, configure imaging 
+  (MUSCAT g/r/i/z or Sinistro filter), run a dry-run IPP check, and submit 
+  observations.
+- **Download LCO Data**: Filter archive frames by proposal, target, site, 
+  instrument, reduction level, and date range, then download selected files 
+  server-side.
+
+To enable LCO features, set `LCO_API_TOKEN` (your Observation Portal API 
+token—[generate one here](https://observe.lco.global/profile/)):
+
+```bash
+export LCO_API_TOKEN="your-token-here"
+```
+
+Downloaded files are saved under `MUSCAT_LCO_DIR/<instrument>/<date>/` (default 
+is `MUSCAT_DATA_DIR`'s per-instrument layout). Live observation submission 
+requires an additional safety gate:
+
+```bash
+export MUSCAT_LCO_ALLOW_SUBMIT=1  # Only set when intentionally going live
+```
+
+The page is linked from the navigation bar and also reachable via 
+`/lco?view=<slug>` after saving an ephemeris view on the **Ephemeris** page.
 
 ## CLI Usage
 
@@ -105,8 +138,9 @@ muscat-db serve --port 8080  # custom port
 ## Web Frontend
 
 The navigation bar links the observation log, photometry, transit fitting, job
-history, exposure calculator, and workflow diagram. Observation-log navigation
-is **Logs** → **Dates** → **CCD summaries** → **Per-frame table**.
+history, exposure calculator, LCO scheduling/download, and workflow diagram. 
+Observation-log navigation is **Logs** → **Dates** → **CCD summaries** → 
+**Per-frame table**.
 
 The home page shows:
 
