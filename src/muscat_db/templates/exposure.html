@@ -639,10 +639,7 @@
       note2.style.borderRadius = '0px';
       note2.style.fontSize = '0.8rem';
       note2.style.color = 'var(--text-dim)';
-      note2.style.lineHeight = '1.5';
-      note2.innerHTML = '<div style="display:flex; gap:1rem; align-items:flex-start;">' +
-        '<div><strong style="color:var(--text);">MuSCAT2 vs MuSCAT3:</strong> ~10× longer exposures (smaller aperture 1.52m vs 2.0m, lower gain 1.0 vs 1.8, larger pixels 0.44 vs 0.267). ' +
-        '<em>Example: gp=12.9 → MuSCAT3: 7.4s vs MuSCAT2: ~70s</em></div></div>';
+      note2.textContent = 'MuSCAT2 vs MuSCAT3: ~10× longer exposures (smaller aperture 1.52m vs 2.0m, lower gain 1.0 vs 1.8, larger pixels 0.44 vs 0.267). Example: gp=12.9 → MuSCAT3: 7.4s vs MuSCAT2: ~70s.';
       resultsBody.parentElement.appendChild(note2);
     }
 
