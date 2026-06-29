@@ -610,6 +610,22 @@
       resultsBody.parentElement.appendChild(note);
     }
 
+    // Add muscat2 note if selected
+    if (data.instrument === 'muscat2' && mode === 'exptime') {
+      var note2 = document.createElement('div');
+      note2.style.marginTop = '1rem';
+      note2.style.padding = '0.75rem';
+      note2.style.backgroundColor = 'color-mix(in srgb, #f59e0b 8%, transparent)';
+      note2.style.borderLeft = '3px solid #f59e0b';
+      note2.style.borderRadius = '6px';
+      note2.style.fontSize = '0.75rem';
+      note2.style.color = 'var(--text-dim)';
+      note2.innerHTML = '<strong style="color:var(--text);">MuSCAT2 vs MuSCAT3 comparison:</strong><br>' +
+        'MuSCAT2 requires ~10× longer exposures due to: smaller aperture (1.52m vs 2.0m), lower gain (1.0 vs 1.8), larger pixel scale (0.44 vs 0.267).<br>' +
+        '<span style="margin-top:0.3rem; display:block;"><em>Example:</em> For gp=12.9, MuSCAT3 needs 7.4s vs MuSCAT2 ~70s.</span>';
+      resultsBody.parentElement.appendChild(note2);
+    }
+
     if (mode === 'exptime' && data.recommended_exptime) {
       recBox.style.display = 'flex';
       recVal.textContent = data.recommended_exptime + ' s';
