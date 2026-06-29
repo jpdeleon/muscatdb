@@ -12,9 +12,10 @@ Key Questions:
 4. Are there outliers or problematic observations?
 
 Peak Count Measurement:
-- Peak is measured from a SINGLE FITS frame (not aggregated)
-- Uses 99.9th percentile of pixel values minus median (baseline subtraction)
-- This accounts for cosmic rays while capturing the true stellar peak
+- Samples 10 equally-spaced frames from each observation dataset
+- Measures peak from each frame using 99.9th percentile minus median baseline
+- Returns median peak across the 10 samples for robust measurement
+- This reduces noise from cosmic rays and frame-to-frame seeing variations
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from __future__ import annotations
 import sys
 import logging
 import csv
+import glob
 from pathlib import Path
 from typing import NamedTuple
 import sqlite3
@@ -68,30 +70,95 @@ class PeakComparison(NamedTuple):
     status: str  # 'ok', 'no_peak', 'no_magnitude', 'saturated'
 
 
-def measure_peak_from_fits(fits_path: str) -> float | None:
-    """Measure peak pixel value from a single FITS frame.
+def measure_peak_from_frame(data: np.ndarray) -> float | None:
+    """Measure peak pixel value from frame data.
 
     Uses 99.9th percentile minus median (baseline) - robust against cosmic rays.
     """
-    try:
-        with fits.open(fits_path, memmap=False) as hdul:
-            data = hdul[0].data
-            if data is None:
-                # Try science extension
-                for hdu in hdul[1:]:
-                    if hdu.data is not None and hdu.data.ndim >= 2:
-                        data = hdu.data
-                        break
-
-            if data is None or data.ndim < 2 or data.size == 0:
-                return None
-
-            baseline = np.median(data)
-            peak = np.percentile(data, 99.9) - baseline
-            return max(0.0, float(peak))
-    except Exception as e:
-        logger.debug(f"Failed to read peak from {fits_path}: {e}")
+    if data is None or data.ndim < 2 or data.size == 0:
         return None
+
+    try:
+        baseline = np.median(data)
+        peak = np.percentile(data, 99.9) - baseline
+        return max(0.0, float(peak))
+    except Exception as e:
+        logger.debug(f"Failed to measure peak: {e}")
+        return None
+
+
+def measure_peak_from_dataset(
+    obsdate: str,
+    filename_base: str,
+    instrument: str = "muscat3",
+    n_samples: int = 10,
+) -> float | None:
+    """Measure peak from multiple equally-spaced frames in a dataset.
+
+    Samples n_samples frames evenly distributed across the observation sequence,
+    then returns the median peak to reduce noise from cosmic rays and frame-to-frame variations.
+
+    Args:
+        obsdate: Observation date (YYMMDD)
+        filename_base: Base filename without extension or frame number
+        instrument: Instrument name
+        n_samples: Number of equally-spaced frames to sample
+
+    Returns:
+        Median peak across sampled frames, or None if measurement fails
+    """
+    raw_dir = raw_data_dir(instrument, obsdate)
+
+    # Find all frames matching this dataset
+    # MuSCAT3 frame numbering: filename is like "ogg2m001-ep02-20201015-0083-e91"
+    # We'll look for files that start with the base and have incrementing numbers
+    pattern = str(raw_dir / f"{filename_base}*")
+    matching_files = sorted(glob.glob(pattern))
+
+    if not matching_files:
+        logger.debug(f"No frames found matching {pattern}")
+        return None
+
+    # Select equally-spaced frames
+    if len(matching_files) <= n_samples:
+        frame_indices = list(range(len(matching_files)))
+    else:
+        frame_indices = [
+            int(i * (len(matching_files) - 1) / (n_samples - 1))
+            for i in range(n_samples)
+        ]
+
+    peaks = []
+    for idx in frame_indices:
+        fits_path = matching_files[idx]
+        try:
+            with fits.open(fits_path, memmap=False) as hdul:
+                data = hdul[0].data
+                if data is None:
+                    # Try science extension
+                    for hdu in hdul[1:]:
+                        if hdu.data is not None and hdu.data.ndim >= 2:
+                            data = hdu.data
+                            break
+
+                peak = measure_peak_from_frame(data)
+                if peak is not None:
+                    peaks.append(peak)
+        except Exception as e:
+            logger.debug(f"Failed to read frame {fits_path}: {e}")
+            continue
+
+    if not peaks:
+        return None
+
+    # Return median of sampled peaks
+    median_peak = float(np.median(peaks))
+    if len(peaks) > 1:
+        logger.debug(
+            f"Measured {len(peaks)} frames: peaks {[f'{p:.0f}' for p in peaks]}, "
+            f"median={median_peak:.0f}"
+        )
+    return median_peak
 
 
 def get_frames_from_db(
@@ -234,20 +301,9 @@ def test_observations(
         if band is None:
             continue
 
-        # Find FITS file (add .fits or .fits.gz extension if missing)
-        raw_dir = raw_data_dir(instrument, obsdate)
-        fits_path = raw_dir / filename
-        if not fits_path.exists():
-            # Try with .fits extension
-            fits_path = raw_dir / f"{filename}.fits"
-            if not fits_path.exists():
-                # Try with .fits.gz extension
-                fits_path = raw_dir / f"{filename}.fits.gz"
-                if not fits_path.exists():
-                    continue
-
-        # Measure peak from FITS
-        observed_peak = measure_peak_from_fits(str(fits_path))
+        # Measure peak from multiple frames in the dataset
+        # This samples 10 equally-spaced frames to get a robust measurement
+        observed_peak = measure_peak_from_dataset(obsdate, filename, instrument)
 
         # Look up magnitude (parse RA/Dec from sexagesimal format)
         ra = _parse_sexagesimal(frame["ra"], is_ra=True)

@@ -2,19 +2,35 @@
 
 ## How Peak Count is Computed
 
-### Single Frame Measurement
+### Multi-Frame Sampling
 
-**Peak count is measured from a SINGLE FITS frame**, not aggregated across multiple frames.
+**Peak count is measured from 10 equally-spaced frames** within each observation dataset, then aggregated to reduce noise.
 
 The measurement process:
-1. **Read FITS data** from the primary HDU (or first science extension if primary is empty)
-2. **Subtract baseline**: Measure median of entire frame (accounts for bias/dark current)
-3. **Compute robust peak**: Use 99.9th percentile of pixel values
-4. **Final peak** = 99.9th percentile - median
+1. **Find all frames** in the observation dataset (e.g., "ogg2m001-ep02-20201015-0083-*")
+2. **Sample 10 equally-spaced frames** across the time series (first, last, and 8 evenly distributed)
+3. **For each frame**:
+   - Read FITS data from primary HDU (or first science extension)
+   - Subtract baseline: Measure median of entire frame
+   - Compute robust peak: Use 99.9th percentile of pixel values
+   - Peak = 99.9th percentile - median
+4. **Aggregate**: Return median of the 10 peak measurements
 
 ```python
+# For each sampled frame:
 peak_adu = np.percentile(data, 99.9) - np.median(data)
+
+# Final result:
+observed_peak = np.median([peak1, peak2, ..., peak10])
 ```
+
+### Why 10 Equally-Spaced Frames?
+
+- **Reduces frame-specific noise**: Single cosmic rays or bad pixels don't bias result
+- **Captures temporal variation**: Seeing, atmospheric transparency can vary during observation
+- **Robust statistics**: Median is robust to outliers; 10 samples gives good statistics
+- **Maintains independence**: Each frame has slightly different conditions, reducing systematic bias
+- **Efficient**: Samples full time span without using every frame
 
 ### Why 99.9th Percentile?
 
@@ -22,16 +38,6 @@ peak_adu = np.percentile(data, 99.9) - np.median(data)
 - **Robust to outliers**: 99.9th percentile is more stable than max()
 - **Captures stellar peak**: Still captures the true PSF peak within the core
 - **Consistent across frames**: More reproducible than raw maximum
-
-### Why Not Multiple Frames?
-
-Each FITS frame is independent:
-- Different airmass
-- Different focus position
-- Different seeing conditions
-- Different exposure time (sometimes)
-
-Averaging would conflate these variables, making calibration unreliable.
 
 ---
 
