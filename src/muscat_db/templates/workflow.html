@@ -217,7 +217,7 @@
   </aside>
 
   <div class="workflow-content">
-    <div class="workflow-card collapsible" id="muscat-card">
+    <div class="workflow-card collapsible collapsed" id="muscat-card">
       <div class="card-header-toggle" onclick="toggleCard('muscat-card')">
         <div class="header-text-wrap">
           <h1 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; margin-top: 0;">
@@ -268,7 +268,7 @@ graph TD
       </div>
     </div>
 
-    <div class="workflow-card collapsible" id="prose-card">
+    <div class="workflow-card collapsible collapsed" id="prose-card">
       <div class="card-header-toggle" onclick="toggleCard('prose-card')">
         <div class="header-text-wrap">
           <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
@@ -313,7 +313,7 @@ graph TD
       </div>
     </div>
 
-    <div class="workflow-card collapsible" id="timer-card">
+    <div class="workflow-card collapsible collapsed" id="timer-card">
       <div class="card-header-toggle" onclick="toggleCard('timer-card')">
         <div class="header-text-wrap">
           <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
@@ -353,7 +353,7 @@ graph TD
       </div>
     </div>
 
-    <div class="workflow-card collapsible" id="ephemeris-card">
+    <div class="workflow-card collapsible collapsed" id="ephemeris-card">
       <div class="card-header-toggle" onclick="toggleCard('ephemeris-card')">
         <div class="header-text-wrap">
           <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
@@ -404,7 +404,7 @@ graph TD
       </div>
     </div>
 
-    <div class="workflow-card collapsible" id="lco-schedule-card">
+    <div class="workflow-card collapsible collapsed" id="lco-schedule-card">
       <div class="card-header-toggle" onclick="toggleCard('lco-schedule-card')">
         <div class="header-text-wrap">
           <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
@@ -462,7 +462,7 @@ graph TD
       </div>
     </div>
 
-    <div class="workflow-card collapsible" id="lco-archive-card">
+    <div class="workflow-card collapsible collapsed" id="lco-archive-card">
       <div class="card-header-toggle" onclick="toggleCard('lco-archive-card')">
         <div class="header-text-wrap">
           <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
@@ -533,7 +533,7 @@ graph TD
       </div>
     </div>
 
-    <div class="workflow-card collapsible" id="schema-card">
+    <div class="workflow-card collapsible collapsed" id="schema-card">
       <div class="card-header-toggle" onclick="toggleCard('schema-card')">
         <div class="header-text-wrap">
           <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
@@ -735,7 +735,7 @@ erDiagram
 
         <div class="faq-section" style="margin-top: 1.5rem;">
           <h3 style="color: var(--accent); margin-bottom: 0.5rem; font-size: 1.1rem;">Build Strategy</h3>
-          <div class="faq-item open">
+          <div class="faq-item">
             <div class="faq-question" onclick="toggleFaq(this)">
               <span>How are tables rebuilt without losing app data?</span>
               <span class="faq-icon">+</span>
@@ -748,9 +748,20 @@ erDiagram
       </div>
     </div>
 
-    <div class="workflow-card" id="execution-details">
-    <h2 style="margin-bottom: 1rem; color: var(--text);">Pipeline Features</h2>
-    <div class="workflow-grid">
+    <div class="workflow-card collapsible collapsed" id="execution-details">
+      <div class="card-header-toggle" onclick="toggleCard('execution-details')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Pipeline Features
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Sequential stages of the MuSCAT-db pipeline from data ingestion through analysis.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+      <div class="card-body">
+        <div class="workflow-grid">
       
       <!-- Stage 1 -->
       <div class="workflow-stage">
@@ -832,10 +843,11 @@ erDiagram
         </div>
       </div>
 
+        </div>
+      </div>
     </div>
-  </div>
 
-    <div class="workflow-card" id="faq-card">
+    <div class="workflow-card collapsible collapsed" id="faq-card">
       <div class="card-header-toggle" onclick="toggleCard('faq-card')">
         <div class="header-text-wrap">
           <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
