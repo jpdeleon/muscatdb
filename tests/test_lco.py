@@ -32,7 +32,7 @@ class LcoTest(unittest.TestCase):
         }
         rg = lco.build_requestgroup("muscat3", params)
         self.assertEqual(rg["name"], "Test MUSCAT Request")
-        self.assertEqual(rg["observation_type"], "IMAGING") # Now at top level
+        self.assertEqual(rg["observation_type"], "NORMAL") # Now at top level
         
         request = rg["requests"][0]
         self.assertEqual(request["instrument_type"], "2M0-SCICAM-MUSCAT")

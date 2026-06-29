@@ -41,16 +41,12 @@
         <option value="elp">elp (1m)</option>
       </select>
     </div>
-    <div class="lco-field"><label for="sch-obs-airmass" title="Airmass limit for the observability check and visibility plot (sets the minimum target altitude).">Obs airmass limit</label>
-      <input id="sch-obs-airmass" type="number" step="any" min="1" value="2"></div>
     <div class="lco-field"><label for="sch-twilight" title="How dark it must be for a transit to count as observable.">Twilight</label>
       <select id="sch-twilight">
         <option value="civil">Civil (−6°)</option>
         <option value="nautical" selected>Nautical (−12°)</option>
         <option value="astronomical">Astronomical (−18°)</option>
       </select></div>
-    <div class="lco-field"><label for="sch-moon-sep" title="Reject samples where the Moon is closer than this to the target (0 = ignore).">Min moon sep (deg)</label>
-      <input id="sch-moon-sep" type="number" step="any" min="0" value="30"></div>
   </div>
   <div class="lco-actions">
     <button class="btn" type="button" id="btn-fetch-ephem">Fetch ephemeris</button>
@@ -194,7 +190,7 @@
 <div class="lco-section">
   <h3>Dry-run &amp; Submit</h3>
   <div class="lco-actions">
-    <button class="btn primary" type="button" id="btn-dry-run">Dry-run IPP</button>
+    <button class="btn primary" type="button" id="btn-dry-run">Check settings</button>
     <button class="btn" type="button" id="btn-submit" disabled
       title="Enabled after a successful dry-run. Requires MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
       Submit
@@ -262,7 +258,7 @@
     'sch-proposal','sch-target','sch-planet','sch-source','sch-coords',
     'sch-t0','sch-period','sch-duration',
     'sch-range-start','sch-range-end','sch-pad-before','sch-pad-after',
-    'sch-obs-airmass','sch-twilight','sch-moon-sep','sch-sites','win-filter',
+    'sch-twilight','sch-sites','win-filter',
     'sch-kind','sch-name','sch-count','sch-exp-g','sch-exp-r','sch-exp-i','sch-exp-z',
     'sch-exp-mode','sch-readout','sch-muscat-site','sch-nb-g','sch-nb-r','sch-nb-i','sch-nb-z',
     'sch-sin-count','sch-site',
@@ -860,8 +856,11 @@
     series.forEach(function (s, i) {
       var d = s.data;
       var color = siteColor(s.site, i);
-      var targetAltNight = d.target_alt.map(function (value, idx) {
-        return d.sun_alt[idx] < d.sun_alt_limit ? value : null;
+      var targetAltObservable = d.target_alt.map(function (value, idx) {
+        var isObservable = d.sun_alt[idx] < d.sun_alt_limit &&
+                           d.target_alt[idx] >= d.alt_limit &&
+                           d.moon_sep[idx] >= d.moon_sep_min;
+        return isObservable ? value : null;
       });
       // Per-sample extras for the hover label: [moon_sep, airmass, moon_alt, sun_alt].
       // Airmass = sec(z) = 1/sin(alt) above the horizon, null otherwise.
@@ -880,8 +879,13 @@
       // time range; the bold night overlay is visual only (skips hover to avoid
       // duplicate tooltips where the two lines coincide).
       traces.push({ x: d.times, y: d.target_alt, name: s.site.toUpperCase(), mode: 'lines', line: { color: color, width: 1.2, dash: 'dot' }, showlegend: false, customdata: customTarget, hovertemplate: targetHover });
-      traces.push({ x: d.times, y: targetAltNight, name: s.site.toUpperCase(), mode: 'lines', line: { color: color, width: 3 }, hoverinfo: 'skip' });
-      d.sun_alt.forEach(function (alt, idx) { if (alt < d.sun_alt_limit) darkIndices.push(idx); });
+      traces.push({ x: d.times, y: targetAltObservable, name: s.site.toUpperCase(), mode: 'lines', line: { color: color, width: 3 }, hoverinfo: 'skip' });
+      d.sun_alt.forEach(function (alt, idx) {
+        var isObservable = alt < d.sun_alt_limit &&
+                           d.target_alt[idx] >= d.alt_limit &&
+                           d.moon_sep[idx] >= d.moon_sep_min;
+        if (isObservable) darkIndices.push(idx);
+      });
     });
     traces.push({ x: primary.times, y: primary.moon_alt, name: 'Moon (' + series[0].site + ')', mode: 'lines', line: { color: 'black', width: 1.5, dash: 'dash' }, hovertemplate: '%{x|%H:%M} UTC<br>Moon alt: %{y:.1f}°<extra>Moon</extra>' });
     traces.push({ x: primary.times, y: primary.sun_alt, name: 'Sun (' + series[0].site + ')', mode: 'lines', line: { color: '#e07b53', width: 1, dash: 'dot' }, hovertemplate: '%{x|%H:%M} UTC<br>Sun alt: %{y:.1f}°<extra>Sun</extra>' });
@@ -1016,11 +1020,11 @@
     if (padBefore === null || padBefore < 0 || padAfter === null || padAfter < 0) {
       msg('msg-windows', 'Padding values must be zero or greater.', 'err'); return;
     }
-    var airmass = num('sch-obs-airmass');
+    var airmass = num('sch-max-airmass');
     if (airmass === null || airmass < 1) {
       msg('msg-windows', 'Airmass limit must be ≥ 1.', 'err'); return;
     }
-    var moonSep = num('sch-moon-sep');
+    var moonSep = num('sch-min-lunar');
     if (moonSep === null || moonSep < 0) {
       msg('msg-windows', 'Minimum moon separation must be ≥ 0.', 'err'); return;
     }
@@ -1080,8 +1084,8 @@
     Promise.all(sites.map(function (s) {
       var q = new URLSearchParams({
         ra: ra, dec: dec, mid: w.mid, duration: String(dur), site: s,
-        obs_airmass: val('sch-obs-airmass') || '2', twilight: val('sch-twilight'),
-        moon_sep_min: val('sch-moon-sep') || '0'
+        obs_airmass: val('sch-max-airmass') || '1.6', twilight: val('sch-twilight'),
+        moon_sep_min: val('sch-min-lunar') || '30'
       });
       return fetch('/api/lco/visibility?' + q.toString())
         .then(function (r) { return r.json(); })
@@ -1096,7 +1100,18 @@
       }
       var rating = w.observability ? w.observability.rating : '';
       var siteLabel = ok.map(function (r) { return r.site.toUpperCase(); }).join(', ');
-      el('vis-caption').textContent = (val('sch-target') || 'target') + ' @ ' + siteLabel + ' — ' + w.mid.slice(0, 10) + (rating ? ' (' + rating + ')' : '');
+      
+      var visParts = ok.map(function (r) {
+        var times = r.data.times;
+        var totalHours = (new Date(times[times.length - 1]) - new Date(times[0])) / 3600000;
+        var visibleHours = r.data.observable_fraction * totalHours;
+        return r.site.toUpperCase() + ': ' + visibleHours.toFixed(2) + 'h';
+      });
+
+      var caption = (val('sch-target') || 'target') + ' @ ' + siteLabel + ' — ' + w.mid.slice(0, 10) +
+        (rating ? ' (' + rating + ')' : '') +
+        ' — visible: ' + visParts.join(', ');
+      el('vis-caption').textContent = caption;
       renderVisibility(ok, w);
     }).catch(function (e) { msg('msg-windows', String(e), 'err'); });
   });
