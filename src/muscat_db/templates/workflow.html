@@ -240,29 +240,40 @@ graph TD
 
     %% Web UI
     C -->|Reads DB| D["Web GUI Dashboard"]:::default
-    D -->|3. Explore Targets and Logs| D
-    
+    D -->|Explore Targets, Logs, Exposures| D
+
     %% Photometry Stage
-    D -->|4. Configure and Launch| E["Photometry Job Queue"]:::pipeline
+    D -->|Configure & Launch| E["Photometry Job Queue"]:::pipeline
     E -->|Runs calibrated prose| F["Photometry Reduction"]:::default
-    F -->|Outputs CSVs and check plots| G["Photometry CSVs\n(results/photometry/)"]:::default
-    
+    F -->|CSVs & diagnostics| G["Photometry Results\n($MUSCAT_PROSE_DIR/inst/date/)"]:::default
+
     %% Transit Fit Stage
-    G -->|Inputs lightcurves| H["Transit Fit Job Queue"]:::db
-    D -->|5. Configure and Launch| H
-    H -->|Runs timer-fit sampler| I["Transit Fitting"]:::default
-    I -->|Outputs corner and fit plots| J["Transit Fit Results\n(results/transit_fit/)"]:::default
-    J -->|Transit centers Tc| L["Ephemeris O-C Plotter"]:::pipeline
-    L -->|Updates interactively| M["O-C Plot and Best-Fit Ephemeris"]:::default
+    G -->|Inputs lightcurves| H["Transit Fit Job Queue"]:::pipeline
+    D -->|Configure & Launch| H
+    H -->|Runs timer MCMC sampler| I["Transit Fitting"]:::default
+    I -->|Posteriors & diagnostics| J["Transit Results\n($MUSCAT_TIMER_DIR/inst/date/target/)"]:::default
 
-    %% Jobs monitoring
-    F -->|Track execution| K["Jobs Page"]:::default
-    I -->|Track execution| K
+    %% Ephemeris Analysis
+    J -->|Transit centers Tc| L["Ephemeris O-C Analysis"]:::pipeline
+    L -->|Interactive fit| M["O-C Plot & Ephemeris\n(saved views in DB)"]:::default
 
-    %% Results loop
-    G -->|Display preview and plots| D
-    J -->|Display parameters and plots| D
-    M -->|Inspect TTVs and update selections| D
+    %% Exposure Calculator
+    D -->|Exposure times| N["Exposure Calculator"]:::pipeline
+    N -->|Calibration coefficients| C
+
+    %% LCO Integration
+    D -->|LCO Token & Config| O["LCO Observation Portal"]:::default
+    O -->|Schedule observations| P["Submit Requestgroups"]:::pipeline
+    O -->|Download archive data| Q["Reduce & Ingest FITS"]:::pipeline
+
+    %% Jobs monitoring & Results loop
+    E -->|Track execution| K["Jobs Page"]:::default
+    H -->|Track execution| K
+    G -->|Display preview & plots| D
+    J -->|Display parameters & plots| D
+    M -->|Inspect TTVs, update| D
+    P -->|Track submission| K
+    Q -->|Add to muscat-db| B
           </pre>
         </div>
       </div>
@@ -371,33 +382,39 @@ graph TD
           <pre class="mermaid" style="width: 100%; text-align: center;">
 graph TD
     %% Target discovery
-    A["Completed Transit Fit Jobs\n(persisted jobs + orphan fit discovery)"]:::db --> B["Target List\n/api/ephemeris/targets"]:::default
-    B --> C["Select One or More Targets\n(ephemeris.html)"]:::default
+    A["Completed Transit Fit Jobs\n(DB jobs table + orphan fit discovery)"]:::db --> B["Target List\n/api/ephemeris/targets"]:::default
+    B --> C["Select One or More Targets\n(ephemeris.html UI)"]:::default
 
     %% Dataset assembly
     C --> D["Load Target Info\n/api/ephemeris/target-info"]:::pipeline
     D --> E["Completed Run Datasets\ninstrument, date, run_id, run_type"]:::default
-    D --> F["Fitted Transit Centers\nTc and uncertainty per planet"]:::default
-    D --> G["Reference Ephemerides\nNASA, TOI, catalog fallback"]:::default
+    D --> F["Fitted Transit Centers\nTc ± σ per planet per dataset"]:::default
+    D --> G["Reference Ephemerides\nNASA Exoplanet Archive, TOI, fallback"]:::default
     D --> H["Planet Cards\nT0, period, source override"]:::default
 
-    %% Interactive calculation
-    E --> I["Dataset Include Checkboxes"]:::default
+    %% Interactive controls
+    E --> I["Dataset Selection\n(Checkboxes per run)"]:::default
     F --> J["Automatic Recalculate\n/api/ephemeris/calculate"]:::pipeline
     G --> J
     H --> J
     I --> J
-    K["Fitting Method\nUnweighted or weighted"]:::default --> J
+    K["Fitting Method\nUnweighted or Weighted"]:::default --> J
 
     %% Fit math
     J --> L["Epoch Assignment\nround((Tc - T0) / P)"]:::default
     L --> M["Linear Ephemeris Fit\nTcalc = T0fit + E * Pfit"]:::default
-    M --> N["O-C Values\n(Tc - Tcalc) in minutes"]:::default
+    M --> N["O-C Residuals\n(Tc - Tcalc) in minutes"]:::default
 
-    %% Output
+    %% Output & persistence
     N --> O["Observed minus Calculated Plot\nBJD or epoch x-axis"]:::default
-    M --> P["Best-Fit Ephemeris Summary\ncentered T0, period, uncertainties"]:::default
-    O --> Q["Interactive Controls\ndate twin axis, excluded points, planet styles, PNG export"]:::default
+    M --> P["Best-Fit Ephemeris Summary\nT0, period, uncertainties"]:::default
+    O --> Q["Interactive Controls\nDate axis toggle, point exclusion, styles, PNG export"]:::default
+
+    %% Saved views
+    C --> R["Save View State\n/api/ephemeris/view POST"]:::pipeline
+    R --> S["Ephemeris Views Table\n(ephemeris_views DB)"]:::db
+    S --> T["Shareable View Links\n/api/ephemeris/view/{slug}"]:::default
+    T --> U["Resume Analysis\nRestore all settings & selections"]:::default
           </pre>
         </div>
 
