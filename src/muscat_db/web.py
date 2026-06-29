@@ -28,6 +28,7 @@ from muscat_db import exposure as exp_calc
 from muscat_db import transit_fit as fit
 from muscat_db import lco
 from muscat_db import transit_obs
+from muscat_db import fov as fov_opt
 from muscat_db.database import (
     SCHEMA,
     delete_note as _delete_note,
@@ -1147,6 +1148,214 @@ def exposure_coeffs(instrument: str):
     for (band, focus_mm), (coef, fwhm, n) in sorted(coeffs.items()):
         rows.append({"band": band, "focus_mm": focus_mm, "coef": round(coef, 4), "fwhm_pix": round(fwhm, 2), "n_frames": n})
     return JSONResponse({"ok": True, "instrument": instrument, "coeffs": rows})
+
+
+@app.get("/api/exposure/target/{target}", response_class=JSONResponse)
+def api_exposure_target(target: str):
+    """Get exposure information for a specific target.
+
+    Returns unique exposure times, filters, instruments, and other details
+    for all observations of the given target.
+    """
+    target = target.strip() if target else ""
+    if not target:
+        return JSONResponse({"ok": False, "error": "Target name required"}, status_code=400)
+
+    try:
+        db = _db_path()
+        conn = sqlite3.connect(db, timeout=10)
+        conn.row_factory = sqlite3.Row
+
+        # Get all frames for this target
+        frames = conn.execute(
+            """
+            SELECT
+                instrument, obsdate, filter, exptime, read_mode,
+                ra, declination, airmass, focus, ccd
+            FROM frames
+            WHERE object = ?
+            ORDER BY obsdate DESC, instrument, filter, exptime
+            """,
+            (target,)
+        ).fetchall()
+
+        if not frames:
+            return JSONResponse({
+                "ok": False,
+                "error": f"No observations found for target '{target}'"
+            }, status_code=404)
+
+        # Aggregate data
+        instruments = set()
+        filters = set()
+        unique_exptimes = {}  # {filter: set of exptimes}
+        unique_read_modes = set()
+        airmass_values = []
+        focus_values = []
+        n_observations = len(frames)
+
+        for frame in frames:
+            instruments.add(frame["instrument"])
+            if frame["filter"]:
+                filters.add(frame["filter"])
+                if frame["filter"] not in unique_exptimes:
+                    unique_exptimes[frame["filter"]] = set()
+                if frame["exptime"] is not None:
+                    unique_exptimes[frame["filter"]].add(round(frame["exptime"], 3))
+            if frame["read_mode"]:
+                unique_read_modes.add(frame["read_mode"])
+            if frame["airmass"] is not None:
+                airmass_values.append(frame["airmass"])
+            if frame["focus"] is not None:
+                focus_values.append(frame["focus"])
+
+        # Get target info from targets table
+        target_info = conn.execute(
+            "SELECT n_dates, n_frames, ra, declination FROM targets WHERE object = ?",
+            (target,)
+        ).fetchone()
+
+        conn.close()
+
+        # Format results
+        exptime_summary = {}
+        for filt in sorted(filters):
+            exptimes = sorted(unique_exptimes.get(filt, []))
+            exptime_summary[filt] = exptimes
+
+        result = {
+            "ok": True,
+            "target": target,
+            "n_observations": n_observations,
+            "n_unique_dates": target_info["n_dates"] if target_info else None,
+            "n_total_frames": target_info["n_frames"] if target_info else None,
+            "instruments": sorted(instruments),
+            "filters": sorted(filters),
+            "unique_read_modes": sorted(unique_read_modes),
+            "exposure_times_by_filter": exptime_summary,
+            "airmass": {
+                "min": min(airmass_values) if airmass_values else None,
+                "max": max(airmass_values) if airmass_values else None,
+                "mean": sum(airmass_values) / len(airmass_values) if airmass_values else None,
+            } if airmass_values else None,
+            "focus": {
+                "min": min(focus_values) if focus_values else None,
+                "max": max(focus_values) if focus_values else None,
+                "mean": sum(focus_values) / len(focus_values) if focus_values else None,
+            } if focus_values else None,
+            "coordinates": {
+                "ra": target_info["ra"],
+                "dec": target_info["declination"],
+            } if target_info else None,
+        }
+
+        return JSONResponse(result)
+
+    except Exception as e:
+        return JSONResponse(
+            {"ok": False, "error": f"Database error: {str(e)}"},
+            status_code=500
+        )
+
+
+# ---------------------------------------------------------------------------
+# FOV optimization
+# ---------------------------------------------------------------------------
+# Instruments that have a footprint definition (XML or computed fallback).
+_FOV_INSTRUMENTS = [name for name in INSTRUMENTS if fov_opt.has_footprint(name)]
+
+
+@app.get("/fov", response_class=HTMLResponse)
+def fov_page(inst: str = "", target: str = ""):
+    inst = inst if inst in _FOV_INSTRUMENTS else ""
+    fov_sizes = {}
+    for name in _FOV_INSTRUMENTS:
+        if name == "sinistro":
+            # Show the default (central_2k_2x2) size; full_frame is a selectable option
+            size_arcmin = fov_opt.SINISTRO_MODES["central_2k_2x2"] * 2.0 / 60.0
+        else:
+            size_arcmin = fov_opt.load_fov_halfsize_arcsec(name) * 2.0 / 60.0
+        fov_sizes[name] = round(size_arcmin, 2)
+    return _render(
+        "fov.html",
+        instruments=_FOV_INSTRUMENTS,
+        sel_inst=inst,
+        sel_target=target,
+        fov_sizes=fov_sizes,
+        sinistro_modes=fov_opt.SINISTRO_MODES,
+    )
+
+
+@app.post("/api/fov/optimize", response_class=JSONResponse)
+def api_fov_optimize(payload: dict = Body(...)):
+    inst = (payload.get("instrument") or "").strip()
+    if inst not in _FOV_INSTRUMENTS:
+        return JSONResponse({"ok": False, "error": "Invalid instrument"}, status_code=400)
+
+    target = (payload.get("target") or "").strip()
+    ra = payload.get("ra")
+    dec = payload.get("dec")
+    try:
+        ra = float(ra) if ra not in (None, "") else None
+        dec = float(dec) if dec not in (None, "") else None
+        margin = float(payload.get("margin_arcsec", fov_opt.DEFAULT_MARGIN_ARCSEC))
+        comp_margin = payload.get("comp_margin_arcsec")
+        comp_margin = float(comp_margin) if comp_margin not in (None, "") else None
+        mag_limit = float(payload.get("mag_limit", 18.0))
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "Invalid numeric parameter"}, status_code=400)
+
+    if not target and (ra is None or dec is None):
+        return JSONResponse(
+            {"ok": False, "error": "Provide a target name or RA/Dec."}, status_code=400
+        )
+
+    allow_rotation = payload.get("allow_rotation", True)
+    pa_step_deg = None if allow_rotation else 180.0
+    sinistro_mode = payload.get("sinistro_mode")
+
+    result = fov_opt.optimize(
+        instrument=inst,
+        target=target,
+        ra=ra,
+        dec=dec,
+        margin_arcsec=margin,
+        comp_margin_arcsec=comp_margin,
+        mag_limit=mag_limit,
+        pa_step_deg=pa_step_deg,
+        sinistro_mode=sinistro_mode,
+    )
+    status = 200 if result.ok else 422
+    return JSONResponse(result.to_dict(), status_code=status)
+
+
+@app.post("/api/fov/resolve-target", response_class=JSONResponse)
+def api_fov_resolve_target(payload: dict = Body(...)):
+    target = (payload.get("target") or "").strip()
+    if not target:
+        return JSONResponse({"ok": False, "error": "Target name is required."}, status_code=400)
+
+    coords = exp_calc.resolve_target_coords(target)
+    if coords is None:
+        return JSONResponse(
+            {"ok": False, "error": f"Could not resolve '{target}'. Try a different name or enter RA/Dec manually."},
+            status_code=422,
+        )
+    return JSONResponse({"ok": True, "ra": round(coords[0], 5), "dec": round(coords[1], 5)})
+
+
+@app.get("/api/fov/observable", response_class=JSONResponse)
+def api_fov_observable():
+    """Report observable declination ranges for each instrument."""
+    observable = {}
+    for inst in _FOV_INSTRUMENTS:
+        min_dec, max_dec = fov_opt.get_observable_range(inst)
+        observable[inst] = {
+            "min_dec": round(min_dec, 1),
+            "max_dec": round(max_dec, 1),
+            "latitude": fov_opt.OBSERVATORY_LOCATIONS.get(inst, 0.0),
+        }
+    return JSONResponse({"ok": True, "observable": observable})
 
 
 @app.get("/ephemeris", response_class=HTMLResponse)

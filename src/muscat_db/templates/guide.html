@@ -207,6 +207,7 @@
         <li><a href="#prose-card" class="toc-link">prose Photometry</a></li>
         <li><a href="#timer-card" class="toc-link">timer Transit Fitting</a></li>
         <li><a href="#ephemeris-card" class="toc-link">Ephemeris O-C Plotter</a></li>
+        <li><a href="#fov-card" class="toc-link">FOV Optimizer</a></li>
         <li><a href="#lco-schedule-card" class="toc-link">LCO Schedule</a></li>
         <li><a href="#lco-archive-card" class="toc-link">LCO Archive</a></li>
         <li><a href="#schema-card" class="toc-link">Database Schema</a></li>
@@ -257,14 +258,22 @@ graph TD
     J -->|Transit centers Tc| L["Ephemeris O-C Analysis"]:::pipeline
     L -->|Interactive fit| M["O-C Plot & Ephemeris\n(saved views in DB)"]:::default
 
-    %% Exposure Calculator
+    %% Exposure Calculator & Targets API
     D -->|Exposure times| N["Exposure Calculator"]:::pipeline
     N -->|Calibration coefficients| C
+    D -->|Query past obs| N1["Exposure Target API\n(/api/exposure/target/{target})"]:::pipeline
+    N1 -->|Retrieves summary| D
+
+    %% FOV Optimizer
+    D -->|Optimize FOV| N2["FOV Optimizer\n(/fov)"]:::pipeline
+    N2 -->|Visualizes field & comps| D
 
     %% LCO Integration
     D -->|LCO Token & Config| O["LCO Observation Portal"]:::default
     O -->|Schedule observations| P["Submit Requestgroups"]:::pipeline
     O -->|Download archive data| Q["Reduce & Ingest FITS"]:::pipeline
+    O -->|Optimize pointing| N2
+    O -->|Estimate exposures| N
 
     %% Jobs monitoring & Results loop
     E -->|Track execution| K["Jobs Page"]:::default
@@ -351,14 +360,17 @@ graph TD
     E --> F["Transit Model Assembly\n(PyMC model definition)"]:::pipeline
     
     %% Optimization & Sampling
-    F --> G["Mean Fitting / Pre-optimization\n(L-BFGS MAP optimization)"]:::default
-    G --> H["MCMC Sampling\n(PyMC NUTS sampler)"]:::pipeline
+    F --> G["Run Mode Check\n(New Fit vs Continue Sampling)"]:::default
+    G -->|New Fit| H["Mean Fitting / Pre-optimization\n(L-BFGS MAP optimization)"]:::default
+    G -->|Continue Sampling| I["Load Previous Trace\n(Resume sampling from saved trace)"]:::default
+    H --> J["MCMC Sampling\n(PyMC NUTS sampler)"]:::pipeline
+    I --> J
     
     %% Post-processing
-    H --> I["Outlier Clipping & Detrending\n(Sigma-clip residual outliers)"]:::default
-    I --> J["Compute Information Criteria\n(Calculate BIC, AIC)"]:::default
-    J --> K["Save Outputs\n(Posterior stats, fit.yaml configs)"]:::default
-    J --> L["Generate Visualizations\n(Corner plot, trace plot, LD profile, fit plots)"]:::default
+    J --> K["Outlier Clipping & Detrending\n(Sigma-clip residual outliers)"]:::default
+    K --> L["Compute Information Criteria\n(Calculate BIC, AIC)"]:::default
+    L --> M["Save Outputs\n(Posterior stats, fit.yaml configs)"]:::default
+    L --> N["Generate Visualizations\n(Corner plot, trace plot, LD profile, fit plots)"]:::default
           </pre>
         </div>
       </div>
@@ -421,6 +433,46 @@ graph TD
       </div>
     </div>
 
+    <div class="workflow-card collapsible collapsed" id="fov-card">
+      <div class="card-header-toggle" onclick="toggleCard('fov-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Field-of-View Pointing & Orientation Optimization
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Maximize comparison star coverage by optimizing telescope pointing offsets and position angles (PA).
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    A["Target Input\n(Resolved Name or RA/Dec)"]:::default --> B["Instrument Selector\n(Footprint size & observatory latitude)"]:::default
+    B --> C["Load Footprint Geometry\n(XML votable or computed fallback)"]:::default
+    A --> D["Resolve Coordinates\n(Query MAST/SIMBAD)"]:::pipeline
+    D --> E["Gaia DR3 Catalog Query\n(Vizier cone-search around target)"]:::pipeline
+    E --> F["Star Scoring Heuristics\n(Mag offset, color similarity, blending)"]:::default
+    C --> G["Grid-Search Optimization\n(Vary center offset & position angle)"]:::pipeline
+    F --> G
+    G --> H["Select Optimal Pointing\n(Target within margin, maximize weights)"]:::default
+    H --> I["Display Results\n(Offsets, PA, comps table, Aladin Lite overlay)"]:::default
+          </pre>
+        </div>
+        <div style="margin-top: 1.5rem;">
+          <p>
+            The FOV Optimizer finds the optimal pointing center offset <code>(east, north)</code> and position angle (PA) that keep the science target in the field of view (with a safe edge margin) while maximizing the number of high-quality comparison stars.
+          </p>
+          <ul>
+            <li><strong>Why pointing offsets matter:</strong> For differential photometry, we want comparison stars of similar brightness and color to the target. If the ideal comparison stars are offset from the target, we can shift the telescope's center pointing and rotate the instrument to capture them.</li>
+            <li><strong>Footprint definition:</strong> The pipeline reads XML footprint definitions (e.g. for MuSCAT, MuSCAT2, MuSCAT3/4) or falls back to detector dimensions (for Sinistro's 13'x13' binned or 26'x26' full-frame modes).</li>
+            <li><strong>Observability validation:</strong> It checks if the target's declination is observable within the latitude limits of the site (e.g. altitude &ge; 20°).</li>
+          </ul>
+        </div>
+      </div>
+    </div>
     <div class="workflow-card collapsible collapsed" id="lco-schedule-card">
       <div class="card-header-toggle" onclick="toggleCard('lco-schedule-card')">
         <div class="header-text-wrap">
@@ -443,9 +495,13 @@ graph TD
     B --> C["Select Project/Proposal"]:::default
     C --> D["Choose Saved Ephemeris View\n(from /lco?view=slug or direct link)"]:::default
     D --> E["Extract Target & Ephemeris\nT0, period, target name"]:::default
+    E --> E1["Show FOV Button\n(Optimize pointing offset/PA)"]:::default
+    E --> E2["Show Exp Button\n(Check target exposure history)"]:::default
 
     %% Window Generation
     E --> F["Configure Search Window\nUTC start date, end date, duration"]:::default
+    E1 --> F
+    E2 --> F
     F --> G["Configure Pre/Post Padding\n(minutes before/after transit)"]:::default
     G --> H["Generate Transit Windows\n/api/lco/windows"]:::pipeline
     H --> I["Display Candidate Windows\nCandidate start/end times"]:::default
@@ -1217,6 +1273,20 @@ erDiagram
           </div>
         </div>
 
+      <div class="faq-item">
+        <div class="faq-question" onclick="toggleFaq(this)">
+          <span>What is the difference between "New Fit" and "Continue Sampling" in transit fitting?</span>
+          <span class="faq-icon">+</span>
+        </div>
+        <div class="faq-answer">
+          <p>The transit fitting pipeline supports two run modes to handle existing reduction results:</p>
+          <ul>
+            <li><strong>New Fit (start fresh)</strong> — Sets <code>clobber: true</code> in the fit configuration. It discards any previous traces, runs L-BFGS MAP pre-optimization to find an initial solution, and starts MCMC sampling from scratch.</li>
+            <li><strong>Continue Sampling</strong> — Sets <code>clobber: false</code>. It loads the previous MCMC trace from saved pickle files and resumes sampling, appending new draws to the existing chain. This option is only available when a previous fit run exists.</li>
+          </ul>
+        </div>
+      </div>
+
         <div class="faq-item">
           <div class="faq-question" onclick="toggleFaq(this)">
             <span>How does the parameter query from the TOI / NASA Exoplanet Archive work?</span>
@@ -1296,6 +1366,48 @@ erDiagram
               <li><strong>MuSCAT2 pipeline</strong> — for standalone MuSCAT2-specific analysis, or when custom analytical models or emcee-specific workflows are preferred.</li>
             </ul>
             <p>Both pipelines produce scientifically rigorous results; the choice depends on your data source and workflow integration needs.</p>
+          </div>
+        </div>
+        <!-- ==================== Observation Planning ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Observation Planning</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the Field-of-View (FOV) Optimizer select comparison stars?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The FOV Optimizer evaluates possible telescope pointings using a grid-search algorithm over center offsets and position angles (PA). It queries the Gaia DR3 catalog and assigns utility weights to candidate comparison stars based on:</p>
+            <ul>
+              <li><strong>Magnitude offset</strong> — Prefers stars slightly fainter than the target (ideal difference is 0.3 mag). Hard penalties are applied to stars brighter than the target (which would trigger early saturation and limit exposure times).</li>
+              <li><strong>Color similarity</strong> — Compares Gaia BP-RP colors to the target. Similar colors reduce systematic trends in differential photometry.</li>
+              <li><strong>Blending</strong> — Stars with close, similarly-bright neighbors (within 12 arcseconds) are penalized because crowding degrades aperture photometry accuracy.</li>
+            </ul>
+            <p>The optimizer selects the center offset and rotation angle that maximize the cumulative weight of the captured stars while keeping the target safely inside the instrument's footprint edge (margin of 30 arcseconds).</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What do the "Show FOV" and "Show Exp" buttons on the LCO Schedule page do?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>These planning shortcut buttons prefill target and instrument parameters, linking directly to the respective planning tool:</p>
+            <ul>
+              <li><strong>Show FOV</strong> — Redirects to the FOV Optimizer page preloaded with the target coordinates and selected LCO instrument to compute optimal offsets.</li>
+              <li><strong>Show Exp</strong> — Redirects to the Exposure Calculator page. Under the hood, it queries the target observations history API (<code>/api/exposure/target/{target}</code>) to retrieve unique filters and exposure times previously used.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>Why did the format of O-C ephemeris export text change?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The exported Observed-minus-Calculated (O-C) summary CSV text now starts with descriptive comment lines (prefixed by <code>#</code>) explaining that the transit center times (TCs) are in Barycentric Dynamical Time (BJD_TDB). This makes it easy for automated scripts and external fitting tools to parse column formats (planet, epoch, tc, tc_unc) and track time-standard coordinates correctly.</p>
           </div>
         </div>
 
