@@ -580,12 +580,12 @@
     <div id="opt-error"></div>
 
     <div class="run-actions">
-      <div style="display:flex; align-items:center; gap:0.5rem;">
-        <label for="opt-run_name" style="font-size:0.85rem; color:var(--text-dim); white-space:nowrap;">Run name
+      <div style="display:flex; align-items:center; gap:0.75rem;">
+        <label for="opt-run_name" style="font-size:0.9rem; font-weight:600; color:var(--text); white-space:nowrap;">Run name
           <span class="help-tooltip" title="Label for this isolated photometry run. Blank becomes default. The default Sinistro central_2k_2x2 mode is omitted from the run id.">?</span>
         </label>
         <input type="text" id="opt-run_name" placeholder="default" value="{{ run_defaults.run_name }}"
-               style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.6rem; font-size: 0.85rem; min-width: 120px;">
+               style="background: var(--input-bg); color: var(--text); border: 1.5px solid var(--border); border-radius: 6px; padding: 0.4rem 0.7rem; font-size: 0.9rem; min-width: 140px;">
       </div>
       <button class="btn primary" type="button" id="run-test-btn" {% if raw_missing %}disabled{% endif %}>
         ▶ Run Test Reduction (first N frames)
