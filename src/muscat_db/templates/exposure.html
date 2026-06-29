@@ -576,6 +576,10 @@
     resultsBody.innerHTML = '';
     colPrimary.textContent = mode === 'exptime' ? 'Exp (s)' : 'Exp (s)';
 
+    // Remove any existing note divs (narrowband and muscat2)
+    var existingNotes = resultsBody.parentElement.querySelectorAll('[data-note="true"]');
+    existingNotes.forEach(function (n) { n.remove(); });
+
     var rows = data.results || [];
     var broadBands = ['gp', 'rp', 'ip', 'zs'];
 
@@ -613,6 +617,7 @@
     // Add narrowband legend if showing narrowband filters
     if (showNarrow.checked && rows.some(function (r) { return ['g_narrow', 'i_narrow', 'z_narrow', 'Na_D'].indexOf(r.band) !== -1; })) {
       var note = document.createElement('div');
+      note.setAttribute('data-note', 'true');
       note.style.marginTop = '1rem';
       note.style.padding = '0.75rem';
       note.style.backgroundColor = 'color-mix(in srgb, var(--accent2) 8%, transparent)';
@@ -630,6 +635,7 @@
     // Add muscat2 note if selected
     if (data.instrument === 'muscat2' && mode === 'exptime') {
       var note2 = document.createElement('div');
+      note2.setAttribute('data-note', 'true');
       note2.style.marginTop = '1rem';
       note2.style.marginLeft = '-1.1rem';
       note2.style.marginRight = '-1.1rem';
