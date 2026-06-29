@@ -631,10 +631,12 @@
     if (data.instrument === 'muscat2' && mode === 'exptime') {
       var note2 = document.createElement('div');
       note2.style.marginTop = '1rem';
-      note2.style.padding = '0.75rem';
+      note2.style.marginLeft = '-1.1rem';
+      note2.style.marginRight = '-1.1rem';
+      note2.style.padding = '0.75rem 1.1rem';
       note2.style.backgroundColor = 'color-mix(in srgb, #f59e0b 8%, transparent)';
       note2.style.borderLeft = '3px solid #f59e0b';
-      note2.style.borderRadius = '6px';
+      note2.style.borderRadius = '0px';
       note2.style.fontSize = '0.75rem';
       note2.style.color = 'var(--text-dim)';
       note2.innerHTML = '<strong style="color:var(--text);">MuSCAT2 vs MuSCAT3 comparison:</strong><br>' +
