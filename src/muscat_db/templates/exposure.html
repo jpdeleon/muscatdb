@@ -179,6 +179,13 @@
             {% endfor %}
           </select>
         </div>
+        <div class="exp-field" id="confmode-field" style="display:none;">
+          <label for="sel-confmode">Readout mode</label>
+          <select id="sel-confmode">
+            <option value="central_2k_2x2">central_2k_2x2 (default)</option>
+            <option value="full_frame">full_frame</option>
+          </select>
+        </div>
         <div class="exp-field" style="grid-column: span 2;">
           <label for="target-name">Target name</label>
           <div class="target-row">
@@ -300,6 +307,8 @@
 <script>
 (function () {
   var selInst = document.getElementById('sel-inst');
+  var confmodeField = document.getElementById('confmode-field');
+  var selConfmode = document.getElementById('sel-confmode');
   var targetName = document.getElementById('target-name');
   var lookupBtn = document.getElementById('lookup-btn');
   var lookupStatus = document.getElementById('lookup-status');
@@ -416,7 +425,7 @@
       var mags = {};
       magInputs.forEach(function (inp) { if (inp.value !== '') mags[inp.dataset.band] = inp.value; });
       localStorage.setItem(STORE_KEY, JSON.stringify({
-        inst: selInst.value, target: targetName.value, mags: mags,
+        inst: selInst.value, confmode: selConfmode.value, target: targetName.value, mags: mags,
         focus: focusMm.value, airmass: airmass.value, satFrac: satFrac.value, customAdu: customAdu.value
       }));
     } catch (e) {}
@@ -425,6 +434,8 @@
     var s;
     try { s = JSON.parse(localStorage.getItem(STORE_KEY) || '{}'); } catch (e) { s = {}; }
     if (!selInst.value && s.inst) selInst.value = s.inst;
+    updateConfmodeVisibility();
+    if (s.confmode && selInst.value === 'sinistro') selConfmode.value = s.confmode;
     if (!targetName.value && s.target) targetName.value = s.target;
     if (s.mags) magInputs.forEach(function (inp) { if (s.mags[inp.dataset.band] !== undefined && !inp.classList.contains('narrow-computed')) { inp.value = s.mags[inp.dataset.band]; markFilled(inp); } });
     if (s.focus !== undefined) focusMm.value = s.focus;
@@ -435,7 +446,18 @@
     updateNarrowMags();
   }
 
-  selInst.addEventListener('change', saveState);
+  // ---- Confmode visibility ----
+  function updateConfmodeVisibility() {
+    if (selInst.value === 'sinistro') {
+      confmodeField.style.display = '';
+      if (!selConfmode.value) selConfmode.value = 'central_2k_2x2';
+    } else {
+      confmodeField.style.display = 'none';
+    }
+  }
+
+  selInst.addEventListener('change', function () { updateConfmodeVisibility(); saveState(); });
+  selConfmode.addEventListener('change', saveState);
   targetName.addEventListener('input', saveState);
 
   // ---- Lookup magnitudes ----
@@ -506,6 +528,9 @@
       airmass: parseFloat(airmass.value) || 1.1,
       mode: mode
     };
+    if (inst === 'sinistro') {
+      payload.confmode = selConfmode.value || 'central_2k_2x2';
+    }
     if (mode === 'exptime') {
       if (satFrac.value === 'custom') payload.target_adu = parseFloat(customAdu.value);
       else payload.sat_frac = parseFloat(satFrac.value);
