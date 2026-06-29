@@ -1057,6 +1057,7 @@ def exposure_calculate(payload: dict = Body(...)):
     mode = payload.get("mode", "exptime")
     exptime = payload.get("exptime")
     target_adu = payload.get("target_adu")
+    confmode = payload.get("confmode", "central_2k_2x2") if inst == "sinistro" else None
     if exptime is not None:
         exptime = float(exptime)
     if target_adu is not None:
@@ -1078,6 +1079,7 @@ def exposure_calculate(payload: dict = Body(...)):
         mode=mode,
         exptime=exptime,
         target_adu=target_adu,
+        confmode=confmode,
     )
     return JSONResponse({"ok": True, **result})
 
