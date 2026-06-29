@@ -104,6 +104,9 @@
   <span class="job-count" data-type="photometry" onclick="toggleType(this, 'photometry')">Photometry</span>
   <span class="job-count" data-type="transit_fit" onclick="toggleType(this, 'transit_fit')">Transit Fit</span>
 </div>
+<div class="jobs-summary" id="time-summary">
+  <span class="job-count" data-time="recent" onclick="toggleRecent(this)">Today</span>
+</div>
 <div class="jobs-summary" id="inst-summary"></div>
 
 <div class="search-bar">
@@ -209,6 +212,22 @@
 
   var activeType = '';
   var activeInst = '';
+  var activeRecent = '';
+
+  // Get today's date at midnight for comparison
+  function getTodayMidnight() {
+    var d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.getTime() / 1000; // return as Unix timestamp in seconds
+  }
+
+  // ── Time filter (today/recent jobs) ───────────────────────────────────────
+  window.toggleRecent = function(el) {
+    document.querySelectorAll('#time-summary .job-count').forEach(function(e) { e.classList.remove('active'); });
+    if (activeRecent === 'recent') { activeRecent = ''; }
+    else { activeRecent = 'recent'; el.classList.add('active'); }
+    applyFilters(); saveFilters();
+  };
 
   // ── Type filter (badges) ──────────────────────────────────────────────────
   window.toggleType = function(el, type) {
@@ -330,6 +349,7 @@
     activeStatus = null;
     activeType = '';
     activeInst = '';
+    activeRecent = '';
     document.querySelectorAll('.job-count').forEach(function(e) { e.classList.remove('active'); });
     applyFilters(); showClearFilter(); saveFilters();
   };
@@ -337,7 +357,7 @@
   function showClearFilter() {
     var el = document.getElementById('clear-filter');
     if (!el) return;
-    el.style.display = (activeStatus || activeType || activeInst) ? '' : 'none';
+    el.style.display = (activeStatus || activeType || activeInst || activeRecent) ? '' : 'none';
   }
 
   // ── Search ───────────────────────────────────────────────────────────────
@@ -393,6 +413,11 @@
         var instCell = r.querySelector('.inst-cell');
         ok = instCell && instCell.textContent.trim() === activeInst;
       }
+      if (ok && activeRecent === 'recent') {
+        var startedAt = parseInt(r.getAttribute('data-started-at') || '0', 10);
+        var todayMidnight = getTodayMidnight();
+        ok = startedAt >= todayMidnight;
+      }
       var isHidden = hiddenKeys.indexOf(r.getAttribute('data-key')) !== -1;
       r.style.display = (ok && !isHidden) ? '' : 'none';
       var logRow = r.nextElementSibling;
@@ -400,7 +425,7 @@
       if (ok && !isHidden) visible++;
     });
     if (searchStatus) {
-      searchStatus.textContent = (q || activeStatus || activeType || activeInst) ? visible + ' / ' + total + ' matching' : total + ' jobs';
+      searchStatus.textContent = (q || activeStatus || activeType || activeInst || activeRecent) ? visible + ' / ' + total + ' matching' : total + ' jobs';
     }
     updateSectionVisibility();
   }
@@ -617,11 +642,12 @@
   // This avoids a race where toggleType/toggleStatus call saveFilters() before
   // all dimensions have been restored, overwriting values yet to be read.
   (function() {
-    var savedStatus, savedSearch, savedType, savedInst;
+    var savedStatus, savedSearch, savedType, savedInst, savedRecent;
     try { savedStatus = localStorage.getItem('jobs:activeStatus'); } catch (_) {}
     try { savedSearch = localStorage.getItem('jobs:search'); } catch (_) {}
     try { savedType = localStorage.getItem('jobs:typeFilter'); } catch (_) {}
     try { savedInst = localStorage.getItem('jobs:instFilter'); } catch (_) {}
+    try { savedRecent = localStorage.getItem('jobs:recentFilter'); } catch (_) {}
 
     if (savedStatus) {
       try {
@@ -640,6 +666,12 @@
       try {
         var iel = document.querySelector('#inst-summary .job-count[data-inst="' + savedInst + '"]');
         if (iel) { toggleInst(iel, savedInst); }
+      } catch (_) {}
+    }
+    if (savedRecent) {
+      try {
+        var rel = document.querySelector('#time-summary .job-count[data-time="recent"]');
+        if (rel) { toggleRecent(rel); }
       } catch (_) {}
     }
     // Save final consolidated state after all restores are done
@@ -677,6 +709,13 @@
           if (iel) toggleInst(iel, si);
         }
       } catch (_) {}
+      try {
+        var sr = localStorage.getItem('jobs:recentFilter');
+        if (sr && activeRecent !== sr) {
+          var rel = document.querySelector('#time-summary .job-count[data-time="recent"]');
+          if (rel) toggleRecent(rel);
+        }
+      } catch (_) {}
       applyFilters();
       showClearFilter();
       saveFilters();
@@ -689,6 +728,7 @@
       localStorage.setItem('jobs:search', searchInput ? searchInput.value : '');
       localStorage.setItem('jobs:typeFilter', activeType || '');
       localStorage.setItem('jobs:instFilter', activeInst || '');
+      localStorage.setItem('jobs:recentFilter', activeRecent || '');
     } catch (_) {}
   }
 
