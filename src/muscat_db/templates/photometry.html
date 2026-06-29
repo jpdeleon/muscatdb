@@ -394,11 +394,6 @@
       <summary>Pipeline options</summary>
       <div class="opt-grid" style="margin-top: 0.5rem;">
         <div class="opt opt-span2">
-          <label for="opt-run_name">Run name <span class="help-tooltip" title="Label for this isolated photometry run. Blank becomes default. The default Sinistro central_2k_2x2 mode is omitted from the run id.">?</span></label>
-          <input type="text" id="opt-run_name" placeholder="default" value="{{ run_defaults.run_name }}" style="width: 100%;">
-          <span class="hint">new outputs are saved under a named run directory</span>
-        </div>
-        <div class="opt opt-span2">
           <label>Bands <span class="help-tooltip" title="Filter bands to reduce.">?</span></label>
           {% set narrow_bands = ['Na_D', 'g_narrow', 'i_narrow', 'z_narrow'] %}
           {# available_bands is the obslog-derived list for this target; when it
@@ -583,6 +578,15 @@
     </details>
 
     <div id="opt-error"></div>
+
+    <div style="display:flex; align-items:center; gap:0.5rem; margin:0.5rem 0;">
+      <label for="opt-run_name" style="font-size:0.85rem; color:var(--text-dim);">Run name
+        <span class="help-tooltip" title="Label for this isolated photometry run. Blank becomes default. The default Sinistro central_2k_2x2 mode is omitted from the run id.">?</span>
+      </label>
+      <input type="text" id="opt-run_name" placeholder="default" value="{{ run_defaults.run_name }}"
+             style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.6rem; font-size: 0.85rem;">
+    </div>
+
     <div class="run-actions">
       <button class="btn primary" type="button" id="run-test-btn" {% if raw_missing %}disabled{% endif %}>
         ▶ Run Test Reduction (first N frames)
