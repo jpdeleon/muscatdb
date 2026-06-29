@@ -207,6 +207,8 @@
         <li><a href="#prose-card" class="toc-link">prose Photometry</a></li>
         <li><a href="#timer-card" class="toc-link">timer Transit Fitting</a></li>
         <li><a href="#ephemeris-card" class="toc-link">Ephemeris O-C Plotter</a></li>
+        <li><a href="#lco-schedule-card" class="toc-link">LCO Schedule</a></li>
+        <li><a href="#lco-archive-card" class="toc-link">LCO Archive</a></li>
         <li><a href="#schema-card" class="toc-link">Database Schema</a></li>
         <li><a href="#execution-details" class="toc-link">Execution Details</a></li>
         <li><a href="#faq-card" class="toc-link">FAQs</a></li>
@@ -398,7 +400,136 @@ graph TD
     O --> Q["Interactive Controls\ndate twin axis, excluded points, planet styles, PNG export"]:::default
           </pre>
         </div>
-        
+
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible" id="lco-schedule-card">
+      <div class="card-header-toggle" onclick="toggleCard('lco-schedule-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            LCO Scheduling Workflow
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            End-to-end LCO Observation Portal submission: from ephemeris to dry-run IPP check to live observation request.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% Configuration & Input
+    A["User Logged In\n(LCO_API_TOKEN configured)"]:::default --> B["Load Proposals\n/api/lco/proposals"]:::pipeline
+    B --> C["Select Project/Proposal"]:::default
+    C --> D["Choose Saved Ephemeris View\n(from /lco?view=slug or direct link)"]:::default
+    D --> E["Extract Target & Ephemeris\nT0, period, target name"]:::default
+
+    %% Window Generation
+    E --> F["Configure Search Window\nUTC start date, end date, duration"]:::default
+    F --> G["Configure Pre/Post Padding\n(minutes before/after transit)"]:::default
+    G --> H["Generate Transit Windows\n/api/lco/windows"]:::pipeline
+    H --> I["Display Candidate Windows\nCandidate start/end times"]:::default
+
+    %% Imaging Configuration
+    I --> J["Select Imaging Mode"]:::default
+    J -->|MUSCAT| K["Configure MUSCAT Imaging\nFilters: g/r/i/z exposure times\nExposure mode: sync/async\nNarrowband in/out positions"]:::default
+    J -->|Sinistro| L["Configure Sinistro Imaging\nFilter, exposure time, count"]:::default
+
+    %% Payload & Validation
+    K --> M["Build Request Payload\nConstraints, configurations, windows"]:::default
+    L --> M
+    M --> N["Dry-Run IPP Check\n/api/lco/ipp"]:::pipeline
+
+    %% Feedback & Submission
+    N -->|IPP Valid| O["Show Payload & IPP Cost\nUser reviews request details"]:::default
+    N -->|IPP Invalid| P["Display Error Message\nUser modifies and retries"]:::default
+    P --> M
+    O --> Q["Submit Button Enabled?"]:::default
+    Q -->|No changes since dry-run| R["User Confirms Submission\n(MUSCAT_LCO_ALLOW_SUBMIT=1)"]:::default
+    Q -->|Changes detected| P
+    R -->|Submit| S["Post to Observation Portal\n/api/lco/submit"]:::pipeline
+
+    %% Tracking
+    S -->|Success| T["Display Requestgroup ID\nObservation scheduled"]:::default
+    S -->|Error| U["Show Error Details\nAsk user to retry"]:::default
+    U --> M
+    T --> V["Track on Jobs Page"]:::default
+          </pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible" id="lco-archive-card">
+      <div class="card-header-toggle" onclick="toggleCard('lco-archive-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            LCO Archive Download Workflow
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Search LCO data archive and download reduced frames to the local server.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% User input and filtering
+    A["Archive Search Interface"]:::default --> B["Set Search Filters"]:::default
+    B --> B1["Project/Proposal ID\n(optional constraint)"]:::default
+    B --> B2["Target Object Name\n(optional substring)"]:::default
+    B --> B3["Instrument\n(1M0-SCICAM-SINISTRO or 2M0-SCICAM-MUSCAT)"]:::default
+    B --> B4["Site / Telescope\n(e.g. ogg, coj, cpt, lsc, elp)"]:::default
+    B --> B5["Reduction Level\n(raw, processed, fits)"]:::default
+    B --> B6["Date Range\n(start and end UTC dates)"]:::default
+    B --> B7["Result Limit\n(max frames to return)"]:::default
+
+    %% API call
+    B1 --> C["Query Archive\n/api/lco/archive/frames"]:::pipeline
+    B2 --> C
+    B3 --> C
+    B4 --> C
+    B5 --> C
+    B6 --> C
+    B7 --> C
+
+    %% Results display
+    C -->|Success| D["Display Frames Table\nColumns: filename, site, instrument, date, filter"]:::default
+    C -->|No results| E["Show 'No frames found'\nSuggest different filters"]:::default
+
+    %% Selection and preparation
+    D --> F["User Selects Frames\n(Checkboxes for multiple selection)"]:::default
+    F --> G["Review Selection\nFilename, size, reduction level"]:::default
+    G --> H["Confirm Download"]:::default
+
+    %% Server-side download
+    H --> I["Send Selected Frame URLs\n/api/lco/archive/download"]:::pipeline
+    I --> J["Server Validates Paths\n(No overwrite by default)"]:::default
+    J -->|Overwrite Disabled| K["Check if files exist locally"]:::default
+    K -->|Files exist| L["Skip existing files\nShow 'already exists' status"]:::default
+    K -->|New files| M["Download from archive-api.lco.global"]:::default
+    J -->|Overwrite Enabled| M
+
+    %% Path resolution
+    M --> N["Determine Save Location"]:::default
+    N --> N1["MUSCAT_LCO_DIR set?\nYes: MUSCAT_LCO_DIR/inst/date/"]:::default
+    N --> N2["No: MUSCAT_DATA_DIR/inst/date/"]:::default
+
+    %% Results
+    N1 --> O["Save Downloaded Files"]:::default
+    N2 --> O
+    O -->|Success| P["Display Results\nFilename, size, path"]:::default
+    O -->|Error| Q["Show Error Details\nPermission or disk issues"]:::default
+
+    %% Final status
+    P --> R["Download Complete\nFiles ready in muscat-db data tree"]:::default
+          </pre>
+        </div>
       </div>
     </div>
 
