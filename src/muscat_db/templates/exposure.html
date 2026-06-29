@@ -141,6 +141,25 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
+
+  /* Help tooltip */
+  .help-icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 1.1em; height: 1.1em; border-radius: 50%; font-size: 0.75em;
+    background: color-mix(in srgb, var(--accent) 25%, transparent);
+    color: var(--accent); font-weight: 700; cursor: help; position: relative;
+    flex-shrink: 0;
+  }
+  .help-icon:hover::after {
+    content: attr(data-help); position: absolute; bottom: 100%; left: 50%;
+    transform: translateX(-50%); margin-bottom: 0.5rem;
+    background: var(--text); color: var(--surface); padding: 0.5rem 0.7rem;
+    border-radius: 6px; font-size: 0.85em; font-weight: normal;
+    white-space: nowrap; z-index: 1000; box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  }
+  .help-icon.multiline:hover::after {
+    white-space: normal; width: 220px; left: -50px; text-align: left;
+  }
 </style>
 
 <h1>Exposure Time Calculator</h1>
@@ -154,7 +173,7 @@
   <div class="exp-form">
     {# ---- Calibration status ---- #}
     <div class="exp-section">
-      <h3>Calibration Status</h3>
+      <h3>Calibration Status <span class="help-icon" data-help="🟢 Green: Database-calibrated coefficients. 🟠 Orange: Using empirical defaults.">?</span></h3>
       <div class="calib-row">
         {% for name in instruments %}
           {% set c = calibrations.get(name, {}) %}
@@ -200,7 +219,7 @@
     {# ---- Magnitudes ---- #}
     <div class="exp-section" id="mags-section">
       <div class="mag-head">
-        <h3 style="margin:0;">Magnitudes per band</h3>
+        <h3 style="margin:0;">Magnitudes per band <span class="help-icon multiline" data-help="Narrowband light collection ratios relative to broadband: g_narrow/g: 0.34, i_narrow/i: 0.29, z_narrow/z: 0.46, Na_D/r: 1/30. Narrow magnitudes auto-compute from broadband values.">?</span></h3>
         <button class="copy-btn" type="button" id="clear-mags">Clear</button>
       </div>
       <p class="hint" style="margin-bottom:0.6rem;">g/r/i/z from Pan-STARRS / SkyMapper (auto-filled) or manual entry</p>
