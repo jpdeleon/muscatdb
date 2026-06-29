@@ -219,12 +219,11 @@
     {# ---- Magnitudes ---- #}
     <div class="exp-section" id="mags-section">
       <div class="mag-head">
-        <h3 style="margin:0;">Magnitudes per band <span class="help-icon multiline" data-help="Filter width ratios (narrow ÷ broadband bandwidth): g: 10/140≈0.07, i: 5/100=0.05, z: 5/100=0.05, Na_D: 5/100=0.05. Narrower filters transmit fewer photons. Narrow magnitudes auto-compute from broadband.">?</span></h3>
+        <h3 style="margin:0;">Magnitudes per band <span class="help-icon multiline" data-help="Broadband filter magnitudes (gp, rp, ip, zs). Narrowband filters (g_narrow, i_narrow, z_narrow, Na_D) use these same magnitudes with filter-width-dependent peak count adjustments in the calculation.">?</span></h3>
         <button class="copy-btn" type="button" id="clear-mags">Clear</button>
       </div>
       <p class="hint" style="margin-bottom:0.6rem;">g/r/i/z from Pan-STARRS / SkyMapper (auto-filled) or manual entry</p>
       <div class="mag-grid" id="mag-broad"></div>
-      <div class="mag-grid" id="mag-narrow" style="margin-top:0.55rem;"></div>
     </div>
 
     {# ---- Observation parameters ---- #}
@@ -360,59 +359,21 @@
     g_narrow: '#45d6b5', Na_D: '#45d6b5', i_narrow: '#45d6b5', z_narrow: '#45d6b5'
   };
   var BROAD = ['gp', 'rp', 'ip', 'zs'];
-  var NARROW = ['g_narrow', 'Na_D', 'i_narrow', 'z_narrow'];
-
-  // Narrowband effective magnitude offsets (log10 scale) relative to broadband parent
-  var NARROW_PARENTS = { g_narrow: 'gp', Na_D: 'rp', i_narrow: 'ip', z_narrow: 'zs' };
-  var NARROW_OFFSETS = { g_narrow: -1.15, Na_D: -1.30, i_narrow: -1.30, z_narrow: -1.30 };
 
   // ---- Build magnitude inputs ----
   function dot(band) { return '<span class="band-dot" style="background:' + (BAND_COLORS[band] || 'var(--text-dim)') + '"></span>'; }
-  function buildMagFields(container, bands, narrow) {
+  function buildMagFields(container, bands) {
     container.innerHTML = bands.map(function (b) {
-      return '<div class="mag-field"><label class="' + (narrow ? 'narrow' : '') + '">' + dot(b) + b + '</label>' +
-        '<input type="number" step="0.01" class="mag-input' + (narrow ? ' narrow' : '') + '" data-band="' + b + '" placeholder="—"></div>';
+      return '<div class="mag-field"><label>' + dot(b) + b + '</label>' +
+        '<input type="number" step="0.01" class="mag-input" data-band="' + b + '" placeholder="—"></div>';
     }).join('');
   }
-  function buildNarrowMagFields(container, bands) {
-    container.innerHTML = bands.map(function (b) {
-      var parent = NARROW_PARENTS[b];
-      var label = parent ? '(' + parent + ')' : '';
-      return '<div class="mag-field"><label class="narrow">' + dot(b) + b + ' <span style="font-size:0.65rem;color:var(--text-dim);">' + label + '</span></label>' +
-        '<input type="number" step="0.01" class="mag-input narrow narrow-computed" data-band="' + b + '" data-parent="' + (parent || '') + '" placeholder="—" disabled style="background:var(--surface2);color:var(--text-dim);"></div>';
-    }).join('');
-  }
-  buildMagFields(document.getElementById('mag-broad'), BROAD, false);
-  buildNarrowMagFields(document.getElementById('mag-narrow'), NARROW);
+  buildMagFields(document.getElementById('mag-broad'), BROAD);
   var magInputs = document.querySelectorAll('.mag-input');
-  var narrowInputs = document.querySelectorAll('.narrow-computed');
 
   function markFilled(inp) { inp.classList.toggle('filled', inp.value !== '' && parseFloat(inp.value) > 0); }
-
-  // ---- Update narrow band magnitudes ----
-  function updateNarrowMags() {
-    narrowInputs.forEach(function (narrowInp) {
-      var parent = narrowInp.dataset.parent;
-      var parentInp = document.querySelector('.mag-input[data-band="' + parent + '"]:not(.narrow-computed)');
-      if (parentInp && parentInp.value !== '') {
-        var parentMag = parseFloat(parentInp.value);
-        var offset = NARROW_OFFSETS[narrowInp.dataset.band] || 0;
-        var narrowMag = parentMag + (offset / 0.4);
-        narrowInp.value = narrowMag.toFixed(2);
-        narrowInp.classList.add('filled');
-      } else {
-        narrowInp.value = '';
-        narrowInp.classList.remove('filled');
-      }
-    });
-  }
-
   magInputs.forEach(function (inp) {
-    inp.addEventListener('input', function () {
-      markFilled(inp);
-      if (!inp.classList.contains('narrow-computed')) updateNarrowMags();
-      saveState();
-    });
+    inp.addEventListener('input', function () { markFilled(inp); saveState(); });
   });
 
   // ---- Button loading helper ----
@@ -456,13 +417,12 @@
     updateConfmodeVisibility();
     if (s.confmode && selInst.value === 'sinistro') selConfmode.value = s.confmode;
     if (!targetName.value && s.target) targetName.value = s.target;
-    if (s.mags) magInputs.forEach(function (inp) { if (s.mags[inp.dataset.band] !== undefined && !inp.classList.contains('narrow-computed')) { inp.value = s.mags[inp.dataset.band]; markFilled(inp); } });
+    if (s.mags) magInputs.forEach(function (inp) { if (s.mags[inp.dataset.band] !== undefined) { inp.value = s.mags[inp.dataset.band]; markFilled(inp); } });
     if (s.focus !== undefined) focusMm.value = s.focus;
     if (s.airmass !== undefined) airmass.value = s.airmass;
     if (s.satFrac) { satFrac.value = s.satFrac; customAduField.style.display = s.satFrac === 'custom' ? '' : 'none'; }
     if (s.customAdu) customAdu.value = s.customAdu;
     syncFocus(); syncAirmass();
-    updateNarrowMags();
   }
 
   // ---- Confmode visibility ----
@@ -496,9 +456,8 @@
           lookupStatus.innerHTML = '✓ ' + parts.join('  ') +
             (data.source ? '  ·  <span style="color:var(--text-dim)">' + data.source + '</span>' : '');
           magInputs.forEach(function (inp) {
-            if (!inp.classList.contains('narrow-computed') && data.mags[inp.dataset.band] !== undefined) { inp.value = data.mags[inp.dataset.band]; markFilled(inp); }
+            if (data.mags[inp.dataset.band] !== undefined) { inp.value = data.mags[inp.dataset.band]; markFilled(inp); }
           });
-          updateNarrowMags();
           saveState();
         } else {
           lookupStatus.className = 'msg err';
@@ -515,10 +474,7 @@
 
   // ---- Clear mags ----
   clearMags.addEventListener('click', function () {
-    magInputs.forEach(function (inp) {
-      if (!inp.classList.contains('narrow-computed')) { inp.value = ''; inp.classList.remove('filled'); }
-    });
-    updateNarrowMags();
+    magInputs.forEach(function (inp) { inp.value = ''; inp.classList.remove('filled'); });
     lookupStatus.textContent = ''; saveState();
   });
 
