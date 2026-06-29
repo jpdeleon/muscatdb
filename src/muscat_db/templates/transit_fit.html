@@ -385,41 +385,6 @@
         </div>
       </div>
       <div class="opt-grid">
-        <div class="opt-section-title">Fitting Pipeline Options</div>
-
-        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: nowrap; align-items: flex-end; padding-bottom: 0.45rem;">
-          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-chromatic" checked>
-            <label for="opt-chromatic">Chromatic fit <span class="help-tooltip" title="Flag indicating if parameters (like Rp/R*) are chromatic (band-dependent).">?</span></label>
-          </div>
-          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-use_custom_optimizer" checked>
-            <label for="opt-use_custom_optimizer">Custom optimizer <span class="help-tooltip" title="Use timer's custom MAP optimizer instead of PyMC's default for the initial solution. Default on.">?</span></label>
-          </div>
-          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-overwrite">
-            <label for="opt-overwrite">Overwrite <span class="help-tooltip" title="Re-run the fit from scratch, ignoring any saved results (sets clobber: true in fit.yaml). Unchecked reuses saved outputs.">?</span></label>
-          </div>
-          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-plot_midtransit" checked>
-            <label for="opt-plot_midtransit">Plot midtransit <span class="help-tooltip" title="Plot a solid vertical line at the nearest midtransit time on data.png.">?</span></label>
-          </div>
-          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-plot_ingress_egress" checked>
-            <label for="opt-plot_ingress_egress">Plot ing/egr <span class="help-tooltip" title="Plot dashed vertical lines at ingress and egress times on data.png.">?</span></label>
-          </div>
-          <div style="margin-top: 0; display: inline-flex; align-items: center; gap: 0.45rem; white-space: nowrap;">
-            <label for="opt-fit_basis" style="margin: 0; font-size: 0.85rem; color: var(--text); display: inline-flex; align-items: center; gap: 0.25rem;">
-              Fit basis
-              <span class="help-tooltip" title="Basis parameterization for PyMC transit model: standard (semi-major axis scale a/R* etc.) or duration (transit duration).">?</span>
-            </label>
-            <select id="opt-fit_basis" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.15rem 0.4rem; font-size: 0.8rem; margin: 0; height: 24px; box-sizing: border-box; line-height: 1; cursor: pointer;">
-              <option value="duration" selected>duration</option>
-              <option value="standard">standard</option>
-            </select>
-          </div>
-        </div>
-
         <div class="opt-section-title" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
           <span>Stellar Parameters <span id="stellar-ref-container" style="font-size: 0.75rem; font-weight: normal; color: var(--text-dim); text-transform: none;"></span></span>
         </div>
@@ -679,6 +644,41 @@
             <label><input type="checkbox" name="fixed-params" value="u_star" checked> u_star</label>
             <label><input type="checkbox" name="fixed-params" value="b"> b</label>
             <label><input type="checkbox" name="fixed-params" value="ror"> Rp/R*</label>
+          </div>
+        </div>
+
+        <div class="opt-section-title">Fitting Pipeline Options</div>
+
+        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: nowrap; align-items: flex-end; padding-bottom: 0.45rem;">
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-chromatic" checked>
+            <label for="opt-chromatic">Chromatic fit <span class="help-tooltip" title="Flag indicating if parameters (like Rp/R*) are chromatic (band-dependent).">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-use_custom_optimizer" checked>
+            <label for="opt-use_custom_optimizer">Custom optimizer <span class="help-tooltip" title="Use timer's custom MAP optimizer instead of PyMC's default for the initial solution. Default on.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-overwrite">
+            <label for="opt-overwrite">Overwrite <span class="help-tooltip" title="Re-run the fit from scratch, ignoring any saved results (sets clobber: true in fit.yaml). Unchecked reuses saved outputs.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-plot_midtransit" checked>
+            <label for="opt-plot_midtransit">Plot midtransit <span class="help-tooltip" title="Plot a solid vertical line at the nearest midtransit time on data.png.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-plot_ingress_egress" checked>
+            <label for="opt-plot_ingress_egress">Plot ing/egr <span class="help-tooltip" title="Plot dashed vertical lines at ingress and egress times on data.png.">?</span></label>
+          </div>
+          <div style="margin-top: 0; display: inline-flex; align-items: center; gap: 0.45rem; white-space: nowrap;">
+            <label for="opt-fit_basis" style="margin: 0; font-size: 0.85rem; color: var(--text); display: inline-flex; align-items: center; gap: 0.25rem;">
+              Fit basis
+              <span class="help-tooltip" title="Basis parameterization for PyMC transit model: standard (semi-major axis scale a/R* etc.) or duration (transit duration).">?</span>
+            </label>
+            <select id="opt-fit_basis" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.15rem 0.4rem; font-size: 0.8rem; margin: 0; height: 24px; box-sizing: border-box; line-height: 1; cursor: pointer;">
+              <option value="duration" selected>duration</option>
+              <option value="standard">standard</option>
+            </select>
           </div>
         </div>
       </div>
