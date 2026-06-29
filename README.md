@@ -138,7 +138,7 @@ muscat-db serve --port 8080  # custom port
 ## Web Frontend
 
 The navigation bar links the observation log, photometry, transit fitting, job
-history, exposure calculator, LCO scheduling/download, and workflow diagram. 
+history, exposure calculator, LCO scheduling/download, and pipeline guide. 
 Observation-log navigation is **Logs** → **Dates** → **CCD summaries** → 
 **Per-frame table**.
 
@@ -166,8 +166,8 @@ are rejected.
 
 Calibration and engineering frames (`DARK*`, `FLAT*`, `BIAS*`, `MOVIE`, `FOCUS_ADJUST`, `FoV`, `Muscat commissioning *`, etc.) are excluded from the targets aggregation so the table only shows real science targets.
 
-Fonts, icons, theme, and search are local or inlined. The **Workflow** page loads
-Mermaid from jsDelivr to render its pipeline diagrams.
+Fonts, icons, theme, and search are local or inlined. The **Guide** page loads
+Mermaid from jsDelivr to render detailed workflow diagrams for each pipeline stage.
 
 ## Cron (daily)
 

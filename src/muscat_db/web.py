@@ -204,9 +204,14 @@ async def logs_page(min_frames: int = 1000):
     )
 
 
-@app.get("/workflow", response_class=HTMLResponse)
-async def workflow_page():
-    return _render("workflow.html")
+@app.get("/guide", response_class=HTMLResponse)
+async def guide_page():
+    return _render("guide.html")
+
+# Legacy redirect for backward compatibility
+@app.get("/workflow", response_class=RedirectResponse)
+async def workflow_redirect():
+    return RedirectResponse(url="/guide", status_code=301)
 
 
 @app.get("/api/targets/export.csv")
