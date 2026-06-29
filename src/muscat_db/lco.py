@@ -232,9 +232,18 @@ def build_requestgroup(kind: str, params: dict) -> dict:
 
     # These constraints are defined at the request level, but get copied into
     # the configuration level by this function, as per the LCO examples.
+    
+    # Set default airmass and lunar distance based on instrument kind
+    if kind in ("muscat", "muscat3", "muscat4"):
+        default_max_airmass = 2.5
+        default_min_lunar_distance = 18
+    else:
+        default_max_airmass = 1.6
+        default_min_lunar_distance = 30
+
     constraints = {
-        "max_airmass": params.get("max_airmass", 1.6),
-        "min_lunar_distance": params.get("min_lunar_distance", 30),
+        "max_airmass": params.get("max_airmass", default_max_airmass),
+        "min_lunar_distance": params.get("min_lunar_distance", default_min_lunar_distance),
     }
 
     configurations = []
@@ -302,7 +311,7 @@ def build_requestgroup(kind: str, params: dict) -> dict:
             "type": params.get("type", "EXPOSE"),
             "instrument_type": instrument_type,
             "instrument_configs": instrument_configs,
-            "acquisition_config": {"mode": "WCS"},
+            "acquisition_config": {"mode": "OFF"},
             "guiding_config": {"mode": params.get("guiding_config", "ON"), "optional": True},
             "constraints": constraints,
             "target": target
