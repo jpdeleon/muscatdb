@@ -859,9 +859,19 @@ def _write_fit_inputs(
         fit_data["tc_pred_unc"] = provided_unc[0] if provided_unc else DEFAULT_TC_UNC
 
     fit_data["chromatic"] = options.get("chromatic") != "false"
-    # "Overwrite" maps to timer's ``clobber``: when true, timer ignores any saved
-    # *.pkl results and re-runs the fit from scratch. Default (unchecked) is false.
-    fit_data["clobber"] = options.get("overwrite") == "true"
+    # Run mode maps to timer's ``clobber``: "new" (start fresh) -> clobber=true,
+    # "continue" (resume sampling) -> clobber=false. For backwards compatibility,
+    # also check legacy "overwrite" option.
+    run_mode = options.get("run_mode")
+    if not run_mode:
+        # Legacy support: map old "overwrite" option to clobber behavior
+        if options.get("overwrite") == "true":
+            run_mode = "new"
+        elif options.get("overwrite") == "false":
+            run_mode = "continue"
+        else:
+            run_mode = "new"
+    fit_data["clobber"] = run_mode == "new"
     fit_data["plot_midtransit"] = options.get("plot_midtransit") == "true"
     fit_data["plot_ingress_egress"] = options.get("plot_ingress_egress") == "true"
 
@@ -1255,13 +1265,25 @@ def start_fit(
 
     run_type = "test" if test_run else "full"
 
-    # Validate overwrite for full fits with existing output
+    # Validate run mode for full fits with existing output
     if run_type == "full":
-        overwrite = options.get("overwrite") == "true"
-        if _fit_reduction_exists(inst, date, target, run_id) and not overwrite:
+        run_mode = options.get("run_mode")
+        if not run_mode:
+            # Legacy support: map old "overwrite" option to new "run_mode"
+            # overwrite="true" (checked) -> run_mode="new" (start fresh)
+            # overwrite="false" (unchecked) -> run_mode="continue" (resume)
+            if options.get("overwrite") == "true":
+                run_mode = "new"
+            elif options.get("overwrite") == "false":
+                run_mode = "continue"
+            else:
+                run_mode = "new"  # default to "new" for fresh fits
+
+        has_results = _fit_reduction_exists(inst, date, target, run_id)
+        if has_results and run_mode not in ("new", "continue"):
             return {
                 "ok": False,
-                "error": "fit results already exist for this target; enable 'Overwrite' to replace",
+                "error": "fit results exist; choose 'New Fit' (start fresh) or 'Continue Sampling'",
             }
 
     # Working directory

@@ -184,6 +184,10 @@
       </select>
     </div>
   </div>
+  <div class="lco-actions">
+    <button class="btn" type="button" id="btn-fov" title="Optimize field-of-view pointing for this target">Show FOV</button>
+    <button class="btn" type="button" id="btn-exp" title="Calculate exposure times for this target">Show Exp</button>
+  </div>
   <p class="lco-note">These scheduling inputs are separate from the archive page.</p>
 </div>
 
@@ -1242,6 +1246,24 @@
         if (!d.ok) { msg('msg-ipp', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
         msg('msg-ipp', 'Submitted: ' + JSON.stringify(d.result && d.result.id ? d.result.id : d.result), 'ok');
       }).catch(function (e) { msg('msg-ipp', String(e), 'err'); });
+  });
+
+  el('btn-fov').addEventListener('click', function () {
+    var target = val('sch-target');
+    var inst = val('sch-kind');
+    if (!target) { alert('Please enter a target'); return; }
+    if (!inst) { alert('Please select an instrument'); return; }
+    var url = '/fov?target=' + encodeURIComponent(target) + '&inst=' + encodeURIComponent(inst);
+    window.location.href = url;
+  });
+
+  el('btn-exp').addEventListener('click', function () {
+    var target = val('sch-target');
+    var inst = val('sch-kind');
+    if (!target) { alert('Please enter a target'); return; }
+    if (!inst) { alert('Please select an instrument'); return; }
+    var url = '/exposure?target=' + encodeURIComponent(target) + '&inst=' + encodeURIComponent(inst);
+    window.location.href = url;
   });
 
   function prefillFromView() {

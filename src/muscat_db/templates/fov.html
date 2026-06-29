@@ -1,0 +1,589 @@
+{% extends "base.html" %}
+{% block title %}FOV — MuSCAT-db{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.css">
+<style>
+  .fov-layout { display: flex; gap: 1.5rem; align-items: flex-start; flex-wrap: wrap; }
+  .fov-panel { flex: 1; min-width: 360px; }
+  .fov-viewer { flex: 1.5; min-width: 480px; position: sticky; top: 1rem; }
+  @media (max-width: 1100px) { .fov-viewer { position: static; } }
+
+  .fov-section { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.1rem 1.25rem; margin-bottom: 1.1rem; }
+  .fov-section > h3 {
+    font-size: 0.7rem; color: var(--text-dim); margin-bottom: 0.85rem;
+    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
+    display: flex; align-items: center; gap: 0.45rem;
+  }
+  .fov-section > h3::before { content: ''; width: 3px; height: 0.85rem; background: var(--accent2); border-radius: 2px; }
+
+  .fov-grid { display: grid; gap: 0.85rem; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .fov-field { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
+  .fov-field label { font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+  .fov-field input, .fov-field select {
+    background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 0.45rem 0.6rem; font-size: 0.88rem; font-family: inherit; min-width: 0;
+  }
+  .fov-field input:focus, .fov-field select:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  .fov-actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-top: 0.9rem; }
+  button.fov-btn {
+    background: var(--accent); color: #06121b; border: none; border-radius: 8px;
+    padding: 0.55rem 1.1rem; font-size: 0.9rem; font-weight: 600; cursor: pointer; font-family: inherit;
+  }
+  button.fov-btn[disabled] { opacity: 0.55; cursor: progress; }
+  button.fov-btn.ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
+  .fov-msg { font-size: 0.82rem; margin-top: 0.6rem; min-height: 1em; }
+  .fov-msg.err { color: #e07b53; }
+  .fov-msg.ok { color: #2ecc71; }
+
+  .fov-summary { display: grid; gap: 0.6rem 1rem; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .fov-stat { display: flex; flex-direction: column; gap: 0.15rem; }
+  .fov-stat .k { font-size: 0.68rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
+  .fov-stat .v { font-size: 1.05rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  #aladin-lite-div { width: 100%; height: 560px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+
+  .fov-legend { display: flex; gap: 1.2rem; flex-wrap: wrap; font-size: 0.78rem; color: var(--text-dim); margin-top: 0.7rem; }
+  .fov-legend span { display: inline-flex; align-items: center; gap: 0.4rem; }
+  .fov-legend .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+
+  .fov-table-wrap { overflow-x: auto; max-height: 320px; overflow-y: auto; }
+  table.fov-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  table.fov-table th, table.fov-table td { padding: 0.35rem 0.55rem; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+  table.fov-table th:first-child, table.fov-table td:first-child { text-align: left; }
+  table.fov-table th { color: var(--text-dim); font-weight: 600; font-size: 0.7rem; text-transform: uppercase; position: sticky; top: 0; background: var(--surface); }
+  .fov-note { font-size: 0.78rem; color: var(--text-dim); margin-top: 0.5rem; line-height: 1.5; }
+</style>
+
+<h2 style="margin-bottom: 0.4rem;">Field-of-View Optimizer</h2>
+<p class="fov-note" style="margin-bottom: 1.1rem; max-width: 70ch;">
+  Choose a pointing and field orientation that keep the target inside the
+  instrument footprint while capturing the richest set of <em>useful</em>
+  comparison stars &mdash; similar brightness (a brighter comp would cap the
+  exposure to avoid saturation), similar color, and well isolated.
+</p>
+
+<div class="fov-layout">
+  <!-- ---- controls + results ---- -->
+  <div class="fov-panel">
+    <div class="fov-section">
+      <h3>Target &amp; Instrument</h3>
+      <div class="fov-grid">
+        <div class="fov-field">
+          <label for="fov-inst">Instrument</label>
+          <select id="fov-inst">
+            {% for name in instruments %}
+            <option value="{{ name }}"{% if name == sel_inst %} selected{% endif %}>{{ name }} ({{ fov_sizes[name] }}′)</option>
+            {% if name == "sinistro" %}
+            <option value="sinistro" data-mode="full_frame"{% if sel_inst == "sinistro" and false %} selected{% endif %}>sinistro (26.0′)</option>
+            {% endif %}
+            {% endfor %}
+          </select>
+        </div>
+        <div class="fov-field" id="fov-sinistro-mode-field" style="display: none;">
+          <label for="fov-sinistro-mode">Readout mode</label>
+          <select id="fov-sinistro-mode">
+            {% for mode, half_arcsec in sinistro_modes.items() %}
+            <option value="{{ mode }}"{% if mode == 'central_2k_2x2' %} selected{% endif %}>{{ mode | replace('_', ' ') }} ({{ (half_arcsec * 2 / 60) | round(1) }}′)</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="fov-field" style="grid-column: span 1;">
+          <label for="fov-target">Target name</label>
+          <input id="fov-target" type="text" placeholder="e.g. WASP-12" value="{{ sel_target }}">
+        </div>
+        <div class="fov-field" style="display: flex; align-items: flex-end;">
+          <button id="fov-resolve" class="fov-btn ghost" type="button" title="Look up RA/Dec for the target name">Resolve</button>
+        </div>
+        <div class="fov-field"><label for="fov-ra">RA (deg)</label><input id="fov-ra" type="text" inputmode="decimal" placeholder="optional"></div>
+        <div class="fov-field"><label for="fov-dec">Dec (deg)</label><input id="fov-dec" type="text" inputmode="decimal" placeholder="optional"></div>
+        <div class="fov-field"><label for="fov-margin" title="Keep the target at least this far from any field edge.">Target margin (″)</label><input id="fov-margin" type="number" step="any" value="30"></div>
+        <div class="fov-field"><label for="fov-comp-margin" title="Keep comparisons at least this far from any field edge. Leave empty to use target margin.">Comp margin (″)</label><input id="fov-comp-margin" type="number" step="any" placeholder="(use target)"></div>
+        <div class="fov-field"><label for="fov-maglim" title="Faint cutoff for comparison candidates (Gaia G).">Mag limit (G)</label><input id="fov-maglim" type="number" step="any" value="18"></div>
+      </div>
+      <div style="margin-top: 0.7rem; display: flex; align-items: center; gap: 0.6rem;">
+        <input id="fov-allow-rotation" type="checkbox" checked style="width: 1.1rem; height: 1.1rem; cursor: pointer;">
+        <label for="fov-allow-rotation" style="cursor: pointer; font-size: 0.85rem; margin: 0;">Allow field rotation (optimize position angle)</label>
+      </div>
+      <div class="fov-actions">
+        <button id="fov-run" class="fov-btn" type="button">Optimize FOV</button>
+        <button id="fov-reset-view" class="fov-btn ghost" type="button">Recenter view</button>
+      </div>
+      <div id="fov-msg" class="fov-msg"></div>
+    </div>
+
+    <div class="fov-section" id="fov-results" style="display: none;">
+      <h3>Optimum Pointing</h3>
+      <div class="fov-summary">
+        <div class="fov-stat"><span class="k">Field center RA</span><span class="v" id="r-cra">—</span></div>
+        <div class="fov-stat"><span class="k">Field center Dec</span><span class="v" id="r-cdec">—</span></div>
+        <div class="fov-stat"><span class="k">Position angle</span><span class="v" id="r-pa">—</span></div>
+        <div class="fov-stat"><span class="k">Target offset</span><span class="v" id="r-off">—</span></div>
+        <div class="fov-stat"><span class="k">Useful comps</span><span class="v" id="r-n">—</span></div>
+        <div class="fov-stat"><span class="k">Target G</span><span class="v" id="r-tg">—</span></div>
+      </div>
+      <div class="fov-actions">
+        <button id="fov-copy-center" class="fov-btn ghost" type="button" title="Copy field center coordinates as RA, Dec">Copy FOV center</button>
+      </div>
+      <div class="fov-note" id="r-note"></div>
+    </div>
+
+    <div class="fov-section" id="fov-comps-section" style="display: none;">
+      <h3>Comparison Stars</h3>
+      <div class="fov-table-wrap">
+        <table class="fov-table">
+          <thead><tr><th>#</th><th>RA</th><th>Dec</th><th>G</th><th>ΔG</th><th>BP-RP</th><th>sep ″</th><th>weight</th></tr></thead>
+          <tbody id="fov-comps-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---- Aladin viewer ---- -->
+  <div class="fov-viewer">
+    <div class="fov-section">
+      <h3>Sky View</h3>
+      <div id="aladin-lite-div"></div>
+      <div class="fov-legend">
+        <span><span class="swatch" style="background:#ff5470;"></span> Target</span>
+        <span><span class="swatch" style="background:#45d6b5;"></span> Comparison stars (size ∝ usefulness)</span>
+        <span><span class="swatch" style="background:#6c8cff; border-radius:2px;"></span> Optimized footprint</span>
+      </div>
+      <div class="fov-note">
+        Footprint size is read from <code>data/FOV_*.vot.xml</code>; the polygon shown
+        reflects the optimized pointing and position angle. Pan/zoom freely &mdash;
+        “Recenter view” returns to the optimized field.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="text/javascript" src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js" charset="utf-8"></script>
+<script>
+(function () {
+  const FOV_ARCMIN = {{ fov_sizes | tojson }};
+  const $ = (id) => document.getElementById(id);
+  const msg = $('fov-msg');
+
+  let aladin = null;
+  let footprintOverlay = null;
+  let compCatalog = null;
+  let targetCatalog = null;
+  let lastResult = null;
+  let observableRanges = {};
+  let compSources = [];  // Track comparison star sources for hover highlighting
+  let highlightOverlay = null;  // Graphics overlay for highlighting selected star
+
+  A.init.then(() => {
+    aladin = A.aladin('#aladin-lite-div', {
+      survey: 'P/DSS2/color',
+      fov: 0.2,
+      target: '00 00 00 +00 00 00',
+      showReticle: true,
+      showCooGrid: false,
+      cooFrame: 'ICRS',
+    });
+    footprintOverlay = A.graphicOverlay({ color: '#6c8cff', lineWidth: 2 });
+    aladin.addOverlay(footprintOverlay);
+    highlightOverlay = A.graphicOverlay({ color: '#ffff00', lineWidth: 3 });
+    aladin.addOverlay(highlightOverlay);
+    targetCatalog = A.catalog({ name: 'Target', shape: 'cross', sourceSize: 18, color: '#ff5470' });
+    compCatalog = A.catalog({ name: 'Comparisons', shape: 'circle', sourceSize: 12, color: '#45d6b5' });
+    aladin.addCatalog(targetCatalog);
+    aladin.addCatalog(compCatalog);
+  });
+
+  function setMsg(text, kind) {
+    msg.textContent = text || '';
+    msg.className = 'fov-msg' + (kind ? ' ' + kind : '');
+  }
+
+  function fmtDeg(d, dec) {
+    if (d === null || d === undefined || isNaN(d)) return '—';
+    return Number(d).toFixed(dec === undefined ? 5 : dec) + '°';
+  }
+
+  function render(result) {
+    lastResult = result;
+    // --- summary ---
+    $('r-cra').textContent = fmtDeg(result.center_ra);
+    $('r-cdec').textContent = fmtDeg(result.center_dec);
+    $('r-pa').textContent = (result.pa_deg ?? 0).toFixed(1) + '°';
+    const oe = result.offset_east_arcsec || 0, on = result.offset_north_arcsec || 0;
+    $('r-off').textContent = `E ${oe.toFixed(0)}″, N ${on.toFixed(0)}″`;
+    $('r-n').textContent = result.n_comps;
+    $('r-tg').textContent = (result.target_gmag === null || result.target_gmag === undefined)
+      ? '—' : result.target_gmag.toFixed(2);
+    $('r-note').textContent =
+      `Field ${result.fov_arcsec ? (result.fov_arcsec/60).toFixed(1) : '?'}′ on a side · `
+      + `weighted comp signal ${result.total_weight} · catalog ${result.catalog}.`;
+    $('fov-results').style.display = '';
+
+    // --- comparison table ---
+    const body = $('fov-comps-body');
+    body.innerHTML = '';
+    (result.comps || []).forEach((c, i) => {
+      const tr = document.createElement('tr');
+      tr.dataset.compIndex = i;
+      tr.innerHTML =
+        `<td>${i + 1}</td><td>${c.ra.toFixed(5)}</td><td>${c.dec.toFixed(5)}</td>` +
+        `<td>${c.gmag.toFixed(2)}</td><td>${c.dmag > 0 ? '+' : ''}${c.dmag.toFixed(2)}</td>` +
+        `<td>${c.bp_rp === null ? '—' : c.bp_rp.toFixed(2)}</td>` +
+        `<td>${c.sep_arcsec.toFixed(0)}</td><td>${c.weight.toFixed(2)}</td>`;
+
+      // Add hover listeners for highlighting in Aladin
+      tr.addEventListener('mouseenter', () => {
+        tr.style.backgroundColor = 'rgba(255, 255, 0, 0.4)';
+        highlightCompStar(i);
+      });
+      tr.addEventListener('mouseleave', () => {
+        tr.style.backgroundColor = '';
+        clearHighlightCompStar();
+      });
+
+      body.appendChild(tr);
+    });
+    $('fov-comps-section').style.display = (result.comps && result.comps.length) ? '' : 'none';
+
+    overplot(result);
+  }
+
+  function overplot(result) {
+    if (!aladin) return;
+    footprintOverlay.removeAll();
+    targetCatalog.removeAll();
+    compCatalog.removeAll();
+
+    // FOV polygon (closed) at optimized pointing + PA.
+    if (Array.isArray(result.footprint) && result.footprint.length) {
+      const poly = result.footprint.map((p) => [p[0], p[1]]);
+      poly.push(poly[0]);
+      footprintOverlay.add(A.polygon(poly));
+    }
+
+    // Target marker.
+    if (result.ra !== null && result.dec !== null) {
+      targetCatalog.addSources([
+        A.source(result.ra, result.dec, { name: result.target || 'target' }),
+      ]);
+    }
+
+    // Comparison stars, sized by usefulness weight.
+    compSources = (result.comps || []).map((c) =>
+      A.source(c.ra, c.dec, {
+        G: c.gmag.toFixed(2),
+        'ΔG': c.dmag,
+        weight: c.weight,
+        size: Math.max(6, 6 + 12 * c.weight),
+      })
+    );
+    if (compSources.length) compCatalog.addSources(compSources);
+
+    recenter(result);
+  }
+
+  function recenter(result) {
+    if (!aladin || !result) return;
+    if (result.center_ra !== null && result.center_dec !== null) {
+      aladin.gotoRaDec(result.center_ra, result.center_dec);
+    }
+    const arcmin = FOV_ARCMIN[$('fov-inst').value] || 8;
+    aladin.setFoV((arcmin / 60) * 1.6); // a touch wider than the footprint
+  }
+
+  function highlightCompStar(index) {
+    if (!highlightOverlay || !lastResult || !lastResult.comps || index >= lastResult.comps.length) return;
+
+    highlightOverlay.removeAll();
+    const comp = lastResult.comps[index];
+
+    if (comp && comp.ra !== undefined && comp.dec !== undefined) {
+      const shape = typeof A.circle === 'function'
+        ? A.circle(comp.ra, comp.dec, 0.003, { color: '#ffff00', lineWidth: 3, fill: false })
+        : A.polygon([
+            [comp.ra - 0.004, comp.dec],
+            [comp.ra + 0.004, comp.dec],
+            [comp.ra, comp.dec - 0.004],
+            [comp.ra, comp.dec + 0.004],
+          ], { color: '#ffff00', lineWidth: 2, fill: false });
+      highlightOverlay.add(shape);
+    }
+  }
+
+  function clearHighlightCompStar() {
+    if (!highlightOverlay) return;
+    highlightOverlay.removeAll();
+  }
+
+  function getParams() {
+    return {
+      inst: $('fov-inst').value,
+      sinistroMode: $('fov-sinistro-mode').value,
+      target: $('fov-target').value.trim(),
+      ra: $('fov-ra').value.trim(),
+      dec: $('fov-dec').value.trim(),
+      margin: $('fov-margin').value,
+      compMargin: $('fov-comp-margin').value,
+      maglim: $('fov-maglim').value,
+      allowRotation: $('fov-allow-rotation').checked,
+    };
+  }
+
+  function setParams(p) {
+    if (p.inst) $('fov-inst').value = p.inst;
+    if (p.sinistroMode) $('fov-sinistro-mode').value = p.sinistroMode;
+    if (p.target !== undefined) $('fov-target').value = p.target;
+    if (p.ra !== undefined) $('fov-ra').value = p.ra;
+    if (p.dec !== undefined) $('fov-dec').value = p.dec;
+    if (p.margin) $('fov-margin').value = p.margin;
+    if (p.compMargin !== undefined) $('fov-comp-margin').value = p.compMargin;
+    if (p.maglim) $('fov-maglim').value = p.maglim;
+    if (p.allowRotation !== undefined) $('fov-allow-rotation').checked = p.allowRotation;
+    updateSinistroModeVisibility();
+  }
+
+  async function loadObservableRanges() {
+    try {
+      const resp = await fetch('/api/fov/observable');
+      const data = await resp.json();
+      if (data.ok) {
+        observableRanges = data.observable;
+      }
+    } catch (e) {
+      console.warn('Could not load observable ranges:', e);
+    }
+  }
+
+  function updateInstrumentAvailability() {
+    const dec = $('fov-dec').value.trim();
+    if (!dec) {
+      // No declination, enable all
+      document.querySelectorAll('#fov-inst option').forEach(opt => {
+        opt.disabled = false;
+      });
+      return;
+    }
+    const decNum = parseFloat(dec);
+    if (isNaN(decNum)) return;
+
+    // Enable/disable instruments based on observable range
+    document.querySelectorAll('#fov-inst option').forEach(opt => {
+      const inst = opt.value;
+      if (inst === '') {
+        opt.disabled = false;
+        return;
+      }
+      const range = observableRanges[inst];
+      if (!range) {
+        opt.disabled = false;
+        return;
+      }
+      const canObserve = decNum >= range.min_dec && decNum <= range.max_dec;
+      opt.disabled = !canObserve;
+      if (!canObserve) {
+        opt.title = `Not observable at dec=${decNum}° (range: ${range.min_dec}° to ${range.max_dec}°)`;
+      } else {
+        opt.title = '';
+      }
+    });
+  }
+
+  function updateSinistroModeVisibility() {
+    const instSelect = $('fov-inst');
+    const selectedOption = instSelect.options[instSelect.selectedIndex];
+    const isSinistro = instSelect.value === 'sinistro';
+    $('fov-sinistro-mode-field').style.display = isSinistro ? '' : 'none';
+
+    // If the selected option has a data-mode attribute, auto-set the readout mode
+    if (isSinistro && selectedOption.dataset.mode) {
+      $('fov-sinistro-mode').value = selectedOption.dataset.mode;
+    }
+  }
+
+  function updateUrl(p) {
+    const sp = new URLSearchParams();
+    if (p.inst) sp.set('inst', p.inst);
+    if (p.sinistroMode && p.sinistroMode !== 'central_2k_2x2') sp.set('smode', p.sinistroMode);
+    if (p.target) sp.set('target', p.target);
+    if (p.ra) sp.set('ra', p.ra);
+    if (p.dec) sp.set('dec', p.dec);
+    if (p.margin && p.margin !== '30') sp.set('margin', p.margin);
+    if (p.compMargin) sp.set('cmarg', p.compMargin);
+    if (p.maglim && p.maglim !== '18') sp.set('maglim', p.maglim);
+    if (!p.allowRotation) sp.set('fixpa', '1');
+    const qs = sp.toString();
+    const url = qs ? '/fov?' + qs : '/fov';
+    window.history.replaceState(null, '', url);
+  }
+
+  function saveToStorage() {
+    const p = getParams();
+    localStorage.setItem('fov-state', JSON.stringify(p));
+  }
+
+  function loadFromStorage() {
+    try {
+      const stored = localStorage.getItem('fov-state');
+      return stored ? JSON.parse(stored) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function loadUrlParams() {
+    const sp = new URLSearchParams(window.location.search);
+    // URL params take precedence; fall back to localStorage.
+    const stored = loadFromStorage();
+    const p = {
+      inst: sp.get('inst') || (stored?.inst || ''),
+      sinistroMode: sp.get('smode') || (stored?.sinistroMode || 'central_2k_2x2'),
+      target: sp.get('target') || (stored?.target || ''),
+      ra: sp.get('ra') || (stored?.ra || ''),
+      dec: sp.get('dec') || (stored?.dec || ''),
+      margin: sp.get('margin') || (stored?.margin || '30'),
+      compMargin: sp.get('cmarg') || (stored?.compMargin || ''),
+      maglim: sp.get('maglim') || (stored?.maglim || '18'),
+      allowRotation: !sp.has('fixpa') && (stored?.allowRotation !== false),
+    };
+    setParams(p);
+    return sp.has('target') || (sp.has('ra') && sp.has('dec'));
+  }
+
+  async function run() {
+    const params = getParams();
+    if (!params.target && !(params.ra && params.dec)) {
+      setMsg('Enter a target name or RA and Dec.', 'err');
+      return;
+    }
+    updateUrl(params);
+    saveToStorage();
+    const btn = $('fov-run');
+    btn.disabled = true;
+    setMsg('Resolving target and querying Gaia…');
+    try {
+      const resp = await fetch('/api/fov/optimize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          instrument: params.inst,
+          sinistro_mode: params.sinistroMode,
+          target: params.target,
+          ra: params.ra || null,
+          dec: params.dec || null,
+          margin_arcsec: parseFloat(params.margin) || 30,
+          comp_margin_arcsec: params.compMargin ? parseFloat(params.compMargin) : null,
+          mag_limit: parseFloat(params.maglim) || 18,
+          allow_rotation: params.allowRotation,
+        }),
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        setMsg(data.error || 'Optimization failed.', 'err');
+        return;
+      }
+      setMsg(`Found ${data.n_comps} useful comparison stars.`, 'ok');
+      render(data);
+    } catch (e) {
+      setMsg('Request failed: ' + e, 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function resolveTarget() {
+    const target = $('fov-target').value.trim();
+    if (!target) {
+      setMsg('Enter a target name to resolve.', 'err');
+      return;
+    }
+    const btn = $('fov-resolve');
+    btn.disabled = true;
+    setMsg('Looking up coordinates…');
+    try {
+      const resp = await fetch('/api/fov/resolve-target', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: target }),
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        setMsg(data.error || 'Resolution failed.', 'err');
+        return;
+      }
+      $('fov-ra').value = data.ra;
+      $('fov-dec').value = data.dec;
+      updateInstrumentAvailability();
+      saveToStorage();
+      setMsg(`Resolved to RA ${data.ra}°, Dec ${data.dec}°`, 'ok');
+      setTimeout(() => setMsg(''), 3000);
+    } catch (e) {
+      setMsg('Request failed: ' + e, 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function copyShareLink() {
+    const params = getParams();
+    if (!params.target && !(params.ra && params.dec)) {
+      setMsg('Run an optimization first to create a shareable link.', 'err');
+      return;
+    }
+    const sp = new URLSearchParams();
+    if (params.inst) sp.set('inst', params.inst);
+    if (params.target) sp.set('target', params.target);
+    if (params.ra) sp.set('ra', params.ra);
+    if (params.dec) sp.set('dec', params.dec);
+    if (params.margin && params.margin !== '30') sp.set('margin', params.margin);
+    if (params.compMargin) sp.set('cmarg', params.compMargin);
+    if (params.maglim && params.maglim !== '18') sp.set('maglim', params.maglim);
+    if (!params.allowRotation) sp.set('fixpa', '1');
+    const url = window.location.origin + '/fov' + (sp.toString() ? '?' + sp.toString() : '');
+    navigator.clipboard.writeText(url).then(() => {
+      setMsg('Link copied to clipboard.', 'ok');
+      setTimeout(() => setMsg(''), 2000);
+    }).catch(() => {
+      setMsg('Failed to copy link.', 'err');
+    });
+  }
+
+  function copyFovCenter() {
+    if (!lastResult) {
+      setMsg('Run an optimization first.', 'err');
+      return;
+    }
+    const ra = lastResult.center_ra;
+    const dec = lastResult.center_dec;
+    if (ra === null || ra === undefined || dec === null || dec === undefined) {
+      setMsg('Field center coordinates not available.', 'err');
+      return;
+    }
+    const coordStr = `${ra.toFixed(5)}, ${dec.toFixed(5)}`;
+    navigator.clipboard.writeText(coordStr).then(() => {
+      setMsg('Coordinates copied: ' + coordStr, 'ok');
+      setTimeout(() => setMsg(''), 2000);
+    }).catch(() => {
+      setMsg('Failed to copy coordinates.', 'err');
+    });
+  }
+
+  const autoRun = loadUrlParams();
+  $('fov-run').addEventListener('click', run);
+  $('fov-resolve').addEventListener('click', resolveTarget);
+  $('fov-reset-view').addEventListener('click', () => recenter(lastResult));
+  $('fov-copy-center').addEventListener('click', copyFovCenter);
+  $('fov-inst').addEventListener('change', updateSinistroModeVisibility);
+  $('fov-dec').addEventListener('change', updateInstrumentAvailability);
+  $('fov-target').addEventListener('keydown', (e) => { if (e.key === 'Enter') resolveTarget(); });
+
+  loadObservableRanges().then(() => updateInstrumentAvailability());
+
+  if (autoRun) {
+    A.init.then(() => { run(); });
+  }
+})();
+</script>
+{% endblock %}

@@ -1647,7 +1647,11 @@
   }
 
   function buildOCSummaryText() {
-    const rows = ['planet,epoch,tc,tc_unc'];
+    const rows = [
+      '# Transit Center Times (TCs) in Barycentric Dynamical Time (BJD_TDB)',
+      '# Columns: planet, epoch, tc (BJD_TDB), tc_unc (days)',
+      'planet,epoch,tc,tc_unc'
+    ];
     if (!fitResults) return rows.join('\n') + '\n';
 
     Object.keys(fitResults).sort().forEach(planet => {

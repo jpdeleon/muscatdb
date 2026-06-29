@@ -658,10 +658,19 @@
             <input type="checkbox" id="opt-use_custom_optimizer" checked>
             <label for="opt-use_custom_optimizer">Custom optimizer <span class="help-tooltip" title="Use timer's custom MAP optimizer instead of PyMC's default for the initial solution. Default on.">?</span></label>
           </div>
-          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-overwrite">
-            <label for="opt-overwrite">Overwrite <span class="help-tooltip" title="Re-run the fit from scratch, ignoring any saved results (sets clobber: true in fit.yaml). Unchecked reuses saved outputs.">?</span></label>
-          </div>
+          <details class="opt-collapse" open style="grid-column: 1 / -1;">
+            <summary>⚙️ Run Mode <span class="help-tooltip" title="Choose whether to start a new fit or continue sampling from previous results.">?</span></summary>
+            <div style="display: flex; gap: 1.5rem; align-items: center;">
+              <label class="opt-check-item" style="margin: 0;">
+                <input type="radio" name="run-mode" value="new" checked>
+                <span>New Fit (start fresh)</span>
+              </label>
+              <label class="opt-check-item" id="continue-label" style="margin: 0; display: none;">
+                <input type="radio" name="run-mode" value="continue">
+                <span>Continue Sampling <span class="help-tooltip" title="Resume from previous trace, adding more samples.">?</span></span>
+              </label>
+            </div>
+          </details>
           <div class="opt check" style="margin-top: 0; white-space: nowrap;">
             <input type="checkbox" id="opt-plot_midtransit" checked>
             <label for="opt-plot_midtransit">Plot midtransit <span class="help-tooltip" title="Plot a solid vertical line at the nearest midtransit time on data.png.">?</span></label>
@@ -752,7 +761,16 @@
   // run_id of the run being viewed / launched; set from the /run response so
   // polling, the live-log key, and cancellation all target the right run.
   var runId  = {{ sel_run|tojson }};
+  var fitResultsExist = {{ (outputs and outputs.has_any)|tojson }};
   function logKey() { return 'fit:log' + (runId ? ':' + runId : ''); }
+
+  // Show/hide "Continue Sampling" option based on whether results exist
+  (function() {
+    var continueLabel = document.getElementById('continue-label');
+    if (continueLabel) {
+      continueLabel.style.display = fitResultsExist ? 'block' : 'none';
+    }
+  })();
 
   var SEL_KEY = 'fit:last';
   var OPT_KEY = 'fit:options:' + inst + ':' + date + ':' + target;
@@ -937,7 +955,7 @@
       chromatic: chk('opt-chromatic') ? 'true' : 'false',
       fit_basis: val('opt-fit_basis'),
       trend: chk('opt-trend') ? 'true' : 'false',
-      overwrite: chk('opt-overwrite') ? 'true' : 'false',
+      run_mode: document.querySelector('input[name="run-mode"]:checked')?.value || 'new',
       plot_midtransit: chk('opt-plot_midtransit') ? 'true' : 'false',
       plot_ingress_egress: chk('opt-plot_ingress_egress') ? 'true' : 'false',
       tune: val('opt-tune'),
@@ -1617,8 +1635,13 @@
     var trEl = document.getElementById('opt-trend');
     if (trEl && saved.trend !== undefined) trEl.checked = saved.trend === 'true';
 
-    var owEl = document.getElementById('opt-overwrite');
-    if (owEl && saved.overwrite !== undefined) owEl.checked = saved.overwrite === 'true';
+    if (saved.run_mode !== undefined) {
+      var rmEl = document.querySelector('input[name="run-mode"][value="' + saved.run_mode + '"]');
+      if (rmEl) rmEl.checked = true;
+    } else if (saved.overwrite !== undefined) {
+      var rmEl = document.querySelector('input[name="run-mode"][value="' + (saved.overwrite === 'true' ? 'new' : 'continue') + '"]');
+      if (rmEl) rmEl.checked = true;
+    }
 
     document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
       c.checked = saved.fixed && saved.fixed.indexOf(c.value) !== -1;
@@ -1662,8 +1685,8 @@
       var trEl = document.getElementById('opt-trend');
       if (trEl) trEl.checked = false;
 
-      var owEl = document.getElementById('opt-overwrite');
-      if (owEl) owEl.checked = false;
+      var rmEl = document.querySelector('input[name="run-mode"][value="new"]');
+      if (rmEl) rmEl.checked = true;
 
       var numDefaults = {'opt-tune':'2000','opt-draws':'2000','opt-chains':'2','opt-cores':'2',
                          'opt-spline_knots':'5','opt-clip_nsig':'7','opt-chunk_thresh':'0','opt-trim_beg':'','opt-trim_end':'',
@@ -1754,8 +1777,13 @@
         var trEl = document.getElementById('opt-trend');
         if (trEl && backup.trend !== undefined) trEl.checked = backup.trend === 'true';
 
-        var owEl = document.getElementById('opt-overwrite');
-        if (owEl && backup.overwrite !== undefined) owEl.checked = backup.overwrite === 'true';
+        if (backup.run_mode !== undefined) {
+          var rmEl = document.querySelector('input[name="run-mode"][value="' + backup.run_mode + '"]');
+          if (rmEl) rmEl.checked = true;
+        } else if (backup.overwrite !== undefined) {
+          var rmEl = document.querySelector('input[name="run-mode"][value="' + (backup.overwrite === 'true' ? 'new' : 'continue') + '"]');
+          if (rmEl) rmEl.checked = true;
+        }
 
         document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
           c.checked = backup.fixed && backup.fixed.indexOf(c.value) !== -1;
@@ -2355,6 +2383,14 @@
       if (errEl) errEl.textContent = 'Please fill in all required fields marked in red above.';
       return;
     }
+    // For full fits with existing results, validate that a run mode is selected
+    if (!testRun && fitResultsExist) {
+      var runModeSelected = document.querySelector('input[name="run-mode"]:checked')?.value;
+      if (!runModeSelected) {
+        if (errEl) errEl.textContent = 'Fit results exist. Choose \'New Fit\' or \'Continue Sampling\' to proceed.';
+        return;
+      }
+    }
     saveJob();
     // Unhide this job on the Jobs page
     try {
@@ -2645,5 +2681,6 @@
   {% else %}
     <a href="/photometry" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Photometry</a>
   {% endif %}
+  <a href="/lco/schedule" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To LCO</a>
 </div>
 {% endblock %}

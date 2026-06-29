@@ -63,16 +63,21 @@ pointing you to `--wcs_method twirl`. BANZAI-reduced **muscat3 / muscat4 /
 sinistro** already carry WCS in their headers and skip solving entirely, so the
 API key is irrelevant for those instruments.
 
-### LCO Scheduling and Archive Downloads
+### LCO Scheduling, Archive Downloads, and FOV Optimization
 
 The `/lco` page integrates with the LCO Observation Portal for scheduling
-MUSCAT and Sinistro observations and downloading reduced data from the LCO
-archive. The feature is split into two workflows:
+MUSCAT and Sinistro observations, optimizing pointing offsets/orientations, and downloading
+reduced data from the LCO archive. The feature is split into three workflows:
 
 - **Schedule Observations**: Load your proposals, select target and planet, 
   generate batch transit windows across a UTC date range, configure imaging 
   (MUSCAT g/r/i/z or Sinistro filter), run a dry-run IPP check, and submit 
-  observations.
+  observations. The scheduler page includes **Show FOV** and **Show Exp** shortcuts
+  to pre-populate pointing offsets and exposure calculations for the target.
+- **Field-of-View (FOV) Optimization (`/fov`)**: Optimize the telescope pointing
+  center offset and Position Angle (PA) to capture the maximum number of useful,
+  non-saturated comparison stars from Gaia DR3 while keeping the science target
+  inside the instrument footprint (safely away from edges).
 - **Download LCO Data**: Filter archive frames by proposal, target, site, 
   instrument, reduction level, and date range, then download selected files 
   server-side.
@@ -138,9 +143,13 @@ muscat-db serve --port 8080  # custom port
 ## Web Frontend
 
 The navigation bar links the observation log, photometry, transit fitting, job
-history, exposure calculator, LCO scheduling/download, and pipeline guide. 
+history, exposure calculator, LCO scheduling/download, field-of-view optimizer, and pipeline guide. 
 Observation-log navigation is **Logs** → **Dates** → **CCD summaries** → 
 **Per-frame table**.
+
+- **Transit Fitting Run Modes**: When launching transit fits, choose between a **New Fit** (start fresh, clobbering existing traces) or **Continue Sampling** (load the previous trace and append more MCMC draws, available if previous results exist).
+- **Field-of-View (FOV) Optimizer**: Accessible from the navbar or observation scheduler to plan pointing offsets and instrument position angle (PA) based on Gaia DR3 comparison star heuristics.
+- **Ephemeris O-C Export Headers**: Exported O-C ephemeris text starts with descriptive `#` comments specifying the BJD_TDB time standard and column formats (planet, epoch, tc, tc_unc) for easy external parsing.
 
 The home page shows:
 
