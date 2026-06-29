@@ -686,15 +686,14 @@
 
     <div id="opt-error" style="color: var(--red); font-size: 0.85rem; margin-top: 0.5rem;"></div>
 
-    <div style="display:flex; align-items:center; gap:0.5rem; margin:0.5rem 0;">
-      <label for="opt-run_name" style="font-size:0.85rem; color:var(--text-dim);">Run name
-        <span class="help-tooltip" title="Optional label for this run (e.g. uniform_priors, gaussian_priors). Distinct runs are stored separately; site/mode of the selected lightcurves are prepended automatically. Empty = 'default'.">?</span>
-      </label>
-      <input type="text" id="opt-run_name" placeholder="default"
-             style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.6rem; font-size: 0.85rem;">
-    </div>
-
     <div class="run-actions">
+      <div style="display:flex; align-items:center; gap:0.5rem;">
+        <label for="opt-run_name" style="font-size:0.85rem; color:var(--text-dim); white-space:nowrap;">Run name
+          <span class="help-tooltip" title="Optional label for this run (e.g. uniform_priors, gaussian_priors). Distinct runs are stored separately; site/mode of the selected lightcurves are prepended automatically. Empty = 'default'.">?</span>
+        </label>
+        <input type="text" id="opt-run_name" placeholder="default"
+               style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.6rem; font-size: 0.85rem; min-width: 120px;">
+      </div>
       <button class="btn" type="button" id="calc-logp-btn">
         ∑ Calculate logprob
       </button>
