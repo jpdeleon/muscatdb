@@ -490,12 +490,29 @@
   });
 
   // ---- Collect magnitudes ----
+  var NARROW_MAP = { g_narrow: 'gp', Na_D: 'rp', i_narrow: 'ip', z_narrow: 'zs' };
+  var NARROW_OFFSET = { g_narrow: -1.15, Na_D: -1.30, i_narrow: -1.30, z_narrow: -1.30 };
+
   function collectMags() {
     var mags = {};
     magInputs.forEach(function (inp) {
       var v = parseFloat(inp.value);
       if (!isNaN(v) && v > 0) mags[inp.dataset.band] = v;
     });
+
+    // Add narrowband magnitudes if checkbox is checked
+    if (showNarrow.checked) {
+      Object.keys(NARROW_MAP).forEach(function (narrow) {
+        var parent = NARROW_MAP[narrow];
+        var parentMag = mags[parent];
+        if (parentMag) {
+          var offset = NARROW_OFFSET[narrow] || 0;
+          var narrowMag = parentMag + (offset / 0.4);
+          mags[narrow] = narrowMag;
+        }
+      });
+    }
+
     return mags;
   }
 
