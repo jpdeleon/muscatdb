@@ -145,9 +145,10 @@ class LcoTest(unittest.TestCase):
             pad_after_min=30,
         )
         self.assertEqual(len(windows), 3)
-        self.assertEqual(windows[0]["epoch"], 2036)
-        self.assertEqual(windows[1]["epoch"], 2037)
-        self.assertEqual(windows[2]["epoch"], 2038)
+        self.assertEqual(windows[0]["epoch"], 0)  # Normalized to 0-indexed within date range
+        self.assertEqual(windows[0]["epoch_abs"], 2036)  # Absolute epoch preserved
+        self.assertEqual(windows[1]["epoch"], 1)
+        self.assertEqual(windows[2]["epoch"], 2)
 
 if __name__ == "__main__":
     unittest.main()
