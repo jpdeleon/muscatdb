@@ -1090,7 +1090,7 @@ def transit_fit_run(payload: dict = Body(...)):
     target = (payload.get("target") or "").strip()
     options = payload.get("options") or {}
     test_run = bool(payload.get("test_run", False))
-    selected_csvs = payload.get("selected_csvs") or None
+    selected_csvs = payload.get("selected_csvs") if "selected_csvs" in payload else None
     result = fit.start_fit(inst, date, target, options, test_run=test_run, selected_csvs=selected_csvs)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
@@ -1103,7 +1103,7 @@ def transit_fit_logp(payload: dict = Body(...)):
     date = (payload.get("date") or "").strip()
     target = (payload.get("target") or "").strip()
     options = payload.get("options") or {}
-    selected_csvs = payload.get("selected_csvs") or None
+    selected_csvs = payload.get("selected_csvs") if "selected_csvs" in payload else None
     result = fit.compute_logp(inst, date, target, options, selected_csvs=selected_csvs)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
