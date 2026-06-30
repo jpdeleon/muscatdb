@@ -1419,13 +1419,19 @@ _FOV_INSTRUMENTS = [name for name in INSTRUMENTS if fov_opt.has_footprint(name)]
 @app.get("/fov", response_class=HTMLResponse)
 def fov_page(inst: str = "", target: str = ""):
     inst = inst if inst in _FOV_INSTRUMENTS else ""
+    readout_modes: dict[str, list[dict[str, str]]] = {}
     fov_sizes = {}
     for name in _FOV_INSTRUMENTS:
         if name == "sinistro":
             # Show the default (central_2k_2x2) size; full_frame is a selectable option
             size_arcmin = fov_opt.SINISTRO_MODES["central_2k_2x2"] * 2.0 / 60.0
+            readout_modes[name] = [
+                {"value": mode, "label": f"{mode} ({round(half_arcsec * 2.0 / 60.0, 1)}′)"}
+                for mode, half_arcsec in fov_opt.SINISTRO_MODES.items()
+            ]
         else:
             size_arcmin = fov_opt.load_fov_halfsize_arcsec(name) * 2.0 / 60.0
+            readout_modes[name] = [{"value": "MUSCAT_FAST", "label": "MUSCAT_FAST"}]
         fov_sizes[name] = round(size_arcmin, 2)
     return _render(
         "fov.html",
@@ -1433,7 +1439,7 @@ def fov_page(inst: str = "", target: str = ""):
         sel_inst=inst,
         sel_target=target,
         fov_sizes=fov_sizes,
-        sinistro_modes=fov_opt.SINISTRO_MODES,
+        readout_modes=readout_modes,
     )
 
 

@@ -73,31 +73,28 @@
     <div class="fov-section">
       <h3>Target &amp; Instrument</h3>
       <div class="fov-grid">
-        <div class="fov-field">
-          <label for="fov-inst">Instrument</label>
-          <select id="fov-inst">
-            {% for name in instruments %}
-            <option value="{{ name }}"{% if name == sel_inst %} selected{% endif %}>{{ name }} ({{ fov_sizes[name] }}′)</option>
-            {% if name == "sinistro" %}
-            <option value="sinistro" data-mode="full_frame"{% if sel_inst == "sinistro" and false %} selected{% endif %}>sinistro (26.0′)</option>
-            {% endif %}
-            {% endfor %}
-          </select>
-        </div>
-        <div class="fov-field" id="fov-sinistro-mode-field" style="display: none;">
-          <label for="fov-sinistro-mode">Readout mode</label>
-          <select id="fov-sinistro-mode">
-            {% for mode, half_arcsec in sinistro_modes.items() %}
-            <option value="{{ mode }}"{% if mode == 'central_2k_2x2' %} selected{% endif %}>{{ mode | replace('_', ' ') }} ({{ (half_arcsec * 2 / 60) | round(1) }}′)</option>
-            {% endfor %}
-          </select>
-        </div>
         <div class="fov-field" style="grid-column: span 1;">
           <label for="fov-target">Target name</label>
           <input id="fov-target" type="text" placeholder="e.g. WASP-12" value="{{ sel_target }}">
         </div>
         <div class="fov-field" style="display: flex; align-items: flex-end;">
           <button id="fov-resolve" class="fov-btn ghost" type="button" title="Look up RA/Dec for the target name">Resolve</button>
+        </div>
+        <div class="fov-field">
+          <label for="fov-inst">Instrument</label>
+          <select id="fov-inst">
+            {% for name in instruments %}
+            <option value="{{ name }}"{% if name == sel_inst %} selected{% endif %}>{{ name }} ({{ fov_sizes[name] }}′)</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="fov-field" id="fov-readout-mode-field">
+          <label for="fov-sinistro-mode">Readout mode</label>
+          <select id="fov-sinistro-mode">
+            {% for mode in readout_modes.get(sel_inst or instruments[0], [{"value": "MUSCAT_FAST", "label": "MUSCAT_FAST"}]) %}
+            <option value="{{ mode.value }}">{{ mode.label }}</option>
+            {% endfor %}
+          </select>
         </div>
         <div class="fov-field"><label for="fov-ra">RA (deg)</label><input id="fov-ra" type="text" inputmode="decimal" placeholder="optional"></div>
         <div class="fov-field"><label for="fov-dec">Dec (deg)</label><input id="fov-dec" type="text" inputmode="decimal" placeholder="optional"></div>
@@ -166,6 +163,7 @@
 <script>
 (function () {
   const FOV_ARCMIN = {{ fov_sizes | tojson }};
+  const READOUT_MODES = {{ readout_modes | tojson }};
   const $ = (id) => document.getElementById(id);
   const msg = $('fov-msg');
 
@@ -322,7 +320,7 @@
   function getParams() {
     return {
       inst: $('fov-inst').value,
-      sinistroMode: $('fov-sinistro-mode').value,
+      readoutMode: $('fov-sinistro-mode').value,
       target: $('fov-target').value.trim(),
       ra: $('fov-ra').value.trim(),
       dec: $('fov-dec').value.trim(),
@@ -335,7 +333,7 @@
 
   function setParams(p) {
     if (p.inst) $('fov-inst').value = p.inst;
-    if (p.sinistroMode) $('fov-sinistro-mode').value = p.sinistroMode;
+    updateReadoutModeOptions(p.inst || $('fov-inst').value, p.readoutMode);
     if (p.target !== undefined) $('fov-target').value = p.target;
     if (p.ra !== undefined) $('fov-ra').value = p.ra;
     if (p.dec !== undefined) $('fov-dec').value = p.dec;
@@ -343,7 +341,7 @@
     if (p.compMargin !== undefined) $('fov-comp-margin').value = p.compMargin;
     if (p.maglim) $('fov-maglim').value = p.maglim;
     if (p.allowRotation !== undefined) $('fov-allow-rotation').checked = p.allowRotation;
-    updateSinistroModeVisibility();
+    updateReadoutModeOptions($('fov-inst').value, p.readoutMode);
   }
 
   async function loadObservableRanges() {
@@ -392,22 +390,24 @@
     });
   }
 
-  function updateSinistroModeVisibility() {
-    const instSelect = $('fov-inst');
-    const selectedOption = instSelect.options[instSelect.selectedIndex];
-    const isSinistro = instSelect.value === 'sinistro';
-    $('fov-sinistro-mode-field').style.display = isSinistro ? '' : 'none';
-
-    // If the selected option has a data-mode attribute, auto-set the readout mode
-    if (isSinistro && selectedOption.dataset.mode) {
-      $('fov-sinistro-mode').value = selectedOption.dataset.mode;
-    }
+  function updateReadoutModeOptions(inst, preferred) {
+    const select = $('fov-sinistro-mode');
+    const modes = READOUT_MODES[inst] || [{ value: 'MUSCAT_FAST', label: 'MUSCAT_FAST' }];
+    const current = preferred || select.value || modes[0].value;
+    select.innerHTML = '';
+    modes.forEach((mode) => {
+      const opt = document.createElement('option');
+      opt.value = mode.value;
+      opt.textContent = mode.label;
+      select.appendChild(opt);
+    });
+    select.value = modes.some((mode) => mode.value === current) ? current : modes[0].value;
   }
 
   function updateUrl(p) {
     const sp = new URLSearchParams();
     if (p.inst) sp.set('inst', p.inst);
-    if (p.sinistroMode && p.sinistroMode !== 'central_2k_2x2') sp.set('smode', p.sinistroMode);
+    if (p.readoutMode) sp.set('smode', p.readoutMode);
     if (p.target) sp.set('target', p.target);
     if (p.ra) sp.set('ra', p.ra);
     if (p.dec) sp.set('dec', p.dec);
@@ -440,7 +440,7 @@
     const stored = loadFromStorage();
     const p = {
       inst: sp.get('inst') || (stored?.inst || ''),
-      sinistroMode: sp.get('smode') || (stored?.sinistroMode || 'central_2k_2x2'),
+      readoutMode: sp.get('smode') || (stored?.readoutMode || stored?.sinistroMode || 'MUSCAT_FAST'),
       target: sp.get('target') || (stored?.target || ''),
       ra: sp.get('ra') || (stored?.ra || ''),
       dec: sp.get('dec') || (stored?.dec || ''),
@@ -470,7 +470,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           instrument: params.inst,
-          sinistro_mode: params.sinistroMode,
+          sinistro_mode: params.inst === 'sinistro' ? params.readoutMode : null,
           target: params.target,
           ra: params.ra || null,
           dec: params.dec || null,
@@ -576,7 +576,7 @@
   $('fov-resolve').addEventListener('click', resolveTarget);
   $('fov-reset-view').addEventListener('click', () => recenter(lastResult));
   $('fov-copy-center').addEventListener('click', copyFovCenter);
-  $('fov-inst').addEventListener('change', updateSinistroModeVisibility);
+  $('fov-inst').addEventListener('change', () => updateReadoutModeOptions($('fov-inst').value));
   $('fov-dec').addEventListener('change', updateInstrumentAvailability);
   $('fov-target').addEventListener('keydown', (e) => { if (e.key === 'Enter') resolveTarget(); });
 
