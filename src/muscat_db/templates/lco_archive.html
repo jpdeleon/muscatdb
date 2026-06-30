@@ -1,0 +1,324 @@
+{% extends "base.html" %}
+{% block title %}LCO Archive — MuSCAT-db{% endblock %}
+{% block content %}
+{% set active_lco_page = "archive" %}
+{% include "_lco_shared.html" %}
+
+<div class="lco-section">
+  <h3>Search LCO Archive</h3>
+  <div class="lco-grid">
+    <div class="lco-field"><label for="dl-proposal">Proposal ID</label><input id="dl-proposal" type="text" placeholder="LCO2026A-001"></div>
+    <div class="lco-field"><label for="dl-object">Object</label><input id="dl-object" type="text" placeholder="WASP-12"></div>
+    <div class="lco-field"><label for="dl-tel">Telescope</label>
+      <select id="dl-tel">
+        <option value="">none</option>
+        <option value="0m4">0.4m</option>
+        <option value="1m0">1m</option>
+        <option value="2m0">2m</option>
+      </select></div>
+    <div class="lco-field"><label for="dl-site">Site</label>
+      <select id="dl-site"><option value="">none</option></select></div>
+    <div class="lco-field"><label for="dl-instrume">Instrument (header)</label><input id="dl-instrume" type="text" placeholder="ep05 / fa..."></div>
+    <div class="lco-field"><label for="dl-filter">Filter</label><input id="dl-filter" type="text" placeholder="rp"></div>
+    <div class="lco-field"><label for="dl-rlevel">Reduction level</label>
+      <select id="dl-rlevel"><option value="">any</option><option value="91" selected>91 (reduced)</option><option value="0">0 (raw)</option></select></div>
+    <div class="lco-field"><label for="dl-start">Start (UTC)</label><input id="dl-start" type="date" min="2014-01-01"></div>
+    <div class="lco-field"><label for="dl-end">End (UTC)</label><input id="dl-end" type="date" min="2014-01-01"></div>
+    <div class="lco-field"><label for="dl-limit">Limit</label><input id="dl-limit" type="number" min="1" max="1000" value="50"></div>
+  </div>
+  <div class="lco-actions">
+    <button class="btn primary" type="button" id="btn-search">Search frames</button>
+    <span class="lco-msg" id="msg-search" style="margin: 0;"></span>
+  </div>
+  <p class="lco-note">Files save to <code>&lt;MUSCAT_LCO_DIR&gt;/&lt;inferred instrument&gt;/&lt;date&gt;/</code> (or that instrument's data dir). The destination instrument is inferred from the archive metadata: OGG 2m0 MuSCAT → muscat3, COJ 2m0 MuSCAT → muscat4, and LCO 1m0 → sinistro.</p>
+</div>
+
+<div class="lco-section">
+  <h3>Results</h3>
+  <div class="lco-actions" style="margin-bottom: 0.6rem;">
+    <button class="btn primary" type="button" id="btn-download" disabled>Download selected</button>
+    <label class="lco-field" style="flex-direction: row; align-items: center; gap: 0.4rem; margin: 0;">
+      <input type="checkbox" id="dl-overwrite"> <span style="font-size: 0.82rem;">Overwrite existing</span>
+    </label>
+    <span class="lco-msg" id="msg-download" style="margin: 0;"></span>
+  </div>
+  <div id="frames-groups" style="display: none;"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+  var CURRENT_YEAR = (new Date()).getFullYear();
+  var OPT_KEY = 'lco:archive:options';
+  var STATE_KEY = 'lco:archive:state';
+  function el(id) { return document.getElementById(id); }
+  function val(id) { var e = el(id); return e ? e.value.trim() : ''; }
+  function chk(id) { var e = el(id); return e ? !!e.checked : false; }
+  function setVal(id, v) { var e = el(id); if (e && v !== undefined && v !== null) e.value = v; }
+  function setChk(id, v) { var e = el(id); if (e) e.checked = !!v; }
+  function msg(id, text, kind) {
+    var e = el(id); if (!e) return;
+    e.textContent = text || '';
+    e.className = 'lco-msg' + (kind ? ' ' + kind : '');
+  }
+
+  function applyDateBounds() {
+    var maxDate = CURRENT_YEAR + '-12-31';
+    ['dl-start', 'dl-end'].forEach(function (id) {
+      var node = el(id);
+      if (!node) return;
+      node.max = maxDate;
+    });
+  }
+
+  var TEXT_IDS = [
+    'dl-proposal','dl-object','dl-site','dl-tel','dl-instrume',
+    'dl-filter','dl-rlevel','dl-start','dl-end','dl-limit'
+  ];
+  var CHECK_IDS = ['dl-overwrite'];
+  var DL_SITE_OPTIONS = {
+    '': [],
+    '0m4': ['ogg', 'coj', 'lsc', 'cpt', 'tfn', 'elp'],
+    '1m0': ['ogg', 'coj', 'lsc', 'cpt', 'tfn', 'elp'],
+    '2m0': ['ogg', 'coj']
+  };
+  var lastFrames = [];
+
+  function collectOptions() {
+    var o = {};
+    TEXT_IDS.forEach(function (id) { o[id] = val(id); });
+    CHECK_IDS.forEach(function (id) { o[id] = chk(id); });
+    return o;
+  }
+  function saveOptions() {
+    try { localStorage.setItem(OPT_KEY, JSON.stringify(collectOptions())); } catch (e) {}
+  }
+  function restoreOptions() {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved) return;
+    TEXT_IDS.forEach(function (id) { if (saved[id] !== undefined && saved[id] !== '') setVal(id, saved[id]); });
+    CHECK_IDS.forEach(function (id) { if (saved[id] !== undefined) setChk(id, saved[id]); });
+  }
+  document.addEventListener('change', function (e) {
+    if (e.target && (TEXT_IDS.indexOf(e.target.id) !== -1 || CHECK_IDS.indexOf(e.target.id) !== -1)) saveOptions();
+  });
+
+  function setDot(id, ok) { var e = el(id); if (e) e.className = 'dot ' + (ok ? 'ok' : 'no'); }
+  fetch('/api/lco/config').then(function (r) { return r.json(); }).then(function (d) {
+    if (!d.ok) return;
+    setDot('cfg-token', d.token_configured);
+    setDot('cfg-root', d.download_root_configured);
+    setDot('cfg-submit', d.submit_allowed);
+  }).catch(function () {});
+
+  function setSelectOptions(id, values, current) {
+    var sel = el(id);
+    if (!sel) return;
+    sel.innerHTML = '';
+    var none = document.createElement('option');
+    none.value = '';
+    none.textContent = 'none';
+    sel.appendChild(none);
+    (values || []).forEach(function (value) {
+      var opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = value;
+      sel.appendChild(opt);
+    });
+    sel.value = current && (values || []).indexOf(current) !== -1 ? current : '';
+  }
+
+  function applyDownloadSiteOptions() {
+    var tel = val('dl-tel');
+    var currentSite = val('dl-site');
+    setSelectOptions('dl-site', DL_SITE_OPTIONS[tel] || [], currentSite);
+  }
+  el('dl-tel').addEventListener('change', applyDownloadSiteOptions);
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function selectedFrameKeys() {
+    var out = [];
+    document.querySelectorAll('#frames-groups tbody input[type=checkbox]:checked').forEach(function (c) {
+      var f = lastFrames[+c.dataset.i];
+      if (f) out.push(f.filename || f.basename || ('idx:' + c.dataset.i));
+    });
+    return out;
+  }
+
+  function saveArchiveState() {
+    try {
+      localStorage.setItem(STATE_KEY, JSON.stringify({
+        frames: lastFrames,
+        selected: selectedFrameKeys()
+      }));
+    } catch (e) {}
+  }
+
+  function frameRowHtml(f, i, selectedSet) {
+    var key = f.filename || f.basename || ('idx:' + i);
+    var checked = selectedSet ? !!selectedSet[key] : false;
+    var status = f._downloadStatus;
+    if (!status && f.saved_locally) {
+      status = 'done';
+    }
+    return '<tr>' +
+      '<td><input type="checkbox" data-i="' + i + '"' + (checked ? ' checked' : '') + '></td>' +
+      '<td>' + esc(f.filename || f.basename || '') + '</td>' +
+      '<td>' + esc(f.SITEID || '') + '</td>' +
+      '<td>' + esc(f.TELID || '') + '</td>' +
+      '<td>' + esc(f.INSTRUME || '') + '</td>' +
+      '<td>' + esc(f.FILTER || '') + '</td>' +
+      '<td>' + esc(f.RLEVEL !== undefined ? f.RLEVEL : (f.reduction_level || '')) + '</td>' +
+      '<td>' + esc(f.DATE_OBS || f.observation_date || '') + '</td>' +
+      '<td class="frame-status" data-i="' + i + '">' + esc(status || '') + '</td>' +
+      '</tr>';
+  }
+
+  function renderFrameGroups(selected) {
+    var host = el('frames-groups');
+    host.innerHTML = '';
+    if (!lastFrames.length) {
+      host.style.display = 'none';
+      el('btn-download').disabled = true;
+      return;
+    }
+    var selectedSet = {};
+    (selected || []).forEach(function (key) { selectedSet[key] = true; });
+    var groups = [];
+    var byId = {};
+    lastFrames.forEach(function (f, i) {
+      var id = f.dataset_id || ('ungrouped:' + i);
+      if (!byId[id]) {
+        byId[id] = { id: id, rows: [], first: f };
+        groups.push(byId[id]);
+      }
+      byId[id].rows.push({ frame: f, index: i });
+    });
+
+    groups.forEach(function (g) {
+      var f = g.first;
+      var existing = (f.dataset_existing_count || 0) > 0;
+      var existingText = existing ? ('already in muscat-db (' + f.dataset_existing_count + '/' + (f.dataset_frame_count || 0) + ' frames)') : 'not in muscat-db';
+      var matchBits = '';
+      if (existing && f.dataset_matched_object) matchBits += '<span>Matched: ' + esc(f.dataset_matched_object) + '</span>';
+      if (existing && f.dataset_match_sep_arcsec !== null && f.dataset_match_sep_arcsec !== undefined) matchBits += '<span>Sep: ' + esc(String(f.dataset_match_sep_arcsec)) + ' arcsec</span>';
+      var details = document.createElement('details');
+      details.className = 'lco-dataset';
+      details.open = true;
+      details.innerHTML =
+        '<summary><div class="lco-dataset-head">' +
+        '<span>Dataset date: ' + esc(f.dataset_date || 'unknown') + '</span>' +
+        (f.OBJECT ? '<span>Target: ' + esc(f.OBJECT) + '</span>' : '') +
+        (f.SITEID ? '<span>Site: ' + esc(f.SITEID) + '</span>' : '') +
+        '<span>Frames: ' + esc(String(f.dataset_frame_count || g.rows.length)) + '</span>' +
+        '<span style="color:' + (existing ? '#2ecc71' : 'var(--text-dim)') + ';">' + esc(existingText) + '</span>' +
+        matchBits +
+        '</div></summary>' +
+        '<div class="lco-dataset-body">' +
+        '<div class="lco-table-wrap">' +
+        '<table class="lco-table"><thead><tr>' +
+        '<th><input type="checkbox" class="frame-group-all" data-group="' + esc(g.id) + '"></th>' +
+        '<th>Filename</th><th>Site</th><th>Tel</th><th>Instr</th><th>Filter</th><th>RLvl</th><th>Date-Obs</th><th>Status</th>' +
+        '</tr></thead><tbody>' +
+        g.rows.map(function (row) { return frameRowHtml(row.frame, row.index, selectedSet); }).join('') +
+        '</tbody></table></div></div>';
+      host.appendChild(details);
+    });
+    host.style.display = '';
+    el('btn-download').disabled = false;
+  }
+
+  function restoreArchiveState() {
+    var saved;
+    try { saved = JSON.parse(localStorage.getItem(STATE_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved) return;
+    lastFrames = Array.isArray(saved.frames) ? saved.frames : [];
+    renderFrameGroups(saved.selected || []);
+  }
+
+  el('frames-groups').addEventListener('change', function (e) {
+    var box = e.target.closest('.frame-group-all');
+    if (box) {
+      var details = box.closest('details');
+      if (!details) return;
+      details.querySelectorAll('tbody input[type=checkbox]').forEach(function (c) { c.checked = box.checked; });
+      saveArchiveState();
+      return;
+    }
+    if (e.target && e.target.matches('tbody input[type=checkbox]')) saveArchiveState();
+  });
+
+  el('btn-search').addEventListener('click', function () {
+    msg('msg-search', 'Searching…');
+    var q = new URLSearchParams();
+    var map = {
+      proposal_id: 'dl-proposal', OBJECT: 'dl-object', SITEID: 'dl-site', TELID: 'dl-tel',
+      INSTRUME: 'dl-instrume', FILTER: 'dl-filter', reduction_level: 'dl-rlevel',
+      start: 'dl-start', end: 'dl-end', limit: 'dl-limit'
+    };
+    Object.keys(map).forEach(function (k) { var v = val(map[k]); if (v) q.set(k, v); });
+    fetch('/api/lco/archive/frames?' + q.toString()).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d.ok) { msg('msg-search', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
+      lastFrames = d.results || [];
+      renderFrameGroups();
+      saveArchiveState();
+      var datasetMsg = d.dataset_count !== undefined ? (' across ' + d.dataset_count + ' dataset' + (d.dataset_count === 1 ? '' : 's')) : '';
+      msg('msg-search', 'Found ' + (d.count !== undefined ? d.count : lastFrames.length) + ' frames (showing ' + lastFrames.length + ')' + datasetMsg, 'ok');
+    }).catch(function (e) { msg('msg-search', String(e), 'err'); });
+  });
+
+  el('btn-download').addEventListener('click', function () {
+    var picked = [];
+    document.querySelectorAll('#frames-groups tbody input[type=checkbox]:checked').forEach(function (c) {
+      var f = lastFrames[+c.dataset.i];
+      if (f) picked.push(f);
+    });
+    if (!picked.length) { msg('msg-download', 'Select frames first', 'err'); return; }
+    msg('msg-download', 'Downloading ' + picked.length + ' frames…');
+    
+    // Set status to downloading... immediately
+    picked.forEach(function (f) {
+      f._downloadStatus = 'downloading…';
+    });
+    renderFrameGroups(selectedFrameKeys());
+    
+    var body = { overwrite: chk('dl-overwrite'), frames: picked };
+    fetch('/api/lco/archive/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) { msg('msg-download', d.error || 'failed', 'err'); return; }
+        var byName = {};
+        (d.results || []).forEach(function (r) { byName[r.filename] = r; });
+        lastFrames.forEach(function (f) {
+          var r = byName[f.filename || f.basename];
+          if (!r) return;
+          if (r.status === 'downloaded' || r.status === 'exists') {
+            f._downloadStatus = 'done';
+            f.saved_locally = true;
+          } else {
+            f._downloadStatus = r.status + (r.error ? ': ' + r.error : '');
+          }
+        });
+        renderFrameGroups(selectedFrameKeys());
+        saveArchiveState();
+        var ok = (d.results || []).filter(function (r) { return r.status === 'downloaded'; }).length;
+        var ex = (d.results || []).filter(function (r) { return r.status === 'exists'; }).length;
+        var er = (d.results || []).filter(function (r) { return r.status === 'error'; }).length;
+        msg('msg-download', 'Done: ' + ok + ' downloaded, ' + ex + ' already present, ' + er + ' errors', er ? 'err' : 'ok');
+      }).catch(function (e) { msg('msg-download', String(e), 'err'); });
+  });
+
+  restoreOptions();
+  applyDateBounds();
+  applyDownloadSiteOptions();
+  restoreArchiveState();
+})();
+</script>
+{% endblock %}

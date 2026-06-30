@@ -156,11 +156,16 @@ def build_run_id(site: str | None, mode: str | None, run_name: str | None) -> st
     Components are joined by ``-`` (the components themselves only ever contain
     ``_``, so ``-`` keeps the id readable and splittable). ``site``/``mode`` are
     blank for non-sinistro or when undetermined; ``mixed`` when the selected
-    lightcurves span more than one value (mixing is allowed).
+    lightcurves span more than one value (mixing is allowed). Sinistro's
+    ``central_2k_2x2`` readout mode is the default and is omitted; non-default
+    modes such as ``full_frame`` remain explicit.
     """
+    mode_part = (mode or "").strip().lower()
+    if mode_part == "central_2k_2x2":
+        mode_part = ""
     parts = [p for p in (
         (site or "").strip().lower(),
-        (mode or "").strip().lower(),
+        mode_part,
         slugify_run_name(run_name),
     ) if p]
     return "-".join(parts)
@@ -248,6 +253,26 @@ def selected_site_mode(inst: str, csv_names: list[str]) -> tuple[str, str]:
     return site, mode
 
 
+def validate_no_duplicate_datasets(inst: str, date: str, csvs: list[pathlib.Path]) -> str | None:
+    """Ensure no selected lightcurves represent the same physical dataset (site, mode, band)."""
+    seen_keys = set()
+    for c in csvs:
+        parts = c.name.split(f"_{inst}_")
+        raw_band = parts[1].split(f"_{date}")[0] if len(parts) > 1 else "gp"
+        mapped_band = _normalize_band(raw_band)
+        site, mode = csv_site_mode(c.name)
+        key = (site or "", mode or "", mapped_band)
+        if key in seen_keys:
+            if inst == "sinistro":
+                site_str = f" (site: {site})" if site else ""
+                mode_str = f" (mode: {mode})" if mode else ""
+                return f"Multiple lightcurves selected for the same dataset: band '{mapped_band}'{site_str}{mode_str}. Please select only one run."
+            else:
+                return f"Multiple lightcurves selected for the same band '{mapped_band}'. Please select only one run."
+        seen_keys.add(key)
+    return None
+
+
 def _timer_prefix() -> list[str]:
     """Resolve how to invoke the timer-fit tool, using the timer conda env."""
     env = "timer"
@@ -267,23 +292,48 @@ def _timer_prefix() -> list[str]:
 
 
 def get_csv_lightcurves(inst: str, date: str, target: str) -> list[pathlib.Path]:
-    """Find the CSV lightcurves outputted by the Photometry page for a target."""
+    """Find the CSV lightcurves outputted by the Photometry page for a target.
+
+    Photometry now stores named runs under ``_runs/<target>/<run_id>/`` while
+    older reductions wrote CSVs directly in ``<inst>/<date>/``. Transit-fit
+    accepts both layouts so one-band Sinistro reductions remain selectable.
+    """
     rdir = output_base() / inst / date
     if not rdir.is_dir():
         return []
 
     target_clean = target.replace(" ", "").replace("-", "").lower()
-    csvs = []
-    for f in rdir.glob("*.csv"):
-        if f.name.startswith("_") or "summary" in f.name:
-            continue
+    inst_token = f"_{inst.lower()}_"
+
+    def matches_lightcurve(f: pathlib.Path) -> bool:
+        if f.name.startswith("_") or "summary" in f.name or "nearby_stars" in f.name:
+            return False
         fname = f.name.lower()
-        if inst.lower() in fname and date in fname:
-            t_part = fname.split(f"_{inst.lower()}_")[0]
-            t_clean = t_part.replace("-", "")
-            if t_clean == target_clean:
-                csvs.append(f)
-    return sorted(csvs)
+        if inst_token not in fname:
+            return False
+        t_part = fname.split(inst_token, 1)[0]
+        return t_part.replace("-", "") == target_clean
+
+    search_dirs = [rdir]
+    try:
+        runs_root = rdir / "_runs" / _target_dir_name(target)
+    except ValueError:
+        runs_root = None
+    if runs_root is not None and runs_root.is_dir():
+        search_dirs.extend(d for d in sorted(runs_root.iterdir()) if d.is_dir())
+
+    csvs = []
+    seen: set[pathlib.Path] = set()
+    for search_dir in search_dirs:
+        for f in search_dir.glob("*.csv"):
+            if not matches_lightcurve(f):
+                continue
+            resolved = f.resolve(strict=False)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            csvs.append(f)
+    return sorted(csvs, key=lambda p: (p.name, str(p.parent)))
 
 
 def get_target_parameters(target_name: str) -> dict:
@@ -809,9 +859,19 @@ def _write_fit_inputs(
         fit_data["tc_pred_unc"] = provided_unc[0] if provided_unc else DEFAULT_TC_UNC
 
     fit_data["chromatic"] = options.get("chromatic") != "false"
-    # "Overwrite" maps to timer's ``clobber``: when true, timer ignores any saved
-    # *.pkl results and re-runs the fit from scratch. Default (unchecked) is false.
-    fit_data["clobber"] = options.get("overwrite") == "true"
+    # Run mode maps to timer's ``clobber``: "new" (start fresh) -> clobber=true,
+    # "continue" (resume sampling) -> clobber=false. For backwards compatibility,
+    # also check legacy "overwrite" option.
+    run_mode = options.get("run_mode")
+    if not run_mode:
+        # Legacy support: map old "overwrite" option to clobber behavior
+        if options.get("overwrite") == "true":
+            run_mode = "new"
+        elif options.get("overwrite") == "false":
+            run_mode = "continue"
+        else:
+            run_mode = "new"
+    fit_data["clobber"] = run_mode == "new"
     fit_data["plot_midtransit"] = options.get("plot_midtransit") == "true"
     fit_data["plot_ingress_egress"] = options.get("plot_ingress_egress") == "true"
 
@@ -824,6 +884,7 @@ def _write_fit_inputs(
     # Model options (timer defaults: include_mean and use_custom_optimizer on).
     fit_data["include_mean"] = _bool_opt("include_mean", default=True)
     fit_data["use_custom_optimizer"] = _bool_opt("use_custom_optimizer", default=True)
+    fit_data["fit_basis"] = str(options.get("fit_basis") or "duration").strip().lower()
 
     # Gaussian-process noise model. Only emit the ``gp`` block when enabled:
     # timer reads gp['log_amp'] etc. directly, so use_gp=true with no block
@@ -856,6 +917,120 @@ def _write_fit_inputs(
         if per_dataset:
             gp_block["per_dataset"] = per_dataset
         fit_data["gp"] = gp_block
+
+    fit_data["include_bump"] = _bool_opt("include_bump", default=False)
+    fit_data["chromatic_bump"] = _bool_opt("chromatic_bump", default=False)
+    if fit_data["include_bump"]:
+        def _bump_values(param: str, val_default: float, unc_default: float) -> tuple[float | list[float], float | list[float], str]:
+            raw_val = options.get(f"bump_{param}", "")
+            prior = str(options.get(f"bump_{param}_prior") or "gaussian").strip().lower()
+
+            s = str(raw_val).strip()
+            if not s:
+                if prior == "uniform":
+                    low, high = val_default - 3 * unc_default, val_default + 3 * unc_default
+                    return (low + high) / 2.0, high - low, prior
+                return val_default, unc_default, prior
+
+            pairs = [p.strip() for p in s.split(";") if p.strip()]
+            vals_val = []
+            vals_unc = []
+            for p in pairs:
+                parts = [x.strip() for x in p.split(",") if x.strip()]
+                if len(parts) >= 2:
+                    try:
+                        v, u = float(parts[0]), float(parts[1])
+                        if prior == "uniform":
+                            vals_val.append((v + u) / 2.0)
+                            vals_unc.append(u - v)
+                        else:
+                            vals_val.append(v)
+                            vals_unc.append(u)
+                    except ValueError:
+                        pass
+
+            if not vals_val:
+                if prior == "uniform":
+                    low, high = val_default - 3 * unc_default, val_default + 3 * unc_default
+                    return (low + high) / 2.0, high - low, prior
+                return val_default, unc_default, prior
+
+            if len(vals_val) == 1:
+                return vals_val[0], vals_unc[0], prior
+            return vals_val, vals_unc, prior
+
+        tcenter, tcenter_unc, tcenter_prior = _bump_values("tcenter", 0.0, 0.1)
+        width, width_unc, width_prior = _bump_values("width", 0.02, 0.01)
+        ampl, ampl_unc, ampl_prior = _bump_values("ampl", 0.01, 0.01)
+
+        fit_data["bump"] = {
+            "tcenter": tcenter,
+            "tcenter_unc": tcenter_unc,
+            "tcenter_prior": tcenter_prior,
+            "width": width,
+            "width_unc": width_unc,
+            "width_prior": width_prior,
+            "ampl": ampl,
+            "ampl_unc": ampl_unc,
+            "ampl_prior": ampl_prior,
+        }
+
+    fit_data["include_flare"] = _bool_opt("include_flare", default=False)
+    fit_data["chromatic_flare"] = _bool_opt("chromatic_flare", default=False)
+    if fit_data["include_flare"]:
+        def _flare_values(param: str, val_default: float, unc_default: float) -> tuple[float | list[float], float | list[float], str]:
+            raw_val = options.get(f"flare_{param}", "")
+            prior = str(options.get(f"flare_{param}_prior") or "gaussian").strip().lower()
+
+            s = str(raw_val).strip()
+            if not s:
+                if prior == "uniform":
+                    low, high = val_default - 3 * unc_default, val_default + 3 * unc_default
+                    return (low + high) / 2.0, high - low, prior
+                return val_default, unc_default, prior
+
+            pairs = [p.strip() for p in s.split(";") if p.strip()]
+            vals_val = []
+            vals_unc = []
+            for p in pairs:
+                parts = [x.strip() for x in p.split(",") if x.strip()]
+                if len(parts) >= 2:
+                    try:
+                        v, u = float(parts[0]), float(parts[1])
+                        if prior == "uniform":
+                            vals_val.append((v + u) / 2.0)
+                            vals_unc.append(u - v)
+                        else:
+                            vals_val.append(v)
+                            vals_unc.append(u)
+                    except ValueError:
+                        pass
+
+            if not vals_val:
+                if prior == "uniform":
+                    low, high = val_default - 3 * unc_default, val_default + 3 * unc_default
+                    return (low + high) / 2.0, high - low, prior
+                return val_default, unc_default, prior
+
+            if len(vals_val) == 1:
+                return vals_val[0], vals_unc[0], prior
+            return vals_val, vals_unc, prior
+
+        tpeak, tpeak_unc, tpeak_prior = _flare_values("tpeak", 0.0, 0.1)
+        fwhm, fwhm_unc, fwhm_prior = _flare_values("fwhm", 0.02, 0.01)
+        ampl, ampl_unc, ampl_prior = _flare_values("ampl", 0.01, 0.01)
+
+        fit_data["flare"] = {
+            "tpeak": tpeak,
+            "tpeak_unc": tpeak_unc,
+            "tpeak_prior": tpeak_prior,
+            "fwhm": fwhm,
+            "fwhm_unc": fwhm_unc,
+            "fwhm_prior": fwhm_prior,
+            "ampl": ampl,
+            "ampl_unc": ampl_unc,
+            "ampl_prior": ampl_prior,
+        }
 
     fixed = options.get("fixed")
     fit_data["fixed"] = ["period", "u_star"] if fixed is None else fixed
@@ -975,10 +1150,14 @@ def compute_logp(inst: str, date: str, target: str, options: dict, selected_csvs
     if not csvs:
         return {"ok": False, "error": "No photometry CSV lightcurves found for this target."}
     if selected_csvs is not None:
-        selected = set(selected_csvs)
-        csvs = [c for c in csvs if c.name in selected]
+        selected = set(str(p) for p in selected_csvs)
+        csvs = [c for c in csvs if str(c) in selected]
         if not csvs:
             return {"ok": False, "error": "No lightcurves selected for logP computation."}
+
+    err = validate_no_duplicate_datasets(inst, date, csvs)
+    if err:
+        return {"ok": False, "error": err}
 
     timer_py = _conda_env_python("timer")
     if not timer_py:
@@ -1016,6 +1195,20 @@ def compute_logp(inst: str, date: str, target: str, options: dict, selected_csvs
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def _fit_reduction_exists(
+    inst: str,
+    date: str,
+    target: str,
+    run_id: str,
+) -> bool:
+    """Check if a transit fit output directory already exists for the given run_id."""
+    try:
+        rdir = fit_output_dir(inst, date, target, run_id)
+    except ValueError:
+        return False
+    return rdir.is_dir()
+
+
 def start_fit(
     inst: str,
     date: str,
@@ -1050,10 +1243,14 @@ def start_fit(
     if not csvs:
         return {"ok": False, "error": "No photometry CSV lightcurves found for this target."}
     if selected_csvs is not None:
-        selected = set(selected_csvs)
-        csvs = [c for c in csvs if c.name in selected]
+        selected = set(str(p) for p in selected_csvs)
+        csvs = [c for c in csvs if str(c) in selected]
         if not csvs:
             return {"ok": False, "error": "No lightcurves selected for fitting."}
+
+    err = validate_no_duplicate_datasets(inst, date, csvs)
+    if err:
+        return {"ok": False, "error": err}
 
     # Identify this run: site/mode derived from the selected lightcurves (mixing
     # allowed -> "mixed"), plus the user's run-name label. The run id isolates the
@@ -1066,6 +1263,29 @@ def start_fit(
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
 
+    run_type = "test" if test_run else "full"
+
+    # Validate run mode for full fits with existing output
+    if run_type == "full":
+        run_mode = options.get("run_mode")
+        if not run_mode:
+            # Legacy support: map old "overwrite" option to new "run_mode"
+            # overwrite="true" (checked) -> run_mode="new" (start fresh)
+            # overwrite="false" (unchecked) -> run_mode="continue" (resume)
+            if options.get("overwrite") == "true":
+                run_mode = "new"
+            elif options.get("overwrite") == "false":
+                run_mode = "continue"
+            else:
+                run_mode = "new"  # default to "new" for fresh fits
+
+        has_results = _fit_reduction_exists(inst, date, target, run_id)
+        if has_results and run_mode not in ("new", "continue"):
+            return {
+                "ok": False,
+                "error": "fit results exist; choose 'New Fit' (start fresh) or 'Continue Sampling'",
+            }
+
     # Working directory
     rdir.mkdir(parents=True, exist_ok=True)
 
@@ -1075,7 +1295,6 @@ def start_fit(
     # Full fits always clobber — otherwise timer reuses the cached test-run
     # trace (20 draws) and exits immediately, misleading the user into thinking
     # their full-fit request was silently ignored.
-    run_type = "test" if test_run else "full"
     _write_fit_inputs(rdir, inst, date, target, csvs, options,
                       site=site, mode=mode, run_name=run_name, run_id=run_id,
                       run_type=run_type)
@@ -1091,8 +1310,15 @@ def start_fit(
     )
 
     with _FIT_LOCK:
+        existing = _FIT_JOBS.get(key)
+        # For full fits at capacity, allow queuing even if a job with the same key exists
+        at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
+
+        if existing is not None and existing.proc.poll() is None and not at_capacity:
+            return {"ok": True, "key": key, "already_running": True, "run_id": run_id}
+
         # Queue full jobs when at capacity
-        if run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS:
+        if at_capacity:
             from muscat_db.database import save_job
             try:
                 save_job(
@@ -1103,6 +1329,7 @@ def start_fit(
                     started_at=time.time(),
                     run_type=run_type,
                     params=params_json,
+                    run_name=run_name,
                 )
             except Exception:
                 return {"ok": False, "error": "database not writable"}
@@ -1156,6 +1383,7 @@ def start_fit(
             started_at=_FIT_JOBS[key].started_at,
             run_type=run_type,
             params=params_json,
+            run_name=run_name,
         )
 
     return {"ok": True, "key": key, "run_id": run_id}
@@ -1310,6 +1538,7 @@ def job_status(inst: str, date: str, target: str, run_id: str = "") -> dict:
         "returncode": rc,
         "log": _tail(log_path),
         "elapsed": round(elapsed),
+        "run_type": job.run_type if job else "full",
     }
 
 
@@ -1419,7 +1648,8 @@ def cancel_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
                     type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id,
                     state="cancelled", returncode=-1, elapsed=0,
                     started_at=found[0]["started_at"],
-                    error_desc="Cancelled by user"
+                    error_desc="Cancelled by user",
+                    run_name=found[0].get("run_name", ""),
                 )
                 return {"ok": True, "key": key}
             return {"ok": False, "error": "no job to cancel"}
@@ -1438,7 +1668,8 @@ def cancel_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
             returncode=-1,
             elapsed=round(time.time() - job.started_at),
             started_at=job.started_at,
-            error_desc="Cancelled by user"
+            error_desc="Cancelled by user",
+            run_name=job.run_name,
         )
 
     try:
@@ -1497,6 +1728,7 @@ def get_fit_outputs(inst: str, date: str, target: str, run_id: str | None = None
     outputs = {
         "has_any": False,
         "plots": [],
+        "systematics_plots": [],
         "summary": None,
         "has_log": False,
         "has_fit_yaml": False,
@@ -1526,15 +1758,27 @@ def get_fit_outputs(inst: str, date: str, target: str, run_id: str | None = None
     if not out_dir.is_dir():
         return outputs
 
-    # Show every PNG plot produced by the run, sorted by name.
+    # Show PNG plots produced by the run, sorted by name. Timer systematics
+    # plots are grouped separately in the UI because there can be one per band.
     for p in sorted(out_dir.glob("*.png")):
         if p.is_file():
             try:
-                mtime = p.stat().st_mtime
+                st = p.stat()
+                mtime = st.st_mtime
+                version = str(st.st_mtime_ns)
                 created_at = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
             except Exception:
+                version = "0"
                 created_at = "Unknown"
-            outputs["plots"].append({"file": p.name, "created_at": created_at})
+            plot_info = {
+                "file": p.name,
+                "created_at": created_at,
+                "version": version,
+            }
+            if p.name.startswith("sys-"):
+                outputs["systematics_plots"].append(plot_info)
+            else:
+                outputs["plots"].append(plot_info)
             outputs["has_any"] = True
 
     # Collect any other output files for download (exclude plots already shown
@@ -1604,7 +1848,9 @@ def _parse_run_dir_name(name: str) -> tuple[str, str, str]:
     """Best-effort split of a run-id dir name into (site, mode, run_name).
 
     Used only as a fallback when meta.yaml lacks identity keys. Components are
-    hyphen-joined and never themselves contain ``-``.
+    hyphen-joined and never themselves contain ``-``. Newer sinistro run ids
+    omit the default ``central_2k_2x2`` mode, so a site-prefixed name with no
+    explicit mode is treated as central mode.
     """
     parts = name.split("-")
     site = mode = ""
@@ -1612,6 +1858,8 @@ def _parse_run_dir_name(name: str) -> tuple[str, str, str]:
         site, parts = parts[0], parts[1:]
     if parts and parts[0] in (set(SINISTRO_MODES) | {"mixed"}):
         mode, parts = parts[0], parts[1:]
+    elif site:
+        mode = "central_2k_2x2"
     return site, mode, "-".join(parts)
 
 
@@ -1779,7 +2027,8 @@ def sync_jobs() -> None:
     with _FIT_LOCK:
         db_jobs = get_persisted_jobs()
         running_keys = {j["key"] for j in db_jobs if j["state"] == "running" and j["type"] == "transit_fit"}
-        
+        db_by_key = {j["key"]: j for j in db_jobs}
+
         for key, job in _FIT_JOBS.items():
             db_key = f"transit_fit:{fit_job_key(job.inst, job.date, job.target, job.run_id)}"
             rc = job.proc.poll()
@@ -1799,14 +2048,37 @@ def sync_jobs() -> None:
                     except OSError:
                         pass
             
-            elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
+            # Only persist when the row actually changed. A steadily-running job
+            # whose DB row already says "running" needs no rewrite; elapsed is
+            # computed live in the web layer, so we no longer write every 2s poll
+            # just to bump it (each write also fired clear_all_caches, nullifying
+            # the directory caches). Terminal transitions still write through.
+            existing = db_by_key.get(db_key)
+
+            # For terminal jobs: use stored elapsed (runtime), not time since start
+            # For running jobs: calculate from current time
+            if job.state not in ("running", "cancelling") and job.elapsed is not None:
+                elapsed = job.elapsed  # Use calculated runtime when job hit terminal state
+            elif existing is not None and existing.get("state") not in ("running", "cancelling"):
+                elapsed = existing.get("elapsed") or 0  # Use existing DB value for completed jobs
+            else:
+                elapsed = round(time.time() - job.started_at)  # Calculate for running jobs
+            unchanged = (
+                existing is not None
+                and existing.get("state") == state
+                and existing.get("returncode") == rc
+            )
+            running_keys.discard(db_key)
+            if unchanged:
+                continue
+
             error_desc = ""
             if state == "error":
                 from muscat_db.photometry import _get_error_desc
                 error_desc = _get_error_desc(job.log_path)
             elif state == "cancelled":
                 error_desc = "Cancelled by user"
-            
+
             save_job(
                 type_="transit_fit",
                 inst=job.inst,
@@ -1817,9 +2089,9 @@ def sync_jobs() -> None:
                 returncode=rc,
                 elapsed=round(elapsed),
                 started_at=job.started_at,
-                error_desc=error_desc
+                error_desc=error_desc,
+                run_name=job.run_name,
             )
-            running_keys.discard(db_key)
 
         for db_key in running_keys:
             # Read identity from the DB row's columns (robust to run_id in the key).
@@ -1833,6 +2105,7 @@ def sync_jobs() -> None:
             
             # Check if outputs exist on disk (meaning the process finished successfully in the background)
             completed_ok = False
+            rdir = None
             try:
                 rdir = fit_output_dir(inst, date, target, run_id or None)
                 if _run_has_outputs(rdir):
@@ -1858,7 +2131,7 @@ def sync_jobs() -> None:
                     started_at=row["started_at"],
                     error_desc=""
                 )
-            elif _detect_process_running(rdir):
+            elif rdir is not None and _detect_process_running(rdir):
                 # Process is still running on the system, leave state as "running"
                 continue
             else:
@@ -1883,8 +2156,16 @@ def sync_jobs() -> None:
             for entry in pending:
                 if _count_running_full() >= _MAX_FULL_JOBS:
                     break
-                if entry["key"] in _FIT_JOBS:
-                    save_job(type_="transit_fit", inst=entry["inst"], date=entry["date"], target=entry["target"], run_id=entry.get("run_id", ""), state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry")
+                # The DB key is prefixed ("transit_fit:..."), so compare against the
+                # in-memory job key (unprefixed) to detect a job that is already
+                # running and must not be relaunched from its stale pending row.
+                entry_run_id = entry.get("run_id", "")
+                try:
+                    mem_key = fit_job_key(entry["inst"], entry["date"], entry["target"], entry_run_id)
+                except ValueError:
+                    mem_key = None
+                if mem_key is not None and mem_key in _FIT_JOBS:
+                    save_job(type_="transit_fit", inst=entry["inst"], date=entry["date"], target=entry["target"], run_id=entry_run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_name=entry.get("run_name", ""))
                     continue
                 try:
                     p = json.loads(entry.get("params") or "{}")
@@ -1912,17 +2193,18 @@ def sync_jobs() -> None:
                         state="error",
                         returncode=-1,
                         elapsed=0,
-                        started_at=entry["started_at"],
-                        error_desc="Invalid target",
-                        run_type=entry.get("run_type", ""),
-                        params=entry.get("params", ""),
-                    )
+                    started_at=entry["started_at"],
+                    error_desc="Invalid target",
+                    run_type=entry.get("run_type", ""),
+                    params=entry.get("params", ""),
+                    run_name=run_name,
+                )
                     continue
                 rdir.mkdir(parents=True, exist_ok=True)
                 csvs = get_csv_lightcurves(inst, date, target)
                 if selected_csvs is not None:
-                    selected = set(selected_csvs)
-                    csvs = [c for c in csvs if c.name in selected]
+                    selected = set(str(p) for p in selected_csvs)
+                    csvs = [c for c in csvs if str(c) in selected]
                 _write_fit_inputs(rdir, inst, date, target, csvs, opts,
                                   site=site, mode=mode, run_name=run_name, run_id=run_id,
                                   run_type=run_type)
@@ -1944,16 +2226,16 @@ def sync_jobs() -> None:
                 except (FileNotFoundError, OSError) as exc:
                     try: logf.close()
                     except OSError: pass
-                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}")
+                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_name=run_name)
                     continue
                 run_type = "test" if test_run else "full"
                 _FIT_JOBS[key] = TransitFitJob(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=log_path, run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name)
                 try:
-                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="running", returncode=None, elapsed=0, started_at=_FIT_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""))
+                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="running", returncode=None, elapsed=0, started_at=_FIT_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""), run_name=run_name)
                 except Exception:
                     try: proc.terminate()
                     except OSError: pass
                     try: logf.close()
                     except OSError: pass
                     _FIT_JOBS.pop(key, None)
-                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Database error")
+                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Database error", run_name=run_name)

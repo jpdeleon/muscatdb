@@ -141,6 +141,25 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
+
+  /* Help tooltip */
+  .help-icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 1.1em; height: 1.1em; border-radius: 50%; font-size: 0.75em;
+    background: color-mix(in srgb, var(--accent) 25%, transparent);
+    color: var(--accent); font-weight: 700; cursor: help; position: relative;
+    flex-shrink: 0;
+  }
+  .help-icon:hover::after {
+    content: attr(data-help); position: absolute; bottom: 100%; left: 50%;
+    transform: translateX(-50%); margin-bottom: 0.5rem;
+    background: var(--text); color: var(--surface); padding: 0.5rem 0.7rem;
+    border-radius: 6px; font-size: 0.85em; font-weight: normal;
+    white-space: nowrap; z-index: 1000; box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  }
+  .help-icon.multiline:hover::after {
+    white-space: normal; width: 220px; left: -50px; text-align: left;
+  }
 </style>
 
 <h1>Exposure Time Calculator</h1>
@@ -154,7 +173,7 @@
   <div class="exp-form">
     {# ---- Calibration status ---- #}
     <div class="exp-section">
-      <h3>Calibration Status</h3>
+      <h3>Calibration Status <span class="help-icon" data-help="🟢 Green: Database-calibrated coefficients. 🟠 Orange: Using empirical defaults.">?</span></h3>
       <div class="calib-row">
         {% for name in instruments %}
           {% set c = calibrations.get(name, {}) %}
@@ -179,6 +198,13 @@
             {% endfor %}
           </select>
         </div>
+        <div class="exp-field" id="confmode-field" style="display:none;">
+          <label for="sel-confmode">Readout mode</label>
+          <select id="sel-confmode">
+            <option value="central_2k_2x2">central_2k_2x2 (default)</option>
+            <option value="full_frame">full_frame</option>
+          </select>
+        </div>
         <div class="exp-field" style="grid-column: span 2;">
           <label for="target-name">Target name</label>
           <div class="target-row">
@@ -193,12 +219,11 @@
     {# ---- Magnitudes ---- #}
     <div class="exp-section" id="mags-section">
       <div class="mag-head">
-        <h3 style="margin:0;">Magnitudes per band</h3>
+        <h3 style="margin:0;">Magnitudes per band <span class="help-icon multiline" data-help="Broadband filter magnitudes (gp, rp, ip, zs). Narrowband filters (g_narrow, i_narrow, z_narrow, Na_D) use these same magnitudes with filter-width-dependent peak count adjustments in the calculation.">?</span></h3>
         <button class="copy-btn" type="button" id="clear-mags">Clear</button>
       </div>
       <p class="hint" style="margin-bottom:0.6rem;">g/r/i/z from Pan-STARRS / SkyMapper (auto-filled) or manual entry</p>
       <div class="mag-grid" id="mag-broad"></div>
-      <div class="mag-grid" id="mag-narrow" style="margin-top:0.55rem;"></div>
     </div>
 
     {# ---- Observation parameters ---- #}
@@ -238,6 +263,10 @@
         <input type="number" id="calc-exptime" class="inline-num" value="30" step="1" min="1" placeholder="exp">
         <span>s</span>
         <button class="btn" type="button" id="calc-peak-btn">Calculate peak counts</button>
+      </div>
+      <div style="display:flex; align-items:center; gap:0.6rem; margin-top:0.75rem; padding-top:0.75rem; border-top:1px dashed var(--border); font-size:0.8rem;">
+        <input type="checkbox" id="show-narrow" style="width:1.1em; height:1.1em; cursor:pointer;">
+        <label for="show-narrow" style="cursor:pointer; flex:1; margin:0;">Also show narrowband filters (scaled by filter width ratios)</label>
       </div>
       <span id="calc-status" class="msg dim"></span>
     </div>
@@ -300,6 +329,8 @@
 <script>
 (function () {
   var selInst = document.getElementById('sel-inst');
+  var confmodeField = document.getElementById('confmode-field');
+  var selConfmode = document.getElementById('sel-confmode');
   var targetName = document.getElementById('target-name');
   var lookupBtn = document.getElementById('lookup-btn');
   var lookupStatus = document.getElementById('lookup-status');
@@ -313,6 +344,7 @@
   var calcBtn = document.getElementById('calc-btn');
   var calcPeakBtn = document.getElementById('calc-peak-btn');
   var calcStatus = document.getElementById('calc-status');
+  var showNarrow = document.getElementById('show-narrow');
   var resultsBody = document.getElementById('results-body');
   var resultsContent = document.getElementById('results-content');
   var resultsPlaceholder = document.getElementById('results-placeholder');
@@ -329,21 +361,19 @@
   var STORE_KEY = 'expcalc.v1';
   var BAND_COLORS = {
     gp: '#4f9eff', rp: '#e0564a', ip: '#b03a2e', zs: '#8e44ad',
-    g_narrow: '#45d6b5', r_narrow: '#45d6b5', Na_D: '#45d6b5', i_narrow: '#45d6b5', z_narrow: '#45d6b5'
+    g_narrow: '#45d6b5', Na_D: '#45d6b5', i_narrow: '#45d6b5', z_narrow: '#45d6b5'
   };
   var BROAD = ['gp', 'rp', 'ip', 'zs'];
-  var NARROW = ['g_narrow', 'r_narrow', 'Na_D', 'i_narrow', 'z_narrow'];
 
   // ---- Build magnitude inputs ----
   function dot(band) { return '<span class="band-dot" style="background:' + (BAND_COLORS[band] || 'var(--text-dim)') + '"></span>'; }
-  function buildMagFields(container, bands, narrow) {
+  function buildMagFields(container, bands) {
     container.innerHTML = bands.map(function (b) {
-      return '<div class="mag-field"><label class="' + (narrow ? 'narrow' : '') + '">' + dot(b) + b + '</label>' +
-        '<input type="number" step="0.01" class="mag-input' + (narrow ? ' narrow' : '') + '" data-band="' + b + '" placeholder="—"></div>';
+      return '<div class="mag-field"><label>' + dot(b) + b + '</label>' +
+        '<input type="number" step="0.01" class="mag-input" data-band="' + b + '" placeholder="—"></div>';
     }).join('');
   }
-  buildMagFields(document.getElementById('mag-broad'), BROAD, false);
-  buildMagFields(document.getElementById('mag-narrow'), NARROW, true);
+  buildMagFields(document.getElementById('mag-broad'), BROAD);
   var magInputs = document.querySelectorAll('.mag-input');
 
   function markFilled(inp) { inp.classList.toggle('filled', inp.value !== '' && parseFloat(inp.value) > 0); }
@@ -380,8 +410,9 @@
       var mags = {};
       magInputs.forEach(function (inp) { if (inp.value !== '') mags[inp.dataset.band] = inp.value; });
       localStorage.setItem(STORE_KEY, JSON.stringify({
-        inst: selInst.value, target: targetName.value, mags: mags,
-        focus: focusMm.value, airmass: airmass.value, satFrac: satFrac.value, customAdu: customAdu.value
+        inst: selInst.value, confmode: selConfmode.value, target: targetName.value, mags: mags,
+        focus: focusMm.value, airmass: airmass.value, satFrac: satFrac.value, customAdu: customAdu.value,
+        showNarrow: showNarrow.checked
       }));
     } catch (e) {}
   }
@@ -389,17 +420,35 @@
     var s;
     try { s = JSON.parse(localStorage.getItem(STORE_KEY) || '{}'); } catch (e) { s = {}; }
     if (!selInst.value && s.inst) selInst.value = s.inst;
+    updateConfmodeVisibility();
+    if (s.confmode && selInst.value === 'sinistro') selConfmode.value = s.confmode;
     if (!targetName.value && s.target) targetName.value = s.target;
     if (s.mags) magInputs.forEach(function (inp) { if (s.mags[inp.dataset.band] !== undefined) { inp.value = s.mags[inp.dataset.band]; markFilled(inp); } });
     if (s.focus !== undefined) focusMm.value = s.focus;
     if (s.airmass !== undefined) airmass.value = s.airmass;
     if (s.satFrac) { satFrac.value = s.satFrac; customAduField.style.display = s.satFrac === 'custom' ? '' : 'none'; }
     if (s.customAdu) customAdu.value = s.customAdu;
+    if (s.showNarrow !== undefined) showNarrow.checked = s.showNarrow;
     syncFocus(); syncAirmass();
   }
 
-  selInst.addEventListener('change', saveState);
+  // ---- Confmode visibility ----
+  function updateConfmodeVisibility() {
+    if (selInst.value === 'sinistro') {
+      confmodeField.style.display = '';
+      if (!selConfmode.value) selConfmode.value = 'central_2k_2x2';
+    } else {
+      confmodeField.style.display = 'none';
+    }
+  }
+
+  selInst.addEventListener('change', function () { updateConfmodeVisibility(); saveState(); });
+  selConfmode.addEventListener('change', saveState);
   targetName.addEventListener('input', saveState);
+  showNarrow.addEventListener('change', function () {
+    saveState();
+    if (renderResults.lastData) renderResults(renderResults.lastData, renderResults.lastMode);
+  });
 
   // ---- Lookup magnitudes ----
   function doLookup() {
@@ -441,12 +490,29 @@
   });
 
   // ---- Collect magnitudes ----
+  var NARROW_MAP = { g_narrow: 'gp', Na_D: 'rp', i_narrow: 'ip', z_narrow: 'zs' };
+  var NARROW_OFFSET = { g_narrow: -1.15, Na_D: -1.30, i_narrow: -1.30, z_narrow: -1.30 };
+
   function collectMags() {
     var mags = {};
     magInputs.forEach(function (inp) {
       var v = parseFloat(inp.value);
       if (!isNaN(v) && v > 0) mags[inp.dataset.band] = v;
     });
+
+    // Add narrowband magnitudes if checkbox is checked
+    if (showNarrow.checked) {
+      Object.keys(NARROW_MAP).forEach(function (narrow) {
+        var parent = NARROW_MAP[narrow];
+        var parentMag = mags[parent];
+        if (parentMag) {
+          var offset = NARROW_OFFSET[narrow] || 0;
+          var narrowMag = parentMag + (offset / 0.4);
+          mags[narrow] = narrowMag;
+        }
+      });
+    }
+
     return mags;
   }
 
@@ -465,6 +531,9 @@
       airmass: parseFloat(airmass.value) || 1.1,
       mode: mode
     };
+    if (inst === 'sinistro') {
+      payload.confmode = selConfmode.value || 'central_2k_2x2';
+    }
     if (mode === 'exptime') {
       if (satFrac.value === 'custom') payload.target_adu = parseFloat(customAdu.value);
       else payload.sat_frac = parseFloat(satFrac.value);
@@ -498,12 +567,28 @@
   function fwClass(pct) { return pct >= 100 ? 'sat' : (pct >= 70 ? 'warn' : 'safe'); }
 
   function renderResults(data, mode) {
+    // Save for re-render on checkbox toggle
+    renderResults.lastData = data;
+    renderResults.lastMode = mode;
+
     resultsPlaceholder.style.display = 'none';
     resultsContent.style.display = 'block';
     resultsBody.innerHTML = '';
     colPrimary.textContent = mode === 'exptime' ? 'Exp (s)' : 'Exp (s)';
 
+    // Remove any existing note divs (narrowband and muscat2)
+    var existingNotes = resultsBody.parentElement.querySelectorAll('[data-note="true"]');
+    existingNotes.forEach(function (n) { n.remove(); });
+
     var rows = data.results || [];
+    var broadBands = ['gp', 'rp', 'ip', 'zs'];
+
+    // Filter rows based on showNarrow checkbox
+    rows = rows.filter(function (r) {
+      if (broadBands.indexOf(r.band) !== -1) return true;  // Always show broadband
+      return showNarrow.checked;  // Show narrowband only if checked
+    });
+
     var minExp = mode === 'exptime' && rows.length
       ? Math.min.apply(null, rows.map(function (r) { return r.exptime; })) : null;
 
@@ -528,6 +613,41 @@
         '<td><span class="stat-pill ' + pill + '">' + pillTxt + '</span></td>';
       resultsBody.appendChild(tr);
     });
+
+    // Add narrowband legend if showing narrowband filters
+    if (showNarrow.checked && rows.some(function (r) { return ['g_narrow', 'i_narrow', 'z_narrow', 'Na_D'].indexOf(r.band) !== -1; })) {
+      var note = document.createElement('div');
+      note.setAttribute('data-note', 'true');
+      note.style.marginTop = '1rem';
+      note.style.padding = '0.75rem';
+      note.style.backgroundColor = 'color-mix(in srgb, var(--accent2) 8%, transparent)';
+      note.style.borderLeft = '3px solid var(--accent2)';
+      note.style.borderRadius = '6px';
+      note.style.fontSize = '0.75rem';
+      note.style.color = 'var(--text-dim)';
+      note.innerHTML = '<strong style="color:var(--text);">Narrowband filter width ratios:</strong><br>' +
+        'g_narrow: 10nm / 140nm ≈ 0.07  •  i_narrow: 5nm / 100nm = 0.05  •  ' +
+        'z_narrow: 5nm / 100nm = 0.05  •  Na_D: 5nm / 100nm = 0.05<br>' +
+        '<span style="margin-top:0.3rem; display:block;">Narrower filters transmit fewer photons, requiring longer exposures or brighter targets to reach the same peak counts.</span>';
+      resultsBody.parentElement.appendChild(note);
+    }
+
+    // Add muscat2 note if selected
+    if (data.instrument === 'muscat2' && mode === 'exptime') {
+      var note2 = document.createElement('div');
+      note2.setAttribute('data-note', 'true');
+      note2.style.marginTop = '1rem';
+      note2.style.marginLeft = '-1.1rem';
+      note2.style.marginRight = '-1.1rem';
+      note2.style.padding = '0.75rem 1.1rem';
+      note2.style.backgroundColor = 'color-mix(in srgb, #f59e0b 8%, transparent)';
+      note2.style.borderLeft = '3px solid #f59e0b';
+      note2.style.borderRadius = '0px';
+      note2.style.fontSize = '0.8rem';
+      note2.style.color = 'var(--text-dim)';
+      note2.textContent = 'MuSCAT2 vs MuSCAT3: ~10× longer exposures (smaller aperture 1.52m vs 2.0m, lower gain 1.0 vs 1.8, larger pixels 0.44 vs 0.267). Example: gp=12.9 → MuSCAT3: 7.4s vs MuSCAT2: ~70s.';
+      resultsBody.parentElement.appendChild(note2);
+    }
 
     if (mode === 'exptime' && data.recommended_exptime) {
       recBox.style.display = 'flex';

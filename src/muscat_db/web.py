@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import datetime
+import math
 import os
 import pathlib
 import re
 import sqlite3
 import threading
+import time
+from zoneinfo import ZoneInfo
 
 _DB_LOCK = threading.Lock()
 _CATALOG_CACHE: dict = {}
@@ -15,7 +18,7 @@ import io
 
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 from contextlib import asynccontextmanager
@@ -23,6 +26,9 @@ from contextlib import asynccontextmanager
 from muscat_db import photometry as phot
 from muscat_db import exposure as exp_calc
 from muscat_db import transit_fit as fit
+from muscat_db import lco
+from muscat_db import transit_obs
+from muscat_db import fov as fov_opt
 from muscat_db.database import (
     SCHEMA,
     delete_note as _delete_note,
@@ -41,8 +47,15 @@ from muscat_db.database import (
     get_ephemeris_view,
     get_persisted_jobs,
     get_last_build_date,
+    _normalize_filters,
 )
 from muscat_db.instruments import INSTRUMENTS
+from muscat_db.coord import (
+    CoordRepr,
+    unpack as _unpack_coord,
+    clean_ra as _clean_ra,
+    clean_dec as _clean_dec,
+)
 
 HERE = pathlib.Path(__file__).parent
 TEMPLATE_DIR = HERE / "templates"
@@ -117,6 +130,18 @@ def _db_path() -> str:
     return str(pathlib.Path(os.environ.get("MUSCAT_DB_PATH", "muscat.db")).resolve())
 
 
+_LCO_SITE_TZ = {
+    "ogg": "Pacific/Honolulu",
+    "coj": "Australia/Brisbane",
+    "lsc": "America/Santiago",
+    "cpt": "Africa/Johannesburg",
+    "elp": "America/Chicago",
+    "tfn": "Atlantic/Canary",
+    "tlv": "Asia/Jerusalem",
+}
+_LCO_DATASET_MATCH_ARCSEC = 60.0
+
+
 def _render(name: str, **kwargs) -> str:
     tpl = jinja.get_template(name)
     return HTMLResponse(tpl.render(**kwargs))
@@ -153,6 +178,7 @@ async def index():
     for t in targets:
         if t["object"] in overrides:
             t["is_identified"] = overrides[t["object"]]
+        t["norm_name"] = _normalize_target_name(t["object"])
 
     last_updated = get_last_build_date(db)
 
@@ -162,6 +188,147 @@ async def index():
     )
     _index_cache["index"] = (key, html)
     return HTMLResponse(html)
+
+
+def _get_datasets_for_normalized_target(db: str, normalized_name: str) -> tuple[list[dict], str]:
+    """Get all datasets for targets that match a normalized name.
+
+    Returns (datasets_list, last_updated_date).
+    """
+    targets = _get_targets(db)
+
+    matching_objects = [
+        t["object"] for t in targets
+        if _normalize_target_name(t["object"]) == normalized_name
+    ]
+    if not matching_objects:
+        return [], get_last_build_date(db)
+
+    # Query per-(inst, date, object) stats from the obslog (summaries table).
+    placeholders = ",".join("?" for _ in matching_objects)
+    conn = sqlite3.connect(db)
+    cur = conn.execute(
+        f"""SELECT instrument, obsdate, object,
+                   SUM(nframes)              AS n_frames,
+                   GROUP_CONCAT(DISTINCT filter) AS filters,
+                   MIN(NULLIF(airmass_min, 0))   AS airmass_min,
+                   MAX(NULLIF(airmass_max, 0))   AS airmass_max
+            FROM summaries
+            WHERE object IN ({placeholders})
+            GROUP BY instrument, obsdate, object""",
+        matching_objects,
+    )
+    obs_stats: dict[tuple, dict] = {}
+    for row in cur.fetchall():
+        raw_filters = sorted(f for f in (row[4] or "").split(",") if f)
+        obs_stats[(row[0], row[1], row[2])] = {
+            "n_frames": row[3] or 0,
+            "filters": raw_filters,
+            "filter_chips": _normalize_filters(raw_filters),
+            "airmass_min": row[5],
+            "airmass_max": row[6],
+        }
+    conn.close()
+
+    datasets = []
+    for target in targets:
+        if _normalize_target_name(target["object"]) != normalized_name:
+            continue
+
+        obj_name = target["object"]
+        date_to_inst = target["date_to_inst"]
+
+        for date in target["dates"]:
+            inst = date_to_inst.get(date)
+            if not inst:
+                continue
+
+            status = phot.get_photometry_status(inst, date, obj_name)
+            phot_status = "full" if status == "full" else ("test" if status == "test" else "none")
+
+            fit_out = fit.get_fit_outputs(inst, date, obj_name)
+            fit_status = "full" if fit_out.get("has_any") else "none"
+
+            stats = obs_stats.get((inst, date, obj_name), {})
+            dataset = {
+                "object": obj_name,
+                "date": date,
+                "instrument": inst,
+                "filters": stats.get("filters", target["filters"]),
+                "filter_chips": stats.get("filter_chips", target["filter_chips"]),
+                "airmass_min": stats.get("airmass_min", target["airmass_min"]),
+                "airmass_max": stats.get("airmass_max", target["airmass_max"]),
+                "n_frames": stats.get("n_frames", target["n_frames"]),
+                "phot": phot_status,
+                "fit": fit_status,
+                "note": target["note"],
+            }
+            datasets.append(dataset)
+
+    datasets.sort(key=lambda d: d["date"], reverse=True)
+    last_updated = get_last_build_date(db)
+    return datasets, last_updated
+
+
+@app.get("/target", response_class=HTMLResponse)
+async def target_page(name: str = ""):
+    db = _db_path()
+    tpl_path = TEMPLATE_DIR / "target.html"
+    tpl_mtime = str(tpl_path.stat().st_mtime_ns) if tpl_path.is_file() else ""
+
+    if not name:
+        # List view: show all normalized targets
+        key = (tpl_mtime, _db_mtime(db), "list")
+        cache_key = "target:list"
+        cached = _index_cache.get(cache_key)
+        if cached is not None and cached[0] == key:
+            return HTMLResponse(cached[1])
+
+        targets = _get_targets(db)
+
+        from collections import defaultdict
+        groups = defaultdict(int)
+
+        for target in targets:
+            norm_name = _normalize_target_name(target["object"])
+            # Count datasets for this normalized name
+            date_to_inst = target["date_to_inst"]
+            for date in target["dates"]:
+                if date in date_to_inst:
+                    groups[norm_name] += 1
+
+        # Sort by normalized name
+        sorted_groups = sorted(groups.items(), key=lambda x: x[0])
+
+        last_updated = get_last_build_date(db)
+
+        html = jinja.get_template("target.html").render(
+            target_name=None,
+            target_groups=sorted_groups,
+            last_updated=last_updated,
+        )
+
+        _index_cache[cache_key] = (key, html)
+        return HTMLResponse(html)
+    else:
+        # Single target view - normalize the input name
+        norm_name = _normalize_target_name(name)
+        key = (tpl_mtime, _db_mtime(db), norm_name)
+        cache_key = f"target:{norm_name}"
+        cached = _index_cache.get(cache_key)
+        if cached is not None and cached[0] == key:
+            return HTMLResponse(cached[1])
+
+        datasets, last_updated = _get_datasets_for_normalized_target(db, norm_name)
+
+        html = jinja.get_template("target.html").render(
+            target_name=norm_name,
+            datasets=datasets,
+            last_updated=last_updated,
+        )
+
+        _index_cache[cache_key] = (key, html)
+        return HTMLResponse(html)
 
 
 @app.get("/logs", response_class=HTMLResponse)
@@ -181,9 +348,14 @@ async def logs_page(min_frames: int = 1000):
     )
 
 
-@app.get("/workflow", response_class=HTMLResponse)
-async def workflow_page():
-    return _render("workflow.html")
+@app.get("/guide", response_class=HTMLResponse)
+async def guide_page():
+    return _render("guide.html")
+
+# Legacy redirect for backward compatibility
+@app.get("/workflow", response_class=RedirectResponse)
+async def workflow_redirect():
+    return RedirectResponse(url="/guide", status_code=301)
 
 
 @app.get("/api/targets/export.csv")
@@ -267,7 +439,7 @@ def _site_required_error(db: str, inst: str, date: str, target: str, options: di
 
 
 @app.get("/photometry", response_class=HTMLResponse)
-def photometry_page(inst: str = "", date: str = "", target: str = "", site: str = "", mode: str = ""):
+def photometry_page(inst: str = "", date: str = "", target: str = "", site: str = "", mode: str = "", run: str = "", overwrite: str = ""):
     db = _db_path()
     inst = inst if inst in INSTRUMENTS else ""
     date = date if phot.valid_date(date) else ""
@@ -282,12 +454,22 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
     if inst != "sinistro" or mode not in phot.SINISTRO_MODES:
         mode = ""
 
+    # Parse overwrite from query parameter (overrides defaults for this session)
+    run_defaults_override = {}
+    if overwrite.lower() in ("0", "false", "no"):
+        run_defaults_override["overwrite"] = False
+    elif overwrite.lower() in ("1", "true", "yes"):
+        run_defaults_override["overwrite"] = True
+
     dates: list[str] = []
     targets: list[str] = []
     available_sites: list[str] = ["lsc", "cpt", "coj", "tfn", "elp"]
     available_modes: list[str] = ["central_2k_2x2", "full_frame"]
     outputs = None
+    runs: list = []
+    sel_run: str | None = None
     previews: dict[str, dict] = {}
+    nearby_preview: dict | None = None
     command = ""
     raw_missing = False
 
@@ -301,7 +483,38 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
     is_narrowband = False
     available_bands: list[str] = []
     if inst and date and target:
-        outputs = phot.list_outputs(inst, date, target, site=site or None, mode=mode or None)
+        runs, run_outputs = phot.list_photometry_runs(inst, date, target)
+        if inst == "sinistro":
+            if site:
+                runs = [r for r in runs if r.is_legacy or r.site == site or not r.site]
+            if mode:
+                runs = [r for r in runs if r.is_legacy or r.mode == mode or not r.mode]
+        run_ids = {r.run_id for r in runs}
+        newest = runs[0].run_id if runs else None
+        if not run:
+            sel_run = newest
+        elif run == "__legacy__":
+            sel_run = "" if "" in run_ids else None
+        elif run in run_ids:
+            sel_run = run
+        else:
+            sel_run = newest
+
+        sel_run_desc = next((r for r in runs if r.run_id == (sel_run or "")), None)
+        if sel_run_desc and sel_run_desc.run_type == "test":
+            runs = [sel_run_desc]
+
+        if sel_run is not None:
+            run_key = sel_run or None  # "" → None for legacy
+            if not (site or mode) and run_key in run_outputs:
+                # Reuse the outputs already computed by list_photometry_runs.
+                # Only skip the cache when sinistro site/mode filters are active,
+                # since those affect which files are selected.
+                outputs = run_outputs[run_key]
+            else:
+                outputs = phot.list_outputs(inst, date, target, site=site or None, mode=mode or None, run_id=sel_run or None)
+        else:
+            outputs = phot.list_outputs(inst, date, target, site=site or None, mode=mode or None)
         command = phot.command_str(inst, date, target, test_run=False)
         raw_missing = not phot.raw_data_dir(inst, date).is_dir()
 
@@ -340,12 +553,19 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
 
         # fall through; previews computed below when outputs exist
         if outputs["has_any"]:
-            rdir = phot.results_dir(inst, date)
+            rdir = phot.run_output_dir(inst, date, target, sel_run or None)
             for band, prods in outputs["bands"].items():
                 csv_info = prods.get("csv")
                 if csv_info:
                     headers, rows = phot.csv_preview(rdir / csv_info["file"], n=8)
                     previews[band] = {"headers": headers, "rows": rows}
+            nearby_info = outputs.get("summary", {}).get("nearby_stars")
+            if nearby_info:
+                nb_headers, nb_rows = phot.csv_preview(rdir / nearby_info["file"], n=100)
+                nearby_preview = {"headers": nb_headers, "rows": nb_rows}
+
+    # Merge URL parameter overrides with defaults
+    merged_defaults = {**phot.RUN_DEFAULTS, **run_defaults_override}
 
     resp = _render(
         "photometry.html",
@@ -353,12 +573,16 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         sel_inst=inst, sel_date=date, sel_target=target,
         sel_site=(outputs.get("site") if outputs else "") or "",
         sel_mode=(outputs.get("mode") if outputs else "") or "",
+        runs=runs,
+        sel_run=sel_run or "",
         dates=dates, targets=targets,
         outputs=outputs, previews=previews,
+        nearby_preview=nearby_preview,
         command=command, raw_missing=raw_missing,
         default_bands=phot.DEFAULT_BANDS,
-        run_defaults=phot.RUN_DEFAULTS,
+        run_defaults=merged_defaults,
         cmap_choices=phot.CMAP_CHOICES,
+        nan_imputation_methods=phot.NAN_IMPUTATION_METHODS,
         wiki_url=_wiki_url(inst, target),
         obs_type=obs_type,
         is_narrowband=is_narrowband,
@@ -420,7 +644,7 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
             except Exception:
                 mtime, created_at = 0.0, "Unknown"
             csite, cmode = fit.csv_site_mode(c.name) if inst == "sinistro" else (None, None)
-            rows.append({"name": c.name, "created_at": created_at,
+            rows.append({"path": str(c), "name": c.name, "created_at": created_at,
                          "_mtime": mtime, "_site": csite, "_mode": cmode})
 
         if inst == "sinistro":
@@ -440,7 +664,7 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
                     if (not sel_site or r["_site"] == sel_site)
                     and (not sel_mode or r["_mode"] == sel_mode)]
 
-        csvs = [{"name": r["name"], "created_at": r["created_at"]} for r in rows]
+        csvs = [{"path": r["path"], "name": r["name"], "created_at": r["created_at"]} for r in rows]
 
         # Existing runs (each isolated in its own dir); show one run's results at
         # a time, defaulting to the newest, selectable via the results-run chips.
@@ -449,9 +673,9 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
         runs = fit.list_fit_runs(inst, date, target)
         if inst == "sinistro":
             if sel_site:
-                runs = [r for r in runs if r.site == sel_site]
+                runs = [r for r in runs if r.is_legacy or r.site == sel_site or not r.site]
             if sel_mode:
-                runs = [r for r in runs if r.mode == sel_mode]
+                runs = [r for r in runs if r.is_legacy or r.mode == sel_mode or not r.mode]
 
         run_ids = {r.run_id for r in runs}
         newest = runs[0].run_id if runs else None
@@ -511,26 +735,55 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
         csv_path = pathlib.Path(HERE.parent.parent / "data" / "TOIs.csv")
         if not csv_path.is_file():
             return None
-            
-        target_clean = re.sub(r"[^0-9a-zA-Z]", "", target).lower()
+
+        def extract_number(s: str) -> int | None:
+            """Extract the numeric part and return as int to normalize leading zeros."""
+            match = re.search(r'\d+', s)
+            return int(match.group(0)) if match else None
+
+        target_lower = target.lower()
+        target_num = extract_number(target_lower)
         best_row = None
-        
+
         with open(csv_path, mode='r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
                 toi = (row.get("TOI") or "").strip()
                 planet_name = (row.get("Planet Name") or "").strip()
                 tic_id = (row.get("TIC ID") or "").strip()
-                
-                toi_clean = re.sub(r"[^0-9a-zA-Z]", "", toi).lower()
-                planet_clean = re.sub(r"[^0-9a-zA-Z]", "", planet_name).lower()
-                tic_clean = re.sub(r"[^0-9a-zA-Z]", "", tic_id).lower()
-                
-                if (toi_clean and (target_clean in (toi_clean, f"toi{toi_clean}") or toi_clean in target_clean)) or \
-                   (planet_clean and (target_clean == planet_clean or planet_clean in target_clean or target_clean in planet_clean)) or \
-                   (tic_clean and (target_clean in (tic_clean, f"tic{tic_clean}") or tic_clean in target_clean)):
-                    best_row = row
-                    break
+
+                # Match TOI by numeric value (handles leading zeros like toi02688 vs TOI-688)
+                if toi:
+                    toi_num = extract_number(toi)
+                    if target_num and toi_num and target_num == toi_num:
+                        best_row = row
+                        break
+                    # Also try exact prefix match for formats like toi688 or toi-688
+                    target_clean = re.sub(r"[^0-9a-zA-Z]", "", target_lower)
+                    toi_clean = re.sub(r"[^0-9a-zA-Z]", "", toi.lower())
+                    if target_clean == toi_clean or (toi_num and target_clean == f"toi{toi_num}"):
+                        best_row = row
+                        break
+
+                # Match planet name (exact or prefix)
+                if planet_name:
+                    target_clean = re.sub(r"[^0-9a-zA-Z]", "", target_lower)
+                    planet_clean = re.sub(r"[^0-9a-zA-Z]", "", planet_name.lower())
+                    if target_clean == planet_clean:
+                        best_row = row
+                        break
+
+                # Match TIC ID by numeric value
+                if tic_id:
+                    tic_num = extract_number(tic_id)
+                    if target_num and tic_num and target_num == tic_num:
+                        best_row = row
+                        break
+                    target_clean = re.sub(r"[^0-9a-zA-Z]", "", target_lower)
+                    tic_clean = re.sub(r"[^0-9a-zA-Z]", "", tic_id.lower())
+                    if target_clean == tic_clean or (tic_num and target_clean == f"tic{tic_num}"):
+                        best_row = row
+                        break
                     
         if not best_row:
             return None
@@ -840,7 +1093,7 @@ def transit_fit_run(payload: dict = Body(...)):
     target = (payload.get("target") or "").strip()
     options = payload.get("options") or {}
     test_run = bool(payload.get("test_run", False))
-    selected_csvs = payload.get("selected_csvs") or None
+    selected_csvs = payload.get("selected_csvs") if "selected_csvs" in payload else None
     result = fit.start_fit(inst, date, target, options, test_run=test_run, selected_csvs=selected_csvs)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
@@ -853,7 +1106,7 @@ def transit_fit_logp(payload: dict = Body(...)):
     date = (payload.get("date") or "").strip()
     target = (payload.get("target") or "").strip()
     options = payload.get("options") or {}
-    selected_csvs = payload.get("selected_csvs") or None
+    selected_csvs = payload.get("selected_csvs") if "selected_csvs" in payload else None
     result = fit.compute_logp(inst, date, target, options, selected_csvs=selected_csvs)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
@@ -959,6 +1212,7 @@ def exposure_calculate(payload: dict = Body(...)):
     mode = payload.get("mode", "exptime")
     exptime = payload.get("exptime")
     target_adu = payload.get("target_adu")
+    confmode = payload.get("confmode", "central_2k_2x2") if inst == "sinistro" else None
     if exptime is not None:
         exptime = float(exptime)
     if target_adu is not None:
@@ -980,6 +1234,7 @@ def exposure_calculate(payload: dict = Body(...)):
         mode=mode,
         exptime=exptime,
         target_adu=target_adu,
+        confmode=confmode,
     )
     return JSONResponse({"ok": True, **result})
 
@@ -1049,6 +1304,220 @@ def exposure_coeffs(instrument: str):
     return JSONResponse({"ok": True, "instrument": instrument, "coeffs": rows})
 
 
+@app.get("/api/exposure/target/{target}", response_class=JSONResponse)
+def api_exposure_target(target: str):
+    """Get exposure information for a specific target.
+
+    Returns unique exposure times, filters, instruments, and other details
+    for all observations of the given target.
+    """
+    target = target.strip() if target else ""
+    if not target:
+        return JSONResponse({"ok": False, "error": "Target name required"}, status_code=400)
+
+    try:
+        db = _db_path()
+        conn = sqlite3.connect(db, timeout=10)
+        conn.row_factory = sqlite3.Row
+
+        # Get all frames for this target
+        frames = conn.execute(
+            """
+            SELECT
+                instrument, obsdate, filter, exptime, read_mode,
+                ra, declination, airmass, focus, ccd
+            FROM frames
+            WHERE object = ?
+            ORDER BY obsdate DESC, instrument, filter, exptime
+            """,
+            (target,)
+        ).fetchall()
+
+        if not frames:
+            return JSONResponse({
+                "ok": False,
+                "error": f"No observations found for target '{target}'"
+            }, status_code=404)
+
+        # Aggregate data
+        instruments = set()
+        filters = set()
+        unique_exptimes = {}  # {filter: set of exptimes}
+        unique_read_modes = set()
+        airmass_values = []
+        focus_values = []
+        n_observations = len(frames)
+
+        for frame in frames:
+            instruments.add(frame["instrument"])
+            if frame["filter"]:
+                filters.add(frame["filter"])
+                if frame["filter"] not in unique_exptimes:
+                    unique_exptimes[frame["filter"]] = set()
+                if frame["exptime"] is not None:
+                    unique_exptimes[frame["filter"]].add(round(frame["exptime"], 3))
+            if frame["read_mode"]:
+                unique_read_modes.add(frame["read_mode"])
+            if frame["airmass"] is not None:
+                airmass_values.append(frame["airmass"])
+            if frame["focus"] is not None:
+                focus_values.append(frame["focus"])
+
+        # Get target info from targets table
+        target_info = conn.execute(
+            "SELECT n_dates, n_frames, ra, declination FROM targets WHERE object = ?",
+            (target,)
+        ).fetchone()
+
+        conn.close()
+
+        # Format results
+        exptime_summary = {}
+        for filt in sorted(filters):
+            exptimes = sorted(unique_exptimes.get(filt, []))
+            exptime_summary[filt] = exptimes
+
+        result = {
+            "ok": True,
+            "target": target,
+            "n_observations": n_observations,
+            "n_unique_dates": target_info["n_dates"] if target_info else None,
+            "n_total_frames": target_info["n_frames"] if target_info else None,
+            "instruments": sorted(instruments),
+            "filters": sorted(filters),
+            "unique_read_modes": sorted(unique_read_modes),
+            "exposure_times_by_filter": exptime_summary,
+            "airmass": {
+                "min": min(airmass_values) if airmass_values else None,
+                "max": max(airmass_values) if airmass_values else None,
+                "mean": sum(airmass_values) / len(airmass_values) if airmass_values else None,
+            } if airmass_values else None,
+            "focus": {
+                "min": min(focus_values) if focus_values else None,
+                "max": max(focus_values) if focus_values else None,
+                "mean": sum(focus_values) / len(focus_values) if focus_values else None,
+            } if focus_values else None,
+            "coordinates": {
+                "ra": target_info["ra"],
+                "dec": target_info["declination"],
+            } if target_info else None,
+        }
+
+        return JSONResponse(result)
+
+    except Exception as e:
+        return JSONResponse(
+            {"ok": False, "error": f"Database error: {str(e)}"},
+            status_code=500
+        )
+
+
+# ---------------------------------------------------------------------------
+# FOV optimization
+# ---------------------------------------------------------------------------
+# Instruments that have a footprint definition (XML or computed fallback).
+_FOV_INSTRUMENTS = [name for name in INSTRUMENTS if fov_opt.has_footprint(name)]
+
+
+@app.get("/fov", response_class=HTMLResponse)
+def fov_page(inst: str = "", target: str = ""):
+    inst = inst if inst in _FOV_INSTRUMENTS else ""
+    readout_modes: dict[str, list[dict[str, str]]] = {}
+    fov_sizes = {}
+    for name in _FOV_INSTRUMENTS:
+        if name == "sinistro":
+            # Show the default (central_2k_2x2) size; full_frame is a selectable option
+            size_arcmin = fov_opt.SINISTRO_MODES["central_2k_2x2"] * 2.0 / 60.0
+            readout_modes[name] = [
+                {"value": mode, "label": f"{mode} ({round(half_arcsec * 2.0 / 60.0, 1)}′)"}
+                for mode, half_arcsec in fov_opt.SINISTRO_MODES.items()
+            ]
+        else:
+            size_arcmin = fov_opt.load_fov_halfsize_arcsec(name) * 2.0 / 60.0
+            readout_modes[name] = [{"value": "MUSCAT_FAST", "label": "MUSCAT_FAST"}]
+        fov_sizes[name] = round(size_arcmin, 2)
+    return _render(
+        "fov.html",
+        instruments=_FOV_INSTRUMENTS,
+        sel_inst=inst,
+        sel_target=target,
+        fov_sizes=fov_sizes,
+        readout_modes=readout_modes,
+    )
+
+
+@app.post("/api/fov/optimize", response_class=JSONResponse)
+def api_fov_optimize(payload: dict = Body(...)):
+    inst = (payload.get("instrument") or "").strip()
+    if inst not in _FOV_INSTRUMENTS:
+        return JSONResponse({"ok": False, "error": "Invalid instrument"}, status_code=400)
+
+    target = (payload.get("target") or "").strip()
+    ra = payload.get("ra")
+    dec = payload.get("dec")
+    try:
+        ra = float(ra) if ra not in (None, "") else None
+        dec = float(dec) if dec not in (None, "") else None
+        margin = float(payload.get("margin_arcsec", fov_opt.DEFAULT_MARGIN_ARCSEC))
+        comp_margin = payload.get("comp_margin_arcsec")
+        comp_margin = float(comp_margin) if comp_margin not in (None, "") else None
+        mag_limit = float(payload.get("mag_limit", 18.0))
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "Invalid numeric parameter"}, status_code=400)
+
+    if not target and (ra is None or dec is None):
+        return JSONResponse(
+            {"ok": False, "error": "Provide a target name or RA/Dec."}, status_code=400
+        )
+
+    allow_rotation = payload.get("allow_rotation", True)
+    pa_step_deg = None if allow_rotation else 180.0
+    sinistro_mode = payload.get("sinistro_mode")
+
+    result = fov_opt.optimize(
+        instrument=inst,
+        target=target,
+        ra=ra,
+        dec=dec,
+        margin_arcsec=margin,
+        comp_margin_arcsec=comp_margin,
+        mag_limit=mag_limit,
+        pa_step_deg=pa_step_deg,
+        sinistro_mode=sinistro_mode,
+    )
+    status = 200 if result.ok else 422
+    return JSONResponse(result.to_dict(), status_code=status)
+
+
+@app.post("/api/fov/resolve-target", response_class=JSONResponse)
+def api_fov_resolve_target(payload: dict = Body(...)):
+    target = (payload.get("target") or "").strip()
+    if not target:
+        return JSONResponse({"ok": False, "error": "Target name is required."}, status_code=400)
+
+    coords = exp_calc.resolve_target_coords(target)
+    if coords is None:
+        return JSONResponse(
+            {"ok": False, "error": f"Could not resolve '{target}'. Try a different name or enter RA/Dec manually."},
+            status_code=422,
+        )
+    return JSONResponse({"ok": True, "ra": round(coords[0], 5), "dec": round(coords[1], 5)})
+
+
+@app.get("/api/fov/observable", response_class=JSONResponse)
+def api_fov_observable():
+    """Report observable declination ranges for each instrument."""
+    observable = {}
+    for inst in _FOV_INSTRUMENTS:
+        min_dec, max_dec = fov_opt.get_observable_range(inst)
+        observable[inst] = {
+            "min_dec": round(min_dec, 1),
+            "max_dec": round(max_dec, 1),
+            "latitude": fov_opt.OBSERVATORY_LOCATIONS.get(inst, 0.0),
+        }
+    return JSONResponse({"ok": True, "observable": observable})
+
+
 @app.get("/ephemeris", response_class=HTMLResponse)
 def ephemeris_page():
     return _render("ephemeris.html")
@@ -1076,6 +1545,275 @@ def api_ephemeris_view_get(slug: str):
     return JSONResponse({"ok": True, **view})
 
 
+# ---------------------------------------------------------------------------
+# LCO scheduling & archive download (see muscat_db/lco.py)
+# ---------------------------------------------------------------------------
+
+
+def _lco_error_response(e: "lco.LcoError") -> JSONResponse:
+    return JSONResponse(e.to_dict(), status_code=e.status)
+
+
+@app.get("/lco")
+def lco_page():
+    return RedirectResponse(url="/lco/schedule", status_code=307)
+
+
+@app.get("/lco/schedule", response_class=HTMLResponse)
+def lco_schedule_page():
+    return _render("lco_schedule.html")
+
+
+@app.get("/lco/archive", response_class=HTMLResponse)
+def lco_archive_page():
+    return _render("lco_archive.html")
+
+
+@app.get("/api/lco/config", response_class=JSONResponse)
+def api_lco_config():
+    """Report whether the token/download-root/submit gate are configured. No secrets."""
+    return JSONResponse({"ok": True, **lco.config_state()})
+
+
+@app.get("/api/lco/proposals", response_class=JSONResponse)
+def api_lco_proposals():
+    try:
+        return JSONResponse({"ok": True, **lco.get_proposals()})
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+
+
+@app.get("/api/lco/requestgroups", response_class=JSONResponse)
+def api_lco_requestgroups(proposal: str = ""):
+    try:
+        return JSONResponse({"ok": True, **lco.get_requestgroups(proposal)})
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+
+
+@app.post("/api/lco/windows", response_class=JSONResponse)
+def api_lco_windows(payload: dict = Body(...)):
+    """Generate transit windows from explicit t0/period/duration or a catalog lookup."""
+    try:
+        t0 = payload.get("t0")
+        period = payload.get("period")
+        duration = payload.get("duration")
+        target = (payload.get("target") or "").strip()
+        planet = (payload.get("planet") or "").strip().lower()
+        source = (payload.get("source") or "catalog").strip().lower()
+
+        if t0 in (None, "") or period in (None, ""):
+            if not target:
+                return JSONResponse(
+                    {"ok": False, "error": "provide t0+period, or a target to look up"},
+                    status_code=400,
+                )
+            # Only catalog sources resolve server-side. The "linear" fit and
+            # individual "dataset_*" sources are computed on the client (via
+            # /api/ephemeris/calculate or target-info) and must populate t0/period
+            # first, so they can't be looked up here.
+            if source == "nasa":
+                planets = _query_target_planets_nasa(target)
+            elif source == "toi":
+                planets = _query_target_planets_toi(target)
+            elif source in ("", "catalog"):
+                planets = _query_target_planets_catalog(target)
+            else:
+                return JSONResponse(
+                    {"ok": False, "error": f"click 'Fetch ephemeris' first for the '{source}' source"},
+                    status_code=400,
+                )
+            key = planet if planet in planets else (next(iter(planets)) if planets else None)
+            ephem = planets.get(key) if key else None
+            if not ephem:
+                return JSONResponse(
+                    {"ok": False, "error": f"no ephemeris found for {target} {planet}".strip()},
+                    status_code=404,
+                )
+            t0 = ephem.get("t0")
+            period = ephem.get("period")
+            if duration in (None, "") and ephem.get("duration") is not None:
+                duration = ephem.get("duration")
+            planet = key
+
+        if duration in (None, ""):
+            return JSONResponse(
+                {"ok": False, "error": "transit duration (hours) is required (none in catalog)"},
+                status_code=400,
+            )
+
+        windows = lco.generate_windows(
+            float(t0),
+            float(period),
+            float(duration),
+            payload.get("range_start"),
+            payload.get("range_end"),
+            float(payload.get("pad_before_min") or 0),
+            float(payload.get("pad_after_min") or 0),
+        )
+        result = {
+            "ok": True,
+            "windows": windows,
+            "planet": planet,
+            "t0": float(t0),
+            "period": float(period),
+            "duration": float(duration),
+        }
+
+        # Optional: classify each transit's observability across the instrument's
+        # LCO sites when coordinates + instrument kind are supplied. Degrades
+        # gracefully (windows still returned) if astropy/observability fails.
+        ra = payload.get("ra")
+        dec = payload.get("dec")
+        # The windows table is site-driven, independent of the imaging instrument:
+        # an explicit ``sites`` list restricts the check; empty/omitted evaluates
+        # the full LCO network (kind is intentionally not used as a fallback here).
+        sites = payload.get("sites") or None
+        if windows and ra not in (None, "") and dec not in (None, ""):
+            try:
+                obs = transit_obs.classify_transits(
+                    float(ra), float(dec), windows, None, float(duration),
+                    max_airmass=float(payload.get("obs_airmass") or 2.0),
+                    twilight=payload.get("twilight") or transit_obs.DEFAULT_TWILIGHT,
+                    moon_sep_min=float(payload.get("moon_sep_min") or 0.0),
+                    include_padding=bool(payload.get("include_padding")),
+                    sites=sites,
+                )
+                for w, o in zip(windows, obs):
+                    w["observability"] = o
+            except transit_obs.TransitObsError as e:
+                result["obs_error"] = str(e)
+            except Exception as e:  # never let plotting/astropy break window listing
+                result["obs_error"] = f"observability unavailable: {e}"
+
+        return JSONResponse(result)
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+    except (TypeError, ValueError) as e:
+        return JSONResponse({"ok": False, "error": f"invalid numeric input: {e}"}, status_code=400)
+
+
+@app.get("/api/lco/visibility", response_class=JSONResponse)
+def api_lco_visibility(
+    ra: float,
+    dec: float,
+    mid: str,
+    duration: float,
+    site: str,
+    obs_airmass: float = 2.0,
+    twilight: str = transit_obs.DEFAULT_TWILIGHT,
+    moon_sep_min: float = 0.0,
+):
+    """Time-series for the inline visibility plot of one transit at one site
+    (target + moon altitude, twilight, airmass limit, shaded transit interval)."""
+    try:
+        series = transit_obs.visibility_series(
+            float(ra), float(dec), mid, float(duration), site,
+            max_airmass=float(obs_airmass), twilight=twilight,
+            moon_sep_min=float(moon_sep_min),
+        )
+        return JSONResponse({"ok": True, **series})
+    except transit_obs.TransitObsError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=e.status)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"visibility unavailable: {e}"}, status_code=500)
+
+
+@app.post("/api/lco/ipp", response_class=JSONResponse)
+def api_lco_ipp(payload: dict = Body(...)):
+    """Build the requestgroup and run the max-allowable-IPP dry-run."""
+    try:
+        rg = lco.build_requestgroup(payload.get("kind"), payload)
+        ipp = lco.max_allowable_ipp(rg)
+        return JSONResponse(
+            {"ok": True, "payload": rg, "payload_hash": lco.payload_hash(rg), "ipp": ipp}
+        )
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+
+
+@app.post("/api/lco/submit", response_class=JSONResponse)
+def api_lco_submit(payload: dict = Body(...)):
+    """Live submission. Guarded: requires explicit confirm AND a payload hash that
+    matches a prior successful dry-run, plus the server-side submit switch."""
+    try:
+        if not payload.get("confirm"):
+            return JSONResponse(
+                {"ok": False, "error": "submission requires explicit confirm"}, status_code=400
+            )
+        rg = lco.build_requestgroup(payload.get("kind"), payload)
+        expected = payload.get("dry_run_hash")
+        if not expected or expected != lco.payload_hash(rg):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "no matching IPP dry-run for this payload; run the dry-run again",
+                },
+                status_code=409,
+            )
+        result = lco.submit_requestgroup(rg)
+        return JSONResponse({"ok": True, "result": result})
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+
+
+@app.get("/api/lco/archive/frames", response_class=JSONResponse)
+def api_lco_archive_frames(
+    instrument: str = "",
+    proposal_id: str = "",
+    OBJECT: str = "",
+    SITEID: str = "",
+    TELID: str = "",
+    INSTRUME: str = "",
+    FILTER: str = "",
+    reduction_level: str = "",
+    start: str = "",
+    end: str = "",
+    limit: str = "50",
+):
+    tel_class = TELID if TELID in ("0m4", "1m0", "2m0") else ""
+    filters = {
+        "proposal_id": proposal_id,
+        "OBJECT": OBJECT,
+        "SITEID": SITEID,
+        "TELID": "" if tel_class else TELID,
+        "INSTRUME": INSTRUME,
+        "FILTER": FILTER,
+        "reduction_level": reduction_level,
+        "start": start,
+        "end": end,
+        "limit": limit,
+    }
+    try:
+        result = lco.archive_search(filters)
+        rows = result.get("results") or []
+        if tel_class and isinstance(rows, list):
+            rows = [r for r in rows if str(r.get("TELID") or "").lower().startswith(tel_class)]
+            result = dict(result)
+            result["results"] = rows
+            result["count"] = len(rows)
+        if isinstance(rows, list):
+            annotated, dataset_count = _annotate_lco_archive_results(instrument, rows)
+            result = dict(result)
+            result["results"] = annotated
+            result["dataset_count"] = dataset_count
+        return JSONResponse({"ok": True, **result})
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+
+
+@app.post("/api/lco/archive/download", response_class=JSONResponse)
+def api_lco_archive_download(payload: dict = Body(...)):
+    try:
+        frames = payload.get("frames")
+        if not isinstance(frames, list) or not frames:
+            return JSONResponse({"ok": False, "error": "no frames selected"}, status_code=400)
+        results = lco.download_frames(frames, overwrite=bool(payload.get("overwrite")))
+        return JSONResponse({"ok": True, "results": results})
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+
+
 # Helper to normalize target names for comparison
 def _normalize_target_name(t: str) -> str:
     s = t.strip().upper().replace(" ", "").replace("-", "").replace("_", "")
@@ -1083,6 +1821,33 @@ def _normalize_target_name(t: str) -> str:
     if len(s) > 2 and s[-1] in "BCDEFGH":
         return s[:-1]
     return s
+
+
+def _safe_float(value) -> float | None:
+    """Parse a value to float, returning None for blanks/invalid input."""
+    if value is None:
+        return None
+    try:
+        s = str(value).strip()
+        if not s:
+            return None
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_err(row: dict, key_base: str) -> float | None:
+    """Extract and average positive and negative uncertainties if available, or return one."""
+    err1 = _safe_float(row.get(key_base + "err1"))
+    err2 = _safe_float(row.get(key_base + "err2"))
+    if err1 is not None and err2 is not None:
+        return (abs(err1) + abs(err2)) / 2.0
+    if err1 is not None:
+        return abs(err1)
+    if err2 is not None:
+        return abs(err2)
+    return None
+
 
 
 def _query_target_planets_nasa(target: str) -> dict:
@@ -1116,9 +1881,23 @@ def _query_target_planets_nasa(target: str) -> dict:
                         per = row.get("pl_orbper")
                         if pl_letter and t0 is not None and per is not None:
                             try:
-                                results[pl_letter] = {"t0": float(t0), "period": float(per)}
+                                entry = {"t0": float(t0), "period": float(per)}
                             except ValueError:
-                                pass
+                                continue
+                            dur = _safe_float(row.get("pl_trandur"))  # hours
+                            if dur is not None:
+                                entry["duration"] = dur
+                            # Extract uncertainties
+                            t0_unc = _get_err(row, "pl_tranmid")
+                            per_unc = _get_err(row, "pl_orbper")
+                            dur_unc = _get_err(row, "pl_trandur")
+                            if t0_unc is not None:
+                                entry["t0_unc"] = t0_unc
+                            if per_unc is not None:
+                                entry["period_unc"] = per_unc
+                            if dur_unc is not None:
+                                entry["duration_unc"] = dur_unc
+                            results[pl_letter] = entry
     except Exception:
         pass
 
@@ -1129,7 +1908,11 @@ def _query_target_planets_nasa(target: str) -> dict:
         if len(host) > 2 and host[-2] == " " and host[-1].lower() in "bcdefgh":
             host = host[:-2].strip()
             
-        cols = ["pl_name", "pl_tranmid", "pl_orbper"]
+        cols = [
+            "pl_name", "pl_tranmid", "pl_tranmiderr1", "pl_tranmiderr2",
+            "pl_orbper", "pl_orbpererr1", "pl_orbpererr2",
+            "pl_trandur", "pl_trandurerr1", "pl_trandurerr2"
+        ]
         col_str = ", ".join(cols)
         q = f"SELECT {col_str} FROM pscomppars WHERE hostname = {_adql_literal(host)} OR hostname LIKE {_adql_literal(host + '%')}"
         url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
@@ -1144,12 +1927,376 @@ def _query_target_planets_nasa(target: str) -> dict:
                         t0 = row.get("pl_tranmid")
                         per = row.get("pl_orbper")
                         if letter and t0 is not None and per is not None:
-                            results[letter] = {"t0": float(t0), "period": float(per)}
+                            entry = {"t0": float(t0), "period": float(per)}
+                            dur = _safe_float(row.get("pl_trandur"))  # hours
+                            if dur is not None:
+                                entry["duration"] = dur
+                            # Extract uncertainties
+                            t0_unc = _get_err(row, "pl_tranmid")
+                            per_unc = _get_err(row, "pl_orbper")
+                            dur_unc = _get_err(row, "pl_trandur")
+                            if t0_unc is not None:
+                                entry["t0_unc"] = t0_unc
+                            if per_unc is not None:
+                                entry["period_unc"] = per_unc
+                            if dur_unc is not None:
+                                entry["duration_unc"] = dur_unc
+                            results[letter] = entry
         except Exception:
             pass
 
     _CATALOG_CACHE[cache_key] = results
     return results
+
+
+def _query_target_coordinates(target: str) -> dict | None:
+    target_clean = target.strip().upper()
+    cache_key = "coords_" + target_clean
+    if cache_key in _CATALOG_CACHE:
+        return _CATALOG_CACHE[cache_key]
+
+    target_norm = _normalize_target_name(target)
+
+    def _store(coords: dict | None) -> dict | None:
+        _CATALOG_CACHE[cache_key] = coords
+        return coords
+
+    def _coords_from_nasa_row(row: dict) -> dict | None:
+        ra = _safe_float(row.get("ra_x"))
+        dec = _safe_float(row.get("dec_x"))
+        if ra is None or dec is None:
+            return None
+        return {"ra": ra, "dec": dec, "source": "nasa"}
+
+    def _coords_from_toi_row(row: dict) -> dict | None:
+        ra = _safe_float(row.get("ra_deg"))
+        dec = _safe_float(row.get("dec_deg"))
+        if ra is None or dec is None:
+            ra = _safe_float(row.get("RA"))
+            dec = _safe_float(row.get("Dec"))
+        if ra is None or dec is None:
+            return None
+        return {"ra": ra, "dec": dec, "source": "toi"}
+
+    try:
+        csv_path = pathlib.Path(HERE).parent.parent / "data" / "nexsci_pscomppars.csv"
+        if csv_path.exists():
+            with open(csv_path, errors="replace") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    h_name = row.get("hostname", "")
+                    p_name = row.get("pl_name", "")
+                    tic = row.get("tic_id", "")
+                    if (
+                        h_name and _normalize_target_name(h_name) == target_norm
+                    ) or (
+                        p_name and _normalize_target_name(p_name) == target_norm
+                    ) or (
+                        tic and _normalize_target_name(tic) == target_norm
+                    ):
+                        coords = _coords_from_nasa_row(row)
+                        if coords:
+                            return _store(coords)
+    except Exception:
+        pass
+
+    try:
+        csv_path = pathlib.Path(HERE).parent.parent / "data" / "TOIs.csv"
+        if csv_path.exists():
+            with open(csv_path, errors="replace") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    toi_val = row.get("TOI", "")
+                    tic_val = row.get("TIC ID", "")
+                    match = False
+                    if toi_val and _normalize_target_name("TOI" + toi_val) == target_norm:
+                        match = True
+                    elif tic_val and (
+                        _normalize_target_name(tic_val) == target_norm
+                        or _normalize_target_name("TIC" + tic_val) == target_norm
+                    ):
+                        match = True
+                    elif row.get("Planet Name") and _normalize_target_name(row.get("Planet Name", "")) == target_norm:
+                        match = True
+                    if match:
+                        coords = _coords_from_toi_row(row)
+                        if coords:
+                            return _store(coords)
+    except Exception:
+        pass
+
+    return _store(None)
+
+
+def _parse_lco_obs_dt(frame: dict) -> datetime.datetime | None:
+    raw = (
+        frame.get("DATE_OBS")
+        or frame.get("observation_date")
+        or frame.get("DAY_OBS")
+        or ""
+    )
+    raw = str(raw).strip()
+    if not raw:
+        return None
+    try:
+        if len(raw) == 10:
+            return datetime.datetime.fromisoformat(raw).replace(tzinfo=datetime.timezone.utc)
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt.astimezone(datetime.timezone.utc)
+    except ValueError:
+        return None
+
+
+def _lco_observing_date(frame: dict) -> str:
+    dt = _parse_lco_obs_dt(frame)
+    if dt is None:
+        day_obs = str(frame.get("DAY_OBS") or "").strip()
+        if day_obs:
+            return day_obs
+        return ""
+    site = str(frame.get("SITEID") or "").strip().lower()
+    tz_name = _LCO_SITE_TZ.get(site, "UTC")
+    local_dt = dt.astimezone(ZoneInfo(tz_name))
+    # Observing nights run through local midnight, so local post-midnight frames
+    # belong to the prior evening's dataset.
+    if local_dt.hour < 12:
+        local_dt = local_dt - datetime.timedelta(days=1)
+    return local_dt.date().isoformat()
+
+
+def _sexagesimal_to_deg(value: str, *, is_ra: bool) -> float | None:
+    parts = value.split(":")
+    if len(parts) != 3:
+        return None
+    sign = 1.0
+    head = parts[0]
+    if not is_ra and head.startswith("-"):
+        sign = -1.0
+    head = head.lstrip("+-")
+    try:
+        a = float(head)
+        b = float(parts[1])
+        c = float(parts[2])
+    except ValueError:
+        return None
+    base = abs(a) + b / 60.0 + c / 3600.0
+    if is_ra:
+        return base * 15.0
+    return sign * base
+
+
+def _coord_to_deg(value, *, is_ra: bool) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    clean = _clean_ra(s) if is_ra else _clean_dec(s)
+    if clean is None:
+        return None
+    return _sexagesimal_to_deg(clean, is_ra=is_ra)
+
+
+def _frame_coords_deg(frame: dict) -> tuple[float | None, float | None]:
+    ra = (
+        frame.get("RA")
+        or frame.get("ra")
+        or frame.get("ra_x")
+        or frame.get("target_ra")
+    )
+    dec = (
+        frame.get("DEC")
+        or frame.get("Dec")
+        or frame.get("declination")
+        or frame.get("dec_x")
+        or frame.get("target_dec")
+    )
+    return _coord_to_deg(ra, is_ra=True), _coord_to_deg(dec, is_ra=False)
+
+
+def _angular_sep_arcsec(ra1: float, dec1: float, ra2: float, dec2: float) -> float:
+    ra1r = math.radians(ra1)
+    dec1r = math.radians(dec1)
+    ra2r = math.radians(ra2)
+    dec2r = math.radians(dec2)
+    cos_sep = (
+        math.sin(dec1r) * math.sin(dec2r)
+        + math.cos(dec1r) * math.cos(dec2r) * math.cos(ra1r - ra2r)
+    )
+    cos_sep = max(-1.0, min(1.0, cos_sep))
+    return math.degrees(math.acos(cos_sep)) * 3600.0
+
+
+def _local_lco_datasets(inst: str, obsdate: str, site: str) -> list[dict]:
+    db = _db_path()
+    conn = sqlite3.connect(db)
+    conn.create_aggregate("coord_repr", 2, CoordRepr)
+    try:
+        rows = conn.execute(
+            """
+            SELECT object, COUNT(*) AS nframes, coord_repr(ra, declination) AS coord
+            FROM frames
+            WHERE instrument = ?
+              AND obsdate = ?
+              AND filename LIKE ?
+            GROUP BY object
+            """,
+            (inst, obsdate, f"{site}%"),
+        ).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for obj, nframes, packed in rows:
+        ra_raw, dec_raw = _unpack_coord(packed)
+        ra_deg = _coord_to_deg(ra_raw, is_ra=True)
+        dec_deg = _coord_to_deg(dec_raw, is_ra=False)
+        out.append(
+            {
+                "object": obj or "",
+                "nframes": int(nframes or 0),
+                "ra_deg": ra_deg,
+                "dec_deg": dec_deg,
+            }
+        )
+    return out
+
+
+def _annotate_lco_archive_results(inst: str, results: list[dict]) -> tuple[list[dict], int]:
+    if not results:
+        return [], 0
+
+    rows: list[dict] = [dict(r) for r in results]
+    rows.sort(
+        key=lambda r: (
+            _parse_lco_obs_dt(r) or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc),
+            str(r.get("filename") or r.get("basename") or ""),
+        )
+    )
+
+    filename_to_group: dict[str, str] = {}
+    dataset_meta: dict[str, dict] = {}
+    group_idx_by_key: dict[tuple[str, str, str], int] = {}
+
+    for row in rows:
+        observing_date = _lco_observing_date(row)
+        identity = (
+            observing_date,
+            str(row.get("OBJECT") or ""),
+            str(row.get("SITEID") or ""),
+        )
+        if identity not in group_idx_by_key:
+            group_idx_by_key[identity] = len(group_idx_by_key) + 1
+        group_id = f"{observing_date or 'unknown'}:{group_idx_by_key[identity]}"
+        if group_id not in dataset_meta:
+            inferred_inst = inst if inst in INSTRUMENTS else ""
+            if not inferred_inst:
+                try:
+                    inferred_inst = lco.infer_archive_instrument(row)
+                except lco.LcoError:
+                    inferred_inst = ""
+            dataset_meta[group_id] = {
+                "dataset_id": group_id,
+                "dataset_date": observing_date,
+                "instrument": inferred_inst,
+                "object": str(row.get("OBJECT") or ""),
+                "site": str(row.get("SITEID") or ""),
+                "telescope": str(row.get("TELID") or ""),
+                "instrument_header": str(row.get("INSTRUME") or ""),
+                "frame_count": 0,
+                "existing_count": 0,
+                "filenames": [],
+                "archive_ra_deg": None,
+                "archive_dec_deg": None,
+            }
+        meta = dataset_meta[group_id]
+        meta["frame_count"] += 1
+        fname = str(row.get("filename") or row.get("basename") or "")
+        if fname:
+            meta["filenames"].append(fname)
+            filename_to_group[fname] = group_id
+        if meta["archive_ra_deg"] is None or meta["archive_dec_deg"] is None:
+            ra_deg, dec_deg = _frame_coords_deg(row)
+            if ra_deg is not None and dec_deg is not None:
+                meta["archive_ra_deg"] = ra_deg
+                meta["archive_dec_deg"] = dec_deg
+
+    local_cache: dict[tuple[str, str, str], list[dict]] = {}
+    for meta in dataset_meta.values():
+        inst_name = str(meta.get("instrument") or "")
+        obsdate = (meta.get("dataset_date") or "").replace("-", "")[2:8]
+        site = str(meta.get("site") or "").lower()
+        if not inst_name or not obsdate or not site:
+            continue
+        key = (inst_name, obsdate, site)
+        if key not in local_cache:
+            local_cache[key] = _local_lco_datasets(inst_name, obsdate, site)
+
+        archive_ra = meta.get("archive_ra_deg")
+        archive_dec = meta.get("archive_dec_deg")
+        if archive_ra is None or archive_dec is None:
+            archive_name = _normalize_target_name(str(meta.get("object") or ""))
+            if not archive_name:
+                continue
+            for cand in local_cache[key]:
+                if _normalize_target_name(str(cand.get("object") or "")) == archive_name:
+                    meta["existing_count"] = int(cand.get("nframes") or 0)
+                    meta["matched_object"] = str(cand.get("object") or "")
+                    break
+            continue
+
+        best_match = None
+        best_sep = None
+        for cand in local_cache[key]:
+            ra2 = cand.get("ra_deg")
+            dec2 = cand.get("dec_deg")
+            if ra2 is None or dec2 is None:
+                continue
+            sep = _angular_sep_arcsec(archive_ra, archive_dec, ra2, dec2)
+            if best_sep is None or sep < best_sep:
+                best_sep = sep
+                best_match = cand
+        if best_match is not None and best_sep is not None and best_sep <= _LCO_DATASET_MATCH_ARCSEC:
+            meta["existing_count"] = int(best_match.get("nframes") or 0)
+            meta["matched_object"] = str(best_match.get("object") or "")
+            meta["match_sep_arcsec"] = round(best_sep, 2)
+
+    out: list[dict] = []
+    for row in rows:
+        fname = str(row.get("filename") or row.get("basename") or "")
+        gid = filename_to_group.get(fname, "")
+        meta = dataset_meta.get(gid, {})
+        row["dataset_id"] = gid
+        row["dataset_date"] = meta.get("dataset_date", "")
+        row["archive_instrument"] = meta.get("instrument", "")
+        row["dataset_exists"] = bool(meta.get("existing_count"))
+        row["dataset_existing_count"] = int(meta.get("existing_count", 0))
+        row["dataset_frame_count"] = int(meta.get("frame_count", 0))
+        row["dataset_matched_object"] = meta.get("matched_object", "")
+        row["dataset_match_sep_arcsec"] = meta.get("match_sep_arcsec")
+        
+        # Check if frame is saved locally
+        inferred_inst = meta.get("instrument") or ""
+        obsdate = (meta.get("dataset_date") or "").replace("-", "")[2:8]
+        row["saved_locally"] = False
+        if inferred_inst and obsdate and fname:
+            try:
+                dest = lco.frame_dest(inferred_inst, obsdate, fname)
+                if dest.exists() and dest.stat().st_size > 0:
+                    row["saved_locally"] = True
+            except Exception:
+                pass
+        out.append(row)
+    return out, len(dataset_meta)
 
 
 def _query_target_planets_toi(target: str) -> dict:
@@ -1197,9 +2344,23 @@ def _query_target_planets_toi(target: str) -> dict:
                         per = row.get("Period (days)")
                         if t0 is not None and per is not None:
                             try:
-                                results[letter] = {"t0": float(t0), "period": float(per)}
+                                entry = {"t0": float(t0), "period": float(per)}
                             except ValueError:
-                                pass
+                                continue
+                            dur = _safe_float(row.get("Duration (hours)"))
+                            if dur is not None:
+                                entry["duration"] = dur
+                            # Extract uncertainties
+                            t0_unc = _safe_float(row.get("Epoch (BJD) err"))
+                            per_unc = _safe_float(row.get("Period (days) err"))
+                            dur_unc = _safe_float(row.get("Duration (hours) err"))
+                            if t0_unc is not None:
+                                entry["t0_unc"] = t0_unc
+                            if per_unc is not None:
+                                entry["period_unc"] = per_unc
+                            if dur_unc is not None:
+                                entry["duration_unc"] = dur_unc
+                            results[letter] = entry
     except Exception:
         pass
 
@@ -1209,7 +2370,7 @@ def _query_target_planets_toi(target: str) -> dict:
         if len(host) > 2 and host[-2] == " " and host[-1].lower() in "bcdefgh":
             host = host[:-2].strip()
         clean_target = host.replace("TOI", "").replace("toi", "").replace("-", "").replace(" ", "").lstrip("0").split(".")[0].strip()
-        q = f"SELECT toidisplay, pl_tranmid, pl_orbper FROM toi WHERE toidisplay LIKE {_adql_literal(host + '%')}"
+        q = f"SELECT toidisplay, pl_tranmid, pl_tranmiderr1, pl_tranmiderr2, pl_orbper, pl_orbpererr1, pl_orbpererr2, pl_trandurh, pl_trandurherr1, pl_trandurherr2 FROM toi WHERE toidisplay LIKE {_adql_literal(host + '%')}"
         url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         try:
@@ -1225,9 +2386,23 @@ def _query_target_planets_toi(target: str) -> dict:
                             try:
                                 candidate_num = int(parts[1])
                                 letter = chr(ord('b') + candidate_num - 1)
-                                results[letter] = {"t0": float(t0), "period": float(per)}
+                                entry = {"t0": float(t0), "period": float(per)}
                             except Exception:
-                                pass
+                                continue
+                            dur = _safe_float(row.get("pl_trandurh"))  # hours
+                            if dur is not None:
+                                entry["duration"] = dur
+                            # Extract uncertainties
+                            t0_unc = _get_err(row, "pl_tranmid")
+                            per_unc = _get_err(row, "pl_orbper")
+                            dur_unc = _get_err(row, "pl_trandurh")
+                            if t0_unc is not None:
+                                entry["t0_unc"] = t0_unc
+                            if per_unc is not None:
+                                entry["period_unc"] = per_unc
+                            if dur_unc is not None:
+                                entry["duration_unc"] = dur_unc
+                            results[letter] = entry
         except Exception:
             pass
 
@@ -1290,64 +2465,90 @@ def _query_target_planets_catalog(target: str) -> dict:
 
 
 # Helper to fetch fitted transit centers for a run
-def _get_run_transit_centers(inst: str, date: str, target: str, run_id: str | None) -> dict:
+def _get_run_fitted_params(inst: str, date: str, target: str, run_id: str | None) -> dict:
+    """Per-planet fitted ephemeris from a run's outputs (the Fitted Parameters
+    Summary), not the input ``sys.yaml`` priors.
+
+    Returns ``{planet: {"tc", "unc", "dur", "dur_unc"}}`` with whatever is
+    available. The transit center (``tc``, BJD) comes from ``out/tc.txt`` when
+    present, otherwise from ``out/summary.csv`` (``t0[idx]`` + the run's
+    reference time). The transit duration (``dur``, hours) comes from
+    ``summary.csv`` (``dur[idx]``, stored in days). ``period`` is deliberately
+    not read here: it is held fixed in the fit and never appears in the summary.
+    """
+    import csv
     import yaml
-    fitted_tcs = {}
+    fitted: dict[str, dict] = {}
     try:
         rdir = fit.fit_output_dir(inst, date, target, run_id or None)
-        tc_txt = rdir / "out" / "tc.txt"
+        out_dir = rdir / "out"
+
+        # Index -> planet letter mapping (summary rows are keyed e.g. "dur[0]").
+        planets_fitted = "b"
+        fit_yaml = rdir / "fit.yaml"
+        if fit_yaml.is_file():
+            with open(fit_yaml) as f:
+                cfg = yaml.safe_load(f) or {}
+                planets_fitted = str(cfg.get("planets", "b"))
+
+        # Transit centers from tc.txt take precedence for t0 when present.
+        tc_txt = out_dir / "tc.txt"
         if tc_txt.is_file():
             with open(tc_txt) as f:
                 for line in f:
                     parts = line.strip().split()
                     if len(parts) >= 3:
                         pl = parts[0]
-                        kepler_val = float(parts[1])
-                        unc = float(parts[2])
-                        bjd_val = kepler_val + 2454833.0
-                        fitted_tcs[pl] = {"tc": bjd_val, "unc": unc}
-        else:
-            summary_csv = rdir / "out" / "summary.csv"
-            if summary_csv.is_file():
-                fit_yaml = rdir / "fit.yaml"
-                planets_fitted = "b"
-                if fit_yaml.is_file():
-                    with open(fit_yaml) as f:
-                        cfg = yaml.safe_load(f) or {}
-                        planets_fitted = str(cfg.get("planets", "b"))
-                
-                ref_time = None
-                log_file = rdir / "timer-fit.log"
-                if log_file.is_file():
-                    with open(log_file) as lf:
-                        for line in lf:
-                            if "ref. time:" in line:
+                        entry = fitted.setdefault(pl, {})
+                        entry["tc"] = float(parts[1]) + 2454833.0  # Kepler -> BJD
+                        entry["unc"] = float(parts[2])
+
+        # Fitted Parameters Summary: t0[idx] (if not already from tc.txt) and dur[idx].
+        summary_csv = out_dir / "summary.csv"
+        if summary_csv.is_file():
+            ref_time = None
+            log_file = rdir / "timer-fit.log"
+            if log_file.is_file():
+                with open(log_file) as lf:
+                    for line in lf:
+                        if "ref. time:" in line:
+                            try:
                                 ref_time = int(line.split("ref. time:")[-1].strip())
-                                break
-                
-                if ref_time is not None:
-                    import csv
-                    with open(summary_csv) as f:
-                        reader = csv.reader(f)
-                        headers = next(reader)
-                        headers[0] = "parameter"
-                        for row in reader:
-                            if row:
-                                row_dict = dict(zip(headers, row))
-                                param = row_dict["parameter"]
-                                if param.startswith("t0[") and param.endswith("]"):
-                                    try:
-                                        idx = int(param[3:-1])
-                                        if idx < len(planets_fitted):
-                                            pl = planets_fitted[idx]
-                                            val = float(row_dict["mean"]) + ref_time
-                                            unc = float(row_dict["sd"])
-                                            fitted_tcs[pl] = {"tc": val, "unc": unc}
-                                    except Exception:
-                                        pass
+                            except ValueError:
+                                ref_time = None
+                            break
+            with open(summary_csv) as f:
+                reader = csv.reader(f)
+                headers = next(reader)
+                headers[0] = "parameter"
+                for row in reader:
+                    if not row:
+                        continue
+                    rd = dict(zip(headers, row))
+                    param = rd.get("parameter", "")
+                    if "[" not in param or not param.endswith("]"):
+                        continue
+                    base, _, idx_str = param[:-1].partition("[")
+                    try:
+                        idx = int(idx_str)
+                    except ValueError:
+                        continue
+                    if idx >= len(planets_fitted):
+                        continue
+                    pl = planets_fitted[idx]
+                    entry = fitted.setdefault(pl, {})
+                    try:
+                        if base == "t0" and "tc" not in entry and ref_time is not None:
+                            entry["tc"] = float(rd["mean"]) + ref_time
+                            entry["unc"] = float(rd["sd"])
+                        elif base == "dur":
+                            entry["dur"] = float(rd["mean"]) * 24.0  # days -> hours
+                            entry["dur_unc"] = float(rd["sd"]) * 24.0
+                    except (ValueError, KeyError):
+                        pass
     except Exception:
         pass
-    return fitted_tcs
+    return fitted
 
 
 @app.get("/api/ephemeris/targets", response_class=JSONResponse)
@@ -1405,11 +2606,32 @@ def api_ephemeris_target_info(target: str):
                     sys_cfg = yaml.safe_load(f) or {}
                     planets_data = sys_cfg.get("planets", {})
                     for pl, pl_params in planets_data.items():
-                        t0_val = pl_params.get("t0", [2450000.0, 0.0])[0]
-                        period_val = pl_params.get("period", [1.0, 0.0])[0]
+                        t0_list = pl_params.get("t0", [2450000.0, 0.0])
+                        if isinstance(t0_list, (list, tuple)):
+                            t0_mean = t0_list[0] if len(t0_list) > 0 else 2450000.0
+                            t0_unc = t0_list[1] if len(t0_list) > 1 else None
+                        else:
+                            t0_mean = t0_list
+                            t0_unc = None
+
+                        period_list = pl_params.get("period", [1.0, 0.0])
+                        if isinstance(period_list, (list, tuple)):
+                            period_mean = period_list[0] if len(period_list) > 0 else 1.0
+                            period_unc = period_list[1] if len(period_list) > 1 else None
+                        else:
+                            period_mean = period_list
+                            period_unc = None
+
+                        # t0 and duration are overridden below from the Fitted
+                        # Parameters Summary; period stays from sys.yaml (it is
+                        # held fixed in the fit and absent from the summary).
                         planets_ephem[pl] = {
-                            "t0": float(t0_val),
-                            "period": float(period_val)
+                            "t0": float(t0_mean),
+                            "t0_unc": float(t0_unc) if t0_unc is not None else None,
+                            "period": float(period_mean),
+                            "period_unc": float(period_unc) if period_unc is not None else None,
+                            "duration": None,
+                            "duration_unc": None,
                         }
             fit_yaml = rdir / "fit.yaml"
             if fit_yaml.is_file():
@@ -1424,11 +2646,20 @@ def api_ephemeris_target_info(target: str):
             if pl not in planets_ephem:
                 planets_ephem[pl] = {"t0": 2450000.0, "period": 1.0}
             
-        tcs = _get_run_transit_centers(inst, date, j["target"], run_id)
-        # Override planets_ephem t0 with fitted tc if available
+        # Override t0 and duration with the run's Fitted Parameters Summary.
+        fitted = _get_run_fitted_params(inst, date, j["target"], run_id)
         for pl in planets_fitted:
-            if pl in tcs and tcs[pl].get("tc") is not None:
-                planets_ephem[pl]["t0"] = float(tcs[pl]["tc"])
+            fp = fitted.get(pl)
+            if not fp:
+                continue
+            if fp.get("tc") is not None:
+                planets_ephem[pl]["t0"] = float(fp["tc"])
+                if fp.get("unc") is not None:
+                    planets_ephem[pl]["t0_unc"] = float(fp["unc"])
+            if fp.get("dur") is not None:
+                planets_ephem[pl]["duration"] = float(fp["dur"])
+                if fp.get("dur_unc") is not None:
+                    planets_ephem[pl]["duration_unc"] = float(fp["dur_unc"])
         
         datasets_list.append({
             "instrument": inst,
@@ -1437,7 +2668,7 @@ def api_ephemeris_target_info(target: str):
             "run_name": j.get("run_name") or (run_id if run_id else "legacy"),
             "target": j["target"],
             "planets_fitted": planets_fitted,
-            "fitted_tcs": tcs,
+            "fitted_tcs": fitted,
             "planets_ephem": planets_ephem,
             "run_type": j.get("run_type") or ""
         })
@@ -1457,6 +2688,7 @@ def api_ephemeris_target_info(target: str):
         "ok": True,
         "target": target,
         "planets": planets_sorted,
+        "coordinates": _query_target_coordinates(target),
         "reference_ephemeris": ref_ephem,
         "nasa_ephemeris": nasa_ephem,
         "toi_ephemeris": toi_ephem,
@@ -1522,10 +2754,10 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
             run_id = j.get("run_id") or ""
             
             # Fetch transit centers
-            tcs = _get_run_transit_centers(inst, date, j["target"], run_id)
-            if pl in tcs:
+            tcs = _get_run_fitted_params(inst, date, j["target"], run_id)
+            if pl in tcs and tcs[pl].get("tc") is not None:
                 val = tcs[pl]["tc"]
-                unc = tcs[pl]["unc"]
+                unc = tcs[pl].get("unc")
                 
                 # Check status: target-specific lookup first, fallback to targetless
                 norm_tgt = _normalize_target_name(j["target"])
@@ -1555,7 +2787,7 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
                 })
                 
         # Perform straight line fit if possible
-        fit_points = [p for p in points if p["checked"] and p["unc"] > 0]
+        fit_points = [p for p in points if p["checked"] and p["unc"] is not None and p["unc"] > 0]
         was_fit = False
         t0_fit = T0
         period_fit = P
@@ -1660,6 +2892,18 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
     return JSONResponse({"ok": True, "results": results})
 
 
+def _live_elapsed(job: dict) -> int:
+    """Elapsed seconds for display: live for active jobs, stored otherwise.
+
+    ``sync_jobs`` no longer rewrites a running job's row every poll just to bump
+    its elapsed, so derive it from ``started_at`` for active states instead of
+    reading the (intentionally stale) stored value.
+    """
+    if job.get("state") in ("running", "cancelling") and job.get("started_at"):
+        return round(time.time() - job["started_at"])
+    return round(job.get("elapsed") or 0)
+
+
 @app.get("/jobs", response_class=HTMLResponse)
 def jobs_page():
     phot.sync_jobs()
@@ -1673,9 +2917,14 @@ def jobs_page():
         all_jobs.extend(orphan_fits)
         all_jobs.sort(key=lambda j: j.get("started_at", 0), reverse=True)
 
+    for j in all_jobs:
+        j["elapsed"] = _live_elapsed(j)
+
     counts = {"running": 0, "done": 0, "error": 0, "cancelled": 0, "pending": 0}
     for j in all_jobs:
         s = j["state"]
+        if s == "cancelling":
+            s = "running"
         if s in counts:
             counts[s] += 1
 
@@ -1689,6 +2938,13 @@ def jobs_status():
     phot.sync_jobs()
     fit.sync_jobs()
     all_jobs = get_persisted_jobs()
+
+    # Discover fits completed on-disk outside the web UI.
+    existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
+    orphan_fits = fit._discover_orphan_fits(existing_keys)
+    if orphan_fits:
+        all_jobs.extend(orphan_fits)
+
     global _last_running
     current_running = {j["key"] for j in all_jobs if j["state"] in ("running", "cancelling")}
     finished = {}
@@ -1699,21 +2955,27 @@ def jobs_status():
                 "elapsed": j["elapsed"],
                 "error_desc": j.get("error_desc", "") or "",
                 "returncode": j.get("returncode"),
+                "started_at": j.get("started_at"),
                 "started_at_str": _datetime_from_timestamp(int(j["started_at"])) if j.get("started_at") else "—",
+                "user_name": j.get("user_name", ""),
             }
     _last_running = current_running
     running = [
         {
             "key": j["key"],
             "state": j["state"],
-            "elapsed": j["elapsed"],
+            "elapsed": _live_elapsed(j),
+            "started_at": j.get("started_at"),
             "started_at_str": _datetime_from_timestamp(int(j["started_at"])) if j.get("started_at") else "—",
+            "user_name": j.get("user_name", ""),
         }
         for j in all_jobs if j["state"] in ("running", "cancelling")
     ]
     counts = {"running": 0, "done": 0, "error": 0, "cancelled": 0, "pending": 0}
     for j in all_jobs:
         s = j["state"]
+        if s == "cancelling":
+            s = "running"
         if s in counts:
             counts[s] += 1
     return {"running": running, "counts": counts, "finished": finished}
@@ -1722,7 +2984,7 @@ def jobs_status():
 @app.get("/jobs/log/{type_}/{inst}/{date}/{target}")
 def job_log(type_: str, inst: str, date: str, target: str, run: str = ""):
     if type_ == "photometry":
-        path = phot.log_path(inst, date, target)
+        path = phot.log_path(inst, date, target, run_id=(run or "").strip())
     elif type_ == "transit_fit":
         path = fit.log_path(inst, date, target, run_id=(run or "").strip())
     else:
@@ -1759,6 +3021,14 @@ def jobs_rerun(payload: dict = Body(...)):
     return JSONResponse(result)
 
 
+@app.get("/photometry/file/{inst}/{date}/{target}/run/{run_id}/{name}")
+def photometry_file_run(inst: str, date: str, target: str, run_id: str, name: str):
+    path = phot.safe_run_artifact_path(inst, date, target, run_id, name)
+    if path is None:
+        raise HTTPException(404, "artifact not found")
+    return FileResponse(str(path), headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
+
+
 @app.get("/photometry/file/{inst}/{date}/{name}")
 def photometry_file(inst: str, date: str, name: str):
     path = phot.safe_artifact_path(inst, date, name)
@@ -1792,7 +3062,7 @@ def photometry_command(payload: dict = Body(...)):
     target = (payload.get("target") or "").strip()
     options = payload.get("options") or {}
     test_run = bool(payload.get("test_run", False))
-    error = phot.validate_run_options(phot.normalize_run_options(options))
+    error = phot.validate_run_options(phot.normalize_run_options(options), inst=inst)
     # Surface the multi-site block as a command error so the page disables the
     # run buttons and shows why until a site is chosen.
     if not error:
@@ -1802,11 +3072,62 @@ def photometry_command(payload: dict = Body(...)):
 
 
 @app.get("/photometry/status")
-def photometry_status(inst: str, date: str, target: str):
+def photometry_status(inst: str, date: str, target: str, run: str = ""):
     # Drain the queue so a pending full job is promoted once the slot frees,
     # even when only the photometry page (not the Jobs page) is polling.
     phot.sync_jobs()
-    return JSONResponse(phot.job_status(inst, date, target))
+    return JSONResponse(phot.job_status(inst, date, target, run_id=(run or "").strip()))
+
+
+@app.post("/photometry/status-batch")
+def photometry_status_batch(payload: dict = Body(...)):
+    """Poll multiple jobs in a single request. Reduces polling overhead when monitoring many jobs.
+
+    Request body:
+    {
+      "jobs": [
+        {"inst": "muscat2", "date": "260307", "target": "TOI05646.01", "run": "run_name"},
+        ...
+      ]
+    }
+
+    Response:
+    {
+      "jobs": [
+        {
+          "inst": "muscat2", "date": "260307", "target": "TOI05646.01", "run": "run_name",
+          "state": "running", "log": "...", "elapsed": 123, ...
+        },
+        ...
+      ]
+    }
+    """
+    phot.sync_jobs()
+    jobs = payload.get("jobs") or []
+    if not isinstance(jobs, list):
+        return JSONResponse({"error": "jobs must be a list"}, status_code=400)
+
+    results = []
+    for job_spec in jobs:
+        inst = (job_spec.get("inst") or "").strip()
+        date = (job_spec.get("date") or "").strip()
+        target = (job_spec.get("target") or "").strip()
+        run = (job_spec.get("run") or "").strip()
+
+        if not all([inst, date, target]):
+            results.append({"error": "inst, date, and target are required"})
+            continue
+
+        status = phot.job_status(inst, date, target, run_id=run)
+        results.append({
+            "inst": inst,
+            "date": date,
+            "target": target,
+            "run": run,
+            **status
+        })
+
+    return JSONResponse({"jobs": results})
 
 
 @app.post("/photometry/cancel")
@@ -1814,7 +3135,8 @@ def photometry_cancel(payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
     target = (payload.get("target") or "").strip()
-    result = phot.cancel_run(inst, date, target)
+    run_id = (payload.get("run_id") or payload.get("run") or "").strip()
+    result = phot.cancel_run(inst, date, target, run_id=run_id)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
     return JSONResponse(result)
@@ -1831,7 +3153,8 @@ def photometry_delete(payload: dict = Body(...)):
         return JSONResponse({"ok": False, "error": "invalid date"}, status_code=400)
     if not (target or "").strip():
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
-    result = phot.delete_reduction(inst, date, target)
+    run_id = (payload.get("run_id") or payload.get("run") or "").strip()
+    result = phot.delete_reduction(inst, date, target, run_id=run_id)
     return JSONResponse(result)
 
 

@@ -24,11 +24,36 @@
     .fig-grid { grid-template-columns: 1fr; }
   }
   .fig {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
     padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem;
   }
-  .fig img { width: 100%; height: auto; border-radius: 6px; display: block; background: #000; }
+  .fig img { width: 100%; height: auto; border-radius: 6px; display: block; background: var(--input-bg); }
   .fig .cap { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-dim); }
+  .result-collapse {
+    margin-top: 1.25rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.9rem;
+  }
+  .result-collapse > summary {
+    color: var(--accent2);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    list-style: none;
+    user-select: none;
+  }
+  .result-collapse > summary::-webkit-details-marker { display: none; }
+  .result-collapse > summary::before {
+    content: '\25B8';
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    transition: transform 0.15s ease;
+  }
+  .result-collapse[open] > summary::before { transform: rotate(90deg); }
+  .result-collapse > .fig-grid { margin-top: 1rem; }
 
   /* Bottom-align checkboxes within the options grid (page-specific override). */
   .opt.check { margin-top: auto; }
@@ -74,7 +99,7 @@
     flex-direction: column;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 10px;
     padding: 0.6rem 0.85rem;
     min-width: 220px;
     transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
@@ -237,7 +262,7 @@
     </div>
     <div class="lightcurve-grid">
       {% for csv in csvs %}
-        <div class="lightcurve-card csv-card" data-csv-name="{{ csv.name }}" role="button" tabindex="0">
+        <div class="lightcurve-card csv-card" data-csv-path="{{ csv.path }}" data-csv-name="{{ csv.name }}" role="button" tabindex="0">
           <input type="checkbox" class="csv-checkbox" checked style="margin-right: 0.5rem;">
           <span class="lc-name">📄 {{ csv.name }}</span>
           <span class="lc-date">Created: {{ csv.created_at }}</span>
@@ -272,12 +297,30 @@
         <figcaption class="cap">
           <span>{{ p.file | replace('.png', '') }} (Created: {{ p.created_at }})</span>
         </figcaption>
-        <a href="{{ file_base }}/{{ p.file }}" target="_blank">
-          <img draggable="false" loading="lazy" src="{{ file_base }}/{{ p.file }}" alt="{{ p.file }}">
+        <a href="{{ file_base }}/{{ p.file }}?v={{ p.version }}" target="_blank">
+          <img draggable="false" loading="lazy" src="{{ file_base }}/{{ p.file }}?v={{ p.version }}" alt="{{ p.file }}">
         </a>
       </figure>
       {% endfor %}
     </div>
+
+    {% if outputs.systematics_plots %}
+    <details class="result-collapse">
+      <summary>Systematics Plots ({{ outputs.systematics_plots | length }})</summary>
+      <div class="fig-grid">
+        {% for p in outputs.systematics_plots %}
+        <figure class="fig">
+          <figcaption class="cap">
+            <span>{{ p.file | replace('.png', '') }} (Created: {{ p.created_at }})</span>
+          </figcaption>
+          <a href="{{ file_base }}/{{ p.file }}?v={{ p.version }}" target="_blank">
+            <img draggable="false" loading="lazy" src="{{ file_base }}/{{ p.file }}?v={{ p.version }}" alt="{{ p.file }}">
+          </a>
+        </figure>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
 
     {% if outputs.summary %}
     <div class="phot-section">
@@ -342,31 +385,6 @@
         </div>
       </div>
       <div class="opt-grid">
-        <div class="opt-section-title">Fitting Pipeline Options</div>
-
-        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: nowrap; align-items: flex-end; padding-bottom: 0.45rem;">
-          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-chromatic" checked>
-            <label for="opt-chromatic">Chromatic fit <span class="help-tooltip" title="Flag indicating if parameters (like Rp/R*) are chromatic (band-dependent).">?</span></label>
-          </div>
-          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-use_custom_optimizer" checked>
-            <label for="opt-use_custom_optimizer">Custom optimizer <span class="help-tooltip" title="Use timer's custom MAP optimizer instead of PyMC's default for the initial solution. Default on.">?</span></label>
-          </div>
-          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-overwrite">
-            <label for="opt-overwrite">Overwrite <span class="help-tooltip" title="Re-run the fit from scratch, ignoring any saved results (sets clobber: true in fit.yaml). Unchecked reuses saved outputs.">?</span></label>
-          </div>
-          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-plot_midtransit" checked>
-            <label for="opt-plot_midtransit">Plot midtransit <span class="help-tooltip" title="Plot a solid vertical line at the nearest midtransit time on data.png.">?</span></label>
-          </div>
-          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-plot_ingress_egress" checked>
-            <label for="opt-plot_ingress_egress">Plot ing/egr <span class="help-tooltip" title="Plot dashed vertical lines at ingress and egress times on data.png.">?</span></label>
-          </div>
-        </div>
-
         <div class="opt-section-title" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
           <span>Stellar Parameters <span id="stellar-ref-container" style="font-size: 0.75rem; font-weight: normal; color: var(--text-dim); text-transform: none;"></span></span>
         </div>
@@ -522,9 +540,101 @@
         </div>
         </details>
 
+        <details class="opt-collapse">
+        <summary>Bump Model <span class="help-tooltip" title="Model sudden flux bumps (e.g. starspot crossings). Parameters support lists (comma-separated for multi-bump) or single values. The bump block is only written to fit.yaml when Use Bump is on.">?</span></summary>
+        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: flex-end; padding-bottom: 0.45rem;">
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-include_bump">
+            <label for="opt-include_bump">Use Bump <span class="help-tooltip" title="Enable the bump noise model. Default off.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-chromatic_bump" disabled>
+            <label for="opt-chromatic_bump">Chromatic Bump <span class="help-tooltip" title="Fit chromatic bump amplitude.">?</span></label>
+          </div>
+        </div>
+        <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem;">
+          <div class="opt">
+            <label for="opt-bump_tcenter">tcenter prior <span class="help-tooltip" title="Prior on center time of the bump (BJD_TDB). Gaussian: enter value,unc. Uniform: enter low,high bounds. Use ; to separate multiple bumps.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="text" id="opt-bump_tcenter" value="0.0,0.1" placeholder="value,unc" style="flex: 3; width: 100%; min-width: 0;" disabled>
+              <select id="opt-bump_tcenter_prior" title="Prior shape — Gaussian: enter value,unc. Uniform: enter low,high bounds." style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;" disabled>
+                <option value="gaussian">Gaussian</option>
+                <option value="uniform">Uniform</option>
+              </select>
+            </div>
+          </div>
+          <div class="opt">
+            <label for="opt-bump_width">width prior <span class="help-tooltip" title="Prior on width of the bump (days). Gaussian: enter value,unc. Uniform: enter low,high bounds. Use ; to separate multiple bumps.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="text" id="opt-bump_width" value="0.02,0.01" placeholder="value,unc" style="flex: 3; width: 100%; min-width: 0;" disabled>
+              <select id="opt-bump_width_prior" title="Prior shape — Gaussian: enter value,unc. Uniform: enter low,high bounds." style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;" disabled>
+                <option value="gaussian">Gaussian</option>
+                <option value="uniform">Uniform</option>
+              </select>
+            </div>
+          </div>
+          <div class="opt">
+            <label for="opt-bump_ampl">ampl prior <span class="help-tooltip" title="Prior on amplitude of the bump (flux units). Gaussian: enter value,unc. Uniform: enter low,high bounds. Use ; to separate multiple bumps.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="text" id="opt-bump_ampl" value="0.01,0.01" placeholder="value,unc" style="flex: 3; width: 100%; min-width: 0;" disabled>
+              <select id="opt-bump_ampl_prior" title="Prior shape — Gaussian: enter value,unc. Uniform: enter low,high bounds." style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;" disabled>
+                <option value="gaussian">Gaussian</option>
+                <option value="uniform">Uniform</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        </details>
+
+        <details class="opt-collapse">
+        <summary>Flare Model <span class="help-tooltip" title="Model sudden flux flares (stellar flares). Parameters support lists (comma-separated for multi-flare) or single values. The flare block is only written to fit.yaml when Use Flare is on.">?</span></summary>
+        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: flex-end; padding-bottom: 0.45rem;">
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-include_flare">
+            <label for="opt-include_flare">Use Flare <span class="help-tooltip" title="Enable the flare noise model. Default off.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-chromatic_flare" disabled>
+            <label for="opt-chromatic_flare">Chromatic Flare <span class="help-tooltip" title="Fit chromatic flare amplitude.">?</span></label>
+          </div>
+        </div>
+        <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem;">
+          <div class="opt">
+            <label for="opt-flare_tpeak">tpeak prior <span class="help-tooltip" title="Prior on peak time of the flare (BJD_TDB). Gaussian: enter value,unc. Uniform: enter low,high bounds. Use ; to separate multiple flares.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="text" id="opt-flare_tpeak" value="0.0,0.1" placeholder="value,unc" style="flex: 3; width: 100%; min-width: 0;" disabled>
+              <select id="opt-flare_tpeak_prior" title="Prior shape — Gaussian: enter value,unc. Uniform: enter low,high bounds." style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;" disabled>
+                <option value="gaussian">Gaussian</option>
+                <option value="uniform">Uniform</option>
+              </select>
+            </div>
+          </div>
+          <div class="opt">
+            <label for="opt-flare_fwhm">fwhm prior <span class="help-tooltip" title="Prior on full-width at half-maximum of the flare (days). Gaussian: enter value,unc. Uniform: enter low,high bounds. Use ; to separate multiple flares.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="text" id="opt-flare_fwhm" value="0.02,0.01" placeholder="value,unc" style="flex: 3; width: 100%; min-width: 0;" disabled>
+              <select id="opt-flare_fwhm_prior" title="Prior shape — Gaussian: enter value,unc. Uniform: enter low,high bounds." style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;" disabled>
+                <option value="gaussian">Gaussian</option>
+                <option value="uniform">Uniform</option>
+              </select>
+            </div>
+          </div>
+          <div class="opt">
+            <label for="opt-flare_ampl">ampl prior <span class="help-tooltip" title="Prior on amplitude of the flare (flux units). Gaussian: enter value,unc. Uniform: enter low,high bounds. Use ; to separate multiple flares.">?</span></label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <input type="text" id="opt-flare_ampl" value="0.01,0.01" placeholder="value,unc" style="flex: 3; width: 100%; min-width: 0;" disabled>
+              <select id="opt-flare_ampl_prior" title="Prior shape — Gaussian: enter value,unc. Uniform: enter low,high bounds." style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;" disabled>
+                <option value="gaussian">Gaussian</option>
+                <option value="uniform">Uniform</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        </details>
+
       </div>
 
-      <div class="opt-grid" style="margin-top: 1.5rem;">
+      <div class="opt-grid" style="margin-top: 0.75rem;">
         <div class="opt-section-title">Fixed Parameters <span class="help-tooltip" title="Parameters checked here are held fixed at their prior values during the fit; unchecked parameters are left free to vary.">?</span></div>
         <div class="opt check" style="grid-column: span 2;">
           <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
@@ -536,20 +646,63 @@
             <label><input type="checkbox" name="fixed-params" value="ror"> Rp/R*</label>
           </div>
         </div>
+
+        <div class="opt-section-title">Fitting Pipeline Options</div>
+
+        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: nowrap; align-items: flex-end; padding-bottom: 0.45rem;">
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-chromatic" checked>
+            <label for="opt-chromatic">Chromatic fit <span class="help-tooltip" title="Flag indicating if parameters (like Rp/R*) are chromatic (band-dependent).">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-use_custom_optimizer" checked>
+            <label for="opt-use_custom_optimizer">Custom optimizer <span class="help-tooltip" title="Use timer's custom MAP optimizer instead of PyMC's default for the initial solution. Default on.">?</span></label>
+          </div>
+          <details class="opt-collapse" open style="grid-column: 1 / -1;">
+            <summary>⚙️ Run Mode <span class="help-tooltip" title="Choose whether to start a new fit or continue sampling from previous results.">?</span></summary>
+            <div style="display: flex; gap: 1.5rem; align-items: center;">
+              <label class="opt-check-item" style="margin: 0;">
+                <input type="radio" name="run-mode" value="new" checked>
+                <span>New Fit (start fresh)</span>
+              </label>
+              <label class="opt-check-item" id="continue-label" style="margin: 0; display: none;">
+                <input type="radio" name="run-mode" value="continue">
+                <span>Continue Sampling <span class="help-tooltip" title="Resume from previous trace, adding more samples.">?</span></span>
+              </label>
+            </div>
+          </details>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-plot_midtransit" checked>
+            <label for="opt-plot_midtransit">Plot midtransit <span class="help-tooltip" title="Plot a solid vertical line at the nearest midtransit time on data.png.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-plot_ingress_egress" checked>
+            <label for="opt-plot_ingress_egress">Plot ing/egr <span class="help-tooltip" title="Plot dashed vertical lines at ingress and egress times on data.png.">?</span></label>
+          </div>
+          <div style="margin-top: 0; display: inline-flex; align-items: center; gap: 0.45rem; white-space: nowrap;">
+            <label for="opt-fit_basis" style="margin: 0; font-size: 0.85rem; color: var(--text); display: inline-flex; align-items: center; gap: 0.25rem;">
+              Fit basis
+              <span class="help-tooltip" title="Basis parameterization for PyMC transit model: standard (semi-major axis scale a/R* etc.) or duration (transit duration).">?</span>
+            </label>
+            <select id="opt-fit_basis" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.15rem 0.4rem; font-size: 0.8rem; margin: 0; height: 24px; box-sizing: border-box; line-height: 1; cursor: pointer;">
+              <option value="duration" selected>duration</option>
+              <option value="standard">standard</option>
+            </select>
+          </div>
+        </div>
       </div>
     </details>
 
     <div id="opt-error" style="color: var(--red); font-size: 0.85rem; margin-top: 0.5rem;"></div>
 
-    <div style="display:flex; align-items:center; gap:0.5rem; margin:0.5rem 0;">
-      <label for="opt-run_name" style="font-size:0.85rem; color:var(--text-dim);">Run name
-        <span class="help-tooltip" title="Optional label for this run (e.g. uniform_priors, gaussian_priors). Distinct runs are stored separately; site/mode of the selected lightcurves are prepended automatically. Empty = 'default'.">?</span>
-      </label>
-      <input type="text" id="opt-run_name" placeholder="default"
-             style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.6rem; font-size: 0.85rem;">
-    </div>
-
     <div class="run-actions">
+      <div style="display:flex; align-items:center; gap:0.75rem;">
+        <label for="opt-run_name" style="font-size:0.9rem; font-weight:600; color:var(--text); white-space:nowrap;">Run name
+          <span class="help-tooltip" title="Optional label for this run (e.g. uniform_priors, gaussian_priors). Distinct runs are stored separately; site/mode of the selected lightcurves are prepended automatically. Empty = 'default'.">?</span>
+        </label>
+        <input type="text" id="opt-run_name" placeholder="default"
+               style="background: var(--input-bg); color: var(--text); border: 1.5px solid var(--border); border-radius: 6px; padding: 0.4rem 0.7rem; font-size: 0.9rem; min-width: 140px;">
+      </div>
       <button class="btn" type="button" id="calc-logp-btn">
         ∑ Calculate logprob
       </button>
@@ -608,7 +761,16 @@
   // run_id of the run being viewed / launched; set from the /run response so
   // polling, the live-log key, and cancellation all target the right run.
   var runId  = {{ sel_run|tojson }};
+  var fitResultsExist = {{ (outputs and outputs.has_any)|tojson }};
   function logKey() { return 'fit:log' + (runId ? ':' + runId : ''); }
+
+  // Show/hide "Continue Sampling" option based on whether results exist
+  (function() {
+    var continueLabel = document.getElementById('continue-label');
+    if (continueLabel) {
+      continueLabel.style.display = fitResultsExist ? 'block' : 'none';
+    }
+  })();
 
   var SEL_KEY = 'fit:last';
   var OPT_KEY = 'fit:options:' + inst + ':' + date + ':' + target;
@@ -658,7 +820,7 @@
   var cancelBtn = document.getElementById('cancel-btn');
   var logEl     = document.getElementById('run-log');
   var errEl     = document.getElementById('opt-error');
-  var polling   = null;
+  var pollTimer = null;
 
   function val(id) { var e = document.getElementById(id); return e ? e.value : ''; }
   function chk(id) { var e = document.getElementById(id); return e ? e.checked : false; }
@@ -791,8 +953,9 @@
       planets: planetsListStr,
       run_name: val('opt-run_name'),
       chromatic: chk('opt-chromatic') ? 'true' : 'false',
+      fit_basis: val('opt-fit_basis'),
       trend: chk('opt-trend') ? 'true' : 'false',
-      overwrite: chk('opt-overwrite') ? 'true' : 'false',
+      run_mode: document.querySelector('input[name="run-mode"]:checked')?.value || 'new',
       plot_midtransit: chk('opt-plot_midtransit') ? 'true' : 'false',
       plot_ingress_egress: chk('opt-plot_ingress_egress') ? 'true' : 'false',
       tune: val('opt-tune'),
@@ -820,6 +983,22 @@
       gp_log_scale_prior: val('opt-gp_log_scale_prior'),
       gp_per_dataset_log_amp: chk('opt-gp_per_dataset_log_amp') ? 'true' : 'false',
       gp_per_dataset_log_scale: chk('opt-gp_per_dataset_log_scale') ? 'true' : 'false',
+      include_bump: chk('opt-include_bump') ? 'true' : 'false',
+      chromatic_bump: chk('opt-chromatic_bump') ? 'true' : 'false',
+      bump_tcenter: val('opt-bump_tcenter'),
+      bump_tcenter_prior: val('opt-bump_tcenter_prior'),
+      bump_width: val('opt-bump_width'),
+      bump_width_prior: val('opt-bump_width_prior'),
+      bump_ampl: val('opt-bump_ampl'),
+      bump_ampl_prior: val('opt-bump_ampl_prior'),
+      include_flare: chk('opt-include_flare') ? 'true' : 'false',
+      chromatic_flare: chk('opt-chromatic_flare') ? 'true' : 'false',
+      flare_tpeak: val('opt-flare_tpeak'),
+      flare_tpeak_prior: val('opt-flare_tpeak_prior'),
+      flare_fwhm: val('opt-flare_fwhm'),
+      flare_fwhm_prior: val('opt-flare_fwhm_prior'),
+      flare_ampl: val('opt-flare_ampl'),
+      flare_ampl_prior: val('opt-flare_ampl_prior'),
       teff: val('opt-teff'),
       teff_unc: val('opt-teff_unc'),
       logg: val('opt-logg'),
@@ -1421,7 +1600,10 @@
 
     ['run_name','teff','teff_unc','logg','logg_unc','feh','feh_unc',
      'tune','draws','chains','cores','spline_knots','clip_nsig','chunk_thresh','trim_beg','trim_end',
-     'gp_log_amp_prior','gp_log_scale_prior'].forEach(function (id) {
+     'gp_log_amp_prior','gp_log_scale_prior',
+     'bump_tcenter','bump_tcenter_prior','bump_width','bump_width_prior','bump_ampl','bump_ampl_prior',
+     'flare_tpeak','flare_tpeak_prior','flare_fwhm','flare_fwhm_prior','flare_ampl','flare_ampl_prior',
+     'fit_basis'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
     });
@@ -1434,6 +1616,8 @@
 
     ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset',
      'use_gp','gp_per_dataset_log_amp','gp_per_dataset_log_scale',
+     'include_bump','chromatic_bump',
+     'include_flare','chromatic_flare',
      'plot_midtransit','plot_ingress_egress'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.checked = saved[id] === 'true';
@@ -1451,8 +1635,13 @@
     var trEl = document.getElementById('opt-trend');
     if (trEl && saved.trend !== undefined) trEl.checked = saved.trend === 'true';
 
-    var owEl = document.getElementById('opt-overwrite');
-    if (owEl && saved.overwrite !== undefined) owEl.checked = saved.overwrite === 'true';
+    if (saved.run_mode !== undefined) {
+      var rmEl = document.querySelector('input[name="run-mode"][value="' + saved.run_mode + '"]');
+      if (rmEl) rmEl.checked = true;
+    } else if (saved.overwrite !== undefined) {
+      var rmEl = document.querySelector('input[name="run-mode"][value="' + (saved.overwrite === 'true' ? 'new' : 'continue') + '"]');
+      if (rmEl) rmEl.checked = true;
+    }
 
     document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
       c.checked = saved.fixed && saved.fixed.indexOf(c.value) !== -1;
@@ -1496,21 +1685,32 @@
       var trEl = document.getElementById('opt-trend');
       if (trEl) trEl.checked = false;
 
-      var owEl = document.getElementById('opt-overwrite');
-      if (owEl) owEl.checked = false;
+      var rmEl = document.querySelector('input[name="run-mode"][value="new"]');
+      if (rmEl) rmEl.checked = true;
 
       var numDefaults = {'opt-tune':'2000','opt-draws':'2000','opt-chains':'2','opt-cores':'2',
                          'opt-spline_knots':'5','opt-clip_nsig':'7','opt-chunk_thresh':'0','opt-trim_beg':'','opt-trim_end':'',
                          'opt-gp_log_amp':'-3,2','opt-gp_log_amp_prior':'gaussian',
-                         'opt-gp_log_scale':'-1,2','opt-gp_log_scale_prior':'gaussian'};
+                         'opt-gp_log_scale':'-1,2','opt-gp_log_scale_prior':'gaussian',
+                         'opt-bump_tcenter':'0.0,0.1','opt-bump_tcenter_prior':'gaussian',
+                         'opt-bump_width':'0.02,0.01','opt-bump_width_prior':'gaussian',
+                         'opt-bump_ampl':'0.01,0.01','opt-bump_ampl_prior':'gaussian',
+                         'opt-flare_tpeak':'0.0,0.1','opt-flare_tpeak_prior':'gaussian',
+                         'opt-flare_fwhm':'0.02,0.01','opt-flare_fwhm_prior':'gaussian',
+                         'opt-flare_ampl':'0.01,0.01','opt-flare_ampl_prior':'gaussian',
+                         'opt-fit_basis':'duration'};
       Object.keys(numDefaults).forEach(function (id) { var el = document.getElementById(id); if (el) el.value = numDefaults[id]; });
 
       var checkDefaults = {'opt-include_mean':true,'opt-use_custom_optimizer':true,'opt-spline':false,
                            'opt-add_bias':false,'opt-quadratic':false,'opt-clip':false,'opt-chunk_offset':false,
                            'opt-use_gp':false,'opt-gp_per_dataset_log_amp':false,'opt-gp_per_dataset_log_scale':false,
+                           'opt-include_bump':false,'opt-chromatic_bump':false,
+                           'opt-include_flare':false,'opt-chromatic_flare':false,
                            'opt-plot_midtransit':true,'opt-plot_ingress_egress':true};
       Object.keys(checkDefaults).forEach(function (id) { var el = document.getElementById(id); if (el) el.checked = checkDefaults[id]; });
       refreshGpPriorControls();
+      refreshBumpPriorControls();
+      refreshFlarePriorControls();
       updateDependentFields();
 
       document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
@@ -1577,8 +1777,13 @@
         var trEl = document.getElementById('opt-trend');
         if (trEl && backup.trend !== undefined) trEl.checked = backup.trend === 'true';
 
-        var owEl = document.getElementById('opt-overwrite');
-        if (owEl && backup.overwrite !== undefined) owEl.checked = backup.overwrite === 'true';
+        if (backup.run_mode !== undefined) {
+          var rmEl = document.querySelector('input[name="run-mode"][value="' + backup.run_mode + '"]');
+          if (rmEl) rmEl.checked = true;
+        } else if (backup.overwrite !== undefined) {
+          var rmEl = document.querySelector('input[name="run-mode"][value="' + (backup.overwrite === 'true' ? 'new' : 'continue') + '"]');
+          if (rmEl) rmEl.checked = true;
+        }
 
         document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
           c.checked = backup.fixed && backup.fixed.indexOf(c.value) !== -1;
@@ -1658,6 +1863,118 @@
     });
   }
 
+  var BUMP_PRIOR_SPECS = [
+    { field: 'opt-bump_tcenter', prior: 'opt-bump_tcenter_prior' },
+    { field: 'opt-bump_width', prior: 'opt-bump_width_prior' },
+    { field: 'opt-bump_ampl', prior: 'opt-bump_ampl_prior' }
+  ];
+
+  function refreshBumpPriorControls() {
+    BUMP_PRIOR_SPECS.forEach(function (spec) {
+      var field = document.getElementById(spec.field);
+      var prior = document.getElementById(spec.prior);
+      if (!field || !prior) return;
+      prior.dataset.mode = prior.value === 'uniform' ? 'uniform' : 'gaussian';
+      field.placeholder = prior.dataset.mode === 'uniform' ? 'low,high (use ; for multiple)' : 'mean,unc (use ; for multiple)';
+    });
+  }
+
+  function setupBumpPriorSelectors() {
+    refreshBumpPriorControls();
+    BUMP_PRIOR_SPECS.forEach(function (spec) {
+      var field = document.getElementById(spec.field);
+      var prior = document.getElementById(spec.prior);
+      if (!field || !prior) return;
+      prior.addEventListener('change', function () {
+        var next = prior.value === 'uniform' ? 'uniform' : 'gaussian';
+        var prev = prior.dataset.mode || 'gaussian';
+        if (next !== prev) {
+          var val = field.value.trim();
+          if (val) {
+            var pairs = val.split(';').map(function (s) { return s.trim(); });
+            var newPairs = [];
+            var ok = true;
+            for (var k = 0; k < pairs.length; k++) {
+              var pair = splitPair(pairs[k]);
+              var a = Number(pair[0]), b = Number(pair[1]);
+              if (pair[0] !== '' && pair[1] !== '' && isFinite(a) && isFinite(b)) {
+                if (next === 'uniform') {
+                  newPairs.push(fmtSig(a - 3 * b, 4) + ',' + fmtSig(a + 3 * b, 4));
+                } else {
+                  newPairs.push(fmtSig((a + b) / 2, 4) + ',' + fmtSig((b - a) / 6, 4));
+                }
+              } else {
+                ok = false;
+                break;
+              }
+            }
+            if (ok && newPairs.length > 0) {
+              field.value = newPairs.join('; ');
+            }
+          }
+        }
+        prior.dataset.mode = next;
+        field.placeholder = next === 'uniform' ? 'low,high (use ; for multiple)' : 'mean,unc (use ; for multiple)';
+      });
+    });
+  }
+
+  var FLARE_PRIOR_SPECS = [
+    { field: 'opt-flare_tpeak', prior: 'opt-flare_tpeak_prior' },
+    { field: 'opt-flare_fwhm', prior: 'opt-flare_fwhm_prior' },
+    { field: 'opt-flare_ampl', prior: 'opt-flare_ampl_prior' }
+  ];
+
+  function refreshFlarePriorControls() {
+    FLARE_PRIOR_SPECS.forEach(function (spec) {
+      var field = document.getElementById(spec.field);
+      var prior = document.getElementById(spec.prior);
+      if (!field || !prior) return;
+      prior.dataset.mode = prior.value === 'uniform' ? 'uniform' : 'gaussian';
+      field.placeholder = prior.dataset.mode === 'uniform' ? 'low,high (use ; for multiple)' : 'mean,unc (use ; for multiple)';
+    });
+  }
+
+  function setupFlarePriorSelectors() {
+    refreshFlarePriorControls();
+    FLARE_PRIOR_SPECS.forEach(function (spec) {
+      var field = document.getElementById(spec.field);
+      var prior = document.getElementById(spec.prior);
+      if (!field || !prior) return;
+      prior.addEventListener('change', function () {
+        var next = prior.value === 'uniform' ? 'uniform' : 'gaussian';
+        var prev = prior.dataset.mode || 'gaussian';
+        if (next !== prev) {
+          var val = field.value.trim();
+          if (val) {
+            var pairs = val.split(';').map(function (s) { return s.trim(); });
+            var newPairs = [];
+            var ok = true;
+            for (var k = 0; k < pairs.length; k++) {
+              var pair = splitPair(pairs[k]);
+              var a = Number(pair[0]), b = Number(pair[1]);
+              if (pair[0] !== '' && pair[1] !== '' && isFinite(a) && isFinite(b)) {
+                if (next === 'uniform') {
+                  newPairs.push(fmtSig(a - 3 * b, 4) + ',' + fmtSig(a + 3 * b, 4));
+                } else {
+                  newPairs.push(fmtSig((a + b) / 2, 4) + ',' + fmtSig((b - a) / 6, 4));
+                }
+              } else {
+                ok = false;
+                break;
+              }
+            }
+            if (ok && newPairs.length > 0) {
+              field.value = newPairs.join('; ');
+            }
+          }
+        }
+        prior.dataset.mode = next;
+        field.placeholder = next === 'uniform' ? 'low,high (use ; for multiple)' : 'mean,unc (use ; for multiple)';
+      });
+    });
+  }
+
   var CONTROL_DEPENDENCIES = [
     { controller: 'opt-spline', targets: ['opt-spline_knots'] },
     { controller: 'opt-clip', targets: ['opt-clip_nsig'] },
@@ -1668,6 +1985,24 @@
         'opt-gp_log_amp', 'opt-gp_log_amp_prior',
         'opt-gp_log_scale', 'opt-gp_log_scale_prior',
         'opt-gp_per_dataset_log_amp', 'opt-gp_per_dataset_log_scale'
+      ]
+    },
+    {
+      controller: 'opt-include_bump',
+      targets: [
+        'opt-chromatic_bump',
+        'opt-bump_tcenter', 'opt-bump_tcenter_prior',
+        'opt-bump_width', 'opt-bump_width_prior',
+        'opt-bump_ampl', 'opt-bump_ampl_prior'
+      ]
+    },
+    {
+      controller: 'opt-include_flare',
+      targets: [
+        'opt-chromatic_flare',
+        'opt-flare_tpeak', 'opt-flare_tpeak_prior',
+        'opt-flare_fwhm', 'opt-flare_fwhm_prior',
+        'opt-flare_ampl', 'opt-flare_ampl_prior'
       ]
     }
   ];
@@ -1686,6 +2021,8 @@
 
   restoreOptions();
   setupGpPriorSelectors();
+  setupBumpPriorSelectors();
+  setupFlarePriorSelectors();
   updateDependentFields();
 
   // ----- field validation -----
@@ -1710,6 +2047,12 @@
     { id: 'opt-trim_end',     type: 'integer', min: 0, optional: true },
     { id: 'opt-gp_log_amp',   type: 'pair', dependsOn: 'opt-use_gp' },
     { id: 'opt-gp_log_scale', type: 'pair', dependsOn: 'opt-use_gp' },
+    { id: 'opt-bump_tcenter', type: 'bump_pair', dependsOn: 'opt-include_bump' },
+    { id: 'opt-bump_width',   type: 'bump_pair', dependsOn: 'opt-include_bump' },
+    { id: 'opt-bump_ampl',    type: 'bump_pair', dependsOn: 'opt-include_bump' },
+    { id: 'opt-flare_tpeak',   type: 'bump_pair', dependsOn: 'opt-include_flare' },
+    { id: 'opt-flare_fwhm',    type: 'bump_pair', dependsOn: 'opt-include_flare' },
+    { id: 'opt-flare_ampl',    type: 'bump_pair', dependsOn: 'opt-include_flare' },
   ];
 
   function validateField(id, rules) {
@@ -1747,6 +2090,21 @@
       var a = Number(parts[0]), b = Number(parts[1]);
       if (isNaN(a) || !isFinite(a) || isNaN(b) || !isFinite(b)) {
         err.textContent = 'Must be two numbers'; err.classList.add('visible'); return false;
+      }
+      err.classList.remove('visible'); err.textContent = ''; return true;
+    }
+
+    if (rules.type === 'bump_pair') {
+      var pairs = val.split(';').map(function (s) { return s.trim(); });
+      for (var k = 0; k < pairs.length; k++) {
+        var parts = pairs[k].split(',').map(function (s) { return s.trim(); });
+        if (parts.length < 2 || parts[0] === '' || parts[1] === '') {
+          err.textContent = 'Enter value,unc (use ; for multiple bumps)'; err.classList.add('visible'); return false;
+        }
+        var a = Number(parts[0]), b = Number(parts[1]);
+        if (isNaN(a) || !isFinite(a) || isNaN(b) || !isFinite(b)) {
+          err.textContent = 'Must be numbers'; err.classList.add('visible'); return false;
+        }
       }
       err.classList.remove('visible'); err.textContent = ''; return true;
     }
@@ -1859,14 +2217,14 @@
     el.textContent = checked + ' / ' + csvCards.length + ' selected';
   }
   function getSelectedCsvs() {
-    var names = [];
+    var paths = [];
     csvCards.forEach(function (card) {
       var cb = card.querySelector('.csv-checkbox');
       if (cb && cb.checked) {
-        names.push(card.getAttribute('data-csv-name'));
+        paths.push(card.getAttribute('data-csv-path'));
       }
     });
-    return names;
+    return paths;
   }
   function restoreCsvSelection() {
     var saved;
@@ -1874,10 +2232,10 @@
     if (!saved || !Array.isArray(saved)) return;
     var selected = new Set(saved);
     csvCards.forEach(function (card) {
-      var name = card.getAttribute('data-csv-name');
+      var path = card.getAttribute('data-csv-path');
       var cb = card.querySelector('.csv-checkbox');
       if (!cb) return;
-      var isSelected = selected.has(name);
+      var isSelected = selected.has(path);
       cb.checked = isSelected;
       card.classList.toggle('selected', isSelected);
       card.classList.toggle('deselected', !isSelected);
@@ -1921,7 +2279,9 @@
     csvCards.forEach(function (card) {
       var cb = card.querySelector('.csv-checkbox');
       if (cb && cb.checked) {
-        bands[extractBand(card.getAttribute('data-csv-name'))] = true;
+        var path = card.getAttribute('data-csv-path');
+        var filename = path.split('/').pop();
+        bands[extractBand(filename)] = true;
       }
     });
     var nBands = Object.keys(bands).length;
@@ -1967,7 +2327,11 @@
     if (runTestBtn) runTestBtn.disabled = on;
     if (cancelBtn) cancelBtn.style.display = on ? '' : 'none';
   }
-  function stopPolling() { if (polling) { clearInterval(polling); polling = null; } }
+  function stopPolling() { if (pollTimer !== null) { clearTimeout(pollTimer); pollTimer = null; } }
+  function schedulePoll(delayMs) {
+    if (pollTimer !== null) return;
+    pollTimer = setTimeout(function () { pollTimer = null; poll(); }, delayMs);
+  }
   function saveJob() { try { localStorage.setItem(JOB_KEY, JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })); } catch (e) {} }
   function clearJob() { try { localStorage.removeItem(JOB_KEY); } catch (e) {} }
 
@@ -1980,6 +2344,10 @@
         logEl.scrollTop = logEl.scrollHeight;
         try { localStorage.setItem(logKey(), s.log); } catch (e) {}
       }
+      if (s.state === 'running' || s.state === 'cancelling') {
+        setRunning(true);
+        schedulePoll(2000);
+      }
       if (s.state === 'done') {
         stopPolling(); clearJob();
         logEl.textContent += '\n\n✓ done — reloading…';
@@ -1987,7 +2355,8 @@
         if (typeof window.showLoading === 'function') {
           window.showLoading('Reloading…');
         }
-        setTimeout(function () { window.location.reload(); }, 1200);
+        var reloadDelay = (s.run_type === 'test') ? 400 : 1200;
+        setTimeout(function () { window.location.reload(); }, reloadDelay);
       } else if (s.state === 'error') {
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent += '\n\n✗ fit run exited with code ' + s.returncode;
@@ -1996,16 +2365,33 @@
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent += '\n\n■ cancelled';
         try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+      } else if (s.state === 'pending') {
+        // Queued behind the running full job; keep the Cancel button and poll
+        // until the slot frees and the run is promoted to 'running'.
+        setRunning(true);
+        if (!s.log) {
+          logEl.style.display = 'block';
+          logEl.textContent = '⏳ Queued — waiting for the running full fit to finish…';
+        }
+        schedulePoll(7000);
       } else if (s.state === 'none') {
         stopPolling(); setRunning(false); clearJob();
       }
-    }).catch(function () {});
+    }).catch(function () { schedulePoll(5000); });
   }
 
   function launch(testRun) {
     if (!validateAllFields()) {
       if (errEl) errEl.textContent = 'Please fill in all required fields marked in red above.';
       return;
+    }
+    // For full fits with existing results, validate that a run mode is selected
+    if (!testRun && fitResultsExist) {
+      var runModeSelected = document.querySelector('input[name="run-mode"]:checked')?.value;
+      if (!runModeSelected) {
+        if (errEl) errEl.textContent = 'Fit results exist. Choose \'New Fit\' or \'Continue Sampling\' to proceed.';
+        return;
+      }
     }
     saveJob();
     // Unhide this job on the Jobs page
@@ -2029,19 +2415,27 @@
       if (!res.ok) {
         clearJob();
         setRunning(false);
+        logEl.style.display = 'block';
         logEl.textContent = 'Error: ' + (res.error || 'failed to start');
+        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
         return;
       }
       // Track the launched run so polling/log/cancel target it.
       runId = res.run_id || '';
       saveJob();
       try { localStorage.removeItem(logKey()); } catch (e) {}
-      if (!polling) polling = setInterval(poll, 2000);
+      if (res.queued) {
+        logEl.textContent = '⏳ Queued — waiting for the running full fit to finish…';
+        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+      }
+      stopPolling();
       poll();
     }).catch(function (err) {
       clearJob();
       setRunning(false);
+      logEl.style.display = 'block';
       logEl.textContent = 'Error: ' + err.message;
+      try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
     });
   }
 
@@ -2093,7 +2487,7 @@
       body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })
     }).then(function (r) { return r.json(); }).then(function () {
       cancelBtn.disabled = false;
-      if (!polling) { polling = setInterval(poll, 2000); poll(); }
+      stopPolling(); poll();
     }).catch(function () { cancelBtn.disabled = false; });
   });
 
@@ -2144,8 +2538,7 @@
           if (saved.run_id !== undefined) runId = saved.run_id;
           setRunning(true);
           if (logEl) logEl.style.display = 'block';
-          if (!polling) polling = setInterval(poll, 2000);
-          poll();
+          stopPolling(); poll();
         } else {
           clearJob();
         }
@@ -2284,11 +2677,15 @@
 </script>
 <div style="text-align:center; margin:2em 0; display: flex; justify-content: center; gap: 1rem; align-items: center;">
   <a href="#" style="display:inline-block; padding:0.5em 2em; background:#0056b3; color:#fff; text-decoration:none; border-radius:4px;">Back to Top</a>
+  {% if sel_target %}
+    <a href="/target?name={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; line-height: 1.2;">To Target</a>
+  {% endif %}
   <a href="/jobs" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Jobs</a>
   {% if sel_inst and sel_date and sel_target %}
     <a href="/photometry?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Photometry</a>
   {% else %}
     <a href="/photometry" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Photometry</a>
   {% endif %}
+  <a href="/lco/schedule" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To LCO</a>
 </div>
 {% endblock %}

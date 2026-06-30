@@ -1,0 +1,92 @@
+<style>
+  .lco-banner {
+    display: flex; flex-wrap: wrap; gap: 1rem; align-items: center;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 1.25rem;
+    font-size: 0.85rem;
+  }
+  .lco-banner .pill { display: inline-flex; align-items: center; gap: 0.35rem; }
+  .lco-banner .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-dim); }
+  .lco-banner .dot.ok { background: #2ecc71; }
+  .lco-banner .dot.no { background: #e07b53; }
+
+  .lco-page-nav { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+  .lco-tab {
+    display: inline-flex; align-items: center;
+    background: var(--surface); color: var(--text-dim);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.5rem 1rem; cursor: pointer; font-size: 0.9rem; font-weight: 500;
+    text-decoration: none;
+  }
+  .lco-tab.active { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
+  .lco-section { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.1rem 1.25rem; margin-bottom: 1.1rem; }
+  .lco-section > h3 {
+    font-size: 0.7rem; color: var(--text-dim); margin-bottom: 0.85rem;
+    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
+    display: flex; align-items: center; gap: 0.45rem;
+  }
+  .lco-section > h3::before { content: ''; width: 3px; height: 0.85rem; background: var(--accent2); border-radius: 2px; }
+
+  .lco-grid { display: grid; gap: 0.85rem; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+  .lco-field { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
+  .lco-field label { font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+  .lco-field input, .lco-field select {
+    background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 0.45rem 0.6rem; font-size: 0.88rem; font-family: inherit; min-width: 0;
+  }
+  .lco-field input:focus, .lco-field select:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  .lco-actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-top: 0.4rem; }
+  .lco-note { font-size: 0.78rem; color: var(--text-dim); margin-top: 0.5rem; }
+  .lco-msg { font-size: 0.82rem; margin-top: 0.5rem; min-height: 1em; }
+  .lco-msg.err { color: #e07b53; }
+  .lco-msg.ok { color: #2ecc71; }
+  .lco-table-wrap { overflow-x: auto; }
+  table.lco-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  table.lco-table th, table.lco-table td { padding: 0.4rem 0.55rem; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+  table.lco-table th { color: var(--text-dim); font-weight: 600; font-size: 0.72rem; text-transform: uppercase; }
+  pre.lco-pre { background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px; padding: 0.8rem; font-size: 0.78rem; overflow-x: auto; max-height: 360px; }
+  .muscat-only, .sinistro-only { display: none; }
+  details.lco-dataset {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    margin-bottom: 0.7rem;
+    overflow: hidden;
+  }
+  details.lco-dataset summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 0.7rem 0.9rem;
+  }
+  details.lco-dataset summary::-webkit-details-marker { display: none; }
+  .lco-dataset-head {
+    display: flex;
+    gap: 0.8rem;
+    flex-wrap: wrap;
+    align-items: center;
+    font-size: 0.83rem;
+  }
+  .lco-dataset-body {
+    border-top: 1px solid var(--border);
+    padding: 0.2rem 0.7rem 0.55rem;
+  }
+</style>
+
+<h2 style="margin-bottom: 0.75rem;">LCO</h2>
+
+<div class="lco-banner" id="lco-config-banner">
+  <span class="pill"><span class="dot" id="cfg-token"></span> API token</span>
+  <span class="pill"><span class="dot" id="cfg-root"></span> Download root</span>
+  <span class="pill"><span class="dot" id="cfg-submit"></span> Live submit</span>
+  <span class="lco-note" style="margin: 0;">Tokens stay server-side. v1 stops at the IPP dry-run; live submission is gated.</span>
+</div>
+
+<div class="lco-page-nav">
+  <a class="lco-tab{% if active_lco_page == 'schedule' %} active{% endif %}" href="/lco/schedule">Schedule Observations</a>
+  <a class="lco-tab{% if active_lco_page == 'archive' %} active{% endif %}" href="/lco/archive">Download LCO Data</a>
+</div>

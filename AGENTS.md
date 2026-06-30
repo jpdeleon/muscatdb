@@ -25,7 +25,8 @@
 
 ## frontend and GUI
 * GUI settings should be consistent with the arguments in run_photometry.py
-* maintian design consistency across all pages based on style.css
+* maintian design consistency across all pages based on styles.css
+* Print or display values up to 6 decimal only. The significant figures should depend on the precision of uncertainty if available.
 * table column widths cannot be wider than the text length of their row values or column names (e.g. in jobs.html, instrument column should be narrow to fit the content).
 * test all GUI elements the same way a user interacts in practice
 * ensure all new inputs and checkboxes added to templates (e.g. photometry.html) are registered in the corresponding JavaScript helper arrays 
@@ -39,6 +40,8 @@
 * when writing new code, choose correctness over simplicity
 * check background process, report any idle or background processes related to muscat-db before running a new one
 * all one-off scripts should live in /tmp but useful scripts should be kept in repo
+* the server lives inside tmux session named muscatdb-gui
+*  The --reload flag only watches Python files, not Jinja2 templates. Remind the user if a restart is needed to see the HTML/JavaScript changes.
 
 ## git branch
 * keep only main and test branch. PR comes from test branch and only gets merged to main
@@ -50,4 +53,8 @@ The pipeline is launched with `start_new_session=True` and prose spawns multipro
 ## Testing
 * The default suite is fast: `pyproject.toml` sets `addopts = "-m 'not slow'"`, so anything marked `@pytest.mark.slow` is deselected unless you opt in with `pytest -m slow`.
 * `tests/test_slow_runs.py` holds heavyweight full-pipeline runtime-profiling runs (real `prose`/`timer` conda tools + real data on the production host). They `pytest.skip` cleanly when raw data, CSV lightcurves, or the external conda envs are absent, so they collect/skip safely anywhere and only do real work on the host. Run them on the host with `uv run pytest -m slow`.
+* Verify transit and visibility from https://exoplanetarchive.ipac.caltech.edu/docs/transit/transit_API.html
 
+## Prompt
+* Ask questions for clarifications if prompt is vague or confusing.
+* Verify non-obvious assumptions before implementing edit.
