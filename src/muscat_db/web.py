@@ -171,7 +171,7 @@ _CACHE_MISS = object()
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index():
+def index():
     db = _db_path()
     tpl_path = TEMPLATE_DIR / "index.html"
     tpl_mtime = str(tpl_path.stat().st_mtime_ns) if tpl_path.is_file() else ""
@@ -279,7 +279,7 @@ def _get_datasets_for_normalized_target(db: str, normalized_name: str) -> tuple[
 
 
 @app.get("/target", response_class=HTMLResponse)
-async def target_page(name: str = ""):
+def target_page(name: str = ""):
     db = _db_path()
     tpl_path = TEMPLATE_DIR / "target.html"
     tpl_mtime = str(tpl_path.stat().st_mtime_ns) if tpl_path.is_file() else ""
@@ -340,7 +340,7 @@ async def target_page(name: str = ""):
 
 
 @app.get("/logs", response_class=HTMLResponse)
-async def logs_page(min_frames: int = 1000):
+def logs_page(min_frames: int = 1000):
     db = _db_path()
     with_data = {row["name"] for row in _get_instruments(db)}
     instruments = [
@@ -357,12 +357,12 @@ async def logs_page(min_frames: int = 1000):
 
 
 @app.get("/guide", response_class=HTMLResponse)
-async def guide_page():
+def guide_page():
     return _render("guide.html")
 
 # Legacy redirect for backward compatibility
 @app.get("/workflow", response_class=RedirectResponse)
-async def workflow_redirect():
+def workflow_redirect():
     return RedirectResponse(url="/guide", status_code=301)
 
 
@@ -3160,7 +3160,7 @@ def photometry_delete(payload: dict = Body(...)):
 
 
 @app.put("/api/targets/{obj}/note")
-async def api_set_note(obj: str, payload: dict = Body(...)):
+def api_set_note(obj: str, payload: dict = Body(...)):
     note = (payload.get("note") or "").strip()
     if len(note) > 2000:
         raise HTTPException(400, "note too long (max 2000 chars)")
@@ -3169,13 +3169,13 @@ async def api_set_note(obj: str, payload: dict = Body(...)):
 
 
 @app.delete("/api/targets/{obj}/note")
-async def api_delete_note(obj: str):
+def api_delete_note(obj: str):
     _delete_note(_db_path(), obj)
     return JSONResponse({"ok": True, "object": obj})
 
 
 @app.put("/api/targets/{obj}/identified")
-async def api_set_identified(obj: str, payload: dict = Body(...)):
+def api_set_identified(obj: str, payload: dict = Body(...)):
     val = payload.get("is_identified")
     if val not in (0, 1):
         raise HTTPException(400, "is_identified must be 0 or 1")
@@ -3184,19 +3184,19 @@ async def api_set_identified(obj: str, payload: dict = Body(...)):
 
 
 @app.get("/{instrument}", response_class=HTMLResponse)
-async def instrument_page(instrument: str):
+def instrument_page(instrument: str):
     dates = _get_dates(_db_path(), instrument)
     return _render("instrument.html", instrument=instrument, dates=dates)
 
 
 @app.get("/{instrument}/{obsdate}", response_class=HTMLResponse)
-async def date_page(instrument: str, obsdate: str):
+def date_page(instrument: str, obsdate: str):
     summaries = _get_summaries(_db_path(), instrument, obsdate)
     ccds = sorted(set(s["ccd"] for s in summaries))
     return _render("date.html", instrument=instrument, obsdate=obsdate, summaries=summaries, ccds=ccds)
 
 
 @app.get("/{instrument}/{obsdate}/ccd{ccd}", response_class=HTMLResponse)
-async def ccd_page(instrument: str, obsdate: str, ccd: int):
+def ccd_page(instrument: str, obsdate: str, ccd: int):
     frames = _get_frames(_db_path(), instrument, obsdate, ccd)
     return _render("ccd.html", instrument=instrument, obsdate=obsdate, ccd=ccd, frames=frames)
