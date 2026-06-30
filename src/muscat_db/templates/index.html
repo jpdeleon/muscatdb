@@ -1,16 +1,16 @@
 {% extends "base.html" %}
 {% block title %}Targets — MuSCAT-db{% endblock %}
 {% block content %}
-<h1>MuSCAT + LCO database (Last updated on {{ last_updated }})</h1>
+<h1>MuSCAT + LCO database summary (Last updated on {{ last_updated }})</h1>
 
 {% set identified   = targets | selectattr('is_identified') | list %}
 {% set unidentified = targets | rejectattr('is_identified') | list %}
 
-<h2 style="margin-top:1.5rem;">Targets ({{ identified|length }})</h2>
+<h2 style="margin-top:1.5rem;">Datasets ({{ identified|length }})</h2>
 
 
 <div class="search-bar">
-  <input id="target-search" type="text" placeholder="Search targets by name…" autocomplete="off">
+  <input id="target-search" type="text" placeholder="Search by object name in fits header…" autocomplete="off">
   <label><input id="regex-toggle" type="checkbox"> Regex</label>
   <label><input id="case-toggle" type="checkbox"> Case-sensitive</label>
   <span id="search-status" class="hint"></span>
@@ -30,16 +30,13 @@
 <table id="{{ table_id }}">
   <thead>
     <tr>
-      <th data-sort-attr="name">Target</th>
+      <th data-sort-attr="name">Object</th>
       <th data-sort-attr="dates">Dates</th>
       <th data-sort-attr="ra"          data-sort-type="ra">RA</th>
       <th data-sort-attr="dec"         data-sort-type="dec">Dec</th>
       <th data-sort-attr="filters">Filters</th>
       <th data-sort-attr="airmassMax"  data-sort-type="number">Airmass</th>
       <th data-sort-attr="frames"      data-sort-type="number"># Frames</th>
-      <th data-sort-attr="phot">Phot</th>
-      <th data-sort-attr="fit">Fit</th>
-      <th data-sort-attr="note">Notes</th>
       <th style="width:1px;">Move</th>
     </tr>
     <tr class="filter-row">
@@ -50,9 +47,6 @@
       <th><input type="text" data-col="filter"      placeholder="g, r, i, z"></th>
       <th><input type="text" data-col="airmass"     placeholder="<1.5  1.1-2"></th>
       <th><input type="text" data-col="frames"      placeholder="<100  >500"></th>
-      <th><input type="text" data-col="phot"        placeholder="Y/N"></th>
-      <th><input type="text" data-col="fit"         placeholder="Y/N"></th>
-      <th><input type="text" data-col="note"        placeholder="contains…"></th>
       <th></th>
     </tr>
   </thead>
@@ -67,15 +61,13 @@
         data-airmass-max="{{ t.airmass_max if t.airmass_max is not none else '' }}"
         data-instruments="{{ t.instruments|join(',') }}"
         data-dates="{% for d in t.dates %}{% set inst = t.date_to_inst.get(d, t.instruments[0] if t.instruments else '') %}{{ d }}{% if inst == 'muscat' %}(M1){% elif inst == 'muscat2' %}(M2){% elif inst == 'muscat3' %}(M3){% elif inst == 'muscat4' %}(M4){% elif inst == 'sinistro' %}(S){% endif %}{% if not loop.last %},{% endif %}{% endfor %}"
-        data-phot="{{ 'Y' if t.phot == 'full' else 'N' }}"
-        data-fit="{{ 'Y' if t.fit == 'full' else 'N' }}"
         data-note="{{ t.note|default('', true) }}">
-      <td><strong>{{ t.object }}</strong></td>
+      <td><a href="/target?name={{ t.norm_name | urlencode }}" style="text-decoration:none; color:inherit;"><strong>{{ t.object }}</strong></a></td>
       <td class="mono" style="white-space:nowrap; vertical-align:top;">
         {% for d in t.dates %}
           {% set inst = t.date_to_inst.get(d, t.instruments[0] if t.instruments else '') %}
           <div style="margin-bottom:2px;">
-            <a href="/{{ inst }}/{{ d }}">{{ d }}{% if inst == 'muscat' %}(M1){% elif inst == 'muscat2' %}(M2){% elif inst == 'muscat3' %}(M3){% elif inst == 'muscat4' %}(M4){% elif inst == 'sinistro' %}(S){% endif %}</a><a href="/photometry?inst={{ inst }}&date={{ d }}&target={{ t.object | urlencode }}" title="photometry" style="text-decoration:none;font-size:0.8em;margin-left:1px;">🔭</a><a href="/transit-fit?inst={{ inst }}&date={{ d }}&target={{ t.object | urlencode }}" title="transit fit" style="text-decoration:none;font-size:0.8em;margin-left:2px;">📈</a>
+            <a href="/{{ inst }}/{{ d }}">{{ d }}{% if inst == 'muscat' %}(M1){% elif inst == 'muscat2' %}(M2){% elif inst == 'muscat3' %}(M3){% elif inst == 'muscat4' %}(M4){% elif inst == 'sinistro' %}(S){% endif %}</a>
           </div>
         {% endfor %}
       </td>
@@ -94,24 +86,6 @@
         {% else %}—{% endif %}
       </td>
       <td>{{ t.n_frames }}</td>
-      <td style="text-align:center;">
-        {% if t.phot == 'full' %}
-          <span style="color: var(--green); font-weight: bold;" title="Full photometry exists">Y</span>
-        {% else %}
-          <span style="color: var(--red);" title="No photometry or test-run only">N</span>
-        {% endif %}
-      </td>
-      <td style="text-align:center;">
-        {% if t.fit == 'full' %}
-          <span style="color: var(--green); font-weight: bold;" title="Transit fit exists">Y</span>
-        {% else %}
-          <span style="color: var(--red);" title="No transit fit">N</span>
-        {% endif %}
-      </td>
-      <td class="note-cell" data-object="{{ t.object }}" style="white-space:normal;">
-        <span class="note-text">{{ t.note }}</span>
-        <span class="note-placeholder" {% if t.note %}style="display:none;"{% endif %}>+ add note</span>
-      </td>
       <td style="text-align:center;">
         <button class="btn-move" data-object="{{ t.object }}" title="{% if t.is_identified %}Move to Unidentified{% else %}Move to Identified{% endif %}">
           {% if t.is_identified %}X{% else %}I{% endif %}
@@ -351,9 +325,6 @@
       airmass:    { val: r => parseFloat(r.dataset.airmassMax),  build: makeNumeric },
       frames:     { val: r => parseInt(r.dataset.frames, 10),    build: makeNumeric },
       date:       { val: r => r.dataset.dates,       build: makeText    },
-      phot:       { val: r => r.dataset.phot,        build: makeText    },
-      fit:        { val: r => r.dataset.fit,         build: makeText    },
-      note:       { val: r => r.dataset.note,        build: makeText    },
     };
 
     function buildColPredicates() {

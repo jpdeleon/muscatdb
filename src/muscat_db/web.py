@@ -47,6 +47,7 @@ from muscat_db.database import (
     get_ephemeris_view,
     get_persisted_jobs,
     get_last_build_date,
+    _normalize_filters,
 )
 from muscat_db.instruments import INSTRUMENTS
 from muscat_db.coord import (
@@ -177,6 +178,7 @@ async def index():
     for t in targets:
         if t["object"] in overrides:
             t["is_identified"] = overrides[t["object"]]
+        t["norm_name"] = _normalize_target_name(t["object"])
 
     last_updated = get_last_build_date(db)
 
@@ -186,6 +188,147 @@ async def index():
     )
     _index_cache["index"] = (key, html)
     return HTMLResponse(html)
+
+
+def _get_datasets_for_normalized_target(db: str, normalized_name: str) -> tuple[list[dict], str]:
+    """Get all datasets for targets that match a normalized name.
+
+    Returns (datasets_list, last_updated_date).
+    """
+    targets = _get_targets(db)
+
+    matching_objects = [
+        t["object"] for t in targets
+        if _normalize_target_name(t["object"]) == normalized_name
+    ]
+    if not matching_objects:
+        return [], get_last_build_date(db)
+
+    # Query per-(inst, date, object) stats from the obslog (summaries table).
+    placeholders = ",".join("?" for _ in matching_objects)
+    conn = sqlite3.connect(db)
+    cur = conn.execute(
+        f"""SELECT instrument, obsdate, object,
+                   SUM(nframes)              AS n_frames,
+                   GROUP_CONCAT(DISTINCT filter) AS filters,
+                   MIN(NULLIF(airmass_min, 0))   AS airmass_min,
+                   MAX(NULLIF(airmass_max, 0))   AS airmass_max
+            FROM summaries
+            WHERE object IN ({placeholders})
+            GROUP BY instrument, obsdate, object""",
+        matching_objects,
+    )
+    obs_stats: dict[tuple, dict] = {}
+    for row in cur.fetchall():
+        raw_filters = sorted(f for f in (row[4] or "").split(",") if f)
+        obs_stats[(row[0], row[1], row[2])] = {
+            "n_frames": row[3] or 0,
+            "filters": raw_filters,
+            "filter_chips": _normalize_filters(raw_filters),
+            "airmass_min": row[5],
+            "airmass_max": row[6],
+        }
+    conn.close()
+
+    datasets = []
+    for target in targets:
+        if _normalize_target_name(target["object"]) != normalized_name:
+            continue
+
+        obj_name = target["object"]
+        date_to_inst = target["date_to_inst"]
+
+        for date in target["dates"]:
+            inst = date_to_inst.get(date)
+            if not inst:
+                continue
+
+            status = phot.get_photometry_status(inst, date, obj_name)
+            phot_status = "full" if status == "full" else ("test" if status == "test" else "none")
+
+            fit_out = fit.get_fit_outputs(inst, date, obj_name)
+            fit_status = "full" if fit_out.get("has_any") else "none"
+
+            stats = obs_stats.get((inst, date, obj_name), {})
+            dataset = {
+                "object": obj_name,
+                "date": date,
+                "instrument": inst,
+                "filters": stats.get("filters", target["filters"]),
+                "filter_chips": stats.get("filter_chips", target["filter_chips"]),
+                "airmass_min": stats.get("airmass_min", target["airmass_min"]),
+                "airmass_max": stats.get("airmass_max", target["airmass_max"]),
+                "n_frames": stats.get("n_frames", target["n_frames"]),
+                "phot": phot_status,
+                "fit": fit_status,
+                "note": target["note"],
+            }
+            datasets.append(dataset)
+
+    datasets.sort(key=lambda d: d["date"], reverse=True)
+    last_updated = get_last_build_date(db)
+    return datasets, last_updated
+
+
+@app.get("/target", response_class=HTMLResponse)
+async def target_page(name: str = ""):
+    db = _db_path()
+    tpl_path = TEMPLATE_DIR / "target.html"
+    tpl_mtime = str(tpl_path.stat().st_mtime_ns) if tpl_path.is_file() else ""
+
+    if not name:
+        # List view: show all normalized targets
+        key = (tpl_mtime, _db_mtime(db), "list")
+        cache_key = "target:list"
+        cached = _index_cache.get(cache_key)
+        if cached is not None and cached[0] == key:
+            return HTMLResponse(cached[1])
+
+        targets = _get_targets(db)
+
+        from collections import defaultdict
+        groups = defaultdict(int)
+
+        for target in targets:
+            norm_name = _normalize_target_name(target["object"])
+            # Count datasets for this normalized name
+            date_to_inst = target["date_to_inst"]
+            for date in target["dates"]:
+                if date in date_to_inst:
+                    groups[norm_name] += 1
+
+        # Sort by normalized name
+        sorted_groups = sorted(groups.items(), key=lambda x: x[0])
+
+        last_updated = get_last_build_date(db)
+
+        html = jinja.get_template("target.html").render(
+            target_name=None,
+            target_groups=sorted_groups,
+            last_updated=last_updated,
+        )
+
+        _index_cache[cache_key] = (key, html)
+        return HTMLResponse(html)
+    else:
+        # Single target view - normalize the input name
+        norm_name = _normalize_target_name(name)
+        key = (tpl_mtime, _db_mtime(db), norm_name)
+        cache_key = f"target:{norm_name}"
+        cached = _index_cache.get(cache_key)
+        if cached is not None and cached[0] == key:
+            return HTMLResponse(cached[1])
+
+        datasets, last_updated = _get_datasets_for_normalized_target(db, norm_name)
+
+        html = jinja.get_template("target.html").render(
+            target_name=norm_name,
+            datasets=datasets,
+            last_updated=last_updated,
+        )
+
+        _index_cache[cache_key] = (key, html)
+        return HTMLResponse(html)
 
 
 @app.get("/logs", response_class=HTMLResponse)
