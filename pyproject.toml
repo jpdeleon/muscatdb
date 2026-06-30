@@ -29,6 +29,7 @@ dev = [
     "pytest>=9.0.3",
     "pytest-mock>=3.15.1",
     "httpx>=0.28",
+    "ruff>=0.8",
 ]
 
 [tool.pytest.ini_options]
@@ -36,3 +37,15 @@ markers = [
     "slow: heavyweight full pipeline runs against real data; run with -m slow",
 ]
 addopts = "-m 'not slow'"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# Pyflakes only: real defects (unused imports/vars, undefined names, malformed
+# f-strings), not whitespace/one-liner/import-placement style — those match the
+# project's existing conventions and would drown the signal. The CI lint job is
+# advisory until the audit's L1 (bare excepts) / L2 (scattered imports) cleanups
+# land; widen `select` (e.g. add "E", "W", "B") and make the job required then.
+select = ["F"]
