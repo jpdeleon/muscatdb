@@ -1271,12 +1271,25 @@ def start_run(
         # For full runs at capacity, allow queuing even if a job with the same key exists
         # (the existing job will be reused if still running; if not, a new one will be queued)
         at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
+        overwrite = opts.get("overwrite", True)
 
         if existing is not None and existing.proc.poll() is None and not at_capacity:
-            return {"ok": True, "key": key, "already_running": True, "run_id": run_id}
+            # If overwrite is True, cancel the existing job and start a new one
+            if overwrite:
+                try:
+                    existing.proc.terminate()
+                    if existing.logf:
+                        try:
+                            existing.logf.close()
+                        except OSError:
+                            pass
+                except OSError:
+                    pass
+                _JOBS.pop(key, None)
+            else:
+                return {"ok": True, "key": key, "already_running": True, "run_id": run_id}
 
         if run_type == "full":
-            overwrite = opts.get("overwrite", True)
             if _full_reduction_exists(inst, date, target, run_id) and not overwrite:
                 return {
                     "ok": False,
