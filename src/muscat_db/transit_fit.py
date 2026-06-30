@@ -17,14 +17,15 @@ import subprocess
 import tempfile
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import IO
 import yaml
 
+from muscat_db import jobs
 from muscat_db import __meta__, __muscatdb_version__, __version__
 from muscat_db.instruments import INSTRUMENTS
 from muscat_db.photometry import (
-    output_base, valid_date, _conda_env_python, _tail, _to_float,
+    output_base, valid_date, _conda_env_python, _tail, _to_float, _get_error_desc,
     SINISTRO_SITES, SINISTRO_MODES,
 )
 from muscat_db.cache import register_cache
@@ -111,64 +112,13 @@ def fit_output_dir(inst: str, date: str, target: str, run_id: str | None = None)
     return path
 
 
-def _target_dir_name(target: str) -> str:
-    target_dir = (target or "").replace(" ", "")
-    if (
-        not target_dir
-        or ".." in target_dir
-        or "/" in target_dir
-        or "\\" in target_dir
-        or target_dir in {".", ".."}
-    ):
-        raise ValueError("invalid target")
-    return target_dir
-
-
-def _run_dir_name(run_id: str) -> str:
-    """Validate a run-id used as a single path segment (same rules as target)."""
-    rid = (run_id or "").strip()
-    if (
-        not rid
-        or ".." in rid
-        or "/" in rid
-        or "\\" in rid
-        or rid in {".", ".."}
-    ):
-        raise ValueError("invalid run id")
-    return rid
-
-
-_RUN_NAME_MAX = 40
-_RUN_SLUG_RE = re.compile(r"[^a-z0-9]+")
-
-
-def slugify_run_name(run_name: str | None) -> str:
-    """Slug a user run label: lowercase, non-alphanumeric -> ``_``, trimmed,
-    length-capped. Blank input -> ``default``. Never contains ``-`` so it stays
-    unambiguous under the ``-`` run-id join."""
-    s = _RUN_SLUG_RE.sub("_", (run_name or "").strip().lower()).strip("_")
-    return s[:_RUN_NAME_MAX].strip("_") or "default"
-
-
-def build_run_id(site: str | None, mode: str | None, run_name: str | None) -> str:
-    """Compose a run id from optional site, optional mode, and a run-name slug.
-
-    Components are joined by ``-`` (the components themselves only ever contain
-    ``_``, so ``-`` keeps the id readable and splittable). ``site``/``mode`` are
-    blank for non-sinistro or when undetermined; ``mixed`` when the selected
-    lightcurves span more than one value (mixing is allowed). Sinistro's
-    ``central_2k_2x2`` readout mode is the default and is omitted; non-default
-    modes such as ``full_frame`` remain explicit.
-    """
-    mode_part = (mode or "").strip().lower()
-    if mode_part == "central_2k_2x2":
-        mode_part = ""
-    parts = [p for p in (
-        (site or "").strip().lower(),
-        mode_part,
-        slugify_run_name(run_name),
-    ) if p]
-    return "-".join(parts)
+# Run-id / path-segment helpers and the run-id join live in muscat_db.jobs so
+# photometry and transit-fit share one implementation (audit C1). Re-exported
+# here under their historical names for callers and tests.
+_target_dir_name = jobs.target_dir_name
+_run_dir_name = jobs.run_dir_name
+slugify_run_name = jobs.slugify_run_name
+build_run_id = jobs.build_run_id
 
 
 def log_path(inst: str, date: str, target: str, run_id: str = "") -> pathlib.Path | None:
@@ -180,36 +130,38 @@ def log_path(inst: str, date: str, target: str, run_id: str = "") -> pathlib.Pat
     return p if p.is_file() else None
 
 
-@dataclass
-class TransitFitJob:
-    key: str
-    inst: str
-    date: str
-    target: str
-    cmd: list[str]
-    proc: subprocess.Popen
-    logf: IO
-    log_path: pathlib.Path
-    started_at: float = field(default_factory=time.time)
-    state: str = "running"      # running | done | error | cancelled
-    returncode: int | None = None
-    cancelled: bool = False
-    elapsed: int | None = None
-    run_type: str = "full"      # "test" | "full"
-    run_id: str = ""            # site-mode-runname slug; "" == legacy single-dir run
-    site: str = ""
-    mode: str = ""
-    run_name: str = ""
-
+# The in-memory job record and the finalizing state machine are shared with
+# photometry via muscat_db.jobs (audit C1). ``TransitFitJob`` keeps its name.
+TransitFitJob = jobs.PipelineJob
 
 _FIT_JOBS: dict[str, TransitFitJob] = {}
 _FIT_LOCK = threading.Lock()
 _MAX_FULL_JOBS = 1
 
+# Finalizing grace-window settings (env-tunable), mirroring photometry so the
+# transit-fit live log keeps streaming the worker output timer emits after the
+# tracked parent exits, instead of freezing at parent-exit (audit C1). timer has
+# no partial-failure concept, so a zero exit is always ``done``.
+_FINALIZE_GRACE_S = int(os.environ.get("MUSCAT_FIT_FINALIZE_GRACE_S", 8))
+_FINALIZE_GRACE_TERMINAL_S = int(os.environ.get("MUSCAT_FIT_FINALIZE_GRACE_TERMINAL_S", 2))
+# Result line timer logs once a fit has completed; remaining writes are teardown.
+_TERMINAL_LOG_MARKERS = ("Timer-fit completed successfully",)
+
+
+def _finalize_config() -> jobs.FinalizeConfig:
+    """Build the finalizing config from the current module-level settings (per
+    call, so the env-tunable values stay overridable at runtime)."""
+    return jobs.FinalizeConfig(
+        grace_s=_FINALIZE_GRACE_S,
+        grace_terminal_s=_FINALIZE_GRACE_TERMINAL_S,
+        terminal_markers=_TERMINAL_LOG_MARKERS,
+        partial_failure_marker=None,
+    )
+
 
 def _count_running_full() -> int:
     """Number of currently-running full (non-test) transit fit jobs."""
-    return sum(1 for j in _FIT_JOBS.values() if j.run_type == "full" and j.proc.poll() is None)
+    return jobs.count_running_full(_FIT_JOBS)
 
 
 def fit_job_key(inst: str, date: str, target: str, run_id: str = "") -> str:
@@ -1516,23 +1468,16 @@ def job_status(inst: str, date: str, target: str, run_id: str = "") -> dict:
                 pass
             return {"state": "none", "log": "", "returncode": None, "elapsed": 0}
         
-        rc = job.proc.poll()
-        if rc is None:
-            state = "cancelling" if job.cancelled else "running"
-        else:
-            if job.cancelled:
-                state = "cancelled"
-            else:
-                state = "done" if rc == 0 else "error"
-            if job.state in ("running",):
-                job.state = state
-                job.returncode = rc
-                job.elapsed = round(time.time() - job.started_at)
-                try: job.logf.close()
-                except OSError: pass
+        state, rc, is_terminal = jobs.resolve_job_state(job, _finalize_config())
+        if is_terminal and job.state == "running":
+            job.state = state
+            job.returncode = rc
+            job.elapsed = round(time.time() - job.started_at)
+            try: job.logf.close()
+            except OSError: pass
         log_path = job.log_path
         elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
-        
+
     return {
         "state": state,
         "returncode": rc,
@@ -1542,17 +1487,8 @@ def job_status(inst: str, date: str, target: str, run_id: str = "") -> dict:
     }
 
 
-def _kill_after(proc: subprocess.Popen, grace: float = 6.0) -> None:
-    try:
-        proc.wait(timeout=grace)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except OSError:
-        try: proc.kill()
-        except OSError: pass
+# Process-group kill helper lives in the shared runner (audit C1).
+_kill_after = jobs.kill_after
 
 
 def delete_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
@@ -1680,43 +1616,6 @@ def cancel_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
         
     threading.Thread(target=_kill_after, args=(proc,), daemon=True).start()
     return {"ok": True, "key": key}
-
-
-def get_all_jobs() -> list[dict]:
-    """Retrieve all background fitting jobs."""
-    with _FIT_LOCK:
-        res = []
-        for key, job in _FIT_JOBS.items():
-            rc = job.proc.poll()
-            if rc is None:
-                state = "cancelling" if job.cancelled else "running"
-            else:
-                if job.cancelled:
-                    state = "cancelled"
-                else:
-                    state = "done" if rc == 0 else "error"
-                if job.state in ("running",):
-                    job.state = state
-                    job.returncode = rc
-                    job.elapsed = round(time.time() - job.started_at)
-                    try: job.logf.close()
-                    except OSError: pass
-            
-            elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
-            res.append({
-                "key": job.key,
-                "inst": job.inst,
-                "date": job.date,
-                "target": job.target,
-                "type": "transit_fit",
-                "state": state,
-                "returncode": rc,
-                "elapsed": round(elapsed),
-                "started_at": job.started_at,
-                "run_id": job.run_id,
-                "run_name": job.run_name,
-            })
-        return sorted(res, key=lambda j: j["started_at"], reverse=True)
 
 
 _fit_outputs_cache = register_cache(ttl=300.0)
@@ -2031,23 +1930,23 @@ def sync_jobs() -> None:
 
         for key, job in _FIT_JOBS.items():
             db_key = f"transit_fit:{fit_job_key(job.inst, job.date, job.target, job.run_id)}"
-            rc = job.proc.poll()
-            if rc is None:
-                state = "cancelling" if job.cancelled else "running"
-            else:
-                if job.cancelled:
-                    state = "cancelled"
-                else:
-                    state = "done" if rc == 0 else "error"
-                if job.state in ("running",):
-                    job.state = state
-                    job.returncode = rc
-                    job.elapsed = round(time.time() - job.started_at)
-                    try:
-                        job.logf.close()
-                    except OSError:
-                        pass
-            
+            state, rc, is_terminal = jobs.resolve_job_state(job, _finalize_config())
+            if is_terminal and job.state == "running":
+                job.state = state
+                job.returncode = rc
+                job.elapsed = round(time.time() - job.started_at)
+                try:
+                    job.logf.close()
+                except OSError:
+                    pass
+
+            # 'finalizing' is a live-view-only state; the DB tracks only
+            # running/terminal, so persist a finalizing job as still running.
+            # This keeps the Jobs page (which reads state from the DB) consistent
+            # with the transit-fit page until the log truly goes quiescent.
+            persist_state = "running" if state == "finalizing" else state
+            persist_rc = None if state == "finalizing" else rc
+
             # Only persist when the row actually changed. A steadily-running job
             # whose DB row already says "running" needs no rewrite; elapsed is
             # computed live in the web layer, so we no longer write every 2s poll
@@ -2065,18 +1964,17 @@ def sync_jobs() -> None:
                 elapsed = round(time.time() - job.started_at)  # Calculate for running jobs
             unchanged = (
                 existing is not None
-                and existing.get("state") == state
-                and existing.get("returncode") == rc
+                and existing.get("state") == persist_state
+                and existing.get("returncode") == persist_rc
             )
             running_keys.discard(db_key)
             if unchanged:
                 continue
 
             error_desc = ""
-            if state == "error":
-                from muscat_db.photometry import _get_error_desc
+            if persist_state == "error":
                 error_desc = _get_error_desc(job.log_path)
-            elif state == "cancelled":
+            elif persist_state == "cancelled":
                 error_desc = "Cancelled by user"
 
             save_job(
@@ -2085,8 +1983,8 @@ def sync_jobs() -> None:
                 date=job.date,
                 target=job.target,
                 run_id=job.run_id,
-                state=state,
-                returncode=rc,
+                state=persist_state,
+                returncode=persist_rc,
                 elapsed=round(elapsed),
                 started_at=job.started_at,
                 error_desc=error_desc,
