@@ -641,7 +641,7 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
             except Exception:
                 mtime, created_at = 0.0, "Unknown"
             csite, cmode = fit.csv_site_mode(c.name) if inst == "sinistro" else (None, None)
-            rows.append({"name": c.name, "created_at": created_at,
+            rows.append({"path": str(c), "name": c.name, "created_at": created_at,
                          "_mtime": mtime, "_site": csite, "_mode": cmode})
 
         if inst == "sinistro":
@@ -661,7 +661,7 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
                     if (not sel_site or r["_site"] == sel_site)
                     and (not sel_mode or r["_mode"] == sel_mode)]
 
-        csvs = [{"name": r["name"], "created_at": r["created_at"]} for r in rows]
+        csvs = [{"path": r["path"], "name": r["name"], "created_at": r["created_at"]} for r in rows]
 
         # Existing runs (each isolated in its own dir); show one run's results at
         # a time, defaulting to the newest, selectable via the results-run chips.
