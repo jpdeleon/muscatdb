@@ -9,6 +9,8 @@ import re
 import datetime
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from muscat_db.instruments import INSTRUMENTS, OBSLOG_BASE
 from muscat_db.cache import clear_all_caches
@@ -374,14 +376,12 @@ def build_db(db_path: str, progress=None) -> int:
     preserved_ephemeris_views: list[dict] = []
     if os.path.exists(db_path):
         try:
-            old_conn = sqlite3.connect(db_path)
-            old_conn.row_factory = sqlite3.Row
-            old_conn.executescript(SCHEMA)
-            rows = old_conn.execute("SELECT * FROM jobs").fetchall()
-            preserved_jobs = [dict(r) for r in rows]
-            rows = old_conn.execute("SELECT * FROM ephemeris_views").fetchall()
-            preserved_ephemeris_views = [dict(r) for r in rows]
-            old_conn.close()
+            with get_conn(db_path, row_factory=sqlite3.Row) as old_conn:
+                old_conn.executescript(SCHEMA)
+                rows = old_conn.execute("SELECT * FROM jobs").fetchall()
+                preserved_jobs = [dict(r) for r in rows]
+                rows = old_conn.execute("SELECT * FROM ephemeris_views").fetchall()
+                preserved_ephemeris_views = [dict(r) for r in rows]
         except sqlite3.OperationalError:
             pass
 
@@ -594,11 +594,9 @@ def _safe_float(v: str) -> float | None:
 
 
 def get_instruments(db_path: str) -> list[dict]:
-    conn = sqlite3.connect(db_path)
-    cur = conn.execute("SELECT DISTINCT instrument FROM summaries ORDER BY instrument")
-    result = [{"name": r[0]} for r in cur.fetchall()]
-    conn.close()
-    return result
+    with get_conn(db_path) as conn:
+        cur = conn.execute("SELECT DISTINCT instrument FROM summaries ORDER BY instrument")
+        return [{"name": r[0]} for r in cur.fetchall()]
 
 
 def get_instruments_summary(db_path: str, min_frames: int = 1000) -> list[dict]:
@@ -606,7 +604,11 @@ def get_instruments_summary(db_path: str, min_frames: int = 1000) -> list[dict]:
 
     Filters science targets to only count those with at least min_frames frames.
     """
-    conn = sqlite3.connect(db_path)
+    with get_conn(db_path) as conn:
+        return _instruments_summary(conn, min_frames)
+
+
+def _instruments_summary(conn: sqlite3.Connection, min_frames: int) -> list[dict]:
     # Get total dates and frames per instrument
     base_stats = conn.execute(
         """SELECT instrument, COUNT(DISTINCT obsdate), SUM(nframes)
@@ -636,9 +638,7 @@ def get_instruments_summary(db_path: str, min_frames: int = 1000) -> list[dict]:
         (min_frames,)
     ).fetchall()
     target_map = {r[0]: r[1] for r in target_stats}
-    
-    conn.close()
-    
+
     # Ensure all instruments from INSTRUMENTS or base_stats are returned
     names = sorted(list(set(INSTRUMENTS) | set(stats_map.keys())))
     return [
@@ -656,38 +656,33 @@ def get_dates(db_path: str, instrument: str) -> list[dict]:
     """Return one row per obsdate. Only YYMMDD-formatted dates are returned;
     legacy/test directories like ``200722_2`` or ``csv_old_220914`` are skipped.
     """
-    conn = sqlite3.connect(db_path)
     # Read from the pre-aggregated `summaries` table rather than `frames`: it is
     # ~1000x smaller per instrument and SUM(nframes) reproduces COUNT(*) over
     # frames exactly, turning a multi-second scan into a sub-second query.
-    cur = conn.execute(
-        """SELECT obsdate, COUNT(DISTINCT ccd), SUM(nframes)
-           FROM summaries
-           WHERE instrument = ?
-             AND length(obsdate) = 6
-             AND obsdate GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]'
-           GROUP BY obsdate ORDER BY obsdate DESC""",
-        (instrument,),
-    )
-    result = [{"obsdate": r[0], "nccd": r[1], "nframes": r[2]} for r in cur.fetchall()]
-    conn.close()
-    return result
+    with get_conn(db_path) as conn:
+        cur = conn.execute(
+            """SELECT obsdate, COUNT(DISTINCT ccd), SUM(nframes)
+               FROM summaries
+               WHERE instrument = ?
+                 AND length(obsdate) = 6
+                 AND obsdate GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]'
+               GROUP BY obsdate ORDER BY obsdate DESC""",
+            (instrument,),
+        )
+        return [{"obsdate": r[0], "nccd": r[1], "nframes": r[2]} for r in cur.fetchall()]
 
 
 def get_summaries(db_path: str, instrument: str, obsdate: str) -> list[dict]:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.execute(
-        """SELECT ccd, object, exptime, read_mode,
-                  frame_start, frame_end, ut_start, ut_end, nframes
-           FROM summaries
-           WHERE instrument = ? AND obsdate = ?
-           ORDER BY ccd, object, ut_start""",
-        (instrument, obsdate),
-    )
-    result = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    return result
+    with get_conn(db_path, row_factory=sqlite3.Row) as conn:
+        cur = conn.execute(
+            """SELECT ccd, object, exptime, read_mode,
+                      frame_start, frame_end, ut_start, ut_end, nframes
+               FROM summaries
+               WHERE instrument = ? AND obsdate = ?
+               ORDER BY ccd, object, ut_start""",
+            (instrument, obsdate),
+        )
+        return [dict(r) for r in cur.fetchall()]
 
 
 def get_objects(db_path: str, instrument: str, obsdate: str) -> list[str]:
@@ -696,25 +691,23 @@ def get_objects(db_path: str, instrument: str, obsdate: str) -> list[str]:
     Reuses the same calibration/junk exclusions as the materialized targets
     table so the photometry picker only offers genuine science targets.
     """
-    conn = sqlite3.connect(db_path)
-    cur = conn.execute(
-        """SELECT DISTINCT object FROM summaries
-           WHERE instrument = ? AND obsdate = ?
-             AND object IS NOT NULL AND TRIM(object) <> ''
-             AND LOWER(TRIM(object)) NOT IN ({exact})
-             AND LOWER(TRIM(object)) NOT LIKE '%flat%'
-             AND LOWER(TRIM(object)) NOT LIKE 'dark%'
-             AND LOWER(TRIM(object)) NOT LIKE 'bias%'
-             AND LOWER(TRIM(object)) NOT LIKE '%test%'
-             AND TRIM(object) NOT GLOB '*:*:*'
-           ORDER BY object COLLATE NOCASE""".format(
-            exact=", ".join(f"'{s}'" for s in _TARGET_EXCLUDE_EXACT),
-        ),
-        (instrument, obsdate),
-    )
-    result = [r[0] for r in cur.fetchall()]
-    conn.close()
-    return result
+    with get_conn(db_path) as conn:
+        cur = conn.execute(
+            """SELECT DISTINCT object FROM summaries
+               WHERE instrument = ? AND obsdate = ?
+                 AND object IS NOT NULL AND TRIM(object) <> ''
+                 AND LOWER(TRIM(object)) NOT IN ({exact})
+                 AND LOWER(TRIM(object)) NOT LIKE '%flat%'
+                 AND LOWER(TRIM(object)) NOT LIKE 'dark%'
+                 AND LOWER(TRIM(object)) NOT LIKE 'bias%'
+                 AND LOWER(TRIM(object)) NOT LIKE '%test%'
+                 AND TRIM(object) NOT GLOB '*:*:*'
+               ORDER BY object COLLATE NOCASE""".format(
+                exact=", ".join(f"'{s}'" for s in _TARGET_EXCLUDE_EXACT),
+            ),
+            (instrument, obsdate),
+        )
+        return [r[0] for r in cur.fetchall()]
 
 
 _YYMMDD = re.compile(r"\d{6}")
@@ -732,8 +725,12 @@ def _is_obsdate(token: str) -> bool:
 
 def get_targets(db_path: str) -> list[dict]:
     """Return the per-target summary materialized at build_db time."""
-    conn = sqlite3.connect(db_path)
-    conn.executescript(SCHEMA)  # ensure target_notes exists on first read
+    with get_conn(db_path) as conn:
+        conn.executescript(SCHEMA)  # ensure target_notes exists on first read
+        return _targets_from_conn(conn)
+
+
+def _targets_from_conn(conn: sqlite3.Connection) -> list[dict]:
     cur = conn.execute(
         """SELECT t.object, t.n_dates, t.n_frames, t.instruments, t.dates, t.filters,
                   t.total_exptime, t.ra, t.declination, t.airmass_min, t.airmass_max,
@@ -784,7 +781,6 @@ def get_targets(db_path: str) -> list[dict]:
             "phot": phot_status,
             "fit": fit_status,
         })
-    conn.close()
     return result
 
 
@@ -842,74 +838,93 @@ def _parse_inst_dates(s: str) -> dict[str, str]:
 
 def set_note(db_path: str, obj: str, note: str) -> None:
     """Upsert a per-target note. Empty/whitespace `note` deletes the row."""
-    conn = sqlite3.connect(db_path, timeout=30)
-    conn.executescript(SCHEMA)
     note = (note or "").strip()
-    if not note:
-        conn.execute("DELETE FROM target_notes WHERE object = ?", (obj,))
-    else:
-        conn.execute(
-            """INSERT INTO target_notes(object, note, updated_at)
-               VALUES (?, ?, CURRENT_TIMESTAMP)
-               ON CONFLICT(object) DO UPDATE
-                 SET note = excluded.note, updated_at = CURRENT_TIMESTAMP""",
-            (obj, note),
-        )
-    conn.commit()
-    conn.close()
+    with get_conn(db_path) as conn:
+        conn.executescript(SCHEMA)
+        if not note:
+            conn.execute("DELETE FROM target_notes WHERE object = ?", (obj,))
+        else:
+            conn.execute(
+                """INSERT INTO target_notes(object, note, updated_at)
+                   VALUES (?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(object) DO UPDATE
+                     SET note = excluded.note, updated_at = CURRENT_TIMESTAMP""",
+                (obj, note),
+            )
+        conn.commit()
     clear_all_caches()
 
 
 def delete_note(db_path: str, obj: str) -> None:
-    conn = sqlite3.connect(db_path, timeout=30)
-    conn.executescript(SCHEMA)
-    conn.execute("DELETE FROM target_notes WHERE object = ?", (obj,))
-    conn.commit()
-    conn.close()
+    with get_conn(db_path) as conn:
+        conn.executescript(SCHEMA)
+        conn.execute("DELETE FROM target_notes WHERE object = ?", (obj,))
+        conn.commit()
     clear_all_caches()
 
 
 def set_identified(db_path: str, obj: str, is_identified: int) -> None:
-    conn = sqlite3.connect(db_path, timeout=30)
-    conn.executescript(SCHEMA)
-    conn.execute(
-        """INSERT INTO target_overrides(object, is_identified, updated_at)
-           VALUES (?, ?, CURRENT_TIMESTAMP)
-           ON CONFLICT(object) DO UPDATE
-             SET is_identified = excluded.is_identified, updated_at = CURRENT_TIMESTAMP""",
-        (obj, is_identified),
-    )
-    conn.commit()
-    conn.close()
+    with get_conn(db_path) as conn:
+        conn.executescript(SCHEMA)
+        conn.execute(
+            """INSERT INTO target_overrides(object, is_identified, updated_at)
+               VALUES (?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(object) DO UPDATE
+                 SET is_identified = excluded.is_identified, updated_at = CURRENT_TIMESTAMP""",
+            (obj, is_identified),
+        )
+        conn.commit()
     clear_all_caches()
 
 
 def get_identified_overrides(db_path: str) -> dict[str, bool]:
-    conn = sqlite3.connect(db_path)
-    conn.executescript(SCHEMA)
-    cur = conn.execute("SELECT object, is_identified FROM target_overrides")
-    result = {row[0]: bool(row[1]) for row in cur.fetchall()}
-    conn.close()
-    return result
+    with get_conn(db_path) as conn:
+        conn.executescript(SCHEMA)
+        cur = conn.execute("SELECT object, is_identified FROM target_overrides")
+        return {row[0]: bool(row[1]) for row in cur.fetchall()}
 
 
 def get_frames(db_path: str, instrument: str, obsdate: str, ccd: int) -> list[dict]:
-    conn = sqlite3.connect(db_path)
-    cur = conn.execute(
-        """SELECT * FROM frames
-           WHERE instrument = ? AND obsdate = ? AND ccd = ?
-           ORDER BY filename""",
-        (instrument, obsdate, ccd),
-    )
-    columns = [d[0] for d in cur.description]
-    result = [dict(zip(columns, r)) for r in cur.fetchall()]
-    conn.close()
-    return result
+    with get_conn(db_path) as conn:
+        cur = conn.execute(
+            """SELECT * FROM frames
+               WHERE instrument = ? AND obsdate = ? AND ccd = ?
+               ORDER BY filename""",
+            (instrument, obsdate, ccd),
+        )
+        columns = [d[0] for d in cur.description]
+        return [dict(zip(columns, r)) for r in cur.fetchall()]
 
 
 def db_path() -> str:
     import pathlib
     return str(pathlib.Path(os.environ.get("MUSCAT_DB_PATH", "muscat.db")).resolve())
+
+
+@contextmanager
+def get_conn(
+    path: str | None = None,
+    *,
+    timeout: float = 30.0,
+    row_factory=None,
+) -> Iterator[sqlite3.Connection]:
+    """Single entry point for SQLite connections.
+
+    Guarantees the connection is closed even if the body raises — the previous
+    open-coded ``connect(...) ... close()`` helpers leaked the handle on any
+    exception between the two — and standardizes the busy ``timeout`` (default
+    30s) so writers don't fail fast under WAL contention. Schema-ensure and
+    migration calls stay at the call site because they vary per table.
+    """
+    if path is None:
+        path = db_path()
+    conn = sqlite3.connect(path, timeout=timeout)
+    try:
+        if row_factory is not None:
+            conn.row_factory = row_factory
+        yield conn
+    finally:
+        conn.close()
 
 
 def _ensure_jobs_schema(conn: sqlite3.Connection) -> None:
@@ -998,49 +1013,47 @@ def save_job(
     if user_name is None:
         user_name = getpass.getuser()
     path = db_path()
-    conn = sqlite3.connect(path, timeout=30)
-    _ensure_jobs_migrated(conn, path)
     # Run-scoped key so distinct runs of the same target are separate job rows;
     # an empty run_id reproduces the legacy key.
     key = f"{type_}:{inst}/{date}/{target.replace(' ', '')}"
     if run_id:
         key = f"{key}/{run_id}"
-    conn.execute(
-        """INSERT INTO jobs(key, type, instrument, obsdate, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id, run_name, user_name)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(key) DO UPDATE SET
-             state      = excluded.state,
-             returncode = excluded.returncode,
-             elapsed    = excluded.elapsed,
-             error_desc = excluded.error_desc,
-             run_type   = CASE WHEN excluded.run_type != '' THEN excluded.run_type ELSE run_type END,
-             params     = CASE WHEN excluded.params != '' THEN excluded.params ELSE params END,
-             run_id     = excluded.run_id,
-             run_name   = CASE WHEN excluded.run_name != '' THEN excluded.run_name ELSE run_name END,
-             user_name  = CASE WHEN excluded.user_name != '' THEN excluded.user_name ELSE user_name END""",
-        (key, type_, inst, date, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id, run_name, user_name)
-    )
-    conn.commit()
-    conn.close()
+    with get_conn(path) as conn:
+        _ensure_jobs_migrated(conn, path)
+        conn.execute(
+            """INSERT INTO jobs(key, type, instrument, obsdate, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id, run_name, user_name)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(key) DO UPDATE SET
+                 state      = excluded.state,
+                 returncode = excluded.returncode,
+                 elapsed    = excluded.elapsed,
+                 error_desc = excluded.error_desc,
+                 run_type   = CASE WHEN excluded.run_type != '' THEN excluded.run_type ELSE run_type END,
+                 params     = CASE WHEN excluded.params != '' THEN excluded.params ELSE params END,
+                 run_id     = excluded.run_id,
+                 run_name   = CASE WHEN excluded.run_name != '' THEN excluded.run_name ELSE run_name END,
+                 user_name  = CASE WHEN excluded.user_name != '' THEN excluded.user_name ELSE user_name END""",
+            (key, type_, inst, date, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id, run_name, user_name)
+        )
+        conn.commit()
     clear_all_caches()
 
 
 def get_persisted_jobs() -> list[dict]:
     path = db_path()
-    conn = sqlite3.connect(path)
-    _ensure_jobs_migrated(conn, path)
-    cur = conn.execute("SELECT * FROM jobs ORDER BY started_at DESC")
-    columns = [d[0] for d in cur.description]
-    result = []
-    for r in cur.fetchall():
-        d = dict(zip(columns, r))
-        d["inst"] = d["instrument"]
-        d["date"] = d["obsdate"]
-        if not str(d.get("run_name") or "").strip():
-            d["run_name"] = str(d.get("run_id") or "").strip()
-        result.append(d)
-    conn.close()
-    return result
+    with get_conn(path) as conn:
+        _ensure_jobs_migrated(conn, path)
+        cur = conn.execute("SELECT * FROM jobs ORDER BY started_at DESC")
+        columns = [d[0] for d in cur.description]
+        result = []
+        for r in cur.fetchall():
+            d = dict(zip(columns, r))
+            d["inst"] = d["instrument"]
+            d["date"] = d["obsdate"]
+            if not str(d.get("run_name") or "").strip():
+                d["run_name"] = str(d.get("run_id") or "").strip()
+            result.append(d)
+        return result
 
 
 def save_ephemeris_view(state: dict) -> dict:
@@ -1052,31 +1065,28 @@ def save_ephemeris_view(state: dict) -> dict:
         targets = []
     targets_json = _canonical_json([str(t) for t in targets])
 
-    conn = sqlite3.connect(path, timeout=30)
-    conn.executescript(SCHEMA)
-    conn.execute(
-        """INSERT INTO ephemeris_views
-           (slug, state_hash, state_json, targets_json, created_at, updated_at)
-           VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-           ON CONFLICT(slug) DO UPDATE SET
-             updated_at = CURRENT_TIMESTAMP""",
-        (slug, state_hash, state_json, targets_json),
-    )
-    conn.commit()
-    conn.close()
+    with get_conn(path) as conn:
+        conn.executescript(SCHEMA)
+        conn.execute(
+            """INSERT INTO ephemeris_views
+               (slug, state_hash, state_json, targets_json, created_at, updated_at)
+               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+               ON CONFLICT(slug) DO UPDATE SET
+                 updated_at = CURRENT_TIMESTAMP""",
+            (slug, state_hash, state_json, targets_json),
+        )
+        conn.commit()
     return {"slug": slug, "state_hash": state_hash}
 
 
 def get_ephemeris_view(slug: str) -> dict | None:
     path = db_path()
-    conn = sqlite3.connect(path)
-    conn.executescript(SCHEMA)
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        "SELECT slug, state_hash, state_json, targets_json, created_at, updated_at FROM ephemeris_views WHERE slug = ?",
-        (slug,),
-    ).fetchone()
-    conn.close()
+    with get_conn(path, row_factory=sqlite3.Row) as conn:
+        conn.executescript(SCHEMA)
+        row = conn.execute(
+            "SELECT slug, state_hash, state_json, targets_json, created_at, updated_at FROM ephemeris_views WHERE slug = ?",
+            (slug,),
+        ).fetchone()
     if row is None:
         return None
     state = json.loads(row["state_json"])
@@ -1092,10 +1102,10 @@ def get_ephemeris_view(slug: str) -> dict | None:
 def get_last_build_date(db_path: str) -> str:
     """Get the date when muscat-db build was run, or the date when the database file was generated."""
     try:
-        conn = sqlite3.connect(db_path)
-        cur = conn.execute("SELECT value FROM db_meta WHERE key = 'last_build_at'")
-        row = cur.fetchone()
-        conn.close()
+        with get_conn(db_path) as conn:
+            row = conn.execute(
+                "SELECT value FROM db_meta WHERE key = 'last_build_at'"
+            ).fetchone()
         if row:
             return row[0][:10]
     except sqlite3.Error:

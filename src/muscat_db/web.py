@@ -30,6 +30,7 @@ from muscat_db import transit_obs
 from muscat_db import fov as fov_opt
 from muscat_db.database import (
     SCHEMA,
+    get_conn,
     delete_note as _delete_note,
     format_elapsed,
     get_dates as _get_dates,
@@ -65,10 +66,9 @@ STATIC_DIR = HERE / "static"
 async def _lifespan(app: FastAPI):
     """Create the database and schema on startup if they don't exist."""
     db = _db_path()
-    conn = sqlite3.connect(db, timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.executescript(SCHEMA)
-    conn.close()
+    with get_conn(db, timeout=10) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.executescript(SCHEMA)
     print(f"[startup] database ready at {db}")
 
     from muscat_db.config import config_status, missing_required_secret
@@ -215,29 +215,28 @@ def _get_datasets_for_normalized_target(db: str, normalized_name: str) -> tuple[
 
     # Query per-(inst, date, object) stats from the obslog (summaries table).
     placeholders = ",".join("?" for _ in matching_objects)
-    conn = sqlite3.connect(db)
-    cur = conn.execute(
-        f"""SELECT instrument, obsdate, object,
-                   SUM(nframes)              AS n_frames,
-                   GROUP_CONCAT(DISTINCT filter) AS filters,
-                   MIN(NULLIF(airmass_min, 0))   AS airmass_min,
-                   MAX(NULLIF(airmass_max, 0))   AS airmass_max
-            FROM summaries
-            WHERE object IN ({placeholders})
-            GROUP BY instrument, obsdate, object""",
-        matching_objects,
-    )
     obs_stats: dict[tuple, dict] = {}
-    for row in cur.fetchall():
-        raw_filters = sorted(f for f in (row[4] or "").split(",") if f)
-        obs_stats[(row[0], row[1], row[2])] = {
-            "n_frames": row[3] or 0,
-            "filters": raw_filters,
-            "filter_chips": _normalize_filters(raw_filters),
-            "airmass_min": row[5],
-            "airmass_max": row[6],
-        }
-    conn.close()
+    with get_conn(db) as conn:
+        cur = conn.execute(
+            f"""SELECT instrument, obsdate, object,
+                       SUM(nframes)              AS n_frames,
+                       GROUP_CONCAT(DISTINCT filter) AS filters,
+                       MIN(NULLIF(airmass_min, 0))   AS airmass_min,
+                       MAX(NULLIF(airmass_max, 0))   AS airmass_max
+                FROM summaries
+                WHERE object IN ({placeholders})
+                GROUP BY instrument, obsdate, object""",
+            matching_objects,
+        )
+        for row in cur.fetchall():
+            raw_filters = sorted(f for f in (row[4] or "").split(",") if f)
+            obs_stats[(row[0], row[1], row[2])] = {
+                "n_frames": row[3] or 0,
+                "filters": raw_filters,
+                "filter_chips": _normalize_filters(raw_filters),
+                "airmass_min": row[5],
+                "airmass_max": row[6],
+            }
 
     datasets = []
     for target in targets:
@@ -413,18 +412,17 @@ def _sinistro_obslog_choices(db: str, inst: str, date: str, target: str) -> tupl
     if inst != "sinistro" or not (date and target):
         return [], []
     try:
-        conn = sqlite3.connect(db)
-        cur = conn.execute(
-            "SELECT DISTINCT substr(filename, 1, 3) FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND filename IS NOT NULL AND filename != ''",
-            (inst, date, target),
-        )
-        sites = sorted({row[0].lower() for row in cur.fetchall() if row[0]} & set(phot.SINISTRO_SITES))
-        cur = conn.execute(
-            "SELECT DISTINCT read_mode FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND read_mode IS NOT NULL AND read_mode != ''",
-            (inst, date, target),
-        )
-        modes = sorted({row[0].lower() for row in cur.fetchall() if row[0]} & set(phot.SINISTRO_MODES))
-        conn.close()
+        with get_conn(db) as conn:
+            cur = conn.execute(
+                "SELECT DISTINCT substr(filename, 1, 3) FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND filename IS NOT NULL AND filename != ''",
+                (inst, date, target),
+            )
+            sites = sorted({row[0].lower() for row in cur.fetchall() if row[0]} & set(phot.SINISTRO_SITES))
+            cur = conn.execute(
+                "SELECT DISTINCT read_mode FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND read_mode IS NOT NULL AND read_mode != ''",
+                (inst, date, target),
+            )
+            modes = sorted({row[0].lower() for row in cur.fetchall() if row[0]} & set(phot.SINISTRO_MODES))
         return sites, modes
     except Exception:
         return [], []
@@ -528,26 +526,24 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         raw_missing = not phot.raw_data_dir(inst, date).is_dir()
 
         try:
-            conn = sqlite3.connect(db)
-            cur = conn.execute(
-                "SELECT DISTINCT filter FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND filter IS NOT NULL AND filter != ''",
-                (inst, date, target),
-            )
-            filters = [row[0] for row in cur.fetchall()]
-            if filters:
-                is_narrowband = any("narrow" in f.lower() or f.lower() == "na_d" for f in filters)
-                obs_type = "(narrowband)" if is_narrowband else "(broadband)"
-                available_bands = phot.bands_from_filters(filters)
+            with get_conn(db) as conn:
+                cur = conn.execute(
+                    "SELECT DISTINCT filter FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND filter IS NOT NULL AND filter != ''",
+                    (inst, date, target),
+                )
+                filters = [row[0] for row in cur.fetchall()]
+                if filters:
+                    is_narrowband = any("narrow" in f.lower() or f.lower() == "na_d" for f in filters)
+                    obs_type = "(narrowband)" if is_narrowband else "(broadband)"
+                    available_bands = phot.bands_from_filters(filters)
 
-            cur = conn.execute(
-                "SELECT COUNT(*) FROM frames WHERE instrument = ? AND obsdate = ? AND object = ?",
-                (inst, date, target),
-            )
-            total_frames = cur.fetchone()[0]
-            if obs_type and total_frames < 100:
-                obs_type += " (test)"
-
-            conn.close()
+                cur = conn.execute(
+                    "SELECT COUNT(*) FROM frames WHERE instrument = ? AND obsdate = ? AND object = ?",
+                    (inst, date, target),
+                )
+                total_frames = cur.fetchone()[0]
+                if obs_type and total_frames < 100:
+                    obs_type += " (test)"
         except Exception:
             pass
 
@@ -1326,21 +1322,24 @@ def api_exposure_target(target: str):
 
     try:
         db = _db_path()
-        conn = sqlite3.connect(db, timeout=10)
-        conn.row_factory = sqlite3.Row
-
-        # Get all frames for this target
-        frames = conn.execute(
-            """
-            SELECT
-                instrument, obsdate, filter, exptime, read_mode,
-                ra, declination, airmass, focus, ccd
-            FROM frames
-            WHERE object = ?
-            ORDER BY obsdate DESC, instrument, filter, exptime
-            """,
-            (target,)
-        ).fetchall()
+        with get_conn(db, timeout=10, row_factory=sqlite3.Row) as conn:
+            # Get all frames for this target
+            frames = conn.execute(
+                """
+                SELECT
+                    instrument, obsdate, filter, exptime, read_mode,
+                    ra, declination, airmass, focus, ccd
+                FROM frames
+                WHERE object = ?
+                ORDER BY obsdate DESC, instrument, filter, exptime
+                """,
+                (target,)
+            ).fetchall()
+            # Get target info from targets table
+            target_info = conn.execute(
+                "SELECT n_dates, n_frames, ra, declination FROM targets WHERE object = ?",
+                (target,)
+            ).fetchone()
 
         if not frames:
             return JSONResponse({
@@ -1371,14 +1370,6 @@ def api_exposure_target(target: str):
                 airmass_values.append(frame["airmass"])
             if frame["focus"] is not None:
                 focus_values.append(frame["focus"])
-
-        # Get target info from targets table
-        target_info = conn.execute(
-            "SELECT n_dates, n_frames, ra, declination FROM targets WHERE object = ?",
-            (target,)
-        ).fetchone()
-
-        conn.close()
 
         # Format results
         exptime_summary = {}
@@ -2150,9 +2141,8 @@ def _angular_sep_arcsec(ra1: float, dec1: float, ra2: float, dec2: float) -> flo
 
 def _local_lco_datasets(inst: str, obsdate: str, site: str) -> list[dict]:
     db = _db_path()
-    conn = sqlite3.connect(db)
-    conn.create_aggregate("coord_repr", 2, CoordRepr)
-    try:
+    with get_conn(db) as conn:
+        conn.create_aggregate("coord_repr", 2, CoordRepr)
         rows = conn.execute(
             """
             SELECT object, COUNT(*) AS nframes, coord_repr(ra, declination) AS coord
@@ -2164,8 +2154,6 @@ def _local_lco_datasets(inst: str, obsdate: str, site: str) -> list[dict]:
             """,
             (inst, obsdate, f"{site}%"),
         ).fetchall()
-    finally:
-        conn.close()
     out = []
     for obj, nframes, packed in rows:
         ra_raw, dec_raw = _unpack_coord(packed)
