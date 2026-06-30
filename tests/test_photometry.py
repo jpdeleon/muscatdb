@@ -515,6 +515,7 @@ class TestRunOptions:
             "make_gif": False,
             "use_barycorrpy": True,
             "gif_stride": "50",
+            "nan_imputation_method": "median",
         }
         cmd = phot.build_command(INST, DATE, TARGET, opts, test_run=False)
         s = " ".join(cmd)
@@ -530,6 +531,7 @@ class TestRunOptions:
         assert "--gif" not in cmd
         assert "--use_barycorrpy" in cmd
         assert "--gif_stride 50" in s
+        assert "--nan-imputation-method median" in s
 
     def test_edge_margin_zero_is_emitted_to_disable(self, monkeypatch, tmp_path):
         # 0 is a meaningful value (disable edge exclusion), distinct from the
@@ -619,6 +621,12 @@ class TestRunOptions:
             inst="sinistro",
         )
         assert err is None
+
+    def test_validate_rejects_unknown_nan_imputation_method(self):
+        err = phot.validate_run_options(
+            phot.normalize_run_options({"bands": ["gp"], "nan_imputation_method": "bogus"})
+        )
+        assert err and "nan imputation method" in err.lower()
 
     def test_validate_rejects_reference_band_not_selected(self):
         err = phot.validate_run_options(

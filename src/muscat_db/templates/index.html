@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Targets — MuSCAT-db{% endblock %}
 {% block content %}
-<h1>MuSCAT + LCO database summary (Last updated on {{ last_updated }})</h1>
+<h1>MuSCAT + LCO database (Last updated on {{ last_updated }})</h1>
 
 {% set identified   = targets | selectattr('is_identified') | list %}
 {% set unidentified = targets | rejectattr('is_identified') | list %}
