@@ -40,6 +40,8 @@
 * when writing new code, choose correctness over simplicity
 * check background process, report any idle or background processes related to muscat-db before running a new one
 * all one-off scripts should live in /tmp but useful scripts should be kept in repo
+* the server lives inside tmux session named muscatdb-gui
+*  The --reload flag only watches Python files, not Jinja2 templates. Remind the user if a restart is needed to see the HTML/JavaScript changes.
 
 ## git branch
 * keep only main and test branch. PR comes from test branch and only gets merged to main
@@ -54,5 +56,5 @@ The pipeline is launched with `start_new_session=True` and prose spawns multipro
 * Verify transit and visibility from https://exoplanetarchive.ipac.caltech.edu/docs/transit/transit_API.html
 
 ## Prompt
-Ask questions for clarifications if prompt is vague or confusing.
-Verify non-obvious assumptions before implementing edit.
+* Ask questions for clarifications if prompt is vague or confusing.
+* Verify non-obvious assumptions before implementing edit.

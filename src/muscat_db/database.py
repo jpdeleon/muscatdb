@@ -183,10 +183,13 @@ def _discover_csv_jobs(instrument: str | None = None, obsdate: str | None = None
         date_entries = [obsdate] if obsdate else sorted(os.listdir(inst_dir))
         for entry in date_entries:
             obsdir = f"{inst_dir}/{entry}"
-            if (
-                not os.path.isdir(obsdir)
-                or entry in ("csv", "html", "muscat", "muscat2", "muscat3", "muscat4", "sinistro")
-            ):
+            if not os.path.isdir(obsdir):
+                continue
+            # Only canonical YYMMDD obslog directories should ever be ingested
+            # into the database. Legacy folders like ``csv_old_220914`` or
+            # free-text labels like ``Hyades`` must remain on disk for
+            # provenance/debugging, but they are not valid observation dates.
+            if not _is_obsdate(entry):
                 continue
             for fname in sorted(os.listdir(obsdir)):
                 if not fname.endswith(".csv") or not fname.startswith("obslog-"):

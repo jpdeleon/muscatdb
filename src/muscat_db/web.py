@@ -439,7 +439,7 @@ def _site_required_error(db: str, inst: str, date: str, target: str, options: di
 
 
 @app.get("/photometry", response_class=HTMLResponse)
-def photometry_page(inst: str = "", date: str = "", target: str = "", site: str = "", mode: str = "", run: str = ""):
+def photometry_page(inst: str = "", date: str = "", target: str = "", site: str = "", mode: str = "", run: str = "", overwrite: str = ""):
     db = _db_path()
     inst = inst if inst in INSTRUMENTS else ""
     date = date if phot.valid_date(date) else ""
@@ -453,6 +453,13 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
     mode = mode.strip().lower()
     if inst != "sinistro" or mode not in phot.SINISTRO_MODES:
         mode = ""
+
+    # Parse overwrite from query parameter (overrides defaults for this session)
+    run_defaults_override = {}
+    if overwrite.lower() in ("0", "false", "no"):
+        run_defaults_override["overwrite"] = False
+    elif overwrite.lower() in ("1", "true", "yes"):
+        run_defaults_override["overwrite"] = True
 
     dates: list[str] = []
     targets: list[str] = []
@@ -555,6 +562,9 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
                 nb_headers, nb_rows = phot.csv_preview(rdir / nearby_info["file"], n=100)
                 nearby_preview = {"headers": nb_headers, "rows": nb_rows}
 
+    # Merge URL parameter overrides with defaults
+    merged_defaults = {**phot.RUN_DEFAULTS, **run_defaults_override}
+
     resp = _render(
         "photometry.html",
         instruments=list(INSTRUMENTS),
@@ -568,7 +578,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         nearby_preview=nearby_preview,
         command=command, raw_missing=raw_missing,
         default_bands=phot.DEFAULT_BANDS,
-        run_defaults=phot.RUN_DEFAULTS,
+        run_defaults=merged_defaults,
         cmap_choices=phot.CMAP_CHOICES,
         wiki_url=_wiki_url(inst, target),
         obs_type=obs_type,

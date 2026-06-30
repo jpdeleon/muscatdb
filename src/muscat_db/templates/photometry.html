@@ -914,6 +914,20 @@
   }
 
   restoreOptions();
+
+  // Apply URL parameter overrides (e.g., ?overwrite=false overrides localStorage)
+  (function () {
+    var params = new URLSearchParams(window.location.search);
+    // Handle overwrite URL parameter
+    if (params.has('overwrite')) {
+      var val = params.get('overwrite').toLowerCase();
+      var el = document.getElementById('opt-overwrite');
+      if (el) {
+        el.checked = val !== '0' && val !== 'false' && val !== 'no';
+      }
+    }
+  })();
+
   updateApertureHints();
 
   function updateWcsMethod() {
@@ -1346,9 +1360,14 @@
     logEl.style.display = 'block';
     logEl.textContent = 'Launching ' + (testRun ? 'test' : 'full') + ' reduction…';
     try { localStorage.removeItem(logKey()); } catch (e) {}
+
+    saveOptions();  // Persist current form state before launching
+    var opts = collectOptions();
+    console.log('[photometry] launch: overwrite=' + opts.overwrite + ' test_run=' + testRun);
+
     fetch('/photometry/run', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ inst: inst, date: date, target: target, test_run: testRun, options: collectOptions() })
+      body: JSON.stringify({ inst: inst, date: date, target: target, test_run: testRun, options: opts })
     }).then(function (r) { return r.json(); }).then(function (res) {
       if (!res.ok) {
         clearJob();
@@ -1450,6 +1469,9 @@
 </script>
 <div style="text-align:center; margin:2em 0; display: flex; justify-content: center; gap: 1rem; align-items: center;">
   <a href="#" class="btn primary" style="text-decoration: none; display: inline-block; line-height: 1.2;">Back to Top</a>
+  {% if sel_target %}
+    <a href="/target?name={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; line-height: 1.2;">To Target</a>
+  {% endif %}
   <a href="/jobs" class="btn primary" style="text-decoration: none; display: inline-block; line-height: 1.2;">To Jobs</a>
   {% if sel_inst and sel_date and sel_target %}
     <a href="/transit-fit?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Transit Fit</a>
