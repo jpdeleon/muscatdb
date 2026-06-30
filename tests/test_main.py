@@ -493,6 +493,40 @@ class TestDatabase:
         finally:
             os.unlink(db_path)
 
+    def test_build_db_skips_noncanonical_obslog_dirs(self, tmp_obslog):
+        from muscat_db.database import build_db, get_dates
+        junk_dir = f"{tmp_obslog}/muscat/csv_old_220914"
+        _make_csv(
+            f"{junk_dir}/obslog-muscat-csv_old_220914-ccd0.csv",
+            ["FRAME", "OBJECT", "JD-STRT", "UT-STRT",
+             "EXPTIME (s)", "READ_MODE", "FILTER",
+             "RA", "DEC", "SECZ", "FOCUS (mm)", "PA (deg)"],
+            [{"FRAME": "MSCT0_2209140001", "OBJECT": "LegacyTarget",
+              "JD-STRT": "60000.1", "UT-STRT": "01:00:00",
+              "EXPTIME (s)": "10", "READ_MODE": "high",
+              "FILTER": "g", "RA": "08:51:00", "DEC": "+11:48:00",
+              "SECZ": "1.0", "FOCUS (mm)": "-38.6", "PA (deg)": "45.0"}],
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            count = build_db(db_path)
+            assert count == 7
+
+            conn = sqlite3.connect(db_path)
+            junk_rows = conn.execute(
+                "SELECT COUNT(*) FROM frames WHERE instrument = ? AND obsdate = ?",
+                ("muscat", "csv_old_220914"),
+            ).fetchone()[0]
+            conn.close()
+            assert junk_rows == 0
+
+            dates = get_dates(db_path, "muscat")
+            assert [row["obsdate"] for row in dates] == ["260101"]
+        finally:
+            os.unlink(db_path)
+
     def test_get_instruments(self):
         from muscat_db.database import build_db, get_instruments
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:

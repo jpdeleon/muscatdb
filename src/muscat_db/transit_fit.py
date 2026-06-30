@@ -2203,8 +2203,8 @@ def sync_jobs() -> None:
                 rdir.mkdir(parents=True, exist_ok=True)
                 csvs = get_csv_lightcurves(inst, date, target)
                 if selected_csvs is not None:
-                    selected = set(selected_csvs)
-                    csvs = [c for c in csvs if c.name in selected]
+                    selected = set(str(p) for p in selected_csvs)
+                    csvs = [c for c in csvs if str(c) in selected]
                 _write_fit_inputs(rdir, inst, date, target, csvs, opts,
                                   site=site, mode=mode, run_name=run_name, run_id=run_id,
                                   run_type=run_type)

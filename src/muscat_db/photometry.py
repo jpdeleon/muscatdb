@@ -953,9 +953,14 @@ def normalize_run_options(raw: dict | None) -> dict:
             if fv is not None:
                 o[key] = fv
 
-    for key in ("make_gif", "plot_gaia_sources", "use_barycorrpy", "overwrite"):
+    for key in ("make_gif", "plot_gaia_sources", "use_barycorrpy"):
         if key in raw:
             o[key] = _to_bool(raw[key])
+    # Overwrite requires special handling: explicitly False if present and falsy,
+    # otherwise default to True. This ensures unchecking the box is honored.
+    if "overwrite" in raw:
+        o["overwrite"] = _to_bool(raw["overwrite"])
+    # If not in raw dict at all, default to True (keep existing behavior)
 
     # Backward-compat: older UI stored a checkbox + optional value instead of a
     # 3-state mode. Translate that persisted shape when the new mode is absent.
@@ -1272,10 +1277,12 @@ def start_run(
         # (the existing job will be reused if still running; if not, a new one will be queued)
         at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
         overwrite = opts.get("overwrite", True)
+        logger.info(f"start_run: {inst}/{date}/{target} run_id={run_id} overwrite={overwrite} existing={existing is not None} at_capacity={at_capacity}")
 
         if existing is not None and existing.proc.poll() is None and not at_capacity:
             # If overwrite is True, cancel the existing job and start a new one
             if overwrite:
+                logger.info(f"start_run: cancelling existing job for {key} (overwrite=True)")
                 try:
                     existing.proc.terminate()
                     if existing.logf:
@@ -1287,10 +1294,12 @@ def start_run(
                     pass
                 _JOBS.pop(key, None)
             else:
+                logger.info(f"start_run: reusing existing job for {key} (overwrite=False)")
                 return {"ok": True, "key": key, "already_running": True, "run_id": run_id}
 
         if run_type == "full":
             if _full_reduction_exists(inst, date, target, run_id) and not overwrite:
+                logger.info(f"start_run: refusing to overwrite existing full reduction for {key} (overwrite=False)")
                 return {
                     "ok": False,
                     "error": "full reduction already exists for this target; enable 'Overwrite existing products' to replace",
@@ -1876,13 +1885,20 @@ def sync_jobs() -> None:
             # with the photometry page until the log truly goes quiescent.
             persist_state = "running" if state == "finalizing" else state
             persist_rc = None if state == "finalizing" else rc
-            elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
             # Only persist when the row actually changed. A steadily-running job
             # whose DB row already says "running" needs no rewrite; elapsed is
             # computed live in the web layer, so we no longer write every 2s poll
             # just to bump it (each write also fired clear_all_caches, nullifying
             # the directory caches). Terminal transitions still write through.
             existing = db_by_key.get(db_key)
+            # For terminal jobs: use stored elapsed (runtime), not time since start
+            # For running jobs: calculate from current time
+            if job.state not in ("running", "cancelling") and job.elapsed is not None:
+                elapsed = job.elapsed  # Use calculated runtime when job hit terminal state
+            elif existing is not None and existing.get("state") not in ("running", "cancelling"):
+                elapsed = existing.get("elapsed") or 0  # Use existing DB value for completed jobs
+            else:
+                elapsed = round(time.time() - job.started_at)  # Calculate for running jobs
             unchanged = (
                 existing is not None
                 and existing.get("state") == persist_state
