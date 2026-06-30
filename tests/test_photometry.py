@@ -122,10 +122,12 @@ class TestListOutputs:
         assert out["summary"]["lightcurves"]["file"] == f"{TARGET}_{INST}_{DATE}_lightcurves.png"
 
     def test_list_outputs_reads_band_scoped_summary_products(self, prose_dir):
+        import time
         rdir = prose_dir / INST / DATE / "_runs" / TARGET.replace(" ", "") / "subset"
         rdir.mkdir(parents=True)
         stem = f"{TARGET}_{INST}_gp_zs_{DATE}"
         (rdir / f"{TARGET}_{INST}_gp_{DATE}_lightcurves.png").write_bytes(b"\x89PNG\r\n")
+        time.sleep(0.01)  # Ensure band-set file has newer mtime
         (rdir / f"{stem}_lightcurves.png").write_bytes(b"\x89PNG\r\n")
         (rdir / f"{stem}_raw_flux.png").write_bytes(b"\x89PNG\r\n")
         (rdir / f"{stem}_covariates.png").write_bytes(b"\x89PNG\r\n")
@@ -135,8 +137,8 @@ class TestListOutputs:
         out = phot.list_outputs(INST, DATE, TARGET, run_id="subset")
 
         assert set(out["summary"]) == {"lightcurves", "raw_flux", "covariates", "stacks"}
+        # Only the newest lightcurves file (band-set-scoped) should appear in summary_items
         assert {item["file"] for item in out["summary_items"] if item["key"] == "lightcurves"} == {
-            f"{TARGET}_{INST}_gp_{DATE}_lightcurves.png",
             f"{stem}_lightcurves.png",
         }
         assert out["npz"] == f"{stem}.npz"

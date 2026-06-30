@@ -563,8 +563,6 @@ def list_outputs(
                     "version": version,
                     "_mtime": mtime,
                 }
-                if key != "nearby_stars":
-                    out["summary_items"].append(item)
                 existing = out["summary"].get(key)
                 if existing is None or mtime > existing.get("_mtime", 0):
                     out["summary"][key] = item
@@ -606,6 +604,14 @@ def list_outputs(
 
     if logs:
         out["log"] = max(logs, key=lambda p: p.stat().st_mtime).name
+
+    # Rebuild summary_items from summary dict to ensure only the newest
+    # version of each summary product is displayed (avoid duplicates for
+    # legacy vs band-set-scoped summary stems with the same key).
+    out["summary_items"] = [
+        item for key, item in out["summary"].items()
+        if key != "nearby_stars"
+    ]
 
     # Strip internal keys and order bands canonically (gp, rp, ip, zs)
     out["summary_items"].sort(
