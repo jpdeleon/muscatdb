@@ -37,11 +37,10 @@ import sqlite3
 import subprocess
 import threading
 import time
-from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
 
+from muscat_db import jobs
 from muscat_db.instruments import INSTRUMENTS
 from muscat_db.cache import register_cache
 from muscat_db.band_utils import DEFAULT_BANDS, NARROW_BANDS, _FILTER_BAND_ALIAS, bands_from_filters  # noqa: F401
@@ -140,8 +139,6 @@ _MODULE = "prose.scripts.run_photometry"
 _DATE_RE = re.compile(r"^\d{6}$")
 # A served filename is a single path segment of safe characters only.
 _NAME_RE = re.compile(r"^[A-Za-z0-9._+:\-]+$")
-_RUN_NAME_MAX = 40
-_RUN_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 # Summary (multi-band) plot suffixes -> short key used by the template.
 _SUMMARY_SUFFIX = {
@@ -262,45 +259,24 @@ def results_dir(inst: str, date: str) -> Path:
     return output_base() / inst / date
 
 
-def _target_dir_name(target: str) -> str:
-    name = (target or "").replace(" ", "")
-    if not name or ".." in name or "/" in name or "\\" in name:
-        raise ValueError("invalid target")
-    return name
-
-
-def _run_dir_name(run_id: str) -> str:
-    rid = (run_id or "").strip()
-    if not rid or ".." in rid or "/" in rid or "\\" in rid or rid in {".", ".."}:
-        raise ValueError("invalid run id")
-    return rid
-
-
-def slugify_run_name(run_name: str | None) -> str:
-    """Slug a user run label. Blank input maps to ``default``."""
-    s = _RUN_SLUG_RE.sub("_", (run_name or "").strip().lower()).strip("_")
-    return s[:_RUN_NAME_MAX].strip("_") or "default"
+# Run-id / path-segment helpers live in muscat_db.jobs so photometry and
+# transit-fit share one implementation (audit C1). Re-exported here under their
+# historical names for callers and tests.
+_target_dir_name = jobs.target_dir_name
+_run_dir_name = jobs.run_dir_name
+slugify_run_name = jobs.slugify_run_name
 
 
 def build_run_id(inst: str, site: str | None, mode: str | None, run_name: str | None) -> str:
-    """Compose a photometry run id using the transit-fit convention.
+    """Compose a photometry run id using the shared run-id convention.
 
-    Non-sinistro runs are identified by the run-name slug only. Sinistro runs
-    include site and only non-default readout mode: ``central_2k_2x2`` is
-    omitted, while ``full_frame`` remains explicit.
+    Non-sinistro runs are identified by the run-name slug only, so site/mode are
+    forced blank; sinistro runs include site and only the non-default readout
+    mode. See :func:`muscat_db.jobs.build_run_id` for the canonical join rules.
     """
-    slug = slugify_run_name(run_name)
     if inst != "sinistro":
-        return slug
-    mode_part = (mode or "").strip().lower()
-    if mode_part == "central_2k_2x2":
-        mode_part = ""
-    parts = [
-        (site or "").strip().lower(),
-        mode_part,
-        slug,
-    ]
-    return "-".join(p for p in parts if p)
+        return jobs.build_run_id("", "", run_name)
+    return jobs.build_run_id(site, mode, run_name)
 
 
 def run_output_dir(inst: str, date: str, target: str, run_id: str | None = None) -> Path:
@@ -1189,28 +1165,9 @@ def command_str(
 
 # --------------------------- background job runner ---------------------------
 
-
-@dataclass
-class Job:
-    key: str
-    inst: str
-    date: str
-    target: str
-    cmd: list[str]
-    proc: subprocess.Popen
-    logf: IO
-    log_path: Path
-    started_at: float = field(default_factory=time.time)
-    state: str = "running"  # running | done | error | cancelled
-    returncode: int | None = None
-    cancelled: bool = False
-    elapsed: int | None = None
-    run_type: str = "full"  # "test" | "full"
-    run_id: str = ""
-    site: str = ""
-    mode: str = ""
-    run_name: str = ""
-
+# The in-memory job record and the finalizing state machine are shared with
+# transit-fit via muscat_db.jobs (audit C1). ``Job`` keeps its historical name.
+Job = jobs.PipelineJob
 
 _JOBS: dict[str, Job] = {}
 _LOCK = threading.Lock()
@@ -1225,7 +1182,7 @@ _MAX_RUNTIME_S = int(os.environ.get("MUSCAT_PHOT_MAX_RUNTIME_S", 3 * 60 * 60))
 
 def _count_running_full() -> int:
     """Number of currently-running full (non-test) photometry jobs."""
-    return sum(1 for j in _JOBS.values() if j.run_type == "full" and j.proc.poll() is None)
+    return jobs.count_running_full(_JOBS)
 
 
 def job_key(inst: str, date: str, target: str, run_id: str = "") -> str:
@@ -1425,35 +1382,8 @@ def start_run(
     return {"ok": True, "key": key, "run_id": run_id}
 
 
-def _tail(path: Path, n: int = 200) -> str:
-    if not path.is_file():
-        return ""
-    try:
-        with open(path, errors="replace") as f:
-            return "".join(deque(f, maxlen=n))
-    except OSError:
-        return ""
-
-
-def _log_has_partial_failure(path: Path | None) -> bool:
-    if path is None or not path.is_file():
-        return False
-    return "photometry PARTIAL FAILURE" in _tail(path, n=1000)
-
-
-def _terminal_job_state(
-    returncode: int,
-    cancelled: bool,
-    log_path_: Path | None,
-) -> str:
-    """Map process completion to state, treating logged partial runs as errors."""
-    if cancelled:
-        return "cancelled"
-    if returncode != 0:
-        return "error"
-    if _log_has_partial_failure(log_path_):
-        return "error"
-    return "done"
+# Re-exported from the shared runner so transit-fit keeps importing it unchanged.
+_tail = jobs.tail
 
 
 # The pipeline is launched with start_new_session=True and prose spawns
@@ -1483,55 +1413,46 @@ _TERMINAL_LOG_MARKERS = (
     "photometry PARTIAL FAILURE",
     "photometry FAILED",
 )
+_PARTIAL_FAILURE_MARKER = "photometry PARTIAL FAILURE"
+
+
+def _finalize_config() -> jobs.FinalizeConfig:
+    """Build the finalizing config from the current module-level, env-tunable
+    settings. Built per call (not cached) so tests/operators can monkeypatch
+    ``_FINALIZE_GRACE_S`` etc. at runtime and have it take effect immediately."""
+    return jobs.FinalizeConfig(
+        grace_s=_FINALIZE_GRACE_S,
+        grace_terminal_s=_FINALIZE_GRACE_TERMINAL_S,
+        terminal_markers=_TERMINAL_LOG_MARKERS,
+        partial_failure_marker=_PARTIAL_FAILURE_MARKER,
+    )
+
+
+# Thin wrappers binding the photometry finalize config; the shared logic lives
+# in muscat_db.jobs (audit C1). Kept as module functions so existing call sites
+# and tests that reference these names keep working.
+def _log_has_partial_failure(path: Path | None) -> bool:
+    return jobs.log_has_partial_failure(path, _finalize_config())
+
+
+def _terminal_job_state(returncode: int, cancelled: bool, log_path_: Path | None) -> str:
+    return jobs.terminal_job_state(returncode, cancelled, log_path_, _finalize_config())
 
 
 def _log_has_terminal_marker(path: Path | None) -> bool:
-    """True once prose has logged a final result line. After this, remaining log
-    writes are worker teardown, so the finalize window can be shortened."""
-    if path is None or not path.is_file():
-        return False
-    tail = _tail(path, n=1000)
-    return any(marker in tail for marker in _TERMINAL_LOG_MARKERS)
+    return jobs.log_has_terminal_marker(path, _finalize_config())
 
 
 def _finalize_grace_s(log_path_: Path | None) -> int:
-    """Effective finalize quiescence window for a log: the short terminal window
-    once a result line is logged, else the conservative default. The ``min``
-    guards against a default set below the terminal window — there is never a
-    reason to wait longer after the result line than before it."""
-    if _log_has_terminal_marker(log_path_):
-        return min(_FINALIZE_GRACE_TERMINAL_S, _FINALIZE_GRACE_S)
-    return _FINALIZE_GRACE_S
+    return jobs.finalize_grace_s(log_path_, _finalize_config())
 
 
 def _log_quiescent(log_path_: Path, now: float) -> bool:
-    """True when the log has not been written for at least the finalize grace
-    window. The window shrinks once prose logs a terminal result line (trailing
-    output by then is just worker teardown). A missing/unreadable log means
-    nothing more is coming, so it counts as quiescent; each append by a
-    still-running worker refreshes the mtime and keeps the job finalizing."""
-    try:
-        mtime = log_path_.stat().st_mtime
-    except OSError:
-        return True
-    return (now - mtime) >= _finalize_grace_s(log_path_)
+    return jobs.log_quiescent(log_path_, now, _finalize_config())
 
 
 def _resolve_job_state(job: "Job", now: float | None = None) -> tuple[str, int | None, bool]:
-    """Resolve a tracked job's live state as ``(state, returncode, is_terminal)``.
-
-    While the parent process runs the job is ``running``/``cancelling``. Once it
-    exits, a non-cancelled job is reported as ``finalizing`` (non-terminal) until
-    its log goes quiescent, so the live view keeps streaming the output workers
-    emit after parent-exit. A cancelled job goes terminal immediately to keep the
-    Cancel flow responsive.
-    """
-    rc = job.proc.poll()
-    if rc is None:
-        return ("cancelling" if job.cancelled else "running"), None, False
-    if not job.cancelled and not _log_quiescent(job.log_path, now if now is not None else time.time()):
-        return "finalizing", rc, False
-    return _terminal_job_state(rc, job.cancelled, job.log_path), rc, True
+    return jobs.resolve_job_state(job, _finalize_config(), now)
 
 
 def _pending_status(inst: str, date: str, target: str, run_id: str = "") -> dict | None:
@@ -1645,62 +1566,9 @@ def job_status(inst: str, date: str, target: str, run_id: str = "") -> dict:
     }
 
 
-def get_all_jobs() -> list[dict]:
-    """Retrieve all background jobs, polling/updating their state."""
-    with _LOCK:
-        res = []
-        for key, job in _JOBS.items():
-            state, rc, is_terminal = _resolve_job_state(job)
-            if is_terminal and job.state == "running":
-                job.state = state
-                job.returncode = rc
-                job.elapsed = round(time.time() - job.started_at)
-                try:
-                    job.logf.close()
-                except OSError:
-                    pass
-
-            elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
-            res.append({
-                "key": job.key,
-                "inst": job.inst,
-                "date": job.date,
-                "target": job.target,
-                "run_id": job.run_id,
-                "state": state,
-                "returncode": rc,
-                "elapsed": round(elapsed),
-                "started_at": job.started_at,
-            })
-        return sorted(res, key=lambda j: j["started_at"], reverse=True)
-
-
-def _kill_after(proc: subprocess.Popen, grace: float = 6.0) -> None:
-    """Escalate to SIGKILL on the process group if SIGTERM was ignored."""
-    try:
-        proc.wait(timeout=grace)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        try:
-            proc.kill()
-        except OSError:
-            pass
-
-
-def _terminate_pg(proc: subprocess.Popen) -> None:
-    """SIGTERM a job's whole process group, escalating to SIGKILL in the background."""
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError, OSError):
-        try:
-            proc.terminate()
-        except OSError:
-            pass
-    threading.Thread(target=_kill_after, args=(proc,), daemon=True).start()
+# Process-group kill helpers live in the shared runner (audit C1).
+_kill_after = jobs.kill_after
+_terminate_pg = jobs.terminate_pg
 
 
 def _watchdog_breach(job: "Job", now: float) -> str | None:
