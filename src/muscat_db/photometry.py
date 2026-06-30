@@ -1335,6 +1335,19 @@ def start_run(
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
         rdir.mkdir(parents=True, exist_ok=True)
+
+        # Clean up old product files before re-running with potentially different bands.
+        # Without this, re-running with fewer bands leaves stale product files from the
+        # previous run (e.g., zs-band products when re-running with only gp/rp/ip).
+        t = target.replace(" ", "")
+        stem = f"{t}_{inst}"
+        for p in list(rdir.glob("*.png")) + list(rdir.glob("*.gif")) + list(rdir.glob("*.csv")):
+            if p.is_file() and p.name.startswith(stem):
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+
         _write_run_meta(rdir, inst=inst, date=date, target=target, run_id=run_id, site=site, mode=mode, run_name=run_name, run_type=run_type)
         cmd = build_command(inst, date, target, opts, test_run=test_run, run_id=run_id)
         log_path = _run_log_path(rdir, inst, date, target, run_id)
