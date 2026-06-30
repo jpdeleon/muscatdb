@@ -45,10 +45,10 @@ from muscat_db.database import (
     set_note as _set_note,
     save_ephemeris_view,
     get_ephemeris_view,
-    get_persisted_jobs,
     get_last_build_date,
     _normalize_filters,
 )
+from muscat_db.job_store import get_job_store
 from muscat_db.instruments import INSTRUMENTS
 from muscat_db.coord import (
     CoordRepr,
@@ -2555,7 +2555,7 @@ def _get_run_fitted_params(inst: str, date: str, target: str, run_id: str | None
 def api_ephemeris_targets():
     with _DB_LOCK:
         fit.sync_jobs()
-        all_jobs = get_persisted_jobs()
+        all_jobs = get_job_store().all()
         existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
         orphan_fits = fit._discover_orphan_fits(existing_keys)
         all_jobs.extend(orphan_fits)
@@ -2572,7 +2572,7 @@ def api_ephemeris_target_info(target: str):
     
     with _DB_LOCK:
         fit.sync_jobs()
-        all_jobs = get_persisted_jobs()
+        all_jobs = get_job_store().all()
         existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
         orphan_fits = fit._discover_orphan_fits(existing_keys)
         all_jobs.extend(orphan_fits)
@@ -2724,7 +2724,7 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
     # Get all completed runs for all requested targets
     with _DB_LOCK:
         fit.sync_jobs()
-        all_jobs = get_persisted_jobs()
+        all_jobs = get_job_store().all()
         existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
         orphan_fits = fit._discover_orphan_fits(existing_keys)
         all_jobs.extend(orphan_fits)
@@ -2908,7 +2908,7 @@ def _live_elapsed(job: dict) -> int:
 def jobs_page():
     phot.sync_jobs()
     fit.sync_jobs()
-    all_jobs = get_persisted_jobs()
+    all_jobs = get_job_store().all()
 
     # Discover fits completed on-disk outside the web UI.
     existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
@@ -2937,7 +2937,7 @@ _last_running: set[str] = set()
 def jobs_status():
     phot.sync_jobs()
     fit.sync_jobs()
-    all_jobs = get_persisted_jobs()
+    all_jobs = get_job_store().all()
 
     # Discover fits completed on-disk outside the web UI.
     existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
@@ -3000,7 +3000,7 @@ def jobs_rerun(payload: dict = Body(...)):
     key = (payload.get("key") or "").strip()
     if not key:
         raise HTTPException(400, "job key required")
-    all_jobs = get_persisted_jobs()
+    all_jobs = get_job_store().all()
     job = next((j for j in all_jobs if j["key"] == key), None)
     if job is None:
         raise HTTPException(404, "job not found")

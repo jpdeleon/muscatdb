@@ -1597,7 +1597,9 @@ class TestRoutes:
                 "started_at": 1645833500.0,
             }
         ]
-        monkeypatch.setattr("muscat_db.web.get_persisted_jobs", lambda: mock_jobs)
+        # The Jobs page reads through the job-store seam (audit C2), which routes
+        # to muscat_db.database.get_persisted_jobs.
+        monkeypatch.setattr("muscat_db.database.get_persisted_jobs", lambda: mock_jobs)
         monkeypatch.setattr("muscat_db.photometry.sync_jobs", lambda: None)
         monkeypatch.setattr("muscat_db.transit_fit.sync_jobs", lambda: None)
     
