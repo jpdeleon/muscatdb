@@ -353,3 +353,126 @@ def test_write_log_banner_cleans_html_refs():
     assert "  pl_ref_c: 'Source: Some text with Planet C Author (http://url)'" in log_text
 
 
+def test_bump_model_options_are_encoded_correctly(tmp_path):
+    inst = "muscat"
+    date = "171103"
+    target = "HAT-P-45"
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    p = src_dir / "HAT-P-45_muscat_zs_171103.csv"
+    p.write_text("time,flux\n")
+    csvs = [p]
+
+    opts = {
+        "planets": "b",
+        "include_bump": "true",
+        "chromatic_bump": "true",
+        "bump_tcenter": "0.1,0.01; 0.5,0.02",
+        "bump_tcenter_prior": "gaussian",
+        "bump_width": "0.01,0.03",
+        "bump_width_prior": "uniform",
+        "bump_ampl": "0.01,0.001",
+        "bump_ampl_prior": "gaussian",
+    }
+
+    fit._write_fit_inputs(tmp_path, inst, date, target, csvs, opts)
+    fit_yaml = yaml.safe_load((tmp_path / "fit.yaml").read_text())
+
+    assert fit_yaml["include_bump"] is True
+    assert fit_yaml["chromatic_bump"] is True
+    
+    bump = fit_yaml["bump"]
+    # 2 bumps parsed from tcenter
+    assert bump["tcenter"] == [0.1, 0.5]
+    assert bump["tcenter_unc"] == [0.01, 0.02]
+    assert bump["tcenter_prior"] == "gaussian"
+    
+    # width uniform prior: [0.01, 0.03] low/high converted to center/width
+    # center = (0.01 + 0.03)/2 = 0.02, width = 0.03 - 0.01 = 0.02
+    assert bump["width"] == pytest.approx(0.02)
+    assert bump["width_unc"] == pytest.approx(0.02)
+    assert bump["width_prior"] == "uniform"
+
+    # ampl prior: single Gaussian
+    assert bump["ampl"] == pytest.approx(0.01)
+    assert bump["ampl_unc"] == pytest.approx(0.001)
+    assert bump["ampl_prior"] == "gaussian"
+
+
+def test_flare_model_options_are_encoded_correctly(tmp_path):
+    inst = "muscat"
+    date = "171103"
+    target = "HAT-P-45"
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    p = src_dir / "HAT-P-45_muscat_zs_171103.csv"
+    p.write_text("time,flux\n")
+    csvs = [p]
+
+    opts = {
+        "planets": "b",
+        "include_flare": "true",
+        "chromatic_flare": "true",
+        "flare_tpeak": "0.1,0.01; 0.5,0.02",
+        "flare_tpeak_prior": "gaussian",
+        "flare_fwhm": "0.01,0.03",
+        "flare_fwhm_prior": "uniform",
+        "flare_ampl": "0.01,0.001",
+        "flare_ampl_prior": "gaussian",
+    }
+
+    fit._write_fit_inputs(tmp_path, inst, date, target, csvs, opts)
+    fit_yaml = yaml.safe_load((tmp_path / "fit.yaml").read_text())
+
+    assert fit_yaml["include_flare"] is True
+    assert fit_yaml["chromatic_flare"] is True
+    
+    flare = fit_yaml["flare"]
+    # 2 flares parsed from tpeak
+    assert flare["tpeak"] == [0.1, 0.5]
+    assert flare["tpeak_unc"] == [0.01, 0.02]
+    assert flare["tpeak_prior"] == "gaussian"
+    
+    # fwhm uniform prior: [0.01, 0.03] low/high converted to center/width
+    # center = (0.01 + 0.03)/2 = 0.02, width = 0.03 - 0.01 = 0.02
+    assert flare["fwhm"] == pytest.approx(0.02)
+    assert flare["fwhm_unc"] == pytest.approx(0.02)
+    assert flare["fwhm_prior"] == "uniform"
+
+    # ampl prior: single Gaussian
+    assert flare["ampl"] == pytest.approx(0.01)
+    assert flare["ampl_unc"] == pytest.approx(0.001)
+    assert flare["ampl_prior"] == "gaussian"
+
+
+def test_fit_basis_option_is_encoded_correctly(tmp_path):
+    inst = "muscat"
+    date = "171103"
+    target = "HAT-P-45"
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    p = src_dir / "HAT-P-45_muscat_zs_171103.csv"
+    p.write_text("time,flux\n")
+    csvs = [p]
+
+    # Test standard basis
+    opts = {
+        "planets": "b",
+        "fit_basis": "standard",
+    }
+    fit._write_fit_inputs(tmp_path, inst, date, target, csvs, opts)
+    fit_yaml = yaml.safe_load((tmp_path / "fit.yaml").read_text())
+    assert fit_yaml["fit_basis"] == "standard"
+
+    # Test duration basis (default)
+    opts_default = {
+        "planets": "b",
+    }
+    fit._write_fit_inputs(tmp_path, inst, date, target, csvs, opts_default)
+    fit_yaml_default = yaml.safe_load((tmp_path / "fit.yaml").read_text())
+    assert fit_yaml_default["fit_basis"] == "duration"
+
+
+
+
+

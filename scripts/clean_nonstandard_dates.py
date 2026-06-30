@@ -33,6 +33,7 @@ SRC = HERE.parent / "src"
 if SRC.is_dir() and str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from muscat_db.coord import CoordRepr  # noqa: E402
 from muscat_db.database import _populate_targets  # noqa: E402
 
 
@@ -93,6 +94,7 @@ def main() -> int:
     conn.commit()
 
     print("Rebuilding targets table…")
+    conn.create_aggregate("coord_repr", 2, CoordRepr)
     conn.execute("DELETE FROM targets")
     _populate_targets(conn)
     conn.commit()

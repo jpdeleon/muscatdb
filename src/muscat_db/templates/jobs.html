@@ -3,19 +3,8 @@
 {% block content %}
 <h1>Jobs</h1>
 
-{% set status_order = ['running', 'pending', 'done', 'error', 'cancelled'] %}
-{% set status_labels = {'running': 'Running', 'pending': 'Pending', 'done': 'Done', 'error': 'Failed', 'cancelled': 'Cancelled'} %}
-
-<div class="jobs-summary" id="jobs-summary">
-  {% for s in status_order %}
-    {% set c = counts.get(s, 0) %}
-    <span class="job-count {% if c > 0 %}has-{{ s }}{% endif %}" data-status="{{ s }}" onclick="toggleStatus(this, '{{ s }}')">
-      <span class="job-count-num">{{ c }}</span>
-      <span class="job-count-label">{{ status_labels[s] }}</span>
-    </span>
-  {% endfor %}
-  <span class="job-count-bar-spacer"></span>
-  <span class="job-count job-count-clear" id="clear-filter" style="display:none;cursor:pointer;opacity:0.6;" onclick="clearFilter()">✕ Clear filter</span>
+<div class="jobs-summary" id="time-summary">
+  <span class="job-count" data-time="recent" onclick="toggleRecent(this)">Today</span>
 </div>
 
 <div class="jobs-summary" id="type-summary">
@@ -24,69 +13,53 @@
 </div>
 <div class="jobs-summary" id="inst-summary"></div>
 
-<div class="search-bar">
-  <input id="job-search" type="text" placeholder="Search target, instrument, date, type…" autocomplete="off">
-  <span id="search-status" class="hint"></span>
-</div>
-
-{% if jobs %}
-<div class="csv-wrap">
-<table id="jobs-table">
-  <thead>
-    <tr>
-      <th data-sort-attr="target" class="sortable">Target</th>
-      <th data-sort-attr="type" class="sortable">Type</th>
-      <th data-sort-attr="instrument" class="sortable">Instrument</th>
-      <th data-sort-attr="obsdate" class="sortable">Date Obs</th>
-      <th data-sort-attr="started_at" data-sort-type="number" class="sortable">Date Run</th>
-      <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
-      <th data-sort-attr="state" class="sortable">Status</th>
-      <th>Details</th>
-      <th>Actions</th>
-    </tr>
-  </thead>
-  <tbody>
-  {% for j in jobs %}
+{% set status_order = ['running', 'pending', 'done', 'error', 'cancelled'] %}
+{% set status_labels = {'running': 'Running', 'pending': 'Pending', 'done': 'Done', 'error': 'Failed', 'cancelled': 'Cancelled'} %}
+{% macro render_job_rows(job_list) -%}
+  {% for j in job_list %}
     {% set link_url -%}
-      {%- if j.type == 'photometry' -%}/photometry?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}
+      {%- if j.type == 'photometry' -%}/photometry?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}{% if j.run_id %}&run={{ j.run_id }}{% endif %}
       {%- else -%}/transit-fit?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}{% if j.run_id %}&run={{ j.run_id }}{% endif %}
       {%- endif -%}
     {%- endset %}
     <tr class="job-row" data-key="{{ j.key }}" data-status="{{ j.state }}" data-type="{{ j.type }}"
-        data-search="{{ (j.target + ' ' + j.inst + ' ' + j.date + ' ' + j.type) | lower }}">
+        data-started-at="{{ j.started_at | default(0) | int }}"
+        data-user-name="{{ j.user_name or '' }}"
+        data-search="{{ (j.target + ' ' + (j.run_name or '') + ' ' + j.inst + ' ' + j.date + ' ' + j.type + ' ' + (j.user_name or '')) | lower }}">
       <td><strong><a href="{{ link_url }}">{{ j.target }}</a></strong></td>
-      <td><span class="badge" style="background:var(--surface2);color:var(--text);">{{ 'Photometry' if j.type == 'photometry' else 'Transit Fit' }}</span></td>
-      <td><span class="badge badge-blue" style="background:var(--surface2);color:var(--text);">{{ j.inst }}</span></td>
+      <td class="mono" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ j.run_name or '' }}">{{ j.run_name or '—' }}</td>
+      <td class="inst-cell"><span class="badge badge-blue">{{ j.inst }}</span></td>
       <td class="mono">{{ j.date }}</td>
-      <td class="mono" style="font-size:0.8rem;color:var(--text-dim);">
+      <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">{{ j.user_name or '—' }}</td>
+      <td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">
         {% if j.started_at %}
           {{ j.started_at | int | datetime_from_timestamp }}
         {% else %}—{% endif %}
       </td>
       <td class="mono elapsed-cell" data-elapsed="{{ j.elapsed }}">{{ format_elapsed(j.elapsed) }}</td>
-      <td>
+      <td class="status-cell">
         {% if j.state == 'done' %}
           <span class="badge badge-green status-badge">Done</span>
         {% elif j.state == 'error' %}
-          <span class="badge status-badge" style="background:var(--red);color:white;">Failed</span>
+          <span class="badge badge-error status-badge">Failed</span>
         {% elif j.state == 'cancelled' %}
-          <span class="badge status-badge" style="background:var(--text-dim);color:white;">Cancelled</span>
+          <span class="badge badge-cancelled status-badge">Cancelled</span>
         {% elif j.state == 'running' %}
           <span class="badge badge-amber status-badge pulse">Running</span>
         {% elif j.state == 'cancelling' %}
-          <span class="badge status-badge" style="background:var(--text-dim);color:white;">Cancelling…</span>
+          <span class="badge badge-cancelled status-badge">Cancelling…</span>
         {% elif j.state == 'pending' %}
-          <span class="badge status-badge" style="background:var(--blue);color:white;">Pending</span>
+          <span class="badge badge-pending status-badge">Pending</span>
         {% else %}
           <span class="badge badge-filter-other status-badge">{{ j.state }}</span>
         {% endif %}
       </td>
-      <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">
+      <td class="details-cell" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">
         {% if j.run_type %}
-          <span class="badge {% if j.run_type == 'test' %}badge-amber{% else %}badge-blue{% endif %}" style="font-size:0.7rem;">{{ j.run_type }}</span>
+          <span class="badge {% if j.run_type == 'test' %}badge-amber{% else %}badge-blue{% endif %}">{{ j.run_type }}</span>
         {% endif %}
         {% if j.state == 'error' and j.error_desc %}
-          <span class="error-desc" style="color:var(--red);font-size:0.8rem;font-family:monospace;margin-left:0.3rem;">{{ j.error_desc }}</span>
+          <span class="error-desc mono" style="color:var(--red);margin-left:0.5rem;">{{ j.error_desc }}</span>
         {% endif %}
       </td>
       <td class="job-actions">
@@ -118,14 +91,80 @@
       </td>
     </tr>
     <tr class="log-row" style="display:none;">
-      <td colspan="9">
+      <td colspan="10">
         <pre class="log-content">Loading…</pre>
       </td>
     </tr>
   {% endfor %}
-  </tbody>
-</table>
+{%- endmacro %}
+
+<div class="jobs-summary" id="jobs-summary">
+  {% for s in status_order %}
+    {% set c = counts.get(s, 0) %}
+    <span class="job-count {% if c > 0 %}has-{{ s }}{% endif %}" data-status="{{ s }}" onclick="toggleStatus(this, '{{ s }}')">
+      <span class="job-count-num">{{ c }}</span>
+      <span class="job-count-label">{{ status_labels[s] }}</span>
+    </span>
+  {% endfor %}
+  <span class="job-count-bar-spacer"></span>
+  <span class="job-count job-count-clear" id="clear-filter" style="display:none;cursor:pointer;opacity:0.6;" onclick="clearFilter()">✕ Clear filter</span>
 </div>
+
+<div class="search-bar">
+  <input id="job-search" type="text" placeholder="Search target, run name, instrument, date, type…" autocomplete="off">
+  <span id="search-status" class="hint"></span>
+</div>
+
+{% if jobs %}
+<details class="adv job-section" id="photometry-jobs-section" open data-job-section="photometry">
+  <summary>Photometry Jobs</summary>
+  <div class="csv-wrap">
+  <table class="jobs-table" data-job-type="photometry">
+    <thead>
+      <tr>
+        <th data-sort-attr="target" class="sortable">Target</th>
+        <th data-sort-attr="run_name" class="sortable">Run Name</th>
+        <th data-sort-attr="instrument" class="sortable">Instrument</th>
+        <th data-sort-attr="obsdate" class="sortable">Date Obs</th>
+        <th data-sort-attr="userName" class="sortable">User</th>
+        <th data-sort-attr="startedAt" data-sort-type="number" class="sortable">Date Run</th>
+        <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
+        <th data-sort-attr="state" class="sortable">Status</th>
+        <th>Details</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{ render_job_rows(jobs | selectattr('type', 'equalto', 'photometry') | list) }}
+    </tbody>
+  </table>
+  </div>
+</details>
+
+<details class="adv job-section" id="transit-fit-jobs-section" open data-job-section="transit_fit" style="margin-top:1rem;">
+  <summary>Transit Fit Jobs</summary>
+  <div class="csv-wrap">
+  <table class="jobs-table" data-job-type="transit_fit">
+    <thead>
+      <tr>
+        <th data-sort-attr="target" class="sortable">Target</th>
+        <th data-sort-attr="run_name" class="sortable">Run Name</th>
+        <th data-sort-attr="instrument" class="sortable">Instrument</th>
+        <th data-sort-attr="obsdate" class="sortable">Date Obs</th>
+        <th data-sort-attr="userName" class="sortable">User</th>
+        <th data-sort-attr="startedAt" data-sort-type="number" class="sortable">Date Run</th>
+        <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
+        <th data-sort-attr="state" class="sortable">Status</th>
+        <th>Details</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{ render_job_rows(jobs | selectattr('type', 'equalto', 'transit_fit') | list) }}
+    </tbody>
+  </table>
+  </div>
+</details>
 {% else %}
 <div style="background:var(--surface);border:1px dashed var(--border);border-radius:10px;padding:2rem;text-align:center;margin-top:1rem;">
   <p style="color:var(--text-dim);">No jobs have been launched yet.</p>
@@ -161,7 +200,9 @@
     return d + 'd ' + h + 'h';
   }
 
-  var allRows = Array.from(document.querySelectorAll('#jobs-table tbody tr.job-row'));
+  var allRows = Array.from(document.querySelectorAll('.jobs-table tbody tr.job-row'));
+  var allTables = Array.from(document.querySelectorAll('.jobs-table'));
+  var allSections = Array.from(document.querySelectorAll('.job-section'));
   var total = allRows.length;
   var activeStatus = null;
   var searchInput = document.getElementById('job-search');
@@ -172,6 +213,22 @@
 
   var activeType = '';
   var activeInst = '';
+  var activeRecent = '';
+
+  // Get today's date at midnight for comparison
+  function getTodayMidnight() {
+    var d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.getTime() / 1000; // return as Unix timestamp in seconds
+  }
+
+  // ── Time filter (today/recent jobs) ───────────────────────────────────────
+  window.toggleRecent = function(el) {
+    document.querySelectorAll('#time-summary .job-count').forEach(function(e) { e.classList.remove('active'); });
+    if (activeRecent === 'recent') { activeRecent = ''; }
+    else { activeRecent = 'recent'; el.classList.add('active'); }
+    applyFilters(); saveFilters();
+  };
 
   // ── Type filter (badges) ──────────────────────────────────────────────────
   window.toggleType = function(el, type) {
@@ -193,7 +250,7 @@
   (function() {
     var insts = {};
     allRows.forEach(function(r) {
-      var c = r.querySelector('td:nth-child(3)');
+      var c = r.querySelector('.inst-cell');
       if (c) { var v = c.textContent.trim(); if (v) insts[v] = true; }
     });
     var container = document.getElementById('inst-summary');
@@ -214,8 +271,21 @@
     return null;
   }
 
+  function updateSectionVisibility() {
+    allSections.forEach(function(section) {
+      var type = section.getAttribute('data-job-section') || '';
+      var rows = Array.from(section.querySelectorAll('tbody tr.job-row'));
+      var anyVisible = rows.some(function(r) { return r.style.display !== 'none'; });
+      if (activeType && activeType !== type) {
+        section.style.display = 'none';
+        return;
+      }
+      section.style.display = anyVisible ? '' : 'none';
+    });
+  }
+
   function replaceStatusBadge(row, state) {
-    var td = row.querySelector('td:nth-child(7)');
+    var td = row.querySelector('.status-cell');
     if (!td) return;
     var html = '';
     if (state === 'done') html = '<span class="badge badge-green status-badge">Done</span>';
@@ -249,7 +319,7 @@
   }
 
   function updateErrorDesc(row, text) {
-    var td = row.querySelector('td:nth-child(8)');
+    var td = row.querySelector('.details-cell');
     if (!td) return;
     var existing = td.querySelector('.error-desc');
     if (existing) {
@@ -280,6 +350,7 @@
     activeStatus = null;
     activeType = '';
     activeInst = '';
+    activeRecent = '';
     document.querySelectorAll('.job-count').forEach(function(e) { e.classList.remove('active'); });
     applyFilters(); showClearFilter(); saveFilters();
   };
@@ -287,11 +358,41 @@
   function showClearFilter() {
     var el = document.getElementById('clear-filter');
     if (!el) return;
-    el.style.display = (activeStatus || activeType || activeInst) ? '' : 'none';
+    el.style.display = (activeStatus || activeType || activeInst || activeRecent) ? '' : 'none';
   }
 
   // ── Search ───────────────────────────────────────────────────────────────
+  function updateCounts() {
+    var counts = { running: 0, pending: 0, done: 0, error: 0, cancelled: 0 };
+    var nonHiddenCount = 0;
+    allRows.forEach(function(r) {
+      var isHidden = hiddenKeys.indexOf(r.getAttribute('data-key')) !== -1;
+      if (!isHidden) {
+        nonHiddenCount++;
+        var s = r.getAttribute('data-status');
+        if (s === 'cancelling') s = 'running';
+        if (counts[s] !== undefined) {
+          counts[s]++;
+        }
+      }
+    });
+    total = nonHiddenCount;
+
+    var countEls = (document.getElementById('jobs-summary') || document.createElement('div')).querySelectorAll('.job-count');
+    countEls.forEach(function(el) {
+      var s = el.getAttribute('data-status');
+      if (s && counts[s] !== undefined) {
+        var num = el.querySelector('.job-count-num');
+        if (num) {
+          num.textContent = counts[s];
+          el.classList.toggle('has-' + s, counts[s] > 0);
+        }
+      }
+    });
+  }
+
   function applyFilters() {
+    updateCounts();
     var q = (searchInput ? searchInput.value : '').toLowerCase().trim();
     var visible = 0;
     allRows.forEach(function(r) {
@@ -300,11 +401,23 @@
         var haystack = r.getAttribute('data-search') || '';
         ok = haystack.indexOf(q) !== -1;
       }
-      if (ok && activeStatus) ok = r.getAttribute('data-status') === activeStatus;
+      if (ok && activeStatus) {
+        var s = r.getAttribute('data-status');
+        if (activeStatus === 'running') {
+          ok = (s === 'running' || s === 'cancelling');
+        } else {
+          ok = s === activeStatus;
+        }
+      }
       if (ok && activeType) ok = r.getAttribute('data-type') === activeType;
       if (ok && activeInst) {
-        var instCell = r.querySelector('td:nth-child(3)');
+        var instCell = r.querySelector('.inst-cell');
         ok = instCell && instCell.textContent.trim() === activeInst;
+      }
+      if (ok && activeRecent === 'recent') {
+        var startedAt = parseInt(r.getAttribute('data-started-at') || '0', 10);
+        var todayMidnight = getTodayMidnight();
+        ok = startedAt >= todayMidnight;
       }
       var isHidden = hiddenKeys.indexOf(r.getAttribute('data-key')) !== -1;
       r.style.display = (ok && !isHidden) ? '' : 'none';
@@ -313,8 +426,9 @@
       if (ok && !isHidden) visible++;
     });
     if (searchStatus) {
-      searchStatus.textContent = (q || activeStatus || activeType || activeInst) ? visible + ' / ' + total + ' matching' : total + ' jobs';
+      searchStatus.textContent = (q || activeStatus || activeType || activeInst || activeRecent) ? visible + ' / ' + total + ' matching' : total + ' jobs';
     }
+    updateSectionVisibility();
   }
 
   if (searchInput) searchInput.addEventListener('input', function() { applyFilters(); saveFilters(); });
@@ -366,6 +480,7 @@
         replaceStatusBadge(row, 'cancelling');
         btn.disabled = true;
         btn.innerText = 'Cancelling…';
+        applyFilters();
       }
     })
     .catch(function(err) { alert('Error: ' + err.message); btn.disabled = false; btn.innerText = 'Cancel'; });
@@ -393,7 +508,8 @@
         var inst = row.querySelector('.job-actions .log-btn');
         var instV = inst ? inst.getAttribute('onclick').match(/'([^']+)'/g).map(function(m) { return m.replace(/'/g,''); }) : [];
         replaceStatusBadge(row, 'running');
-        replaceActions(row, 'running', key, instV[0] || '', instV[1] || '', instV[2] || '', instV[3] || '');
+        replaceActions(row, 'running', key, instV[0] || '', instV[1] || '', instV[2] || '', instV[3] || '', instV[4] || '');
+        applyFilters();
       }
     })
     .catch(function(err) { alert('Error: ' + err.message); btn.disabled = false; btn.innerText = '⟳ Re-run'; });
@@ -431,19 +547,6 @@
     fetch('/jobs/status')
       .then(function(r) { return r.json(); })
       .then(function(data) {
-        // Update summary counts
-        var countEls = (document.getElementById('jobs-summary') || document.createElement('div')).querySelectorAll('.job-count');
-        countEls.forEach(function(el) {
-          var s = el.getAttribute('data-status');
-          if (s && data.counts[s] !== undefined) {
-            var num = el.querySelector('.job-count-num');
-            if (num) {
-              num.textContent = data.counts[s];
-              el.classList.toggle('has-' + s, data.counts[s] > 0);
-            }
-          }
-        });
-
         // Update finished jobs in-place
         for (var key in data.finished) {
           if (!data.finished.hasOwnProperty(key)) continue;
@@ -453,14 +556,22 @@
 
           row.setAttribute('data-status', f.state);
           replaceStatusBadge(row, f.state);
-          var td = row.querySelector('td:nth-child(6) .elapsed-cell') || row.querySelector('td:nth-child(6)');
+          var td = row.querySelector('.elapsed-cell');
           if (td && f.elapsed != null) {
             td.setAttribute('data-elapsed', f.elapsed);
             td.textContent = formatElapsed(f.elapsed);
           }
-          var dateRunTd = row.querySelector('td:nth-child(5)');
+          var dateRunTd = row.querySelector('.date-run-cell');
           if (dateRunTd && f.started_at_str) {
             dateRunTd.textContent = f.started_at_str;
+          }
+          if (f.started_at) {
+            row.setAttribute('data-started-at', Math.round(f.started_at));
+          }
+          var userTd = row.querySelector('.user-cell');
+          if (userTd && f.user_name) {
+            userTd.textContent = f.user_name;
+            row.setAttribute('data-user-name', f.user_name);
           }
           if (f.error_desc) updateErrorDesc(row, f.error_desc);
 
@@ -474,17 +585,38 @@
           var type = parts[0] || row.getAttribute('data-type') || '';
           type = type === 'transit_fit' ? 'transit_fit' : 'photometry';
           replaceActions(row, f.state, key, type, parts[1] || '', parts[2] || '', parts[3] || '', parts[4] || '');
-          applyFilters();
         }
 
-        // Update running jobs started_at_str in-place
+        // Update running jobs in-place
         if (data.running) {
           data.running.forEach(function(rj) {
             var row = rowByKey(rj.key);
             if (row) {
-              var dateRunTd = row.querySelector('td:nth-child(5)');
+              var dateRunTd = row.querySelector('.date-run-cell');
               if (dateRunTd && rj.started_at_str) {
                 dateRunTd.textContent = rj.started_at_str;
+              }
+              if (rj.started_at) {
+                row.setAttribute('data-started-at', Math.round(rj.started_at));
+              }
+              var userTd = row.querySelector('.user-cell');
+              if (userTd && rj.user_name) {
+                userTd.textContent = rj.user_name;
+                row.setAttribute('data-user-name', rj.user_name);
+              }
+              // Update state transitions (e.g. pending -> running)
+              if (row.getAttribute('data-status') !== rj.state) {
+                row.setAttribute('data-status', rj.state);
+                replaceStatusBadge(row, rj.state);
+                var logBtn = row.querySelector('.log-btn');
+                var parts = [];
+                if (logBtn) {
+                  var m = logBtn.getAttribute('onclick').match(/'([^']+)'/g);
+                  if (m) parts = m.map(function(x) { return x.replace(/'/g, ''); });
+                }
+                var type = parts[0] || row.getAttribute('data-type') || '';
+                type = type === 'transit_fit' ? 'transit_fit' : 'photometry';
+                replaceActions(row, rj.state, rj.key, type, parts[1] || '', parts[2] || '', parts[3] || '', parts[4] || '');
               }
             }
           });
@@ -497,6 +629,9 @@
             if (b && !b.classList.contains('pulse')) b.classList.add('pulse');
           }
         });
+
+        // Always re-apply filters to refresh status counts and visibility
+        applyFilters();
       })
       .catch(function() {});
   }
@@ -508,11 +643,12 @@
   // This avoids a race where toggleType/toggleStatus call saveFilters() before
   // all dimensions have been restored, overwriting values yet to be read.
   (function() {
-    var savedStatus, savedSearch, savedType, savedInst;
+    var savedStatus, savedSearch, savedType, savedInst, savedRecent;
     try { savedStatus = localStorage.getItem('jobs:activeStatus'); } catch (_) {}
     try { savedSearch = localStorage.getItem('jobs:search'); } catch (_) {}
     try { savedType = localStorage.getItem('jobs:typeFilter'); } catch (_) {}
     try { savedInst = localStorage.getItem('jobs:instFilter'); } catch (_) {}
+    try { savedRecent = localStorage.getItem('jobs:recentFilter'); } catch (_) {}
 
     if (savedStatus) {
       try {
@@ -531,6 +667,12 @@
       try {
         var iel = document.querySelector('#inst-summary .job-count[data-inst="' + savedInst + '"]');
         if (iel) { toggleInst(iel, savedInst); }
+      } catch (_) {}
+    }
+    if (savedRecent) {
+      try {
+        var rel = document.querySelector('#time-summary .job-count[data-time="recent"]');
+        if (rel) { toggleRecent(rel); }
       } catch (_) {}
     }
     // Save final consolidated state after all restores are done
@@ -568,6 +710,13 @@
           if (iel) toggleInst(iel, si);
         }
       } catch (_) {}
+      try {
+        var sr = localStorage.getItem('jobs:recentFilter');
+        if (sr && activeRecent !== sr) {
+          var rel = document.querySelector('#time-summary .job-count[data-time="recent"]');
+          if (rel) toggleRecent(rel);
+        }
+      } catch (_) {}
       applyFilters();
       showClearFilter();
       saveFilters();
@@ -580,6 +729,7 @@
       localStorage.setItem('jobs:search', searchInput ? searchInput.value : '');
       localStorage.setItem('jobs:typeFilter', activeType || '');
       localStorage.setItem('jobs:instFilter', activeInst || '');
+      localStorage.setItem('jobs:recentFilter', activeRecent || '');
     } catch (_) {}
   }
 
@@ -593,22 +743,36 @@
       if (!raw) return;
       var ref = JSON.parse(raw);
       if (ref.col == null || !ref.dir) return;
-      var table = document.getElementById('jobs-table');
-      if (!table) return;
-      var headerRow = table.tHead && table.tHead.rows[0];
-      if (!headerRow) return;
-      var th = headerRow.cells[ref.col];
-      if (!th) return;
-      th.dataset.sortDir = ref.dir === 'asc' ? '' : 'asc';
-      th.click();
+      allTables.forEach(function(table) {
+        var headerRow = table.tHead && table.tHead.rows[0];
+        if (!headerRow) return;
+        var th = headerRow.cells[ref.col];
+        if (!th) return;
+        th.dataset.sortDir = ref.dir === 'asc' ? '' : 'asc';
+        th.click();
+      });
     } catch (_) {}
   }
-  document.querySelectorAll('#jobs-table thead tr:first-child th.sortable').forEach(function(th) {
+  document.querySelectorAll('.jobs-table thead tr:first-child th.sortable').forEach(function(th) {
     th.addEventListener('click', function() {
       requestAnimationFrame(function() { saveSort(th.cellIndex, th.dataset.sortDir || ''); });
     });
   });
   requestAnimationFrame(restoreSort);
+
+  ['photometry-jobs-section', 'transit-fit-jobs-section'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var key = 'jobs:details:' + id;
+    try {
+      var saved = localStorage.getItem(key);
+      if (saved === 'closed') el.removeAttribute('open');
+      else if (saved === 'open') el.setAttribute('open', '');
+    } catch (_) {}
+    el.addEventListener('toggle', function() {
+      try { localStorage.setItem(key, el.open ? 'open' : 'closed'); } catch (_) {}
+    });
+  });
 
   // Start polling
   var hasRunning = document.querySelectorAll('.job-row[data-status="running"], .job-row[data-status="cancelling"]').length > 0;

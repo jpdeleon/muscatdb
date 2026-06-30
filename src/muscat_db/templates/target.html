@@ -1,0 +1,276 @@
+{% extends "base.html" %}
+{% block title %}{% if target_name %}{{ target_name }} — MuSCAT-db{% else %}Targets — MuSCAT-db{% endif %}{% endblock %}
+{% block content %}
+
+{% if target_name %}
+  {# Single target view #}
+  <h1>Target: {{ target_name }}</h1>
+  <p style="color: var(--text-dim); margin-bottom: 1.5rem;">
+    <a href="/target">← Back to Targets</a>
+  </p>
+
+  <div class="search-bar">
+    <input id="dataset-search" type="text" placeholder="Search by date or instrument…" autocomplete="off">
+    <span id="search-status" class="hint"></span>
+  </div>
+
+  {% if datasets %}
+  <div class="csv-wrap">
+  <table id="datasets-table">
+    <thead>
+      <tr>
+        <th data-sort-attr="date">Date</th>
+        <th data-sort-attr="object">Object</th>
+        <th data-sort-attr="inst">Instrument</th>
+        <th data-sort-attr="filters">Filters</th>
+        <th data-sort-attr="airmassMax" data-sort-type="number">Airmass</th>
+        <th data-sort-attr="frames" data-sort-type="number"># Frames</th>
+        <th data-sort-attr="phot">Phot</th>
+        <th data-sort-attr="fit">Fit</th>
+        <th data-sort-attr="note">Notes</th>
+      </tr>
+      <tr class="filter-row">
+        <th><input type="text" data-col="date" placeholder="YYMMDD"></th>
+        <th><input type="text" data-col="object" placeholder="V1298Tau-b…"></th>
+        <th><input type="text" data-col="inst" placeholder="muscat, muscat2, …"></th>
+        <th><input type="text" data-col="filter" placeholder="g, r, i, z"></th>
+        <th><input type="text" data-col="airmass" placeholder="<1.5  1.1-2"></th>
+        <th><input type="text" data-col="frames" placeholder="<100  >500"></th>
+        <th><input type="text" data-col="phot" placeholder="Y/N"></th>
+        <th><input type="text" data-col="fit" placeholder="Y/N"></th>
+        <th><input type="text" data-col="note" placeholder="contains…"></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for dataset in datasets %}
+      <tr data-date="{{ dataset.date }}"
+          data-object="{{ dataset.object }}"
+          data-inst="{{ dataset.instrument }}"
+          data-filters="{{ dataset.filters|join(',') }}"
+          data-airmass-max="{{ dataset.airmass_max if dataset.airmass_max is not none else '' }}"
+          data-frames="{{ dataset.n_frames }}"
+          data-phot="{{ 'Y' if dataset.phot == 'full' else 'N' }}"
+          data-fit="{{ 'Y' if dataset.fit == 'full' else 'N' }}"
+          data-note="{{ dataset.note|default('', true) }}">
+        <td class="mono"><a href="/{{ dataset.instrument }}/{{ dataset.date }}">{{ dataset.date }}</a></td>
+        <td class="mono">{{ dataset.object }}</td>
+        <td class="mono">{{ dataset.instrument }}</td>
+        <td>
+          {% for c in dataset.filter_chips %}
+            <span class="badge badge-filter-{{ c.color }}{% if c.narrow %} narrow{% endif %}">{{ c.label }}</span>
+          {% endfor %}
+        </td>
+        <td class="mono">
+          {% if dataset.airmass_min is not none and dataset.airmass_max is not none %}
+            {{ '%.2f'|format(dataset.airmass_min) }}–{{ '%.2f'|format(dataset.airmass_max) }}
+          {% else %}—{% endif %}
+        </td>
+        <td>{{ dataset.n_frames }}</td>
+        <td style="text-align:center;">
+          <a href="/photometry?inst={{ dataset.instrument }}&date={{ dataset.date }}&target={{ dataset.object | urlencode }}" title="photometry" style="text-decoration:none;">🔭</a>
+          {% if dataset.phot == 'full' %}
+            <span style="color: var(--green); font-weight: bold;" title="Full photometry exists">Y</span>
+          {% else %}
+            <span style="color: var(--red);" title="No photometry or test-run only">N</span>
+          {% endif %}
+        </td>
+        <td style="text-align:center;">
+          <a href="/transit-fit?inst={{ dataset.instrument }}&date={{ dataset.date }}&target={{ dataset.object | urlencode }}" title="transit fit" style="text-decoration:none;">📈</a>
+          {% if dataset.fit == 'full' %}
+            <span style="color: var(--green); font-weight: bold;" title="Transit fit exists">Y</span>
+          {% else %}
+            <span style="color: var(--red);" title="No transit fit">N</span>
+          {% endif %}
+        </td>
+        <td class="note-cell" data-object="{{ dataset.object }}" style="white-space:normal;">
+          <span class="note-text">{{ dataset.note }}</span>
+          <span class="note-placeholder" {% if dataset.note %}style="display:none;"{% endif %}>+ add note</span>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+
+  <script>
+    (function () {
+      const input  = document.getElementById('dataset-search');
+      const status = document.getElementById('search-status');
+      const rows = Array.from(document.querySelectorAll('#datasets-table tbody tr'));
+      const colInputs = Array.from(document.querySelectorAll('tr.filter-row input'));
+      const total = rows.length;
+
+      function makeNumeric(raw) {
+        const s = raw.trim();
+        if (!s) return null;
+        let m;
+        if ((m = s.match(/^(<=|>=|<|>|=)?\s*(-?\d+(?:\.\d+)?)$/))) {
+          const op = m[1] || '=', v = parseFloat(m[2]);
+          return x => {
+            if (x == null || isNaN(x)) return false;
+            if (op === '<')  return x <  v;
+            if (op === '<=') return x <= v;
+            if (op === '>')  return x >  v;
+            if (op === '>=') return x >= v;
+            return Math.abs(x - v) < 1e-9;
+          };
+        }
+        if ((m = s.match(/^(-?\d+(?:\.\d+)?)\s*(?:-|\.\.|:|to)\s*(-?\d+(?:\.\d+)?)$/))) {
+          const a = parseFloat(m[1]), b = parseFloat(m[2]);
+          const lo = Math.min(a,b), hi = Math.max(a,b);
+          return x => x != null && !isNaN(x) && x >= lo && x <= hi;
+        }
+        return 'INVALID';
+      }
+
+      function makeText(raw) {
+        const s = raw.trim();
+        if (!s) return null;
+        const needles = s.toLowerCase().split(/\s*,\s*/).filter(Boolean);
+        return hay => {
+          const h = (hay || '').toLowerCase();
+          return needles.some(n => h.includes(n));
+        };
+      }
+
+      function makeToken(raw) {
+        const s = raw.trim();
+        if (!s) return null;
+        const needles = s.toLowerCase().split(/\s*,\s*/).filter(Boolean);
+        return hay => {
+          const tokens = (hay || '').toLowerCase().split(',')
+            .map(t => t.trim()).filter(Boolean);
+          return needles.some(n => tokens.includes(n));
+        };
+      }
+
+      const colSpec = {
+        date:       { val: r => r.dataset.date,       build: makeText    },
+        object:     { val: r => r.dataset.object,     build: makeText    },
+        inst:       { val: r => r.dataset.inst,       build: makeToken   },
+        filter:     { val: r => r.dataset.filters,    build: makeText    },
+        airmass:    { val: r => parseFloat(r.dataset.airmassMax), build: makeNumeric },
+        frames:     { val: r => parseInt(r.dataset.frames, 10),   build: makeNumeric },
+        phot:       { val: r => r.dataset.phot,       build: makeText    },
+        fit:        { val: r => r.dataset.fit,        build: makeText    },
+        note:       { val: r => r.dataset.note,       build: makeText    },
+      };
+
+      function buildColPredicates() {
+        const preds = [];
+        colInputs.forEach(inp => {
+          const spec = colSpec[inp.dataset.col];
+          if (!spec) return;
+          const p = spec.build(inp.value);
+          inp.classList.remove('invalid');
+          if (p === 'INVALID') {
+            inp.classList.add('invalid');
+            return;
+          }
+          if (p) preds.push(row => p(spec.val(row)));
+        });
+        return preds;
+      }
+
+      function filter() {
+        const q = input.value.toLowerCase();
+        status.textContent = '';
+        status.className = 'hint';
+
+        const colPreds = buildColPredicates();
+        let visible = 0;
+
+        rows.forEach(r => {
+          let ok = true;
+          if (q) {
+            const date = (r.dataset.date || '').toLowerCase();
+            const inst = (r.dataset.inst || '').toLowerCase();
+            ok = date.includes(q) || inst.includes(q);
+          }
+          for (let i = 0; ok && i < colPreds.length; i++) ok = colPreds[i](r);
+          r.style.display = ok ? '' : 'none';
+          if (ok) visible++;
+        });
+
+        if (q || colPreds.length) {
+          status.textContent = visible + ' / ' + total + ' matching';
+        } else {
+          status.textContent = total + ' dataset' + (total !== 1 ? 's' : '');
+        }
+      }
+
+      input.addEventListener('input', filter);
+      colInputs.forEach(inp => inp.addEventListener('input', filter));
+      filter();
+    })();
+  </script>
+  {% else %}
+    <p>No datasets found for this target.</p>
+  {% endif %}
+
+{% else %}
+  {# List of all normalized targets #}
+  <h1>Targets (Last updated on {{ last_updated }})</h1>
+
+  <div class="search-bar">
+    <input id="target-search" type="text" placeholder="Search targets…" autocomplete="off">
+    <span id="search-status" class="hint"></span>
+  </div>
+
+  <div class="csv-wrap">
+  <table id="targets-list">
+    <thead>
+      <tr>
+        <th data-sort-attr="name">Normalized Name</th>
+        <th data-sort-attr="count" data-sort-type="number">Datasets</th>
+        <th style="width:1px;"></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for norm_name, count in target_groups %}
+      <tr data-name="{{ norm_name }}" data-count="{{ count }}">
+        <td><strong>{{ norm_name }}</strong></td>
+        <td style="text-align:center;">{{ count }}</td>
+        <td style="text-align:center;">
+          <a href="/target?name={{ norm_name | urlencode }}" style="text-decoration:none; font-size:0.9em;">View →</a>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+
+  <script>
+    (function () {
+      const input  = document.getElementById('target-search');
+      const status = document.getElementById('search-status');
+      const rows = Array.from(document.querySelectorAll('#targets-list tbody tr'));
+      const total = rows.length;
+
+      function filter() {
+        const q = input.value.toLowerCase();
+        status.textContent = '';
+        status.className = 'hint';
+
+        let visible = 0;
+        rows.forEach(r => {
+          const name = (r.dataset.name || '').toLowerCase();
+          const ok = !q || name.includes(q);
+          r.style.display = ok ? '' : 'none';
+          if (ok) visible++;
+        });
+
+        if (q) {
+          status.textContent = visible + ' / ' + total + ' matching';
+        } else {
+          status.textContent = total + ' target' + (total !== 1 ? 's' : '');
+        }
+      }
+
+      input.addEventListener('input', filter);
+      filter();
+    })();
+  </script>
+{% endif %}
+
+{% endblock %}

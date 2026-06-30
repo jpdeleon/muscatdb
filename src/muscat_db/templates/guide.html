@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Workflow Diagram — MuSCAT-db{% endblock %}
+{% block title %}Pipeline Guide — MuSCAT-db{% endblock %}
 {% block content %}
 <style>
   /* Customize Mermaid nodes using CSS variables for theme compatibility */
@@ -207,14 +207,18 @@
         <li><a href="#prose-card" class="toc-link">prose Photometry</a></li>
         <li><a href="#timer-card" class="toc-link">timer Transit Fitting</a></li>
         <li><a href="#ephemeris-card" class="toc-link">Ephemeris O-C Plotter</a></li>
-        <li><a href="#execution-details" class="toc-link">Execution Details</a></li>
+        <li><a href="#fov-card" class="toc-link">FOV Optimizer</a></li>
+        <li><a href="#lco-schedule-card" class="toc-link">LCO Schedule</a></li>
+        <li><a href="#lco-archive-card" class="toc-link">LCO Archive</a></li>
+        <li><a href="#schema-card" class="toc-link">Database Schema</a></li>
+        <li><a href="#execution-details" class="toc-link">Pipeline Features</a></li>
         <li><a href="#faq-card" class="toc-link">FAQs</a></li>
       </ul>
     </div>
   </aside>
 
   <div class="workflow-content">
-    <div class="workflow-card collapsible" id="muscat-card">
+    <div class="workflow-card collapsible collapsed" id="muscat-card">
       <div class="card-header-toggle" onclick="toggleCard('muscat-card')">
         <div class="header-text-wrap">
           <h1 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; margin-top: 0;">
@@ -237,35 +241,54 @@ graph TD
 
     %% Web UI
     C -->|Reads DB| D["Web GUI Dashboard"]:::default
-    D -->|3. Explore Targets and Logs| D
-    
+    D -->|Explore Targets, Logs, Exposures| D
+
     %% Photometry Stage
-    D -->|4. Configure and Launch| E["Photometry Job Queue"]:::pipeline
+    D -->|Configure & Launch| E["Photometry Job Queue"]:::pipeline
     E -->|Runs calibrated prose| F["Photometry Reduction"]:::default
-    F -->|Outputs CSVs and check plots| G["Photometry CSVs\n(results/photometry/)"]:::default
-    
+    F -->|CSVs & diagnostics| G["Photometry Results\n($MUSCAT_PROSE_DIR/inst/date/)"]:::default
+
     %% Transit Fit Stage
-    G -->|Inputs lightcurves| H["Transit Fit Job Queue"]:::db
-    D -->|5. Configure and Launch| H
-    H -->|Runs timer-fit sampler| I["Transit Fitting"]:::default
-    I -->|Outputs corner and fit plots| J["Transit Fit Results\n(results/transit_fit/)"]:::default
-    J -->|Transit centers Tc| L["Ephemeris O-C Plotter"]:::pipeline
-    L -->|Updates interactively| M["O-C Plot and Best-Fit Ephemeris"]:::default
+    G -->|Inputs lightcurves| H["Transit Fit Job Queue"]:::pipeline
+    D -->|Configure & Launch| H
+    H -->|Runs timer MCMC sampler| I["Transit Fitting"]:::default
+    I -->|Posteriors & diagnostics| J["Transit Results\n($MUSCAT_TIMER_DIR/inst/date/target/)"]:::default
 
-    %% Jobs monitoring
-    F -->|Track execution| K["Jobs Page"]:::default
-    I -->|Track execution| K
+    %% Ephemeris Analysis
+    J -->|Transit centers Tc| L["Ephemeris O-C Analysis"]:::pipeline
+    L -->|Interactive fit| M["O-C Plot & Ephemeris\n(saved views in DB)"]:::default
 
-    %% Results loop
-    G -->|Display preview and plots| D
-    J -->|Display parameters and plots| D
-    M -->|Inspect TTVs and update selections| D
+    %% Exposure Calculator & Targets API
+    D -->|Exposure times| N["Exposure Calculator"]:::pipeline
+    N -->|Calibration coefficients| C
+    D -->|Query past obs| N1["Exposure Target API\n(/api/exposure/target/{target})"]:::pipeline
+    N1 -->|Retrieves summary| D
+
+    %% FOV Optimizer
+    D -->|Optimize FOV| N2["FOV Optimizer\n(/fov)"]:::pipeline
+    N2 -->|Visualizes field & comps| D
+
+    %% LCO Integration
+    D -->|LCO Token & Config| O["LCO Observation Portal"]:::default
+    O -->|Schedule observations| P["Submit Requestgroups"]:::pipeline
+    O -->|Download archive data| Q["Reduce & Ingest FITS"]:::pipeline
+    O -->|Optimize pointing| N2
+    O -->|Estimate exposures| N
+
+    %% Jobs monitoring & Results loop
+    E -->|Track execution| K["Jobs Page"]:::default
+    H -->|Track execution| K
+    G -->|Display preview & plots| D
+    J -->|Display parameters & plots| D
+    M -->|Inspect TTVs, update| D
+    P -->|Track submission| K
+    Q -->|Add to muscat-db| B
           </pre>
         </div>
       </div>
     </div>
 
-    <div class="workflow-card collapsible" id="prose-card">
+    <div class="workflow-card collapsible collapsed" id="prose-card">
       <div class="card-header-toggle" onclick="toggleCard('prose-card')">
         <div class="header-text-wrap">
           <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
@@ -310,7 +333,7 @@ graph TD
       </div>
     </div>
 
-    <div class="workflow-card collapsible" id="timer-card">
+    <div class="workflow-card collapsible collapsed" id="timer-card">
       <div class="card-header-toggle" onclick="toggleCard('timer-card')">
         <div class="header-text-wrap">
           <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
@@ -337,20 +360,23 @@ graph TD
     E --> F["Transit Model Assembly\n(PyMC model definition)"]:::pipeline
     
     %% Optimization & Sampling
-    F --> G["Mean Fitting / Pre-optimization\n(L-BFGS MAP optimization)"]:::default
-    G --> H["MCMC Sampling\n(PyMC NUTS sampler)"]:::pipeline
+    F --> G["Run Mode Check\n(New Fit vs Continue Sampling)"]:::default
+    G -->|New Fit| H["Mean Fitting / Pre-optimization\n(L-BFGS MAP optimization)"]:::default
+    G -->|Continue Sampling| I["Load Previous Trace\n(Resume sampling from saved trace)"]:::default
+    H --> J["MCMC Sampling\n(PyMC NUTS sampler)"]:::pipeline
+    I --> J
     
     %% Post-processing
-    H --> I["Outlier Clipping & Detrending\n(Sigma-clip residual outliers)"]:::default
-    I --> J["Compute Information Criteria\n(Calculate BIC, AIC)"]:::default
-    J --> K["Save Outputs\n(Posterior stats, fit.yaml configs)"]:::default
-    J --> L["Generate Visualizations\n(Corner plot, trace plot, LD profile, fit plots)"]:::default
+    J --> K["Outlier Clipping & Detrending\n(Sigma-clip residual outliers)"]:::default
+    K --> L["Compute Information Criteria\n(Calculate BIC, AIC)"]:::default
+    L --> M["Save Outputs\n(Posterior stats, fit.yaml configs)"]:::default
+    L --> N["Generate Visualizations\n(Corner plot, trace plot, LD profile, fit plots)"]:::default
           </pre>
         </div>
       </div>
     </div>
 
-    <div class="workflow-card collapsible" id="ephemeris-card">
+    <div class="workflow-card collapsible collapsed" id="ephemeris-card">
       <div class="card-header-toggle" onclick="toggleCard('ephemeris-card')">
         <div class="header-text-wrap">
           <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
@@ -368,83 +394,447 @@ graph TD
           <pre class="mermaid" style="width: 100%; text-align: center;">
 graph TD
     %% Target discovery
-    A["Completed Transit Fit Jobs\n(persisted jobs + orphan fit discovery)"]:::db --> B["Target List\n/api/ephemeris/targets"]:::default
-    B --> C["Select One or More Targets\n(ephemeris.html)"]:::default
+    A["Completed Transit Fit Jobs\n(DB jobs table + orphan fit discovery)"]:::db --> B["Target List\n/api/ephemeris/targets"]:::default
+    B --> C["Select One or More Targets\n(ephemeris.html UI)"]:::default
 
     %% Dataset assembly
     C --> D["Load Target Info\n/api/ephemeris/target-info"]:::pipeline
     D --> E["Completed Run Datasets\ninstrument, date, run_id, run_type"]:::default
-    D --> F["Fitted Transit Centers\nTc and uncertainty per planet"]:::default
-    D --> G["Reference Ephemerides\nNASA, TOI, catalog fallback"]:::default
+    D --> F["Fitted Transit Centers\nTc ± σ per planet per dataset"]:::default
+    D --> G["Reference Ephemerides\nNASA Exoplanet Archive, TOI, fallback"]:::default
     D --> H["Planet Cards\nT0, period, source override"]:::default
 
-    %% Interactive calculation
-    E --> I["Dataset Include Checkboxes"]:::default
+    %% Interactive controls
+    E --> I["Dataset Selection\n(Checkboxes per run)"]:::default
     F --> J["Automatic Recalculate\n/api/ephemeris/calculate"]:::pipeline
     G --> J
     H --> J
     I --> J
-    K["Fitting Method\nUnweighted or weighted"]:::default --> J
+    K["Fitting Method\nUnweighted or Weighted"]:::default --> J
 
     %% Fit math
     J --> L["Epoch Assignment\nround((Tc - T0) / P)"]:::default
     L --> M["Linear Ephemeris Fit\nTcalc = T0fit + E * Pfit"]:::default
-    M --> N["O-C Values\n(Tc - Tcalc) in minutes"]:::default
+    M --> N["O-C Residuals\n(Tc - Tcalc) in minutes"]:::default
 
-    %% Output
+    %% Output & persistence
     N --> O["Observed minus Calculated Plot\nBJD or epoch x-axis"]:::default
-    M --> P["Best-Fit Ephemeris Summary\ncentered T0, period, uncertainties"]:::default
-    O --> Q["Interactive Controls\ndate twin axis, excluded points, planet styles, PNG export"]:::default
+    M --> P["Best-Fit Ephemeris Summary\nT0, period, uncertainties"]:::default
+    O --> Q["Interactive Controls\nDate axis toggle, point exclusion, styles, PNG export"]:::default
+
+    %% Saved views
+    C --> R["Save View State\n/api/ephemeris/view POST"]:::pipeline
+    R --> S["Ephemeris Views Table\n(ephemeris_views DB)"]:::db
+    S --> T["Shareable View Links\n/api/ephemeris/view/{slug}"]:::default
+    T --> U["Resume Analysis\nRestore all settings & selections"]:::default
           </pre>
         </div>
 
-        <div class="workflow-grid" style="margin-top: 1.5rem;">
-          <div class="workflow-stage">
-            <div class="workflow-header">
-              <span class="workflow-badge">A</span>
-              <span class="workflow-title">Data Source</span>
-            </div>
-            <div class="workflow-desc">
-              The page only lists targets with completed transit-fit jobs. It also discovers orphan fit outputs so legacy results remain available.
-            </div>
-          </div>
+      </div>
+    </div>
 
-          <div class="workflow-stage">
-            <div class="workflow-header">
-              <span class="workflow-badge">B</span>
-              <span class="workflow-title">Reference Ephemerides</span>
-            </div>
-            <div class="workflow-desc">
-              Planet cards are initialized from NASA, TOI, or catalog fallback values, and can be overridden from a fitted dataset source.
-            </div>
-          </div>
+    <div class="workflow-card collapsible collapsed" id="fov-card">
+      <div class="card-header-toggle" onclick="toggleCard('fov-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Field-of-View Pointing & Orientation Optimization
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Maximize comparison star coverage by optimizing telescope pointing offsets and position angles (PA).
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
 
-          <div class="workflow-stage stage-phot">
-            <div class="workflow-header">
-              <span class="workflow-badge">C</span>
-              <span class="workflow-title">Automatic Updates</span>
-            </div>
-            <div class="workflow-desc">
-              Dataset checkboxes, fitting method, and T0/period edits trigger a debounced calculate request so the plot reflects the current selection.
-            </div>
-          </div>
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    A["Target Input\n(Resolved Name or RA/Dec)"]:::default --> B["Instrument Selector\n(Footprint size & observatory latitude)"]:::default
+    B --> C["Load Footprint Geometry\n(XML votable or computed fallback)"]:::default
+    A --> D["Resolve Coordinates\n(Query MAST/SIMBAD)"]:::pipeline
+    D --> E["Gaia DR3 Catalog Query\n(Vizier cone-search around target)"]:::pipeline
+    E --> F["Star Scoring Heuristics\n(Mag offset, color similarity, blending)"]:::default
+    C --> G["Grid-Search Optimization\n(Vary center offset & position angle)"]:::pipeline
+    F --> G
+    G --> H["Select Optimal Pointing\n(Target within margin, maximize weights)"]:::default
+    H --> I["Display Results\n(Offsets, PA, comps table, Aladin Lite overlay)"]:::default
+          </pre>
+        </div>
+        <div style="margin-top: 1.5rem;">
+          <p>
+            The FOV Optimizer finds the optimal pointing center offset <code>(east, north)</code> and position angle (PA) that keep the science target in the field of view (with a safe edge margin) while maximizing the number of high-quality comparison stars.
+          </p>
+          <ul>
+            <li><strong>Why pointing offsets matter:</strong> For differential photometry, we want comparison stars of similar brightness and color to the target. If the ideal comparison stars are offset from the target, we can shift the telescope's center pointing and rotate the instrument to capture them.</li>
+            <li><strong>Footprint definition:</strong> The pipeline reads XML footprint definitions (e.g. for MuSCAT, MuSCAT2, MuSCAT3/4) or falls back to detector dimensions (for Sinistro's 13'x13' binned or 26'x26' full-frame modes).</li>
+            <li><strong>Observability validation:</strong> It checks if the target's declination is observable within the latitude limits of the site (e.g. altitude &ge; 20°).</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="workflow-card collapsible collapsed" id="lco-schedule-card">
+      <div class="card-header-toggle" onclick="toggleCard('lco-schedule-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            LCO Scheduling Workflow
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            End-to-end LCO Observation Portal submission: from ephemeris to dry-run IPP check to live observation request.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
 
-          <div class="workflow-stage stage-phot">
-            <div class="workflow-header">
-              <span class="workflow-badge">D</span>
-              <span class="workflow-title">O-C Outputs</span>
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% Configuration & Input
+    A["User Logged In\n(LCO_API_TOKEN configured)"]:::default --> B["Load Proposals\n/api/lco/proposals"]:::pipeline
+    B --> C["Select Project/Proposal"]:::default
+    C --> D["Choose Saved Ephemeris View\n(from /lco?view=slug or direct link)"]:::default
+    D --> E["Extract Target & Ephemeris\nT0, period, target name"]:::default
+    E --> E1["Show FOV Button\n(Optimize pointing offset/PA)"]:::default
+    E --> E2["Show Exp Button\n(Check target exposure history)"]:::default
+
+    %% Window Generation
+    E --> F["Configure Search Window\nUTC start date, end date, duration"]:::default
+    E1 --> F
+    E2 --> F
+    F --> G["Configure Pre/Post Padding\n(minutes before/after transit)"]:::default
+    G --> H["Generate Transit Windows\n/api/lco/windows"]:::pipeline
+    H --> I["Display Candidate Windows\nCandidate start/end times"]:::default
+
+    %% Imaging Configuration
+    I --> J["Select Imaging Mode"]:::default
+    J -->|MUSCAT| K["Configure MUSCAT Imaging\nFilters: g/r/i/z exposure times\nExposure mode: sync/async\nNarrowband in/out positions"]:::default
+    J -->|Sinistro| L["Configure Sinistro Imaging\nFilter, exposure time, count"]:::default
+
+    %% Payload & Validation
+    K --> M["Build Request Payload\nConstraints, configurations, windows"]:::default
+    L --> M
+    M --> N["Dry-Run IPP Check\n/api/lco/ipp"]:::pipeline
+
+    %% Feedback & Submission
+    N -->|IPP Valid| O["Show Payload & IPP Cost\nUser reviews request details"]:::default
+    N -->|IPP Invalid| P["Display Error Message\nUser modifies and retries"]:::default
+    P --> M
+    O --> Q["Submit Button Enabled?"]:::default
+    Q -->|No changes since dry-run| R["User Confirms Submission\n(MUSCAT_LCO_ALLOW_SUBMIT=1)"]:::default
+    Q -->|Changes detected| P
+    R -->|Submit| S["Post to Observation Portal\n/api/lco/submit"]:::pipeline
+
+    %% Tracking
+    S -->|Success| T["Display Requestgroup ID\nObservation scheduled"]:::default
+    S -->|Error| U["Show Error Details\nAsk user to retry"]:::default
+    U --> M
+    T --> V["Track on Jobs Page"]:::default
+          </pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="lco-archive-card">
+      <div class="card-header-toggle" onclick="toggleCard('lco-archive-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            LCO Archive Download Workflow
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Search LCO data archive and download reduced frames to the local server.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% User input and filtering
+    A["Archive Search Interface"]:::default --> B["Set Search Filters"]:::default
+    B --> B1["Project/Proposal ID\n(optional constraint)"]:::default
+    B --> B2["Target Object Name\n(optional substring)"]:::default
+    B --> B3["Instrument\n(1M0-SCICAM-SINISTRO or 2M0-SCICAM-MUSCAT)"]:::default
+    B --> B4["Site / Telescope\n(e.g. ogg, coj, cpt, lsc, elp)"]:::default
+    B --> B5["Reduction Level\n(raw, processed, fits)"]:::default
+    B --> B6["Date Range\n(start and end UTC dates)"]:::default
+    B --> B7["Result Limit\n(max frames to return)"]:::default
+
+    %% API call
+    B1 --> C["Query Archive\n/api/lco/archive/frames"]:::pipeline
+    B2 --> C
+    B3 --> C
+    B4 --> C
+    B5 --> C
+    B6 --> C
+    B7 --> C
+
+    %% Results display
+    C -->|Success| D["Display Frames Table\nColumns: filename, site, instrument, date, filter"]:::default
+    C -->|No results| E["Show 'No frames found'\nSuggest different filters"]:::default
+
+    %% Selection and preparation
+    D --> F["User Selects Frames\n(Checkboxes for multiple selection)"]:::default
+    F --> G["Review Selection\nFilename, size, reduction level"]:::default
+    G --> H["Confirm Download"]:::default
+
+    %% Server-side download
+    H --> I["Send Selected Frame URLs\n/api/lco/archive/download"]:::pipeline
+    I --> J["Server Validates Paths\n(No overwrite by default)"]:::default
+    J -->|Overwrite Disabled| K["Check if files exist locally"]:::default
+    K -->|Files exist| L["Skip existing files\nShow 'already exists' status"]:::default
+    K -->|New files| M["Download from archive-api.lco.global"]:::default
+    J -->|Overwrite Enabled| M
+
+    %% Path resolution
+    M --> N["Determine Save Location"]:::default
+    N --> N1["MUSCAT_LCO_DIR set?\nYes: MUSCAT_LCO_DIR/inst/date/"]:::default
+    N --> N2["No: MUSCAT_DATA_DIR/inst/date/"]:::default
+
+    %% Results
+    N1 --> O["Save Downloaded Files"]:::default
+    N2 --> O
+    O -->|Success| P["Display Results\nFilename, size, path"]:::default
+    O -->|Error| Q["Show Error Details\nPermission or disk issues"]:::default
+
+    %% Final status
+    P --> R["Download Complete\nFiles ready in muscat-db data tree"]:::default
+          </pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="schema-card">
+      <div class="card-header-toggle" onclick="toggleCard('schema-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Database Schema
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Entity-relationship diagram and column definitions for <code>muscat.db</code>.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+erDiagram
+    frames {
+        int id PK
+        text instrument
+        text obsdate
+        int ccd
+        text filename
+        text object
+        real jd_start
+        text ut_start
+        real exptime
+        text read_mode
+        text filter
+        text ra
+        text declination
+        real airmass
+        real focus
+        real pa
+    }
+    summaries {
+        int id PK
+        text instrument
+        text obsdate
+        int ccd
+        text object
+        real exptime
+        text read_mode
+        text frame_start
+        text frame_end
+        text ut_start
+        text ut_end
+        int nframes
+        text filter
+        text ra
+        text declination
+        real airmass_min
+        real airmass_max
+    }
+    targets {
+        text object PK
+        int n_dates
+        int n_frames
+        text instruments
+        text dates
+        text inst_dates
+        text filters
+        real total_exptime
+        text ra
+        text declination
+        real airmass_min
+        real airmass_max
+        int is_identified
+    }
+    target_notes {
+        text object PK
+        text note
+        text updated_at
+    }
+    target_overrides {
+        text object PK
+        int is_identified
+        text updated_at
+    }
+    jobs {
+        text key PK
+        text type
+        text instrument
+        text obsdate
+        text target
+        text state
+        int returncode
+        int elapsed
+        real started_at
+        text error_desc
+        text run_type
+        text params
+        text run_id
+        text run_name
+    }
+    db_meta {
+        text key PK
+        text value
+    }
+    exposure_coeffs {
+        text instrument PK
+        text band PK
+        real focus_mm PK
+        real coef
+        real fwhm_pix
+        int n_frames
+        text updated_at
+    }
+    exposure_jobs {
+        text id PK
+        text instrument
+        text state
+        text progress
+        real started_at
+        real updated_at
+    }
+    ephemeris_views {
+        text slug PK
+        text state_hash
+        text state_json
+        text targets_json
+        text created_at
+        text updated_at
+    }
+
+    frames ||--o{ summaries : "grouped into"
+    targets ||--o{ frames : "contains"
+    targets ||--o{ summaries : "contains"
+    targets ||--|| target_notes : "annotates"
+    targets ||--|| target_overrides : "overrides"
+          </pre>
+        </div>
+
+        <div style="margin-top: 2rem;">
+          <h3 style="color: var(--accent); margin-bottom: 1rem; font-size: 1.1rem;">Table Reference</h3>
+          <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+              <thead>
+                <tr style="border-bottom: 2px solid var(--border);">
+                  <th style="text-align: left; padding: 0.5rem 0.75rem; color: var(--text-dim); font-weight: 600;">Table</th>
+                  <th style="text-align: left; padding: 0.5rem 0.75rem; color: var(--text-dim); font-weight: 600;">Description</th>
+                  <th style="text-align: left; padding: 0.5rem 0.75rem; color: var(--text-dim); font-weight: 600;">Rows</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">frames</td>
+                  <td style="padding: 0.5rem 0.75rem;">Per-FITS-row metadata: instrument, date, CCD, target name, JD, filter, coordinates, airmass</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per science frame</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">summaries</td>
+                  <td style="padding: 0.5rem 0.75rem;">Per-observation rollup: date range, frame count, airmass range, filter</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per (inst, date, CCD, object)</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">targets</td>
+                  <td style="padding: 0.5rem 0.75rem;">Aggregate target stats: observation count, instrument list, date coverage, total exposure time</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per unique object name</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">target_notes</td>
+                  <td style="padding: 0.5rem 0.75rem;">User-defined notes attached to a target</td>
+                  <td style="padding: 0.5rem 0.75rem;">Zero or one per target</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">target_overrides</td>
+                  <td style="padding: 0.5rem 0.75rem;">Manual override for the <code>is_identified</code> flag on a target</td>
+                  <td style="padding: 0.5rem 0.75rem;">Zero or one per target</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">jobs</td>
+                  <td style="padding: 0.5rem 0.75rem;">Pipeline job tracking: type (photometry / transit_fit), state, return code, elapsed time, serialized params</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per pipeline launch</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">db_meta</td>
+                  <td style="padding: 0.5rem 0.75rem;">Key-value metadata store (build version, last rebuild timestamp, etc.)</td>
+                  <td style="padding: 0.5rem 0.75rem;">Few rows</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">exposure_coeffs</td>
+                  <td style="padding: 0.5rem 0.75rem;">Exposure-time calibration coefficients per (instrument, band, focus)</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per calibration point</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">exposure_jobs</td>
+                  <td style="padding: 0.5rem 0.75rem;">Exposure calculator job tracking: state, progress, timestamps</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per exposure calc run</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">ephemeris_views</td>
+                  <td style="padding: 0.5rem 0.75rem;">Saved interactive O-C plot views: persisted filter state, target list, and plot configuration</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per saved view</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="faq-section" style="margin-top: 1.5rem;">
+          <h3 style="color: var(--accent); margin-bottom: 0.5rem; font-size: 1.1rem;">Build Strategy</h3>
+          <div class="faq-item">
+            <div class="faq-question" onclick="toggleFaq(this)">
+              <span>How are tables rebuilt without losing app data?</span>
+              <span class="faq-icon">+</span>
             </div>
-            <div class="workflow-desc">
-              The result includes used/excluded points, per-planet O-C panels, an optional UTC date twin axis, and best-fit ephemeris parameters.
+            <div class="faq-answer">
+              <p>The <code>build-db</code> command writes a new database to a temporary file first, then atomically replaces <code>muscat.db</code>. Before replacement, app-owned tables (<code>jobs</code>, <code>ephemeris_views</code>, <code>target_notes</code>, <code>target_overrides</code>, <code>db_meta</code>, <code>exposure_coeffs</code>, <code>exposure_jobs</code>) are copied from the existing database so no job history or user data is lost. The observation-derived tables (<code>frames</code>, <code>summaries</code>, <code>targets</code>) are rebuilt from scratch from the CSV obslogs.</p>
             </div>
           </div>
         </div>
       </div>
     </div>
 
-    <div class="workflow-card" id="execution-details">
-    <h2 style="margin-bottom: 1rem; color: var(--text);">Pipeline Execution Details</h2>
-    <div class="workflow-grid">
+    <div class="workflow-card collapsible collapsed" id="execution-details">
+      <div class="card-header-toggle" onclick="toggleCard('execution-details')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Pipeline Features
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Sequential stages of the MuSCAT-db pipeline from data ingestion through analysis.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+      <div class="card-body">
+        <div class="workflow-grid">
       
       <!-- Stage 1 -->
       <div class="workflow-stage">
@@ -526,10 +916,11 @@ graph TD
         </div>
       </div>
 
+        </div>
+      </div>
     </div>
-  </div>
 
-    <div class="workflow-card" id="faq-card">
+    <div class="workflow-card collapsible collapsed" id="faq-card">
       <div class="card-header-toggle" onclick="toggleCard('faq-card')">
         <div class="header-text-wrap">
           <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
@@ -614,10 +1005,27 @@ graph TD
                   <li>Updating the comparison star weights based on their correlation with the current reference</li>
                 </ul>
               </li>
-              <li><strong>Weights</strong> — stars with lower intrinsic scatter and higher correlation with the ensemble receive higher weights. Stars affected by systematic noise (e.g., airmass trends, seeing variations) are down-weighted automatically</li>
+              <li><strong>Weights</strong> — stars with lower intrinsic scatter and higher correlation receive higher weights. To ensure robustness against outliers (e.g. cosmic rays, transient spikes), the weights are computed using a robust scale estimator, the <strong>Median Absolute Deviation (MAD)</strong> (i.e. weight $\propto 1/\text{MAD}$), rather than the standard deviation.</li>
               <li><strong>Convergence</strong> — the iteration continues until the target lightcurve stabilizes, typically within a few iterations</li>
             </ol>
             <p>The key advantage is that no manual selection of comparison stars is needed — the algorithm handles both the choice and the relative weighting, and it can exclude bad comparison stars that would otherwise introduce noise.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What is Broeg's NaN limitation, and how can we address it?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p><strong>The NaN Limitation:</strong> The matrix-based implementation of <code>autodiff</code> in prose requires a dense matrix with no <code>NaN</code>s. Because of this, we cannot easily mask out localized outliers (like a cosmic ray hitting a single comparison star on a single frame) by setting them to <code>NaN</code> without propagating that <code>NaN</code> to all other stars through the matrix multiplications.</p>
+            <p><strong>Proposed Fix (Imputation):</strong> Instead of dropping the entire frame (which is wasteful) or using <code>NaN</code>s (which breaks the algebra), we can apply star-level sigma clipping on the flux matrix and <strong>impute/replace individual outlier points with the median flux of that star</strong> before running the <code>autodiff</code> calculation.</p>
+            <p><strong>Implications:</strong></p>
+            <ul>
+              <li><strong>Zero Data Loss:</strong> We preserve the target and all other comparison stars' data at that epoch rather than throwing the whole frame away.</li>
+              <li><strong>No Outlier Propagation:</strong> Since the outlier is replaced by the median, it does not leak into the weighted artificial lightcurve and pollute other stars' differential lightcurves.</li>
+              <li><strong>Matrix Compatibility:</strong> The matrix remains fully dense and compatible with the vectorized NumPy operations.</li>
+            </ul>
           </div>
         </div>
 
@@ -633,6 +1041,27 @@ graph TD
               <li><strong>Manual Selection</strong> — If explicit comparison star indices (<code>--cID</code>) are provided by the user, the pipeline validates that they are in-range and do not belong to the avoided/excluded list before using them directly.</li>
               <li><strong>Automatic Selection (Broeg et al. 2005)</strong> — If no explicit IDs are provided, the pipeline executes the <code>autodiff()</code> algorithm. This algorithm dynamically determines and weights comparison stars from the candidate pool (excluding the target and any avoided stars) to minimize the scatter in the target's differential lightcurve.</li>
               <li><strong>Avoided Stars</strong> — Stars can be manually excluded via <code>--avoid_cids</code>. Additionally, the pipeline automatically detects stars near the CCD edge (<code>edge_cids</code>) and adds them to the avoid pool to prevent edge-effect systematics from contaminating the comparison pool.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How are the optimal comparison stars and aperture size computed?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p><strong>Optimal Comparison Stars:</strong></p>
+            <ul>
+              <li><strong>Candidate Pool:</strong> Taken from the tracked sources (up to <code>max_num_stars</code>), excluding the target and avoided stars.</li>
+              <li><strong>Iterative Weighting:</strong> The Broeg et al. 2005 algorithm assigns weights to each candidate star inversely proportional to their Median Absolute Deviation (MAD) (i.e., $w \propto 1/\text{MAD}$). Using MAD instead of standard deviation prevents transient outliers (like cosmic rays or hot pixels) from skewing the weight.</li>
+              <li><strong>Combination Optimization:</strong> Comparison stars are sorted by weight. The pipeline (in <code>auto_diff_1d</code>) starts with the highest-weighted star, iteratively adding the next-highest, and computes the binned white noise (<code>binned_nanstd</code>) of the target's resulting differential lightcurve. It retains the subset of comparison stars that minimizes this white noise.</li>
+            </ul>
+            <p><strong>Optimal Aperture Size:</strong></p>
+            <ul>
+              <li><strong>Aperture Grid:</strong> The pipeline runs photometry on a series of aperture radii (either defined by Gaia heuristics or custom parameters).</li>
+              <li><strong>Outlier Filtering:</strong> During evaluation, points that are $> 4\sigma$ from the median are temporarily clipped to avoid biasing the aperture metric.</li>
+              <li><strong>Noise Minimization (stddiff):</strong> For each aperture, the standard deviation of successive differences ($\sigma(\Delta f)$) is computed. This acts as a high-pass filter to remove slow trends (red noise, systematics, or the transit itself) and focus purely on high-frequency white noise. The aperture size that minimizes this metric is selected as the optimal aperture.</li>
             </ul>
           </div>
         </div>
@@ -765,6 +1194,7 @@ graph TD
               <li><strong>aper_unit</strong>: pix</li>
               <li><strong>max_num_stars</strong>: 10</li>
               <li><strong>min_star_separation</strong>: 10.0 pix</li>
+              <li><strong>avoid_nearby_star_mode</strong>: auto (max(2 x FWHM, 3 arcsec))</li>
               <li><strong>cutout_size</strong>: 35 pix</li>
               <li><strong>bin_size_minutes</strong>: 10.0</li>
               <li><strong>gif_stride</strong>: 100</li>
@@ -817,7 +1247,7 @@ graph TD
               <li><strong>Per-band self-reference (default, <code>--ref_band</code> not set)</strong> — each band creates its own reference frame from its first science frame. Alignment is within-camera only. Recommended for multi-camera instruments (MuSCAT3/4) where each band uses a separate CCD, because cross-camera registration would introduce interpolation artifacts from slightly different pointing and distortion.</li>
               <li><strong>Single reference (<code>--ref_band gp</code> for example)</strong> — all bands align to the reference band's middle frame. This can introduce systematic offsets between bands because different cameras have different pixel scales, rotations, and distortions. The resulting lightcurves may show band-dependent systematics.</li>
             </ul>
-            <p>For MuSCAT2 (single CCD with filter wheel), both strategies work because all bands share the same detector. Per-band self-reference is still the default and generally recommended.</p>
+            <p>For MuSCAT2 (single CCD with filter wheel), both strategies work because all bands share the same detector. Per-band self-reference is still the default and generally recommended. For Sinistro, <code>--ref_band</code> is disabled in the GUI because simultaneous bands can be observed by different LCO telescopes with large pointing offsets, so mapping one band's reference catalog onto another can fail or produce invalid alignment.</p>
           </div>
         </div>
 
@@ -843,6 +1273,20 @@ graph TD
           </div>
         </div>
 
+      <div class="faq-item">
+        <div class="faq-question" onclick="toggleFaq(this)">
+          <span>What is the difference between "New Fit" and "Continue Sampling" in transit fitting?</span>
+          <span class="faq-icon">+</span>
+        </div>
+        <div class="faq-answer">
+          <p>The transit fitting pipeline supports two run modes to handle existing reduction results:</p>
+          <ul>
+            <li><strong>New Fit (start fresh)</strong> — Sets <code>clobber: true</code> in the fit configuration. It discards any previous traces, runs L-BFGS MAP pre-optimization to find an initial solution, and starts MCMC sampling from scratch.</li>
+            <li><strong>Continue Sampling</strong> — Sets <code>clobber: false</code>. It loads the previous MCMC trace from saved pickle files and resumes sampling, appending new draws to the existing chain. This option is only available when a previous fit run exists.</li>
+          </ul>
+        </div>
+      </div>
+
         <div class="faq-item">
           <div class="faq-question" onclick="toggleFaq(this)">
             <span>How does the parameter query from the TOI / NASA Exoplanet Archive work?</span>
@@ -855,6 +1299,115 @@ graph TD
               <li><strong>NASA Exoplanet Archive</strong> (<code>source=nasa</code>) — queries the <code>pscomppars</code> (Planetary Systems Composite Parameters) table by <code>pl_name</code> or <code>hostname</code>. Returns the same parameters plus metallicity, radius ratio, and impact parameter, with literature references.</li>
             </ul>
             <p>The fetched values are used to pre-populate the priors in the YAML configuration, which can be edited before running the fit.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does timer compare to the MuSCAT2 transit pipeline?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The <code>timer</code> transit fitting pipeline used here is distinct from the <a href="https://github.com/hpparvi/MuSCAT2_transit_pipeline" target="_blank" rel="noopener noreferrer">MuSCAT2 transit pipeline</a> (Parvi et al.). Key differences:</p>
+            <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem; margin-top: 0.5rem;">
+              <thead>
+                <tr style="border-bottom: 2px solid var(--border);">
+                  <th style="text-align: left; padding: 0.5rem; color: var(--text-dim); font-weight: 600;">Aspect</th>
+                  <th style="text-align: left; padding: 0.5rem; color: var(--text-dim); font-weight: 600;">timer (MuSCAT-db)</th>
+                  <th style="text-align: left; padding: 0.5rem; color: var(--text-dim); font-weight: 600;">MuSCAT2 Pipeline</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Sampling engine</td>
+                  <td style="padding: 0.5rem;"><strong>PyMC (v3 or v4)</strong> with NUTS sampler</td>
+                  <td style="padding: 0.5rem;"><strong>emcee</strong> ensemble sampler</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Transit model</td>
+                  <td style="padding: 0.5rem;">batman or starry (flexible)</td>
+                  <td style="padding: 0.5rem;">Custom analytical model</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Limb darkening</td>
+                  <td style="padding: 0.5rem;">Quadratic, nonlinear, fixed, or priors</td>
+                  <td style="padding: 0.5rem;">Fixed from stellar parameters</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Systematics model</td>
+                  <td style="padding: 0.5rem;">Linear regression or Gaussian process</td>
+                  <td style="padding: 0.5rem;">Airmass + centroid polynomial</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Configuration</td>
+                  <td style="padding: 0.5rem;">YAML files (<code>fit.yaml</code>, <code>sys.yaml</code>)</td>
+                  <td style="padding: 0.5rem;">Python scripts</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Web integration</td>
+                  <td style="padding: 0.5rem;"><strong>Native</strong> — runs via web UI, persists results in DB</td>
+                  <td style="padding: 0.5rem;">Standalone — independent command-line tool</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Archive integration</td>
+                  <td style="padding: 0.5rem;">Loads photometry CSVs from prose pipeline</td>
+                  <td style="padding: 0.5rem;">Works with raw MuSCAT2 observations</td>
+                </tr>
+                <tr>
+                  <td style="padding: 0.5rem;">Output</td>
+                  <td style="padding: 0.5rem;">Posterior samples, corner/trace/LD/fit plots, O-C analysis</td>
+                  <td style="padding: 0.5rem;">Posterior samples and publication-quality plots</td>
+                </tr>
+              </tbody>
+            </table>
+            <p style="margin-top: 1rem;"><strong>When to use each:</strong></p>
+            <ul>
+              <li><strong>timer (here)</strong> — for rapid, reproducible multi-band transit analysis integrated with the MuSCAT-db photometry pipeline, with flexible detrending and modern Bayesian inference.</li>
+              <li><strong>MuSCAT2 pipeline</strong> — for standalone MuSCAT2-specific analysis, or when custom analytical models or emcee-specific workflows are preferred.</li>
+            </ul>
+            <p>Both pipelines produce scientifically rigorous results; the choice depends on your data source and workflow integration needs.</p>
+          </div>
+        </div>
+        <!-- ==================== Observation Planning ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Observation Planning</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the Field-of-View (FOV) Optimizer select comparison stars?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The FOV Optimizer evaluates possible telescope pointings using a grid-search algorithm over center offsets and position angles (PA). It queries the Gaia DR3 catalog and assigns utility weights to candidate comparison stars based on:</p>
+            <ul>
+              <li><strong>Magnitude offset</strong> — Prefers stars slightly fainter than the target (ideal difference is 0.3 mag). Hard penalties are applied to stars brighter than the target (which would trigger early saturation and limit exposure times).</li>
+              <li><strong>Color similarity</strong> — Compares Gaia BP-RP colors to the target. Similar colors reduce systematic trends in differential photometry.</li>
+              <li><strong>Blending</strong> — Stars with close, similarly-bright neighbors (within 12 arcseconds) are penalized because crowding degrades aperture photometry accuracy.</li>
+            </ul>
+            <p>The optimizer selects the center offset and rotation angle that maximize the cumulative weight of the captured stars while keeping the target safely inside the instrument's footprint edge (margin of 30 arcseconds).</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What do the "Show FOV" and "Show Exp" buttons on the LCO Schedule page do?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>These planning shortcut buttons prefill target and instrument parameters, linking directly to the respective planning tool:</p>
+            <ul>
+              <li><strong>Show FOV</strong> — Redirects to the FOV Optimizer page preloaded with the target coordinates and selected LCO instrument to compute optimal offsets.</li>
+              <li><strong>Show Exp</strong> — Redirects to the Exposure Calculator page. Under the hood, it queries the target observations history API (<code>/api/exposure/target/{target}</code>) to retrieve unique filters and exposure times previously used.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>Why did the format of O-C ephemeris export text change?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The exported Observed-minus-Calculated (O-C) summary CSV text now starts with descriptive comment lines (prefixed by <code>#</code>) explaining that the transit center times (TCs) are in Barycentric Dynamical Time (BJD_TDB). This makes it easy for automated scripts and external fitting tools to parse column formats (planet, epoch, tc, tc_unc) and track time-standard coordinates correctly.</p>
           </div>
         </div>
 

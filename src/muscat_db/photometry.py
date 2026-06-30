@@ -67,6 +67,7 @@ _DEFAULT_TMPDIR = str(Path.home() / ".muscatdb" / "tmp")
 # Default values for every optional run_photometry argument the form exposes.
 # Kept here so the template, normalizer, and command builder share one source.
 RUN_DEFAULTS: dict = {
+    "run_name": "default",
     "bands": DEFAULT_BANDS,
     "ref_band": "",            # "" -> per-band self-reference (pipeline default)
     "refid": "",               # "" -> pipeline default (0 / middle frame)
@@ -85,9 +86,12 @@ RUN_DEFAULTS: dict = {
     "ccd_trim": "",            # "Y,X"; "" -> no trim (pipeline default)
     "edge_margin": "",         # px from CCD edge to exclude comps; "" -> auto (half cutout), 0 -> off
     "bin_size_minutes": 10.0,
+    "nan_imputation_method": "linear",
     "target_id": "",           # "" -> auto
     "comparison_ids": "",      # "" -> auto, or "1,2,3"
     "avoid_comparison_ids": "",  # "" -> none; "1,2,3" -> --avoid_cids (requires --ref_band)
+    "avoid_nearby_star_mode": "auto",  # off | auto | custom
+    "avoid_nearby_star": "",  # arcsec; used when avoid_nearby_star_mode == "custom"
     "target_coord": "",        # "" -> resolve via MAST; "RA Dec" -> bypass name resolution
     "gif_stride": 100,
     "overwrite": True,
@@ -115,15 +119,29 @@ CMAP_CHOICES = (
     "RdYlBu", "RdYlGn", "Spectral",
 )
 
+# NaN imputation strategies exposed by prose2's --nan-imputation-method.
+NAN_IMPUTATION_METHODS = (
+    "none",
+    "mean",
+    "median",
+    "linear",
+    "spline",
+    "forward_fill",
+)
+
 
 ALLOWED_EXTS = {".png", ".gif", ".csv", ".npz", ".log", ".txt"}
 _RUN_LOG_NAME = "_webrun.log"
+_RUNS_DIR_NAME = "_runs"
+_RUN_META_NAME = "_webrun_meta.json"
 _CONDA_ENV_DEFAULT = "prose"   # prose deps live in a conda env named "prose"
 _MODULE = "prose.scripts.run_photometry"
 
 _DATE_RE = re.compile(r"^\d{6}$")
 # A served filename is a single path segment of safe characters only.
 _NAME_RE = re.compile(r"^[A-Za-z0-9._+:\-]+$")
+_RUN_NAME_MAX = 40
+_RUN_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 # Summary (multi-band) plot suffixes -> short key used by the template.
 _SUMMARY_SUFFIX = {
@@ -132,6 +150,7 @@ _SUMMARY_SUFFIX = {
     "_covariates.png": "covariates",
     "_systematics.png": "covariates",   # backward compat with old pipeline
     "_stacks.png": "stacks",
+    "_nearby_stars.csv": "nearby_stars",
 }
 # Per-band product suffixes -> short key.
 _BAND_SUFFIX = {
@@ -243,6 +262,70 @@ def results_dir(inst: str, date: str) -> Path:
     return output_base() / inst / date
 
 
+def _target_dir_name(target: str) -> str:
+    name = (target or "").replace(" ", "")
+    if not name or ".." in name or "/" in name or "\\" in name:
+        raise ValueError("invalid target")
+    return name
+
+
+def _run_dir_name(run_id: str) -> str:
+    rid = (run_id or "").strip()
+    if not rid or ".." in rid or "/" in rid or "\\" in rid or rid in {".", ".."}:
+        raise ValueError("invalid run id")
+    return rid
+
+
+def slugify_run_name(run_name: str | None) -> str:
+    """Slug a user run label. Blank input maps to ``default``."""
+    s = _RUN_SLUG_RE.sub("_", (run_name or "").strip().lower()).strip("_")
+    return s[:_RUN_NAME_MAX].strip("_") or "default"
+
+
+def build_run_id(inst: str, site: str | None, mode: str | None, run_name: str | None) -> str:
+    """Compose a photometry run id using the transit-fit convention.
+
+    Non-sinistro runs are identified by the run-name slug only. Sinistro runs
+    include site and only non-default readout mode: ``central_2k_2x2`` is
+    omitted, while ``full_frame`` remains explicit.
+    """
+    slug = slugify_run_name(run_name)
+    if inst != "sinistro":
+        return slug
+    mode_part = (mode or "").strip().lower()
+    if mode_part == "central_2k_2x2":
+        mode_part = ""
+    parts = [
+        (site or "").strip().lower(),
+        mode_part,
+        slug,
+    ]
+    return "-".join(p for p in parts if p)
+
+
+def run_output_dir(inst: str, date: str, target: str, run_id: str | None = None) -> Path:
+    """Output directory for a legacy or named photometry run."""
+    base = results_dir(inst, date)
+    if not run_id:
+        return base
+    return base / _RUNS_DIR_NAME / _target_dir_name(target) / _run_dir_name(run_id)
+
+
+def _parse_run_dir_name(inst: str, name: str) -> tuple[str, str, str]:
+    """Best-effort split of a run-id dir name into (site, mode, run_name)."""
+    if inst != "sinistro":
+        return "", "", name
+    parts = name.split("-")
+    site = mode = ""
+    if parts and parts[0] in SINISTRO_SITES:
+        site, parts = parts[0], parts[1:]
+    if parts and parts[0] in SINISTRO_MODES:
+        mode, parts = parts[0], parts[1:]
+    elif site:
+        mode = "central_2k_2x2"
+    return site, mode, "-".join(parts)
+
+
 def raw_data_dir(inst: str, date: str) -> Path:
     base = os.environ.get("MUSCAT_DATA_DIR")
     if not base:
@@ -292,6 +375,11 @@ def discovered_targets(inst: str, date: str) -> list[str]:
         m = pat.match(p.name)
         if m:
             found.add(m.group("t"))
+    runs_dir = rdir / _RUNS_DIR_NAME
+    if runs_dir.is_dir():
+        for d in runs_dir.iterdir():
+            if d.is_dir():
+                found.add(d.name)
     return sorted(found)
 
 
@@ -301,6 +389,7 @@ def list_outputs(
     target: str,
     site: str | None = None,
     mode: str | None = None,
+    run_id: str | None = None,
 ) -> dict:
     """Classify the existing products for one (inst, date, target).
 
@@ -327,6 +416,7 @@ def list_outputs(
     """
     out: dict = {
         "summary": {},
+        "summary_items": [],
         "bands": {},
         "npz": None,
         "log": None,
@@ -338,7 +428,10 @@ def list_outputs(
         "mode": None,
         "ref_header": None,
     }
-    rdir = results_dir(inst, date)
+    try:
+        rdir = run_output_dir(inst, date, target, run_id)
+    except ValueError:
+        return out
     if not rdir.is_dir():
         return out
 
@@ -361,10 +454,15 @@ def list_outputs(
     # ..._250710_full_lightcurves.png, ..._250710_full.npz, ..._gp_250710_full.csv).
     mode_opt = r"(?P<mode>_full)?" if inst == "sinistro" else ""
 
-    # Multi-band summary stem: <target>_<inst>_[<site>_]<date6>[_full]  (no band).
+    # Summary stems exist in two generations:
+    #   <target>_<inst>_[<site>_]<date6>[_full]                (legacy)
+    #   <target>_<inst>_[<site>_]<bands>_<date6>[_full]        (band-set scoped)
     # Allow any 6-digit date so obs-night and UT-date both match.
     summary_re = re.compile(
         rf"^{t_esc}_{inst_esc}_{site_opt}(?P<file_date>\d{{6}}){mode_opt}(?P<rest>.*)$"
+    )
+    summary_bandset_re = re.compile(
+        rf"^{t_esc}_{inst_esc}_{site_opt}(?P<bands>[A-Za-z0-9_]+?)_(?P<file_date>\d{{6}}){mode_opt}(?P<rest>.*)$"
     )
     # Per-band stem: <target>_<inst>_[<site>_]<band>_<date6>[_full]. The band
     # token may itself contain underscores (narrow-band/Johnson filters:
@@ -391,7 +489,7 @@ def list_outputs(
         for p in rdir.iterdir():
             if not p.is_file() or p.suffix == ".log":
                 continue
-            m = summary_re.match(p.name) or band_re.match(p.name)
+            m = summary_re.match(p.name) or summary_bandset_re.match(p.name) or band_re.match(p.name)
             if not m:
                 continue
             try:
@@ -436,13 +534,17 @@ def list_outputs(
             continue
 
         try:
-            mtime = p.stat().st_mtime
+            st = p.stat()
+            mtime = st.st_mtime
+            version = str(st.st_mtime_ns)
             created_at = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
         except Exception:
+            mtime = 0.0
+            version = "0"
             created_at = "Unknown"
 
-        # Try summary suffixes first (no band token between inst and date).
-        ms = summary_re.match(name)
+        # Try summary suffixes first, including band-set-scoped summary stems.
+        ms = summary_re.match(name) or summary_bandset_re.match(name)
         if ms:
             # When a site/mode is in force, only that combination is shown.
             if effective_site is not None and ms.group("site") != effective_site:
@@ -465,10 +567,17 @@ def list_outputs(
                 continue
             key = _SUMMARY_SUFFIX.get(rest)
             if key is not None:
+                item = {
+                    "key": key,
+                    "file": name,
+                    "created_at": created_at,
+                    "version": version,
+                    "_mtime": mtime,
+                }
                 existing = out["summary"].get(key)
                 if existing is None or mtime > existing.get("_mtime", 0):
-                    out["summary"][key] = {"file": name, "created_at": created_at, "_mtime": mtime}
-                    out["has_any"] = True
+                    out["summary"][key] = item
+                out["has_any"] = True
                 continue
             # If the summary regex matched but rest is unrecognised, fall
             # through to the band regex (it is more specific).
@@ -487,7 +596,12 @@ def list_outputs(
         band = mb.group("band")
         existing = out["bands"].setdefault(band, {}).get(key)
         if existing is None or mtime > existing.get("_mtime", 0):
-            out["bands"][band][key] = {"file": name, "created_at": created_at, "_mtime": mtime}
+            out["bands"][band][key] = {
+                "file": name,
+                "created_at": created_at,
+                "version": version,
+                "_mtime": mtime,
+            }
             out["has_any"] = True
 
     if inst in ("muscat", "muscat2"):
@@ -502,8 +616,27 @@ def list_outputs(
     if logs:
         out["log"] = max(logs, key=lambda p: p.stat().st_mtime).name
 
+    # Rebuild summary_items from summary dict to ensure only the newest
+    # version of each summary product is displayed (avoid duplicates for
+    # legacy vs band-set-scoped summary stems with the same key).
+    out["summary_items"] = [
+        item for key, item in out["summary"].items()
+        if key != "nearby_stars"
+    ]
+
     # Strip internal keys and order bands canonically (gp, rp, ip, zs)
+    out["summary_items"].sort(
+        key=lambda item: (
+            ["lightcurves", "raw_flux", "covariates", "stacks"].index(item["key"])
+            if item["key"] in {"lightcurves", "raw_flux", "covariates", "stacks"}
+            else 99,
+            -item.get("_mtime", 0),
+            item["file"],
+        )
+    )
     for d in out["summary"].values():
+        d.pop("_mtime", None)
+    for d in out["summary_items"]:
         d.pop("_mtime", None)
     for band_d in out["bands"].values():
         for d in band_d.values():
@@ -531,6 +664,111 @@ def csv_preview(path: Path, n: int = 8) -> tuple[list[str], list[list[str]]]:
         return headers, rows
     except OSError:
         return [], []
+
+
+@dataclass
+class RunDescriptor:
+    run_id: str
+    site: str = ""
+    mode: str = ""
+    run_name: str = ""
+    mtime: float = 0.0
+    is_legacy: bool = False
+    run_type: str = "full"
+
+
+def _read_run_meta(d: Path) -> dict:
+    try:
+        return json.loads((d / _RUN_META_NAME).read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _dir_mtime(d: Path) -> float:
+    try:
+        return max((p.stat().st_mtime for p in d.iterdir() if p.is_file()), default=d.stat().st_mtime)
+    except OSError:
+        return 0.0
+
+
+def _write_run_meta(d: Path, *, inst: str, date: str, target: str, run_id: str, site: str, mode: str, run_name: str, run_type: str) -> None:
+    meta = {
+        "inst": inst,
+        "date": date,
+        "target": target,
+        "run_id": run_id,
+        "site": site,
+        "mode": mode,
+        "run_name": run_name,
+        "run_type": run_type,
+        "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
+    }
+    try:
+        (d / _RUN_META_NAME).write_text(json.dumps(meta, sort_keys=True, indent=2))
+    except OSError:
+        pass
+
+
+def list_photometry_runs(
+    inst: str, date: str, target: str
+) -> tuple[list[RunDescriptor], dict[str | None, dict]]:
+    """Enumerate legacy and named photometry runs for a target, newest-first.
+
+    Returns ``(runs, run_outputs)`` where ``run_outputs`` maps each run's
+    ``run_id`` (``None`` for the legacy run) to its pre-computed
+    ``list_outputs()`` result.  Callers that need the outputs for the selected
+    run can pull them from the dict instead of calling ``list_outputs()`` again,
+    avoiding a redundant directory scan.
+    """
+    runs: list[RunDescriptor] = []
+    run_outputs: dict[str | None, dict] = {}
+
+    legacy = list_outputs(inst, date, target)
+    run_outputs[None] = legacy
+    legacy_dir = run_output_dir(inst, date, target)
+    if legacy.get("has_any"):
+        runs.append(RunDescriptor(
+            run_id="",
+            site="",
+            mode="",
+            run_name="legacy",
+            mtime=_dir_mtime(legacy_dir),
+            is_legacy=True,
+            run_type="full",
+        ))
+
+    try:
+        runs_root = results_dir(inst, date) / _RUNS_DIR_NAME / _target_dir_name(target)
+    except ValueError:
+        return runs, run_outputs
+    if runs_root.is_dir():
+        for d in sorted(runs_root.iterdir()):
+            if not d.is_dir():
+                continue
+            out = list_outputs(inst, date, target, run_id=d.name)
+            run_outputs[d.name] = out
+            if not out.get("has_any"):
+                continue
+            meta = _read_run_meta(d)
+            if meta.get("run_id") or meta.get("run_name"):
+                site = str(meta.get("site") or "")
+                mode = str(meta.get("mode") or "")
+                run_name = str(meta.get("run_name") or "")
+                run_type = str(meta.get("run_type") or "full")
+            else:
+                site, mode, run_name = _parse_run_dir_name(inst, d.name)
+                run_type = "full"
+            runs.append(RunDescriptor(
+                run_id=d.name,
+                site=site,
+                mode=mode,
+                run_name=run_name or d.name,
+                mtime=_dir_mtime(d),
+                is_legacy=False,
+                run_type=run_type,
+            ))
+    runs.sort(key=lambda r: r.mtime, reverse=True)
+    return runs, run_outputs
 
 
 # --------------------------- safe file serving ---------------------------
@@ -561,6 +799,26 @@ def safe_artifact_path(inst: str, date: str, name: str) -> Path | None:
     candidate = (base / inst / date / name).resolve()
     try:
         candidate.relative_to(base)
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
+
+
+def safe_run_artifact_path(inst: str, date: str, target: str, run_id: str, name: str) -> Path | None:
+    """Resolve a named-run artifact path, or ``None`` when invalid/missing."""
+    if inst not in INSTRUMENTS or not valid_date(date):
+        return None
+    if ".." in name or "/" in name or not _NAME_RE.match(name):
+        return None
+    if Path(name).suffix.lower() not in ALLOWED_EXTS:
+        return None
+    try:
+        rdir = run_output_dir(inst, date, target, run_id).resolve()
+    except ValueError:
+        return None
+    candidate = (rdir / name).resolve()
+    try:
+        candidate.relative_to(rdir)
     except ValueError:
         return None
     return candidate if candidate.is_file() else None
@@ -691,7 +949,7 @@ def normalize_run_options(raw: dict | None) -> dict:
     if "bands" in raw:  # present-but-empty must surface as an error, not default
         o["bands"] = [str(b).strip() for b in (bands or []) if str(b).strip()]
 
-    for key in ("ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "target_coord", "wcs_method", "calib_dir", "site", "mode", "cmap"):
+    for key in ("run_name", "ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "avoid_nearby_star_mode", "avoid_nearby_star", "target_coord", "wcs_method", "calib_dir", "site", "mode", "cmap", "nan_imputation_method"):
         if raw.get(key) is not None:
             o[key] = str(raw[key]).strip()
 
@@ -706,25 +964,61 @@ def normalize_run_options(raw: dict | None) -> dict:
             if iv is not None:
                 o[key] = iv
 
-    for key in ("min_star_separation", "bin_size_minutes", "sig_bkg", "sig_fwhm", "sig_dx", "sig_dy"):
+    for key in ("min_star_separation", "avoid_nearby_star", "bin_size_minutes", "sig_bkg", "sig_fwhm", "sig_dx", "sig_dy"):
         if str(raw.get(key, "")).strip() != "":
             fv = _to_float(raw[key])
             if fv is not None:
                 o[key] = fv
 
-    for key in ("make_gif", "plot_gaia_sources", "use_barycorrpy", "overwrite"):
+    for key in ("make_gif", "plot_gaia_sources", "use_barycorrpy"):
         if key in raw:
             o[key] = _to_bool(raw[key])
+    # Overwrite requires special handling: explicitly False if present and falsy,
+    # otherwise default to True. This ensures unchecking the box is honored.
+    if "overwrite" in raw:
+        o["overwrite"] = _to_bool(raw["overwrite"])
+    # If not in raw dict at all, default to True (keep existing behavior)
+
+    # Backward-compat: older UI stored a checkbox + optional value instead of a
+    # 3-state mode. Translate that persisted shape when the new mode is absent.
+    if "avoid_nearby_star_mode" not in raw and "avoid_nearby_stars" in raw:
+        enabled = _to_bool(raw.get("avoid_nearby_stars"))
+        if not enabled:
+            o["avoid_nearby_star_mode"] = "off"
+        else:
+            o["avoid_nearby_star_mode"] = (
+                "custom" if str(raw.get("avoid_nearby_star", "")).strip() != "" else "auto"
+            )
 
     return o
 
 
-def validate_run_options(o: dict) -> str | None:
+def validate_run_options(o: dict, inst: str | None = None) -> str | None:
     """Return a user-facing error string for invalid options, else ``None``."""
     if not o.get("bands"):
         return "select at least one band"
     if any(not _BAND_RE.match(b) for b in o["bands"]):
         return "band names may only contain letters, digits and underscores"
+    ref_band = (o.get("ref_band") or "").strip()
+    if inst == "sinistro" and ref_band and len(o.get("bands") or []) > 1:
+        return "reference band is disabled for multi-band Sinistro reductions because simultaneous bands can be from different telescopes/pointings"
+    if ref_band and ref_band not in set(o.get("bands") or []):
+        return "reference band must be one of the selected bands"
+    if (o.get("avoid_comparison_ids") or "").strip() and not (o.get("ref_band") or "").strip():
+        return "avoid comparison IDs requires a reference band"
+    if o.get("avoid_nearby_star_mode") not in ("off", "auto", "custom"):
+        return "avoid nearby stars mode must be one of off, auto, or custom"
+    if o.get("avoid_nearby_star_mode") == "custom":
+        nearby = o.get("avoid_nearby_star")
+        if nearby not in (None, ""):
+            try:
+                nearby_f = float(nearby)
+            except (TypeError, ValueError):
+                return "nearby-star separation must be a number in arcsec"
+            if nearby_f <= 0:
+                return "nearby-star separation must be > 0 arcsec"
+        else:
+            return "nearby-star separation is required in custom mode"
     ar = (o.get("aper_radii") or "").replace(" ", "")
     an = (o.get("annulus") or "").replace(" ", "")
     if ar and not _TRIPLE_RE.match(ar):
@@ -742,8 +1036,13 @@ def validate_run_options(o: dict) -> str | None:
         return "aperture unit must be 'pix' or 'fwhm'"
     if o.get("wcs_method") not in ("twirl", "astrometry.net"):
         return "WCS method must be 'twirl' or 'astrometry.net'"
-    if (o.get("cmap") or "Greys_r") not in CMAP_CHOICES:
+    # Colormap validation: default is "gray" (black=low, white=high).
+    # Note: prose2's run_photometry has a bug where gray and gray_r render
+    # identically; this is a prose2 issue and needs to be fixed there.
+    if (o.get("cmap") or "gray") not in CMAP_CHOICES:
         return f"colormap must be one of {', '.join(CMAP_CHOICES)}"
+    if (o.get("nan_imputation_method") or "linear") not in NAN_IMPUTATION_METHODS:
+        return f"NaN imputation method must be one of {', '.join(NAN_IMPUTATION_METHODS)}"
     site = (o.get("site") or "").strip().lower()
     if site and site not in SINISTRO_SITES:
         return f"site must be one of {', '.join(SINISTRO_SITES)}"
@@ -760,6 +1059,7 @@ def build_command(
     options: dict | None = None,
     *,
     test_run: bool = True,
+    run_id: str | None = None,
 ) -> list[str]:
     """argv for a prose reduction, including any non-default options.
 
@@ -771,7 +1071,7 @@ def build_command(
         *_prose_prefix(),
         "--target_name", target,
         "--data_dir", str(raw_data_dir(inst, date)),
-        "--results_dir", str(results_dir(inst, date)),
+        "--results_dir", str(run_output_dir(inst, date, target, run_id)),
         "--bands", *o["bands"],
     ]
     if o.get("ref_band"):
@@ -802,6 +1102,12 @@ def build_command(
         aids = [a.strip() for a in o["avoid_comparison_ids"].split(",") if a.strip()]
         if aids:
             args += ["--avoid_cids", *aids]
+    if o.get("avoid_nearby_star_mode") != "off":
+        nearby = o.get("avoid_nearby_star")
+        if o.get("avoid_nearby_star_mode") == "auto" or nearby in (None, ""):
+            args.append("--avoid_nearby_star")
+        else:
+            args += ["--avoid_nearby_star", str(nearby)]
 
     # Numeric overrides: only emit when the user changed them from the default.
     for flag, key in (
@@ -849,6 +1155,9 @@ def build_command(
     cmap = (o.get("cmap") or "").strip()
     if cmap and cmap != RUN_DEFAULTS["cmap"]:
         args += ["--cmap", cmap]
+    nan_method = (o.get("nan_imputation_method") or "").strip()
+    if nan_method and nan_method != RUN_DEFAULTS["nan_imputation_method"]:
+        args += ["--nan-imputation-method", nan_method]
     if o.get("use_barycorrpy"):
         args.append("--use_barycorrpy")
 
@@ -870,8 +1179,12 @@ def command_str(
     options: dict | None = None,
     *,
     test_run: bool = False,
+    run_id: str | None = None,
 ) -> str:
-    return shlex.join(build_command(inst, date, target, options, test_run=test_run))
+    if run_id is None:
+        opts = normalize_run_options(options)
+        run_id = build_run_id(inst, opts.get("site"), opts.get("mode"), opts.get("run_name"))
+    return shlex.join(build_command(inst, date, target, options, test_run=test_run, run_id=run_id))
 
 
 # --------------------------- background job runner ---------------------------
@@ -893,6 +1206,10 @@ class Job:
     cancelled: bool = False
     elapsed: int | None = None
     run_type: str = "full"  # "test" | "full"
+    run_id: str = ""
+    site: str = ""
+    mode: str = ""
+    run_name: str = ""
 
 
 _JOBS: dict[str, Job] = {}
@@ -911,22 +1228,38 @@ def _count_running_full() -> int:
     return sum(1 for j in _JOBS.values() if j.run_type == "full" and j.proc.poll() is None)
 
 
-def job_key(inst: str, date: str, target: str) -> str:
-    return f"{inst}/{date}/{target.replace(' ', '')}"
+def job_key(inst: str, date: str, target: str, run_id: str = "") -> str:
+    base = f"{inst}/{date}/{target.replace(' ', '')}"
+    return f"{base}/{run_id}" if run_id else base
 
 
-def _run_log_path(rdir: Path, inst: str, date: str, target: str) -> Path:
+def _run_log_path(rdir: Path, inst: str, date: str, target: str, run_id: str = "") -> Path:
     """Return a deterministic, target-specific web-run log path."""
-    digest = hashlib.sha256(job_key(inst, date, target).encode()).hexdigest()[:16]
+    digest = hashlib.sha256(job_key(inst, date, target, run_id).encode()).hexdigest()[:16]
     return rdir / f"_webrun_{digest}.log"
 
 
-def log_path(inst: str, date: str, target: str) -> Path | None:
-    rdir = results_dir(inst, date) if results_dir(inst, date) else None
-    if rdir is None:
+def log_path(inst: str, date: str, target: str, run_id: str = "") -> Path | None:
+    try:
+        rdir = run_output_dir(inst, date, target, run_id or None)
+    except ValueError:
         return None
-    p = _run_log_path(rdir, inst, date, target)
+    p = _run_log_path(rdir, inst, date, target, run_id)
     return p if p.is_file() else None
+
+
+def _full_reduction_exists(
+    inst: str,
+    date: str,
+    target: str,
+    run_id: str,
+) -> bool:
+    """Check if a full reduction already exists for the given run_id."""
+    try:
+        rdir = run_output_dir(inst, date, target, run_id)
+    except ValueError:
+        return False
+    return rdir.is_dir()
 
 
 def start_run(
@@ -946,23 +1279,56 @@ def start_run(
     if not (target or "").strip():
         return {"ok": False, "error": "target is required"}
     opts = normalize_run_options(options)
-    err = validate_run_options(opts)
+    err = validate_run_options(opts, inst=inst)
     if err:
         return {"ok": False, "error": err}
     rawdir = raw_data_dir(inst, date)
     if not rawdir.is_dir():
         return {"ok": False, "error": f"raw data not found: {rawdir}"}
 
-    key = job_key(inst, date, target)
+    run_name = str(opts.get("run_name") or "").strip()
+    site = (opts.get("site") or "").strip().lower() if inst == "sinistro" else ""
+    mode = (opts.get("mode") or "").strip().lower() if inst == "sinistro" else ""
+    run_id = build_run_id(inst, site, mode, run_name)
+    key = job_key(inst, date, target, run_id)
+    run_type = "test" if test_run else "full"
+
     with _LOCK:
         existing = _JOBS.get(key)
-        if existing is not None and existing.proc.poll() is None:
-            return {"ok": True, "key": key, "already_running": True}
+        # For full runs at capacity, allow queuing even if a job with the same key exists
+        # (the existing job will be reused if still running; if not, a new one will be queued)
+        at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
+        overwrite = opts.get("overwrite", True)
+        logger.info(f"start_run: {inst}/{date}/{target} run_id={run_id} overwrite={overwrite} existing={existing is not None} at_capacity={at_capacity}")
 
-        run_type = "test" if test_run else "full"
+        if existing is not None and existing.proc.poll() is None and not at_capacity:
+            # If overwrite is True, cancel the existing job and start a new one
+            if overwrite:
+                logger.info(f"start_run: cancelling existing job for {key} (overwrite=True)")
+                try:
+                    existing.proc.terminate()
+                    if existing.logf:
+                        try:
+                            existing.logf.close()
+                        except OSError:
+                            pass
+                except OSError:
+                    pass
+                _JOBS.pop(key, None)
+            else:
+                logger.info(f"start_run: reusing existing job for {key} (overwrite=False)")
+                return {"ok": True, "key": key, "already_running": True, "run_id": run_id}
+
+        if run_type == "full":
+            if _full_reduction_exists(inst, date, target, run_id) and not overwrite:
+                logger.info(f"start_run: refusing to overwrite existing full reduction for {key} (overwrite=False)")
+                return {
+                    "ok": False,
+                    "error": "full reduction already exists for this target; enable 'Overwrite existing products' to replace",
+                }
 
         # Queue full jobs when at capacity
-        if run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS:
+        if at_capacity:
             from muscat_db.database import save_job
             try:
                 save_job(
@@ -972,16 +1338,35 @@ def start_run(
                     returncode=None, elapsed=0,
                     started_at=time.time(),
                     run_type=run_type,
-                    params=json.dumps({"test_run": test_run, "options": opts}, separators=(",", ":"))
+                    params=json.dumps({"test_run": test_run, "options": opts, "run_id": run_id, "site": site, "mode": mode, "run_name": run_name}, separators=(",", ":")),
+                    run_id=run_id,
+                    run_name=run_name,
                 )
             except sqlite3.OperationalError as exc:
                 return {"ok": False, "error": f"database not writable: {exc}"}
-            return {"ok": True, "key": key, "queued": True}
+            return {"ok": True, "key": key, "queued": True, "run_id": run_id}
 
-        rdir = results_dir(inst, date)
+        try:
+            rdir = run_output_dir(inst, date, target, run_id)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
         rdir.mkdir(parents=True, exist_ok=True)
-        cmd = build_command(inst, date, target, opts, test_run=test_run)
-        log_path = _run_log_path(rdir, inst, date, target)
+
+        # Clean up old product files before re-running with potentially different bands.
+        # Without this, re-running with fewer bands leaves stale product files from the
+        # previous run (e.g., zs-band products when re-running with only gp/rp/ip).
+        t = target.replace(" ", "")
+        stem = f"{t}_{inst}"
+        for p in list(rdir.glob("*.png")) + list(rdir.glob("*.gif")) + list(rdir.glob("*.csv")):
+            if p.is_file() and p.name.startswith(stem):
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+
+        _write_run_meta(rdir, inst=inst, date=date, target=target, run_id=run_id, site=site, mode=mode, run_name=run_name, run_type=run_type)
+        cmd = build_command(inst, date, target, opts, test_run=test_run, run_id=run_id)
+        log_path = _run_log_path(rdir, inst, date, target, run_id)
         logf = open(log_path, "w")
         logf.write(f"$ {shlex.join(cmd)}\n\n")
         logf.flush()
@@ -1005,7 +1390,7 @@ def start_run(
         _JOBS[key] = Job(
             key=key, inst=inst, date=date, target=target,
             cmd=cmd, proc=proc, logf=logf, log_path=log_path,
-            run_type=run_type,
+            run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name,
         )
         # Record new job in the database
         from muscat_db.database import save_job
@@ -1020,7 +1405,9 @@ def start_run(
                 elapsed=0,
                 started_at=_JOBS[key].started_at,
                 run_type=run_type,
-                params=json.dumps({"test_run": test_run, "options": opts}, separators=(",", ":"))
+                params=json.dumps({"test_run": test_run, "options": opts, "run_id": run_id, "site": site, "mode": mode, "run_name": run_name}, separators=(",", ":")),
+                run_id=run_id,
+                run_name=run_name,
             )
         except sqlite3.OperationalError as exc:
             # DB write failed (e.g. read-only database). Roll back the launched
@@ -1035,7 +1422,7 @@ def start_run(
                 pass
             _JOBS.pop(key, None)
             return {"ok": False, "error": f"database not writable: {exc}"}
-    return {"ok": True, "key": key}
+    return {"ok": True, "key": key, "run_id": run_id}
 
 
 def _tail(path: Path, n: int = 200) -> str:
@@ -1147,7 +1534,7 @@ def _resolve_job_state(job: "Job", now: float | None = None) -> tuple[str, int |
     return _terminal_job_state(rc, job.cancelled, job.log_path), rc, True
 
 
-def _pending_status(inst: str, date: str, target: str) -> dict | None:
+def _pending_status(inst: str, date: str, target: str, run_id: str = "") -> dict | None:
     """Return a queued-job status dict if a pending DB entry exists, else None.
 
     A full run launched while the single full-job slot is occupied is recorded
@@ -1156,7 +1543,7 @@ def _pending_status(inst: str, date: str, target: str) -> dict | None:
     """
     from muscat_db.database import get_persisted_jobs
 
-    db_key = f"photometry:{job_key(inst, date, target)}"
+    db_key = f"photometry:{job_key(inst, date, target, run_id)}"
     try:
         for entry in get_persisted_jobs():
             if (
@@ -1176,7 +1563,7 @@ def _pending_status(inst: str, date: str, target: str) -> dict | None:
     return None
 
 
-def _persisted_status(inst: str, date: str, target: str) -> dict | None:
+def _persisted_status(inst: str, date: str, target: str, run_id: str = "") -> dict | None:
     """Return a terminal-state status dict from the DB for a job no longer in
     ``_JOBS``.
 
@@ -1189,7 +1576,7 @@ def _persisted_status(inst: str, date: str, target: str) -> dict | None:
     """
     from muscat_db.database import get_persisted_jobs
 
-    db_key = f"photometry:{job_key(inst, date, target)}"
+    db_key = f"photometry:{job_key(inst, date, target, run_id)}"
     try:
         for entry in get_persisted_jobs():  # newest-first; one row per key
             if entry["key"] != db_key or entry["type"] != "photometry":
@@ -1197,7 +1584,7 @@ def _persisted_status(inst: str, date: str, target: str) -> dict | None:
             state = entry["state"]
             if state not in ("done", "error", "cancelled"):
                 return None  # running/pending handled by the caller
-            lp = log_path(inst, date, target)
+            lp = log_path(inst, date, target, run_id)
             error_desc = entry.get("error_desc") or ""
             if state == "error" and not error_desc and lp:
                 error_desc = _get_error_desc(lp)
@@ -1215,20 +1602,20 @@ def _persisted_status(inst: str, date: str, target: str) -> dict | None:
     return None
 
 
-def job_status(inst: str, date: str, target: str) -> dict:
+def job_status(inst: str, date: str, target: str, run_id: str = "") -> dict:
     """Poll a job and return its state plus its target-specific log tail.
 
     A zero exit status is still an error when the pipeline logged
     ``photometry PARTIAL FAILURE``.
     """
-    key = job_key(inst, date, target)
+    key = job_key(inst, date, target, run_id)
     with _LOCK:
         job = _JOBS.get(key)
         if job is None:
-            pending = _pending_status(inst, date, target)
+            pending = _pending_status(inst, date, target, run_id)
             if pending is not None:
                 return pending
-            persisted = _persisted_status(inst, date, target)
+            persisted = _persisted_status(inst, date, target, run_id)
             if persisted is not None:
                 return persisted
             return {"state": "none", "log": "", "returncode": None, "elapsed": 0}
@@ -1254,6 +1641,7 @@ def job_status(inst: str, date: str, target: str) -> dict:
         "log": _tail(log_path),
         "elapsed": round(elapsed),
         "error_desc": error_desc,
+        "run_type": job.run_type if job else "full",
     }
 
 
@@ -1278,6 +1666,7 @@ def get_all_jobs() -> list[dict]:
                 "inst": job.inst,
                 "date": job.date,
                 "target": job.target,
+                "run_id": job.run_id,
                 "state": state,
                 "returncode": rc,
                 "elapsed": round(elapsed),
@@ -1328,55 +1717,67 @@ def _watchdog_breach(job: "Job", now: float) -> str | None:
     return None
 
 
-def delete_reduction(inst: str, date: str, target: str) -> dict:
+def delete_reduction(inst: str, date: str, target: str, run_id: str = "") -> dict:
     """Delete all reduction products for one (inst, date, target) from disk.
 
     Removes files matching the target's stem in the results directory, plus
     the web-run log. Also clears the persisted job record so the Jobs page
     no longer shows a stale entry. Never touches other targets.
     """
-    rdir = results_dir(inst, date)
+    try:
+        rdir = run_output_dir(inst, date, target, run_id or None)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
     if not rdir.is_dir():
         return {"ok": True, "count": 0}
     t = target.replace(" ", "")
     stem = f"{t}_{inst}"
-    web_log = _run_log_path(rdir, inst, date, target)
+    web_log = _run_log_path(rdir, inst, date, target, run_id)
     removed = 0
-    for p in list(rdir.iterdir()):
-        if not p.is_file():
-            continue
-        if p.name.startswith(stem):
+    if run_id:
+        try:
+            for p in rdir.rglob("*"):
+                if p.is_file():
+                    removed += 1
+            shutil.rmtree(rdir)
+        except OSError as exc:
+            return {"ok": False, "error": f"failed to delete run: {exc}"}
+    else:
+        for p in list(rdir.iterdir()):
+            if not p.is_file():
+                continue
+            if p.name.startswith(stem):
+                try:
+                    p.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        if web_log.is_file():
             try:
-                p.unlink()
+                web_log.unlink()
                 removed += 1
             except OSError:
                 pass
-    if web_log.is_file():
-        try:
-            web_log.unlink()
-            removed += 1
-        except OSError:
-            pass
     from muscat_db.database import db_path, clear_all_caches
     try:
         conn = sqlite3.connect(db_path())
-        conn.execute("DELETE FROM jobs WHERE key = ?", (f"photometry:{job_key(inst, date, target)}",))
+        conn.execute("DELETE FROM jobs WHERE key = ?", (f"photometry:{job_key(inst, date, target, run_id)}",))
         conn.commit()
         conn.close()
         clear_all_caches()
     except Exception:
         pass
     try:
-        del _JOBS[job_key(inst, date, target)]
+        del _JOBS[job_key(inst, date, target, run_id)]
     except KeyError:
         pass
     return {"ok": True, "count": removed}
 
 
-def cancel_run(inst: str, date: str, target: str) -> dict:
+def cancel_run(inst: str, date: str, target: str, run_id: str = "") -> dict:
     """Cancel a running or pending reduction. Sends SIGTERM to the job's process group
     and escalates to SIGKILL after a short grace period."""
-    key = job_key(inst, date, target)
+    key = job_key(inst, date, target, run_id)
     with _LOCK:
         from muscat_db.database import save_job, get_persisted_jobs
         job = _JOBS.get(key)
@@ -1390,7 +1791,8 @@ def cancel_run(inst: str, date: str, target: str) -> dict:
                     type_="photometry", inst=inst, date=date, target=target,
                     state="cancelled", returncode=-1, elapsed=0,
                     started_at=found[0]["started_at"],
-                    error_desc="Cancelled by user"
+                    error_desc="Cancelled by user",
+                    run_id=run_id,
                 )
                 return {"ok": True, "key": key}
             return {"ok": False, "error": "no job to cancel"}
@@ -1409,7 +1811,8 @@ def cancel_run(inst: str, date: str, target: str) -> dict:
             returncode=-1,
             elapsed=round(time.time() - job.started_at),
             started_at=job.started_at,
-            error_desc="Cancelled by user"
+            error_desc="Cancelled by user",
+            run_id=run_id,
         )
 
     try:
@@ -1469,6 +1872,7 @@ def sync_jobs() -> None:
                 state="error", returncode=-1,
                 elapsed=round(now - job.started_at), started_at=job.started_at,
                 error_desc=f"watchdog: {reason}", run_type=job.run_type,
+                run_id=job.run_id,
             )
             _JOBS.pop(key, None)
 
@@ -1476,7 +1880,8 @@ def sync_jobs() -> None:
         for entry in db_jobs:
             if entry["type"] != "photometry" or entry["state"] != "done":
                 continue
-            entry_log_path = log_path(entry["inst"], entry["date"], entry["target"])
+            entry_run_id = entry.get("run_id") or ""
+            entry_log_path = log_path(entry["inst"], entry["date"], entry["target"], entry_run_id)
             if not _log_has_partial_failure(entry_log_path):
                 continue
             save_job(
@@ -1491,12 +1896,14 @@ def sync_jobs() -> None:
                 error_desc=_get_error_desc(entry_log_path) if entry_log_path else "Partial failure",
                 run_type=entry.get("run_type") or "",
                 params=entry.get("params") or "",
+                run_id=entry_run_id,
             )
 
         running_keys = {j["key"] for j in db_jobs if j["state"] == "running" and j["type"] == "photometry"}
-        
+        db_by_key = {j["key"]: j for j in db_jobs}
+
         for key, job in _JOBS.items():
-            db_key = f"photometry:{job.inst}/{job.date}/{job.target.replace(' ', '')}"
+            db_key = f"photometry:{job_key(job.inst, job.date, job.target, job.run_id)}"
             state, rc, is_terminal = _resolve_job_state(job)
             if is_terminal and job.state == "running":
                 job.state = state
@@ -1513,7 +1920,29 @@ def sync_jobs() -> None:
             # with the photometry page until the log truly goes quiescent.
             persist_state = "running" if state == "finalizing" else state
             persist_rc = None if state == "finalizing" else rc
-            elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
+            # Only persist when the row actually changed. A steadily-running job
+            # whose DB row already says "running" needs no rewrite; elapsed is
+            # computed live in the web layer, so we no longer write every 2s poll
+            # just to bump it (each write also fired clear_all_caches, nullifying
+            # the directory caches). Terminal transitions still write through.
+            existing = db_by_key.get(db_key)
+            # For terminal jobs: use stored elapsed (runtime), not time since start
+            # For running jobs: calculate from current time
+            if job.state not in ("running", "cancelling") and job.elapsed is not None:
+                elapsed = job.elapsed  # Use calculated runtime when job hit terminal state
+            elif existing is not None and existing.get("state") not in ("running", "cancelling"):
+                elapsed = existing.get("elapsed") or 0  # Use existing DB value for completed jobs
+            else:
+                elapsed = round(time.time() - job.started_at)  # Calculate for running jobs
+            unchanged = (
+                existing is not None
+                and existing.get("state") == persist_state
+                and existing.get("returncode") == persist_rc
+            )
+            running_keys.discard(db_key)
+            if unchanged:
+                continue
+
             error_desc = ""
             if persist_state == "error":
                 error_desc = _get_error_desc(job.log_path)
@@ -1529,13 +1958,17 @@ def sync_jobs() -> None:
                 returncode=persist_rc,
                 elapsed=round(elapsed),
                 started_at=job.started_at,
-                error_desc=error_desc
+                error_desc=error_desc,
+                run_id=job.run_id,
             )
-            running_keys.discard(db_key)
             
         for db_key in running_keys:
             _, rest = db_key.split(":", 1)
-            inst, date, target = rest.split("/", 2)
+            parts = rest.split("/")
+            if len(parts) < 3:
+                continue
+            inst, date, target = parts[:3]
+            run_id = "/".join(parts[3:]) if len(parts) > 3 else ""
             started_at = time.time()
             elapsed = 0
             for j in db_jobs:
@@ -1552,7 +1985,8 @@ def sync_jobs() -> None:
                 returncode=-1,
                 elapsed=elapsed,
                 started_at=started_at,
-                error_desc="Process lost (server restart)"
+                error_desc="Process lost (server restart)",
+                run_id=run_id,
             )
 
         # Launch pending full jobs if capacity allows
@@ -1563,8 +1997,12 @@ def sync_jobs() -> None:
             for entry in pending:
                 if _count_running_full() >= _MAX_FULL_JOBS:
                     break
-                if entry["key"] in _JOBS:
-                    save_job(type_="photometry", inst=entry["inst"], date=entry["date"], target=entry["target"], state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry")
+                run_id = entry.get("run_id") or ""
+                # The DB key is prefixed ("photometry:..."), so compare against the
+                # in-memory job key (unprefixed) to detect a job that is already
+                # running and must not be relaunched from its stale pending row.
+                if job_key(entry["inst"], entry["date"], entry["target"], run_id) in _JOBS:
+                    save_job(type_="photometry", inst=entry["inst"], date=entry["date"], target=entry["target"], state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_id=run_id, run_name=entry.get("run_name", ""))
                     continue
                 try:
                     p = json.loads(entry.get("params") or "{}")
@@ -1573,11 +2011,21 @@ def sync_jobs() -> None:
                 opts = p.get("options", {})
                 test_run = p.get("test_run", True)
                 inst, date, target = entry["inst"], entry["date"], entry["target"]
-                key = job_key(inst, date, target)
-                cmd = build_command(inst, date, target, opts, test_run=test_run)
-                rdir = results_dir(inst, date)
+                run_id = p.get("run_id") or entry.get("run_id") or build_run_id(inst, opts.get("site"), opts.get("mode"), opts.get("run_name"))
+                site = p.get("site", opts.get("site", "")) if inst == "sinistro" else ""
+                mode = p.get("mode", opts.get("mode", "")) if inst == "sinistro" else ""
+                run_name = p.get("run_name", opts.get("run_name", ""))
+                key = job_key(inst, date, target, run_id)
+                cmd = build_command(inst, date, target, opts, test_run=test_run, run_id=run_id)
+                try:
+                    rdir = run_output_dir(inst, date, target, run_id)
+                except ValueError as exc:
+                    save_job(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=str(exc), run_id=run_id, run_name=run_name)
+                    continue
                 rdir.mkdir(parents=True, exist_ok=True)
-                pending_log_path = _run_log_path(rdir, inst, date, target)
+                run_type = "test" if test_run else "full"
+                _write_run_meta(rdir, inst=inst, date=date, target=target, run_id=run_id, site=site, mode=mode, run_name=run_name, run_type=run_type)
+                pending_log_path = _run_log_path(rdir, inst, date, target, run_id)
                 try:
                     logf = open(pending_log_path, "w")
                     logf.write(f"$ {shlex.join(cmd)}\n\n")
@@ -1587,16 +2035,15 @@ def sync_jobs() -> None:
                 except (FileNotFoundError, OSError) as exc:
                     try: logf.close()
                     except OSError: pass
-                    save_job(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}")
+                    save_job(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_id=run_id, run_name=run_name)
                     continue
-                run_type = "test" if test_run else "full"
-                _JOBS[key] = Job(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=pending_log_path, run_type=run_type)
+                _JOBS[key] = Job(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=pending_log_path, run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name)
                 try:
-                    save_job(type_="photometry", inst=inst, date=date, target=target, state="running", returncode=None, elapsed=0, started_at=_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""))
+                    save_job(type_="photometry", inst=inst, date=date, target=target, state="running", returncode=None, elapsed=0, started_at=_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""), run_id=run_id, run_name=run_name)
                 except sqlite3.OperationalError as exc:
                     try: proc.terminate()
                     except OSError: pass
                     try: logf.close()
                     except OSError: pass
                     _JOBS.pop(key, None)
-                    save_job(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Database not writable: {exc}")
+                    save_job(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Database not writable: {exc}", run_id=run_id, run_name=run_name)

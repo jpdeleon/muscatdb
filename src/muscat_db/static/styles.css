@@ -188,6 +188,11 @@ tr.filter-row th input::placeholder { color: var(--text-dim); font-style: italic
 [data-theme="dark"] .badge-filter-i.narrow { background: #382912; color: #c2a76d; }
 [data-theme="dark"] .badge-filter-z.narrow { background: #381c1c; color: #c08e8e; }
 
+/* Status badges for job states */
+.badge-error   { background: var(--red); color: #ffffff; }
+.badge-cancelled { background: var(--text-dim); color: #ffffff; }
+.badge-pending { background: var(--blue); color: #ffffff; }
+
 /* ---------- Instrument filter badges ---------- */
 .instrument-badges {
   display: flex;
@@ -703,4 +708,8 @@ th.drag-over-right {
   width: 90%;
   box-shadow: 0 8px 32px rgba(0,0,0,0.3);
 }
+
+/* ---------- LCO Schedule page ---------- */
+.muscat-only { display: none; }
+.sinistro-only { display: none; }
 

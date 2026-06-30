@@ -41,6 +41,9 @@ _POLL_INTERVAL_S = 5
 # margin so this flags a real regression, not normal variance.
 _PHOT_ELAPSED_CEILING_S = 600
 
+# Sinistro / TIC88297141 / single-band zs baseline is ~120s full run.
+_SINISTRO_PHOT_ELAPSED_CEILING_S = 300
+
 
 def _poll_to_terminal(status_fn, *, timeout=_POLL_TIMEOUT_S, interval=_POLL_INTERVAL_S):
     """Poll ``status_fn()`` until it reports a terminal state or *timeout*.
@@ -66,7 +69,8 @@ def test_full_photometry_run_completes_and_is_fast(record_property):
         # Raw data dir or conda env missing on this host -> nothing to profile.
         pytest.skip(f"photometry run could not start: {res.get('error')}")
 
-    status = _poll_to_terminal(lambda: phot.job_status(INST, DATE, TARGET))
+    run_id = res.get("run_id") or ""
+    status = _poll_to_terminal(lambda: phot.job_status(INST, DATE, TARGET, run_id))
 
     state = status.get("state")
     assert state not in _NON_TERMINAL, f"run did not reach a terminal state: {state}"
@@ -81,6 +85,43 @@ def test_full_photometry_run_completes_and_is_fast(record_property):
           f"(ceiling {_PHOT_ELAPSED_CEILING_S}s)")
     assert elapsed < _PHOT_ELAPSED_CEILING_S, (
         f"photometry runtime regression: {elapsed}s >= {_PHOT_ELAPSED_CEILING_S}s ceiling"
+    )
+
+
+@pytest.mark.slow
+def test_sinistro_photometry_run_completes_and_is_fast(record_property):
+    """Full single-band zs photometry for sinistro/260624/TIC88297141 finishes
+    ``done`` within the runtime-regression ceiling."""
+    opts = {
+        "bands": ["zs"],
+        "ref_band": "zs",
+        "target_coord": "261.784554 -25.969731",
+        "avoid_comparison_ids": "0,1,2",
+        "avoid_nearby_star_mode": "custom",
+        "avoid_nearby_star": "1.0",
+        "min_star_separation": 4.0,
+        "max_num_stars": 40,
+    }
+    res = phot.start_run("sinistro", "260624", "TIC88297141", options=opts, test_run=False)
+    if not res.get("ok"):
+        pytest.skip(f"sinistro photometry could not start: {res.get('error')}")
+
+    run_id = res.get("run_id") or ""
+    status = _poll_to_terminal(lambda: phot.job_status("sinistro", "260624", "TIC88297141", run_id))
+
+    state = status.get("state")
+    assert state not in _NON_TERMINAL, f"run did not reach a terminal state: {state}"
+    assert state == "done", (
+        f"sinistro photometry ended in {state!r} "
+        f"(error_desc={status.get('error_desc')!r})\n{status.get('log', '')[-2000:]}"
+    )
+
+    elapsed = status.get("elapsed") or 0
+    record_property("sinistro_photometry_elapsed_s", elapsed)
+    print(f"\n[slow] sinistro photometry full run elapsed: {elapsed}s "
+          f"(ceiling {_SINISTRO_PHOT_ELAPSED_CEILING_S}s)")
+    assert elapsed < _SINISTRO_PHOT_ELAPSED_CEILING_S, (
+        f"sinistro runtime regression: {elapsed}s >= {_SINISTRO_PHOT_ELAPSED_CEILING_S}s ceiling"
     )
 
 

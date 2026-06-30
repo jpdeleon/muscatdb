@@ -846,6 +846,7 @@ def calc_all_bands(
     mode: str = "exptime",
     exptime: float | None = None,
     target_adu: float | None = None,
+    confmode: str | None = None,
 ) -> dict:
     """Calculate for all bands.
 
@@ -854,6 +855,9 @@ def calc_all_bands(
 
     When ``target_adu`` is provided (custom ADU mode), it overrides the
     sat_frac-derived target.
+
+    confmode: Sinistro readout mode ("central_2k_2x2" or "full_frame"), currently
+    not used for calculation but may affect full well in future versions.
     """
     params = INSTRUMENT_PARAMS.get(instrument, {})
     full_well = params.get("full_well", 100000)
