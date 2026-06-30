@@ -23,8 +23,8 @@
     <div class="lco-field"><label for="sch-t0" title="BJD_TDB. Enter mean,uncertainty. Populated by Fetch ephemeris; editable.">t0 (BJD)</label><input id="sch-t0" type="text" inputmode="decimal" placeholder="e.g. 2459000.5,0.0003"></div>
     <div class="lco-field"><label for="sch-period">Period (days)</label><input id="sch-period" type="text" inputmode="decimal" placeholder="e.g. 1.0914,0.00001"></div>
     <div class="lco-field"><label for="sch-duration" title="From the catalog when available; override here. Enter mean,uncertainty.">Duration (hr)</label><input id="sch-duration" type="text" inputmode="decimal" placeholder="e.g. 2.5,0.1"></div>
-    <div class="lco-field"><label for="sch-pad-before">Pad before (min)</label><input id="sch-pad-before" type="number" step="any" value="45"></div>
-    <div class="lco-field"><label for="sch-pad-after">Pad after (min)</label><input id="sch-pad-after" type="number" step="any" value="45"></div>
+    <div class="lco-field"><label for="sch-pad-before">Pre-ingress (min)</label><input id="sch-pad-before" type="number" step="any" value="45"></div>
+    <div class="lco-field"><label for="sch-pad-after">Post-egress (min)</label><input id="sch-pad-after" type="number" step="any" value="45"></div>
     <div class="lco-field"><label for="sch-include-padding" style="margin: 0;" title="When on, the padded baseline (start→end) must also be observable for a transit to rate 'full'. When off, padding is used only for the displayed span and the observability check spans just the transit (mid ± duration/2).">Include padding in obs check</label>
       <input id="sch-include-padding" type="checkbox"></div>
   </div>
@@ -47,6 +47,9 @@
         <option value="nautical" selected>Nautical (−12°)</option>
         <option value="astronomical">Astronomical (−18°)</option>
       </select></div>
+    <div class="lco-field"><label for="sch-max-airmass">Max airmass</label><input id="sch-max-airmass" type="number" step="any" value="2"></div>
+    <div class="lco-field"><label for="sch-min-lunar">Min lunar (deg)</label><input id="sch-min-lunar" type="number" step="any" value="30"></div>
+    <button class="btn" type="button" id="btn-fov" title="Optimize field-of-view pointing for this target">Show FOV</button>
   </div>
   <div class="lco-actions">
     <button class="btn" type="button" id="btn-fetch-ephem">Fetch ephemeris</button>
@@ -156,8 +159,6 @@
   </div>
 
   <div class="lco-grid" style="margin-top: 0.6rem; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
-    <div class="lco-field"><label for="sch-max-airmass">Max airmass</label><input id="sch-max-airmass" type="number" step="any" value="1.6"></div>
-    <div class="lco-field"><label for="sch-min-lunar">Min lunar (deg)</label><input id="sch-min-lunar" type="number" step="any" value="30"></div>
     <div class="lco-field"><label for="sch-ipp">IPP value</label><input id="sch-ipp" type="number" step="any" value="1.0"></div>
     <div class="lco-field"><label for="sch-type">Type</label>
       <select id="sch-type">
@@ -185,7 +186,6 @@
     </div>
   </div>
   <div class="lco-actions">
-    <button class="btn" type="button" id="btn-fov" title="Optimize field-of-view pointing for this target">Show FOV</button>
     <button class="btn" type="button" id="btn-exp" title="Calculate exposure times for this target">Show Exp</button>
   </div>
   <p class="lco-note">These scheduling inputs are separate from the archive page.</p>
@@ -842,6 +842,11 @@
     cpt: '#c879e0', tfn: '#e07b53', elp: '#7ad17a'
   };
   var SITE_COLOR_CYCLE = ['#6c8cff', '#45d6b5', '#e0a23b', '#c879e0', '#e07b53', '#7ad17a'];
+  var SITE_LABELS = {
+    ogg: 'OGG – Haleakala', coj: 'COJ – Siding Spring',
+    lsc: 'LSC – Cerro Tololo', cpt: 'CPT – Sutherland',
+    tfn: 'TFN – Tenerife', elp: 'ELP – McDonald'
+  };
   function siteColor(site, idx) {
     return SITE_COLORS[site] || SITE_COLOR_CYCLE[idx % SITE_COLOR_CYCLE.length];
   }
@@ -856,7 +861,6 @@
     var primary = series[0].data;
 
     var traces = [];
-    var darkIndices = [];
     series.forEach(function (s, i) {
       var d = s.data;
       var color = siteColor(s.site, i);
@@ -872,37 +876,39 @@
         var am = alt > 0 ? 1.0 / Math.sin(alt * Math.PI / 180.0) : null;
         return [d.moon_sep[idx], am, d.moon_alt[idx], d.sun_alt[idx]];
       });
+      var moonSepStr = d.moon_sep_mid != null ? d.moon_sep_mid.toFixed(1) + '° ' : '';
+      var legendLabel = moonSepStr + (SITE_LABELS[s.site] || s.site.toUpperCase());
       var targetHover = '%{x|%Y-%m-%d %H:%M} UTC<br>' +
         'Altitude: %{y:.1f}°<br>' +
         'Airmass: %{customdata[1]:.2f}<br>' +
         'Moon sep: %{customdata[0]:.1f}°<br>' +
         'Moon alt: %{customdata[2]:.1f}°<br>' +
         'Sun alt: %{customdata[3]:.1f}°' +
-        '<extra>' + s.site.toUpperCase() + '</extra>';
-      // Hover lives on the full-track (faint) trace so it works across the whole
-      // time range; the bold night overlay is visual only (skips hover to avoid
-      // duplicate tooltips where the two lines coincide).
-      traces.push({ x: d.times, y: d.target_alt, name: s.site.toUpperCase(), mode: 'lines', line: { color: color, width: 1.2, dash: 'dot' }, showlegend: false, customdata: customTarget, hovertemplate: targetHover });
-      traces.push({ x: d.times, y: targetAltObservable, name: s.site.toUpperCase(), mode: 'lines', line: { color: color, width: 3 }, hoverinfo: 'skip' });
-      d.sun_alt.forEach(function (alt, idx) {
-        var isObservable = alt < d.sun_alt_limit &&
-                           d.target_alt[idx] >= d.alt_limit &&
-                           d.moon_sep[idx] >= d.moon_sep_min;
-        if (isObservable) darkIndices.push(idx);
-      });
+        '<extra>' + (SITE_LABELS[s.site] || s.site.toUpperCase()) + '</extra>';
+      // Faint dotted trace carries the hover and legend entry; bold observable
+      // overlay is visual only (no legend duplicate, no hover).
+      traces.push({ x: d.times, y: d.target_alt, name: legendLabel, mode: 'lines', line: { color: color, width: 1.2, dash: 'dot' }, showlegend: true, customdata: customTarget, hovertemplate: targetHover });
+      traces.push({ x: d.times, y: targetAltObservable, name: legendLabel, mode: 'lines', line: { color: color, width: 3 }, showlegend: false, hoverinfo: 'skip' });
     });
-    traces.push({ x: primary.times, y: primary.moon_alt, name: 'Moon (' + series[0].site + ')', mode: 'lines', line: { color: 'black', width: 1.5, dash: 'dash' }, hovertemplate: '%{x|%H:%M} UTC<br>Moon alt: %{y:.1f}°<extra>Moon</extra>' });
-    traces.push({ x: primary.times, y: primary.sun_alt, name: 'Sun (' + series[0].site + ')', mode: 'lines', line: { color: '#e07b53', width: 1, dash: 'dot' }, hovertemplate: '%{x|%H:%M} UTC<br>Sun alt: %{y:.1f}°<extra>Sun</extra>' });
+    traces.push({ x: primary.times, y: primary.moon_alt, name: 'Moon', mode: 'lines', line: { color: isDark ? '#aaa' : '#555', width: 1.5, dash: 'dash' }, hovertemplate: '%{x|%H:%M} UTC<br>Moon alt: %{y:.1f}°<extra>Moon</extra>' });
+    traces.push({ x: primary.times, y: primary.sun_alt, name: 'Sun', mode: 'lines', line: { color: '#e07b53', width: 1, dash: 'dot' }, hovertemplate: '%{x|%H:%M} UTC<br>Sun alt: %{y:.1f}°<extra>Sun</extra>' });
 
-    // x-range = union of every site's night across the window.
-    var xMin = primary.times[0];
-    var xMax = primary.times[primary.times.length - 1];
-    if (darkIndices.length > 0) {
-      var lo = Math.min.apply(null, darkIndices);
-      var hi = Math.max.apply(null, darkIndices);
-      xMin = primary.times[lo];
-      xMax = primary.times[hi];
-    }
+    // x-range = 24-hour window from 00:00 UT to 00:00 UT next day (shifted 1 day later)
+    var firstTime = new Date(primary.times[0]);
+    var xMin = new Date(Date.UTC(firstTime.getUTCFullYear(), firstTime.getUTCMonth(), firstTime.getUTCDate() + 1, 0, 0, 0)).toISOString();
+    var xMax = new Date(Date.UTC(firstTime.getUTCFullYear(), firstTime.getUTCMonth(), firstTime.getUTCDate() + 2, 0, 0, 0)).toISOString();
+
+    // Right y-axis: airmass ticks placed at the corresponding altitude values so
+    // they align correctly with the left altitude axis.
+    var AM_TICKS = [1.0, 1.1, 1.25, 1.5, 2.0, 2.5, 3.0];
+    var amTickVals = [], amTickText = [];
+    AM_TICKS.forEach(function (am) {
+      var alt = Math.asin(1.0 / am) * 180.0 / Math.PI;
+      if (alt >= primary.alt_limit - 0.5 && alt <= 90.5) {
+        amTickVals.push(alt);
+        amTickText.push(String(am));
+      }
+    });
 
     var x0 = primary.times[0];
     var x1 = primary.times[primary.times.length - 1];
@@ -915,17 +921,18 @@
       { type: 'line', xref: 'x', yref: 'y', x0: x0, x1: x1, y0: 0, y1: 0, line: { color: grid, width: 1 } }
     ];
     var layout = {
-      margin: { l: 45, r: 12, t: 10, b: 36 },
+      margin: { l: 45, r: 65, t: 30, b: 36 },
       paper_bgcolor: 'rgba(0,0,0,0)',
       plot_bgcolor: 'rgba(0,0,0,0)',
       font: { color: fg, size: 11 },
-      xaxis: { gridcolor: grid, title: 'UTC', range: [xMin, xMax] },
+      xaxis: { gridcolor: grid, title: 'UT time (hours)', range: [xMin, xMax] },
       yaxis: { gridcolor: grid, title: 'Altitude (deg)', range: [primary.alt_limit, 90], zeroline: false },
-      legend: { orientation: 'h', y: 1.12 },
+      yaxis2: { overlaying: 'y', side: 'right', range: [primary.alt_limit, 90], tickvals: amTickVals, ticktext: amTickText, title: 'Airmass', showgrid: false, zeroline: false, tickfont: { size: 10 } },
+      legend: { orientation: 'h', y: 1.15, x: 0, xanchor: 'left', font: { size: 10 } },
       shapes: shapes,
       annotations: [
         { x: primary.ingress, y: 90, xref: 'x', yref: 'y', text: 'transit', showarrow: false, font: { color: '#45d6b5', size: 10 }, xanchor: 'left', yanchor: 'top' },
-        { x: 0.99, y: 0.02, xref: 'paper', yref: 'paper', xanchor: 'right', yanchor: 'bottom', showarrow: false, font: { color: fg, size: 10 }, text: 'alt≥' + primary.alt_limit + '° · sun<' + primary.sun_alt_limit + '°' }
+        { x: 0.01, y: 0.02, xref: 'paper', yref: 'paper', xanchor: 'left', yanchor: 'bottom', showarrow: false, font: { color: fg, size: 10 }, text: 'alt≥' + primary.alt_limit + '° · sun<' + primary.sun_alt_limit + '°' }
       ]
     };
     Plotly.newPlot('vis-plot', traces, layout, { responsive: true, displayModeBar: false });
@@ -1000,6 +1007,10 @@
   });
 
   el('btn-gen-windows').addEventListener('click', function () {
+    // Hide the plot when generating new windows
+    el('vis-figure').style.display = 'none';
+    if (window.Plotly) Plotly.purge('vis-plot');
+
     // --- validation ---
     var start = val('sch-range-start');
     var end = val('sch-range-end');
@@ -1088,7 +1099,7 @@
     Promise.all(sites.map(function (s) {
       var q = new URLSearchParams({
         ra: ra, dec: dec, mid: w.mid, duration: String(dur), site: s,
-        obs_airmass: val('sch-max-airmass') || '1.6', twilight: val('sch-twilight'),
+        obs_airmass: val('sch-max-airmass') || '2.0', twilight: val('sch-twilight'),
         moon_sep_min: val('sch-min-lunar') || '30'
       });
       return fetch('/api/lco/visibility?' + q.toString())
