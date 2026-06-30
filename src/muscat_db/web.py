@@ -11,7 +11,6 @@ import time
 from zoneinfo import ZoneInfo
 
 _DB_LOCK = threading.Lock()
-_CATALOG_CACHE: dict = {}
 
 import csv
 import io
@@ -49,6 +48,7 @@ from muscat_db.database import (
     _normalize_filters,
 )
 from muscat_db.job_store import get_job_store
+from muscat_db.cache import LRUCache
 from muscat_db.instruments import INSTRUMENTS
 from muscat_db.coord import (
     CoordRepr,
@@ -158,7 +158,16 @@ def _db_mtime(db: str):
 
 # Rendering the ~2.85 MB targets page costs ~1.3s. Cache the rendered HTML
 # keyed on the DB mtime so repeat loads are instant until the data changes.
-_index_cache: dict[str, tuple] = {}
+# Each entry is a multi-MB HTML blob, so the cache is bounded (LRU) to keep
+# memory flat over a long-lived server; sizes are env-overridable for tuning.
+_INDEX_CACHE_MAX = int(os.environ.get("MUSCAT_INDEX_CACHE_MAX", "64"))
+_CATALOG_CACHE_MAX = int(os.environ.get("MUSCAT_CATALOG_CACHE_MAX", "512"))
+_index_cache = LRUCache(maxsize=_INDEX_CACHE_MAX)
+# Per-target catalog lookups (NASA/TOI archive + local CSV). Bounded + locked:
+# keyed per distinct query string, it otherwise grows once per unique target.
+_CATALOG_CACHE = LRUCache(maxsize=_CATALOG_CACHE_MAX)
+# Distinguishes "absent" from a legitimately cached None (see _query_target_coordinates).
+_CACHE_MISS = object()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1857,8 +1866,9 @@ def _query_target_planets_nasa(target: str) -> dict:
     
     target_clean = target.strip().upper()
     cache_key = "nasa_" + target_clean
-    if cache_key in _CATALOG_CACHE:
-        return _CATALOG_CACHE[cache_key]
+    cached = _CATALOG_CACHE.get(cache_key, _CACHE_MISS)
+    if cached is not _CACHE_MISS:
+        return cached
         
     results = {}
     target_norm = _normalize_target_name(target)
@@ -1952,8 +1962,9 @@ def _query_target_planets_nasa(target: str) -> dict:
 def _query_target_coordinates(target: str) -> dict | None:
     target_clean = target.strip().upper()
     cache_key = "coords_" + target_clean
-    if cache_key in _CATALOG_CACHE:
-        return _CATALOG_CACHE[cache_key]
+    cached = _CATALOG_CACHE.get(cache_key, _CACHE_MISS)
+    if cached is not _CACHE_MISS:
+        return cached
 
     target_norm = _normalize_target_name(target)
 
@@ -2306,8 +2317,9 @@ def _query_target_planets_toi(target: str) -> dict:
     
     target_clean = target.strip().upper()
     cache_key = "toi_" + target_clean
-    if cache_key in _CATALOG_CACHE:
-        return _CATALOG_CACHE[cache_key]
+    cached = _CATALOG_CACHE.get(cache_key, _CACHE_MISS)
+    if cached is not _CACHE_MISS:
+        return cached
         
     results = {}
     target_norm = _normalize_target_name(target)
@@ -2413,8 +2425,9 @@ def _query_target_planets_toi(target: str) -> dict:
 # Helper to query all planet ephemerides for a target from catalogs
 def _query_target_planets_catalog(target: str) -> dict:
     target_clean = target.strip().upper()
-    if target_clean in _CATALOG_CACHE:
-        return _CATALOG_CACHE[target_clean]
+    cached = _CATALOG_CACHE.get(target_clean, _CACHE_MISS)
+    if cached is not _CACHE_MISS:
+        return cached
         
     results = dict(_query_target_planets_nasa(target))
     if not results:
