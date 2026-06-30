@@ -22,7 +22,6 @@ shape ``get_persisted_jobs`` already produces, so callers keep reading
 
 from __future__ import annotations
 
-import sqlite3
 from typing import Protocol, runtime_checkable
 
 # Imported as a module (not by name) so the concrete store sees monkeypatched
@@ -146,10 +145,9 @@ class DatabaseJobStore(JobRepository, JobQueue):
         # Best-effort, matching the prior inline behaviour: a failed delete must
         # not break the surrounding delete-reduction / delete-fit flow.
         try:
-            conn = sqlite3.connect(database.db_path())
-            conn.execute("DELETE FROM jobs WHERE key = ?", (key,))
-            conn.commit()
-            conn.close()
+            with database.get_conn() as conn:
+                conn.execute("DELETE FROM jobs WHERE key = ?", (key,))
+                conn.commit()
             database.clear_all_caches()
         except Exception:
             pass
