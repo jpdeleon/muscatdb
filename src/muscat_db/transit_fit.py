@@ -22,6 +22,7 @@ from typing import IO
 import yaml
 
 from muscat_db import jobs
+from muscat_db.job_store import get_job_store
 from muscat_db import __meta__, __muscatdb_version__, __version__
 from muscat_db.instruments import INSTRUMENTS
 from muscat_db.photometry import (
@@ -1271,13 +1272,10 @@ def start_fit(
 
         # Queue full jobs when at capacity
         if at_capacity:
-            from muscat_db.database import save_job
             try:
-                save_job(
+                get_job_store().enqueue(
                     type_="transit_fit",
                     inst=inst, date=date, target=target, run_id=run_id,
-                    state="pending",
-                    returncode=None, elapsed=0,
                     started_at=time.time(),
                     run_type=run_type,
                     params=params_json,
@@ -1322,8 +1320,7 @@ def start_fit(
             run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name,
         )
         # Record new job in the database
-        from muscat_db.database import save_job
-        save_job(
+        get_job_store().save(
             type_="transit_fit",
             inst=inst,
             date=date,
@@ -1348,13 +1345,12 @@ def _pending_status(inst: str, date: str, target: str, run_id: str = "") -> dict
     in the DB as ``pending`` but not added to ``_FIT_JOBS``; surface that here so the
     transit fitting page can show a "queued" state instead of silently resetting.
     """
-    from muscat_db.database import get_persisted_jobs
     try:
         db_key = f"transit_fit:{fit_job_key(inst, date, target, run_id)}"
     except ValueError:
         return None
     try:
-        for entry in get_persisted_jobs():
+        for entry in get_job_store().all():
             if (
                 entry["key"] == db_key
                 and entry["type"] == "transit_fit"
@@ -1378,13 +1374,12 @@ def _running_status(inst: str, date: str, target: str, run_id: str = "") -> dict
     A full run launched while the single full-job slot is occupied is recorded
     in the DB as ``running``; surface that here if the process is active but not in ``_FIT_JOBS``.
     """
-    from muscat_db.database import get_persisted_jobs
     try:
         db_key = f"transit_fit:{fit_job_key(inst, date, target, run_id)}"
     except ValueError:
         return None
     try:
-        for entry in get_persisted_jobs():
+        for entry in get_job_store().all():
             if (
                 entry["key"] == db_key
                 and entry["type"] == "transit_fit"
@@ -1409,13 +1404,12 @@ def _running_status(inst: str, date: str, target: str, run_id: str = "") -> dict
 
 def _persisted_status(inst: str, date: str, target: str, run_id: str = "") -> dict | None:
     """Return a terminal-state status dict from the DB for a job no longer in ``_FIT_JOBS``."""
-    from muscat_db.database import get_persisted_jobs
     try:
         db_key = f"transit_fit:{fit_job_key(inst, date, target, run_id)}"
     except ValueError:
         return None
     try:
-        for entry in get_persisted_jobs():  # newest-first; one row per key
+        for entry in get_job_store().all():  # newest-first; one row per key
             if entry["key"] != db_key or entry["type"] != "transit_fit":
                 continue
             state = entry["state"]
@@ -1540,19 +1534,10 @@ def delete_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
                 except OSError:
                     pass
 
-    from muscat_db.database import db_path, clear_all_caches
-    import sqlite3
-    try:
-        conn = sqlite3.connect(db_path())
-        db_key = f"transit_fit:{inst}/{date}/{_target_dir_name(target)}"
-        if run_id:
-            db_key = f"{db_key}/{_run_dir_name(run_id)}"
-        conn.execute("DELETE FROM jobs WHERE key = ?", (db_key,))
-        conn.commit()
-        conn.close()
-        clear_all_caches()
-    except Exception:
-        pass
+    db_key = f"transit_fit:{inst}/{date}/{_target_dir_name(target)}"
+    if run_id:
+        db_key = f"{db_key}/{_run_dir_name(run_id)}"
+    get_job_store().delete(db_key)
 
     job_key = f"{inst}/{date}/{_target_dir_name(target)}"
     if run_id:
@@ -1571,16 +1556,15 @@ def cancel_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
         key = fit_job_key(inst, date, target, run_id)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
+    store = get_job_store()
     with _FIT_LOCK:
-        from muscat_db.database import save_job, get_persisted_jobs
         job = _FIT_JOBS.get(key)
         if job is None:
             # May be a pending job (in DB but not yet launched)
-            db_jobs = get_persisted_jobs()
             db_key = f"transit_fit:{key}"
-            found = [j for j in db_jobs if j["key"] == db_key]
+            found = [j for j in store.all() if j["key"] == db_key]
             if found and found[0]["state"] == "pending":
-                save_job(
+                store.save(
                     type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id,
                     state="cancelled", returncode=-1, elapsed=0,
                     started_at=found[0]["started_at"],
@@ -1594,7 +1578,7 @@ def cancel_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
         job.cancelled = True
         proc = job.proc
         # Immediately record cancellation in the database
-        save_job(
+        store.save(
             type_="transit_fit",
             inst=inst,
             date=date,
@@ -1922,9 +1906,9 @@ def _detect_process_running(rdir: pathlib.Path) -> bool:
 
 
 def sync_jobs() -> None:
-    from muscat_db.database import save_job, get_persisted_jobs
+    store = get_job_store()
     with _FIT_LOCK:
-        db_jobs = get_persisted_jobs()
+        db_jobs = store.all()
         running_keys = {j["key"] for j in db_jobs if j["state"] == "running" and j["type"] == "transit_fit"}
         db_by_key = {j["key"]: j for j in db_jobs}
 
@@ -1977,7 +1961,7 @@ def sync_jobs() -> None:
             elif persist_state == "cancelled":
                 error_desc = "Cancelled by user"
 
-            save_job(
+            store.save(
                 type_="transit_fit",
                 inst=job.inst,
                 date=job.date,
@@ -2017,7 +2001,7 @@ def sync_jobs() -> None:
                 pass
                 
             if completed_ok:
-                save_job(
+                store.save(
                     type_="transit_fit",
                     inst=inst,
                     date=date,
@@ -2033,7 +2017,7 @@ def sync_jobs() -> None:
                 # Process is still running on the system, leave state as "running"
                 continue
             else:
-                save_job(
+                store.save(
                     type_="transit_fit",
                     inst=inst,
                     date=date,
@@ -2048,9 +2032,7 @@ def sync_jobs() -> None:
 
         # Launch pending full jobs if capacity allows
         if _count_running_full() < _MAX_FULL_JOBS:
-            db_jobs = get_persisted_jobs()
-            pending = [j for j in db_jobs if j["state"] == "pending" and j["type"] == "transit_fit"]
-            pending.sort(key=lambda j: j["started_at"])
+            pending = store.pending("transit_fit")
             for entry in pending:
                 if _count_running_full() >= _MAX_FULL_JOBS:
                     break
@@ -2063,7 +2045,7 @@ def sync_jobs() -> None:
                 except ValueError:
                     mem_key = None
                 if mem_key is not None and mem_key in _FIT_JOBS:
-                    save_job(type_="transit_fit", inst=entry["inst"], date=entry["date"], target=entry["target"], run_id=entry_run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_name=entry.get("run_name", ""))
+                    store.save(type_="transit_fit", inst=entry["inst"], date=entry["date"], target=entry["target"], run_id=entry_run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_name=entry.get("run_name", ""))
                     continue
                 try:
                     p = json.loads(entry.get("params") or "{}")
@@ -2082,7 +2064,7 @@ def sync_jobs() -> None:
                     key = fit_job_key(inst, date, target, run_id)
                     rdir = fit_output_dir(inst, date, target, run_id or None)
                 except ValueError:
-                    save_job(
+                    store.save(
                         type_="transit_fit",
                         inst=inst,
                         date=date,
@@ -2124,16 +2106,16 @@ def sync_jobs() -> None:
                 except (FileNotFoundError, OSError) as exc:
                     try: logf.close()
                     except OSError: pass
-                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_name=run_name)
+                    store.save(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_name=run_name)
                     continue
                 run_type = "test" if test_run else "full"
                 _FIT_JOBS[key] = TransitFitJob(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=log_path, run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name)
                 try:
-                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="running", returncode=None, elapsed=0, started_at=_FIT_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""), run_name=run_name)
+                    store.save(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="running", returncode=None, elapsed=0, started_at=_FIT_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""), run_name=run_name)
                 except Exception:
                     try: proc.terminate()
                     except OSError: pass
                     try: logf.close()
                     except OSError: pass
                     _FIT_JOBS.pop(key, None)
-                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Database error", run_name=run_name)
+                    store.save(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Database error", run_name=run_name)

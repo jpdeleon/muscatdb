@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from muscat_db import jobs
+from muscat_db.job_store import get_job_store
 from muscat_db.instruments import INSTRUMENTS
 from muscat_db.cache import register_cache
 from muscat_db.band_utils import DEFAULT_BANDS, NARROW_BANDS, _FILTER_BAND_ALIAS, bands_from_filters  # noqa: F401
@@ -1286,13 +1287,10 @@ def start_run(
 
         # Queue full jobs when at capacity
         if at_capacity:
-            from muscat_db.database import save_job
             try:
-                save_job(
+                get_job_store().enqueue(
                     type_="photometry",
                     inst=inst, date=date, target=target,
-                    state="pending",
-                    returncode=None, elapsed=0,
                     started_at=time.time(),
                     run_type=run_type,
                     params=json.dumps({"test_run": test_run, "options": opts, "run_id": run_id, "site": site, "mode": mode, "run_name": run_name}, separators=(",", ":")),
@@ -1350,9 +1348,8 @@ def start_run(
             run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name,
         )
         # Record new job in the database
-        from muscat_db.database import save_job
         try:
-                save_job(
+                get_job_store().save(
                 type_="photometry",
                 inst=inst,
                 date=date,
@@ -1462,11 +1459,9 @@ def _pending_status(inst: str, date: str, target: str, run_id: str = "") -> dict
     in the DB as ``pending`` but not added to ``_JOBS``; surface that here so the
     photometry page can show a "queued" state instead of silently resetting.
     """
-    from muscat_db.database import get_persisted_jobs
-
     db_key = f"photometry:{job_key(inst, date, target, run_id)}"
     try:
-        for entry in get_persisted_jobs():
+        for entry in get_job_store().all():
             if (
                 entry["key"] == db_key
                 and entry["type"] == "photometry"
@@ -1495,11 +1490,9 @@ def _persisted_status(inst: str, date: str, target: str, run_id: str = "") -> di
     failure. Surface the persisted outcome (plus its log tail and error
     description) so the final state is never lost.
     """
-    from muscat_db.database import get_persisted_jobs
-
     db_key = f"photometry:{job_key(inst, date, target, run_id)}"
     try:
-        for entry in get_persisted_jobs():  # newest-first; one row per key
+        for entry in get_job_store().all():  # newest-first; one row per key
             if entry["key"] != db_key or entry["type"] != "photometry":
                 continue
             state = entry["state"]
@@ -1626,15 +1619,7 @@ def delete_reduction(inst: str, date: str, target: str, run_id: str = "") -> dic
                 removed += 1
             except OSError:
                 pass
-    from muscat_db.database import db_path, clear_all_caches
-    try:
-        conn = sqlite3.connect(db_path())
-        conn.execute("DELETE FROM jobs WHERE key = ?", (f"photometry:{job_key(inst, date, target, run_id)}",))
-        conn.commit()
-        conn.close()
-        clear_all_caches()
-    except Exception:
-        pass
+    get_job_store().delete(f"photometry:{job_key(inst, date, target, run_id)}")
     try:
         del _JOBS[job_key(inst, date, target, run_id)]
     except KeyError:
@@ -1646,16 +1631,15 @@ def cancel_run(inst: str, date: str, target: str, run_id: str = "") -> dict:
     """Cancel a running or pending reduction. Sends SIGTERM to the job's process group
     and escalates to SIGKILL after a short grace period."""
     key = job_key(inst, date, target, run_id)
+    store = get_job_store()
     with _LOCK:
-        from muscat_db.database import save_job, get_persisted_jobs
         job = _JOBS.get(key)
         if job is None:
             # May be a pending job (in DB but not yet launched)
-            db_jobs = get_persisted_jobs()
             db_key = f"photometry:{key}"
-            found = [j for j in db_jobs if j["key"] == db_key]
+            found = [j for j in store.all() if j["key"] == db_key]
             if found and found[0]["state"] == "pending":
-                save_job(
+                store.save(
                     type_="photometry", inst=inst, date=date, target=target,
                     state="cancelled", returncode=-1, elapsed=0,
                     started_at=found[0]["started_at"],
@@ -1668,9 +1652,9 @@ def cancel_run(inst: str, date: str, target: str, run_id: str = "") -> dict:
             return {"ok": True, "already_finished": True}
         job.cancelled = True
         proc = job.proc
-        
+
         # Immediately record cancellation in the database
-        save_job(
+        store.save(
             type_="photometry",
             inst=inst,
             date=date,
@@ -1717,7 +1701,7 @@ def _get_error_desc(log_path: Path) -> str:
 
 
 def sync_jobs() -> None:
-    from muscat_db.database import save_job, get_persisted_jobs
+    store = get_job_store()
     with _LOCK:
         # Watchdog: kill runs that have hung (no log output, or past the absolute
         # cap) and record them as errors. This frees the single full-job slot so the
@@ -1735,7 +1719,7 @@ def sync_jobs() -> None:
                 job.logf.close()
             except OSError:
                 pass
-            save_job(
+            store.save(
                 type_="photometry", inst=job.inst, date=job.date, target=job.target,
                 state="error", returncode=-1,
                 elapsed=round(now - job.started_at), started_at=job.started_at,
@@ -1744,7 +1728,7 @@ def sync_jobs() -> None:
             )
             _JOBS.pop(key, None)
 
-        db_jobs = get_persisted_jobs()
+        db_jobs = store.all()
         for entry in db_jobs:
             if entry["type"] != "photometry" or entry["state"] != "done":
                 continue
@@ -1752,7 +1736,7 @@ def sync_jobs() -> None:
             entry_log_path = log_path(entry["inst"], entry["date"], entry["target"], entry_run_id)
             if not _log_has_partial_failure(entry_log_path):
                 continue
-            save_job(
+            store.save(
                 type_="photometry",
                 inst=entry["inst"],
                 date=entry["date"],
@@ -1817,7 +1801,7 @@ def sync_jobs() -> None:
             elif persist_state == "cancelled":
                 error_desc = "Cancelled by user"
 
-            save_job(
+            store.save(
                 type_="photometry",
                 inst=job.inst,
                 date=job.date,
@@ -1829,7 +1813,7 @@ def sync_jobs() -> None:
                 error_desc=error_desc,
                 run_id=job.run_id,
             )
-            
+
         for db_key in running_keys:
             _, rest = db_key.split(":", 1)
             parts = rest.split("/")
@@ -1844,7 +1828,7 @@ def sync_jobs() -> None:
                     started_at = j["started_at"]
                     elapsed = j["elapsed"]
                     break
-            save_job(
+            store.save(
                 type_="photometry",
                 inst=inst,
                 date=date,
@@ -1859,9 +1843,7 @@ def sync_jobs() -> None:
 
         # Launch pending full jobs if capacity allows
         if _count_running_full() < _MAX_FULL_JOBS:
-            db_jobs = get_persisted_jobs()
-            pending = [j for j in db_jobs if j["state"] == "pending" and j["type"] == "photometry"]
-            pending.sort(key=lambda j: j["started_at"])
+            pending = store.pending("photometry")
             for entry in pending:
                 if _count_running_full() >= _MAX_FULL_JOBS:
                     break
@@ -1870,7 +1852,7 @@ def sync_jobs() -> None:
                 # in-memory job key (unprefixed) to detect a job that is already
                 # running and must not be relaunched from its stale pending row.
                 if job_key(entry["inst"], entry["date"], entry["target"], run_id) in _JOBS:
-                    save_job(type_="photometry", inst=entry["inst"], date=entry["date"], target=entry["target"], state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_id=run_id, run_name=entry.get("run_name", ""))
+                    store.save(type_="photometry", inst=entry["inst"], date=entry["date"], target=entry["target"], state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_id=run_id, run_name=entry.get("run_name", ""))
                     continue
                 try:
                     p = json.loads(entry.get("params") or "{}")
@@ -1888,7 +1870,7 @@ def sync_jobs() -> None:
                 try:
                     rdir = run_output_dir(inst, date, target, run_id)
                 except ValueError as exc:
-                    save_job(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=str(exc), run_id=run_id, run_name=run_name)
+                    store.save(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=str(exc), run_id=run_id, run_name=run_name)
                     continue
                 rdir.mkdir(parents=True, exist_ok=True)
                 run_type = "test" if test_run else "full"
@@ -1903,15 +1885,15 @@ def sync_jobs() -> None:
                 except (FileNotFoundError, OSError) as exc:
                     try: logf.close()
                     except OSError: pass
-                    save_job(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_id=run_id, run_name=run_name)
+                    store.save(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_id=run_id, run_name=run_name)
                     continue
                 _JOBS[key] = Job(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=pending_log_path, run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name)
                 try:
-                    save_job(type_="photometry", inst=inst, date=date, target=target, state="running", returncode=None, elapsed=0, started_at=_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""), run_id=run_id, run_name=run_name)
+                    store.save(type_="photometry", inst=inst, date=date, target=target, state="running", returncode=None, elapsed=0, started_at=_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""), run_id=run_id, run_name=run_name)
                 except sqlite3.OperationalError as exc:
                     try: proc.terminate()
                     except OSError: pass
                     try: logf.close()
                     except OSError: pass
                     _JOBS.pop(key, None)
-                    save_job(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Database not writable: {exc}", run_id=run_id, run_name=run_name)
+                    store.save(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Database not writable: {exc}", run_id=run_id, run_name=run_name)
