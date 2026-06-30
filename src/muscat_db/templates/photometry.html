@@ -534,6 +534,14 @@
               <input type="number" id="opt-bin_size_minutes" value="{{ run_defaults.bin_size_minutes }}" step="0.5" min="0" style="width: 100%;">
             </div>
             <div class="opt">
+              <label for="opt-nan_imputation_method">NaN imputation <span class="help-tooltip" title="Method to recover comparison stars with partial NaN values from cosmic rays, detector dropouts, or readout glitches. 'none' filters out any star with NaNs (conservative); 'linear' recovers most via interpolation (recommended). Applied before comparison star selection to maximize pool (corresponds to --nan-imputation-method).">?</span></label>
+              <select id="opt-nan_imputation_method" style="width: 100%;">
+                {% for method in nan_imputation_methods %}
+                <option value="{{ method }}" {% if (run_defaults.nan_imputation_method or 'linear') == method %}selected{% endif %}>{{ method }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="opt">
               <label for="opt-test_run_frames"># of test-run frames <span class="help-tooltip" title="Number of frames to process during a test-run reduction (corresponds to --test_run_frames).">?</span></label>
               <input type="number" id="opt-test_run_frames" value="{{ run_defaults.test_run_frames }}" min="1" style="width: 100%;">
             </div>
@@ -854,6 +862,7 @@
       ccd_trim: val('opt-ccd_trim'),
       edge_margin: val('opt-edge_margin'),
       bin_size_minutes: val('opt-bin_size_minutes'),
+      nan_imputation_method: val('opt-nan_imputation_method'),
       overwrite: chk('opt-overwrite'),
       sig_bkg: val('opt-sig_bkg'),
       sig_fwhm: val('opt-sig_fwhm'),
@@ -885,7 +894,7 @@
     });
     ['run_name','ref_band','refid','aper_unit','aper_radii','annulus',
      'target_id','comparison_ids','avoid_comparison_ids','avoid_nearby_star_mode','avoid_nearby_star','target_coord','test_run_frames','min_star_separation','max_num_stars',
-       'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','cmap','site','mode'].forEach(function (id) {
+       'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','cmap','site','mode'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
     });
@@ -962,7 +971,7 @@
       });
       ['run_name','ref_band','refid','aper_unit','aper_radii','annulus',
        'target_id','comparison_ids','avoid_comparison_ids','avoid_nearby_star_mode','avoid_nearby_star','target_coord','test_run_frames','min_star_separation','max_num_stars',
-     'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','cmap','site','mode'].forEach(function (id) {
+     'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','cmap','site','mode'].forEach(function (id) {
         var el = document.getElementById('opt-'+id);
         if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';
       });

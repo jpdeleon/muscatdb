@@ -47,6 +47,7 @@ class TestPhotometryInputs:
             "avoid_nearby_star",
             "aper_radii",
             "annulus",
+            "nan_imputation_method",
             "overwrite",
         }
 

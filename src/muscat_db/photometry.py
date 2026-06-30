@@ -86,6 +86,7 @@ RUN_DEFAULTS: dict = {
     "ccd_trim": "",            # "Y,X"; "" -> no trim (pipeline default)
     "edge_margin": "",         # px from CCD edge to exclude comps; "" -> auto (half cutout), 0 -> off
     "bin_size_minutes": 10.0,
+    "nan_imputation_method": "linear",
     "target_id": "",           # "" -> auto
     "comparison_ids": "",      # "" -> auto, or "1,2,3"
     "avoid_comparison_ids": "",  # "" -> none; "1,2,3" -> --avoid_cids (requires --ref_band)
@@ -116,6 +117,16 @@ CMAP_CHOICES = (
     "gray", "gray_r",
     "coolwarm", "RdBu", "RdGy", "PiYG", "PRGn", "BrBG", "PuOr",
     "RdYlBu", "RdYlGn", "Spectral",
+)
+
+# NaN imputation strategies exposed by prose2's --nan-imputation-method.
+NAN_IMPUTATION_METHODS = (
+    "none",
+    "mean",
+    "median",
+    "linear",
+    "spline",
+    "forward_fill",
 )
 
 
@@ -938,7 +949,7 @@ def normalize_run_options(raw: dict | None) -> dict:
     if "bands" in raw:  # present-but-empty must surface as an error, not default
         o["bands"] = [str(b).strip() for b in (bands or []) if str(b).strip()]
 
-    for key in ("run_name", "ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "avoid_nearby_star_mode", "avoid_nearby_star", "target_coord", "wcs_method", "calib_dir", "site", "mode", "cmap"):
+    for key in ("run_name", "ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "avoid_nearby_star_mode", "avoid_nearby_star", "target_coord", "wcs_method", "calib_dir", "site", "mode", "cmap", "nan_imputation_method"):
         if raw.get(key) is not None:
             o[key] = str(raw[key]).strip()
 
@@ -1030,6 +1041,8 @@ def validate_run_options(o: dict, inst: str | None = None) -> str | None:
     # identically; this is a prose2 issue and needs to be fixed there.
     if (o.get("cmap") or "gray") not in CMAP_CHOICES:
         return f"colormap must be one of {', '.join(CMAP_CHOICES)}"
+    if (o.get("nan_imputation_method") or "linear") not in NAN_IMPUTATION_METHODS:
+        return f"NaN imputation method must be one of {', '.join(NAN_IMPUTATION_METHODS)}"
     site = (o.get("site") or "").strip().lower()
     if site and site not in SINISTRO_SITES:
         return f"site must be one of {', '.join(SINISTRO_SITES)}"
@@ -1142,6 +1155,9 @@ def build_command(
     cmap = (o.get("cmap") or "").strip()
     if cmap and cmap != RUN_DEFAULTS["cmap"]:
         args += ["--cmap", cmap]
+    nan_method = (o.get("nan_imputation_method") or "").strip()
+    if nan_method and nan_method != RUN_DEFAULTS["nan_imputation_method"]:
+        args += ["--nan-imputation-method", nan_method]
     if o.get("use_barycorrpy"):
         args.append("--use_barycorrpy")
 

@@ -501,6 +501,8 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
             sel_run = newest
 
         sel_run_desc = next((r for r in runs if r.run_id == (sel_run or "")), None)
+        if sel_run_desc and sel_run_desc.run_type == "test":
+            runs = [sel_run_desc]
 
         if sel_run is not None:
             run_key = sel_run or None  # "" → None for legacy
@@ -580,6 +582,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         default_bands=phot.DEFAULT_BANDS,
         run_defaults=merged_defaults,
         cmap_choices=phot.CMAP_CHOICES,
+        nan_imputation_methods=phot.NAN_IMPUTATION_METHODS,
         wiki_url=_wiki_url(inst, target),
         obs_type=obs_type,
         is_narrowband=is_narrowband,
