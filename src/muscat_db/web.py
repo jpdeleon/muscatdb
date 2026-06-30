@@ -351,8 +351,6 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
             sel_run = newest
 
         sel_run_desc = next((r for r in runs if r.run_id == (sel_run or "")), None)
-        if sel_run_desc and getattr(sel_run_desc, "run_type", None) == "test":
-            runs = [r for r in runs if r.run_name == sel_run_desc.run_name]
 
         if sel_run is not None:
             run_key = sel_run or None  # "" → None for legacy
