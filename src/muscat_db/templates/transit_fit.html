@@ -262,7 +262,7 @@
     </div>
     <div class="lightcurve-grid">
       {% for csv in csvs %}
-        <div class="lightcurve-card csv-card" data-csv-path="{{ csv }}" role="button" tabindex="0">
+        <div class="lightcurve-card csv-card" data-csv-path="{{ csv.path }}" role="button" tabindex="0">
           <input type="checkbox" class="csv-checkbox" checked style="margin-right: 0.5rem;">
           <span class="lc-name">📄 {{ csv.name }}</span>
           <span class="lc-date">Created: {{ csv.created_at }}</span>
