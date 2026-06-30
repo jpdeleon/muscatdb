@@ -34,7 +34,6 @@
 * the jobs are run in a 24-core remote server with 100 Gb memory so queuing heavy jobs should be handled safely
 * in the future, the pipeline will use celery and redis across several servers with 48, 120, and 120 cores
 
-
 ## backend and scripts
 * the output should be high-quality lightcurves from photometry, and robust inferences from transit fit
 * when writing new code, choose correctness over simplicity
@@ -42,6 +41,9 @@
 * all one-off scripts should live in /tmp but useful scripts should be kept in repo
 * the server lives inside tmux session named muscatdb-gui
 *  The --reload flag only watches Python files, not Jinja2 templates. Remind the user if a restart is needed to see the HTML/JavaScript changes.
+
+## optimization
+* consider CPU parallelization with a JIT compiler such as Numba, porting the inner loop into Cython, or implementing a CUDA GPU function with Numba or CuPy
 
 ## git branch
 * keep only main and test branch. PR comes from test branch and only gets merged to main
