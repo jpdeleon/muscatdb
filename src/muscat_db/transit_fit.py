@@ -1150,8 +1150,8 @@ def compute_logp(inst: str, date: str, target: str, options: dict, selected_csvs
     if not csvs:
         return {"ok": False, "error": "No photometry CSV lightcurves found for this target."}
     if selected_csvs is not None:
-        selected = set(selected_csvs)
-        csvs = [c for c in csvs if c.name in selected]
+        selected = set(str(p) for p in selected_csvs)
+        csvs = [c for c in csvs if str(c) in selected]
         if not csvs:
             return {"ok": False, "error": "No lightcurves selected for logP computation."}
 
@@ -1243,8 +1243,8 @@ def start_fit(
     if not csvs:
         return {"ok": False, "error": "No photometry CSV lightcurves found for this target."}
     if selected_csvs is not None:
-        selected = set(selected_csvs)
-        csvs = [c for c in csvs if c.name in selected]
+        selected = set(str(p) for p in selected_csvs)
+        csvs = [c for c in csvs if str(c) in selected]
         if not csvs:
             return {"ok": False, "error": "No lightcurves selected for fitting."}
 
@@ -2048,14 +2048,21 @@ def sync_jobs() -> None:
                     except OSError:
                         pass
             
-            elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
-
             # Only persist when the row actually changed. A steadily-running job
             # whose DB row already says "running" needs no rewrite; elapsed is
             # computed live in the web layer, so we no longer write every 2s poll
             # just to bump it (each write also fired clear_all_caches, nullifying
             # the directory caches). Terminal transitions still write through.
             existing = db_by_key.get(db_key)
+
+            # For terminal jobs: use stored elapsed (runtime), not time since start
+            # For running jobs: calculate from current time
+            if job.state not in ("running", "cancelling") and job.elapsed is not None:
+                elapsed = job.elapsed  # Use calculated runtime when job hit terminal state
+            elif existing is not None and existing.get("state") not in ("running", "cancelling"):
+                elapsed = existing.get("elapsed") or 0  # Use existing DB value for completed jobs
+            else:
+                elapsed = round(time.time() - job.started_at)  # Calculate for running jobs
             unchanged = (
                 existing is not None
                 and existing.get("state") == state

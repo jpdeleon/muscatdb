@@ -262,7 +262,7 @@
     </div>
     <div class="lightcurve-grid">
       {% for csv in csvs %}
-        <div class="lightcurve-card csv-card" data-csv-name="{{ csv.name }}" role="button" tabindex="0">
+        <div class="lightcurve-card csv-card" data-csv-path="{{ csv }}" role="button" tabindex="0">
           <input type="checkbox" class="csv-checkbox" checked style="margin-right: 0.5rem;">
           <span class="lc-name">📄 {{ csv.name }}</span>
           <span class="lc-date">Created: {{ csv.created_at }}</span>
@@ -2217,14 +2217,14 @@
     el.textContent = checked + ' / ' + csvCards.length + ' selected';
   }
   function getSelectedCsvs() {
-    var names = [];
+    var paths = [];
     csvCards.forEach(function (card) {
       var cb = card.querySelector('.csv-checkbox');
       if (cb && cb.checked) {
-        names.push(card.getAttribute('data-csv-name'));
+        paths.push(card.getAttribute('data-csv-path'));
       }
     });
-    return names;
+    return paths;
   }
   function restoreCsvSelection() {
     var saved;
@@ -2232,10 +2232,10 @@
     if (!saved || !Array.isArray(saved)) return;
     var selected = new Set(saved);
     csvCards.forEach(function (card) {
-      var name = card.getAttribute('data-csv-name');
+      var path = card.getAttribute('data-csv-path');
       var cb = card.querySelector('.csv-checkbox');
       if (!cb) return;
-      var isSelected = selected.has(name);
+      var isSelected = selected.has(path);
       cb.checked = isSelected;
       card.classList.toggle('selected', isSelected);
       card.classList.toggle('deselected', !isSelected);
@@ -2279,7 +2279,9 @@
     csvCards.forEach(function (card) {
       var cb = card.querySelector('.csv-checkbox');
       if (cb && cb.checked) {
-        bands[extractBand(card.getAttribute('data-csv-name'))] = true;
+        var path = card.getAttribute('data-csv-path');
+        var filename = path.split('/').pop();
+        bands[extractBand(filename)] = true;
       }
     });
     var nBands = Object.keys(bands).length;
@@ -2675,6 +2677,9 @@
 </script>
 <div style="text-align:center; margin:2em 0; display: flex; justify-content: center; gap: 1rem; align-items: center;">
   <a href="#" style="display:inline-block; padding:0.5em 2em; background:#0056b3; color:#fff; text-decoration:none; border-radius:4px;">Back to Top</a>
+  {% if sel_target %}
+    <a href="/target?name={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; line-height: 1.2;">To Target</a>
+  {% endif %}
   <a href="/jobs" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Jobs</a>
   {% if sel_inst and sel_date and sel_target %}
     <a href="/photometry?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Photometry</a>
