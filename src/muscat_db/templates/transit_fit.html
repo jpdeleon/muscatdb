@@ -792,6 +792,10 @@
   if (inst) {
     MuscatStorage.setJSON(SEL_KEY, { inst: inst, date: date, target: target });
   }
+  if (inst && date && target && window.MuscatRouteState) {
+    window.MuscatRouteState.rememberTransitFit({ inst: inst, date: date, target: target, run: runId || '' });
+    window.MuscatRouteState.applyNavbar();
+  }
 
   // ----- cascading selectors -----
   var selInst   = document.getElementById('sel-inst');

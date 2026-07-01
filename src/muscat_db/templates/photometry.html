@@ -666,6 +666,10 @@
   if (inst) {
     MuscatStorage.setJSON(SEL_KEY, { inst: inst, date: date, target: target });
   }
+  if (inst && date && target && window.MuscatRouteState) {
+    window.MuscatRouteState.rememberPhotometry({ inst: inst, date: date, target: target, run: runId || '' });
+    window.MuscatRouteState.applyNavbar();
+  }
 
   // ----- persistent job: resume or show banner across page navigations -----
   function saveJob() { MuscatStorage.setJSON(JOB_KEY, { inst: inst, date: date, target: target, run_id: runId }); }
