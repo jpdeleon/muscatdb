@@ -288,39 +288,7 @@ def target_page(name: str = ""):
     tpl_mtime = str(tpl_path.stat().st_mtime_ns) if tpl_path.is_file() else ""
 
     if not name:
-        # List view: show all normalized targets
-        key = (tpl_mtime, _db_mtime(db), "list")
-        cache_key = "target:list"
-        cached = _index_cache.get(cache_key)
-        if cached is not None and cached[0] == key:
-            return HTMLResponse(cached[1])
-
-        targets = _get_targets(db)
-
-        from collections import defaultdict
-        groups = defaultdict(int)
-
-        for target in targets:
-            norm_name = _normalize_target_name(target["object"])
-            # Count datasets for this normalized name
-            date_to_inst = target["date_to_inst"]
-            for date in target["dates"]:
-                if date in date_to_inst:
-                    groups[norm_name] += 1
-
-        # Sort by normalized name
-        sorted_groups = sorted(groups.items(), key=lambda x: x[0])
-
-        last_updated = get_last_build_date(db)
-
-        html = jinja.get_template("target.html").render(
-            target_name=None,
-            target_groups=sorted_groups,
-            last_updated=last_updated,
-        )
-
-        _index_cache[cache_key] = (key, html)
-        return HTMLResponse(html)
+        return RedirectResponse("/", status_code=303)
     else:
         # Single target view - normalize the input name
         norm_name = _normalize_target_name(name)

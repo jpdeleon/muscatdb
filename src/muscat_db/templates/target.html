@@ -5,8 +5,13 @@
 {% if target_name %}
   {# Single target view #}
   <h1>Target: {{ target_name }}</h1>
+  <script>
+    try {
+      localStorage.setItem('target:lastName', {{ target_name | tojson }});
+    } catch (_) {}
+  </script>
   <p style="color: var(--text-dim); margin-bottom: 1.5rem;">
-    <a href="/target">← Back to Targets</a>
+    <a href="/">← Back to database search</a>
   </p>
 
   <div class="search-bar">
