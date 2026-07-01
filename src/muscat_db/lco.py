@@ -41,10 +41,13 @@ def _get_lco_api_token() -> str:
 
 def config_state() -> dict:
     """Return the configuration state for LCO variables. No secrets exposed."""
+    token_configured = bool(os.environ.get("LCO_API_TOKEN"))
+    download_root_configured = bool(os.environ.get("MUSCAT_LCO_DIR"))
+    submit_flag_enabled = os.environ.get("MUSCAT_LCO_ALLOW_SUBMIT") == "1"
     return {
-        "token_configured": bool(os.environ.get("LCO_API_TOKEN")),
-        "download_root_configured": bool(os.environ.get("MUSCAT_LCO_DIR")),
-        "submit_allowed": os.environ.get("MUSCAT_LCO_ALLOW_SUBMIT") == "1",
+        "token_configured": token_configured,
+        "download_root_configured": download_root_configured,
+        "submit_allowed": token_configured and download_root_configured and submit_flag_enabled,
     }
 
 
@@ -100,15 +103,39 @@ def infer_archive_instrument(frame: dict) -> str:
     site = str(frame.get("SITEID") or "").lower()
     tel = str(frame.get("TELID") or "").lower()
     instrume = str(frame.get("INSTRUME") or "").lower()
+    filename = str(frame.get("filename") or frame.get("basename") or "").lower()
 
-    if site == "ogg" and tel.startswith("2m0") and "muscat" in instrume:
+    if not site and filename:
+        if filename.startswith("ogg"):
+            site = "ogg"
+        elif filename.startswith("coj"):
+            site = "coj"
+        elif filename.startswith(("lsc", "cpt", "tfn", "elp")):
+            site = filename[:3]
+
+    if not tel and filename:
+        if "2m0" in filename:
+            tel = "2m0"
+        elif "1m0" in filename:
+            tel = "1m0"
+
+    if not instrume and filename:
+        if "-ep" in filename or "muscat" in filename:
+            instrume = "muscat"
+        elif "-fa" in filename or "-kb" in filename or "sinistro" in filename:
+            instrume = "sinistro"
+
+    if site == "ogg" and tel.startswith("2m0") and ("muscat" in instrume or "ep" in instrume):
         return "muscat3"
-    if site == "coj" and tel.startswith("2m0") and "muscat" in instrume:
+    if site == "coj" and tel.startswith("2m0") and ("muscat" in instrume or "ep" in instrume):
         return "muscat4"
     if tel.startswith("1m0"):
         return "sinistro"
 
-    raise LcoError("Could not infer instrument", detail=f"site={site}, tel={tel}, instrume={instrume}")
+    raise LcoError(
+        "Could not infer destination instrument",
+        detail=f"site={site}, tel={tel}, instrume={instrume}, filename={filename}",
+    )
 
 
 def frame_dest(instrument: str, obsdate: str, filename: str) -> Path:
@@ -138,7 +165,7 @@ def download_frames(frames: list[dict], overwrite: bool = False) -> list[dict]:
 
         try:
             instrument = infer_archive_instrument(frame)
-            date_obs = (frame.get("DATE_OBS") or "").split("T")[0].replace("-", "")
+            date_obs = (frame.get("DATE_OBS") or frame.get("DAY_OBS") or "").split("T")[0].replace("-", "")
             if len(date_obs) >= 6:
                 obsdate = date_obs[2:]
             else:
