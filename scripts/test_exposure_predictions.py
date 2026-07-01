@@ -35,16 +35,13 @@ from astropy.io import fits
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from muscat_db.database import db_path, SCHEMA
-from muscat_db.instruments import get_instrument
+from muscat_db.database import db_path
 from muscat_db.exposure import (
     calc_peak,
     lookup_magnitudes,
-    get_coeff,
     load_coeffs,
-    EXTINCTION,
 )
-from muscat_db.photometry import raw_data_dir, valid_date
+from muscat_db.photometry import raw_data_dir
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -287,7 +284,7 @@ def test_observations(
     print(f"Found {len(frames)} frames to test\n")
 
     results = []
-    coeffs = load_coeffs(instrument)
+    load_coeffs(instrument)
 
     for i, frame in enumerate(frames, 1):
         if i % 20 == 0:
@@ -378,7 +375,7 @@ def analyze_results(results: list[dict]) -> None:
         return
 
     print(f"\n{'='*80}")
-    print(f"ANALYSIS SUMMARY")
+    print("ANALYSIS SUMMARY")
     print(f"{'='*80}\n")
 
     # Overall statistics
@@ -422,7 +419,7 @@ def analyze_results(results: list[dict]) -> None:
             print(f"{am_bin:>6.1f} ±0.1 {len(am_data):<6} {mean_err:>+.1f}%{'':<9} {min_err:>+7.1f}% to {max_err:>+7.1f}%")
 
     # Status breakdown
-    print(f"\nStatus Breakdown:")
+    print("\nStatus Breakdown:")
     statuses = set(r["status"] for r in results)
     for status in sorted(statuses):
         count = len([r for r in results if r["status"] == status])

@@ -5,7 +5,6 @@ Uses real astropy with fixed times (no Time.now), so results are deterministic.
 
 from __future__ import annotations
 
-import math
 
 import pytest
 

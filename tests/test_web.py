@@ -7,7 +7,7 @@ import getpass
 import pytest
 from fastapi.testclient import TestClient
 
-from muscat_db.database import save_job, db_path, get_persisted_jobs
+from muscat_db.database import save_job, get_persisted_jobs
 from muscat_db.web import app, _annotate_lco_archive_results
 
 @pytest.fixture
@@ -103,6 +103,46 @@ def test_jobs_status_response_counts_and_started_at(mock_db, monkeypatch):
             
     assert user1_found
     assert default_user_found
+
+
+def test_jobs_rerun_restores_persisted_run_identity(mock_db, monkeypatch):
+    import json
+
+    save_job(
+        type_="photometry",
+        inst="muscat3",
+        date="260101",
+        target="WASP-12b",
+        state="done",
+        returncode=0,
+        elapsed=100,
+        started_at=1700000200.0,
+        run_type="full",
+        params=json.dumps({"test_run": False, "options": {"bands": ["gp"]}}),
+        run_id="science_run",
+        run_name="Science Run",
+    )
+    key = get_persisted_jobs()[0]["key"]
+    captured = {}
+
+    def fake_start_run(inst, date, target, options, test_run):
+        captured.update(
+            inst=inst,
+            date=date,
+            target=target,
+            options=options,
+            test_run=test_run,
+        )
+        return {"ok": True, "key": "rerun-key"}
+
+    monkeypatch.setattr("muscat_db.web.phot.start_run", fake_start_run)
+
+    response = TestClient(app).post("/jobs/rerun", json={"key": key})
+
+    assert response.status_code == 200
+    assert captured["options"]["bands"] == ["gp"]
+    assert captured["options"]["run_name"] == "Science Run"
+    assert captured["test_run"] is False
 
 
 def test_validate_no_duplicate_datasets():

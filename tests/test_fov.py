@@ -4,7 +4,6 @@ These cover the pure-geometry and scoring layers, which run offline. The Gaia
 query and the full ``optimize`` orchestration need the network and are not
 exercised here.
 """
-import math
 
 import numpy as np
 import pytest

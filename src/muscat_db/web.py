@@ -3011,10 +3011,15 @@ def jobs_rerun(payload: dict = Body(...)):
         p = json.loads(params_raw) if params_raw else {}
     except (json.JSONDecodeError, TypeError):
         p = {}
+    options = dict(p.get("options") or {})
+    for field in ("run_name", "site", "mode"):
+        value = p.get(field) or job.get(field)
+        if value and not options.get(field):
+            options[field] = value
     if job["type"] == "photometry":
-        result = phot.start_run(inst, date, target, options=p.get("options", {}), test_run=p.get("test_run", True))
+        result = phot.start_run(inst, date, target, options=options, test_run=p.get("test_run", True))
     elif job["type"] == "transit_fit":
-        result = fit.start_fit(inst, date, target, options=p.get("options", {}), test_run=p.get("test_run", False), selected_csvs=p.get("selected_csvs"))
+        result = fit.start_fit(inst, date, target, options=options, test_run=p.get("test_run", False), selected_csvs=p.get("selected_csvs"))
     else:
         raise HTTPException(400, "unknown job type")
     if not result.get("ok"):

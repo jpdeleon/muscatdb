@@ -161,7 +161,7 @@ def main() -> int:
                     truncated.append((obj, inst, date, originals))
                 else:
                     sample = sorted(new_counts.items(), key=lambda x: -x[1])[:5]
-                    print(f"    DIFFERENT: rescan top OBJECTs: "
+                    print("    DIFFERENT: rescan top OBJECTs: "
                           + ", ".join(f"{o!r}={c}" for o, c in sample))
                     truncated.append((obj, inst, date, [o for o, _ in sample]))
 

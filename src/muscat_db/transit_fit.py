@@ -1241,22 +1241,6 @@ def start_fit(
                 "error": "fit results exist; choose 'New Fit' (start fresh) or 'Continue Sampling'",
             }
 
-    # Working directory
-    rdir.mkdir(parents=True, exist_ok=True)
-
-    # Preserve existing products so timer can reuse them when clobber is false.
-    # When overwrite is selected, fit.yaml sets clobber=true and timer owns the
-    # invalidation/replacement of its cached results.
-    # Full fits always clobber — otherwise timer reuses the cached test-run
-    # trace (20 draws) and exits immediately, misleading the user into thinking
-    # their full-fit request was silently ignored.
-    _write_fit_inputs(rdir, inst, date, target, csvs, options,
-                      site=site, mode=mode, run_name=run_name, run_id=run_id,
-                      run_type=run_type)
-
-    # Clear cached outputs so the next page load reads fresh results from disk.
-    _fit_outputs_cache.clear()
-
     key = fit_job_key(inst, date, target, run_id)
     params_json = json.dumps(
         {"test_run": test_run, "options": options, "selected_csvs": selected_csvs,
@@ -1266,11 +1250,11 @@ def start_fit(
 
     with _FIT_LOCK:
         existing = _FIT_JOBS.get(key)
-        # For full fits at capacity, allow queuing even if a job with the same key exists
-        at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
 
-        if existing is not None and existing.proc.poll() is None and not at_capacity:
+        if existing is not None and existing.proc.poll() is None:
             return {"ok": True, "key": key, "already_running": True, "run_id": run_id}
+
+        at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
 
         # Queue full jobs when at capacity
         if at_capacity:
@@ -1286,6 +1270,22 @@ def start_fit(
             except Exception:
                 return {"ok": False, "error": "database not writable"}
             return {"ok": True, "key": key, "queued": True, "run_id": run_id}
+
+    # Working directory
+    rdir.mkdir(parents=True, exist_ok=True)
+
+    # Preserve existing products so timer can reuse them when clobber is false.
+    # When overwrite is selected, fit.yaml sets clobber=true and timer owns the
+    # invalidation/replacement of its cached results.
+    # Full fits always clobber — otherwise timer reuses the cached test-run
+    # trace (20 draws) and exits immediately, misleading the user into thinking
+    # their full-fit request was silently ignored.
+    _write_fit_inputs(rdir, inst, date, target, csvs, options,
+                      site=site, mode=mode, run_name=run_name, run_id=run_id,
+                      run_type=run_type)
+
+    # Clear cached outputs so the next page load reads fresh results from disk.
+    _fit_outputs_cache.clear()
 
     # Launch process
     cmd = [*_timer_prefix(), "-v", str(rdir)]

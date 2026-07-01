@@ -239,7 +239,6 @@ class TestScanner:
 
     def test_scan_missing_dates(self, tmp_obslog, tmp_data):
         from muscat_db.scanner import scan_missing_dates
-        inst = INSTRUMENTS["muscat"]
         obsdate = tmp_data
         # Create data dirs for two dates
         for d in ["260101", "260102"]:
