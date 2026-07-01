@@ -1176,6 +1176,8 @@ Job = jobs.PipelineJob
 _JOBS: dict[str, Job] = {}
 _LOCK = threading.Lock()
 _MAX_FULL_JOBS = 1
+_PROSE_PRODUCT_SUFFIXES = {".csv", ".npz", ".png", ".gif"}
+_TARGET_PRODUCT_SUFFIXES = _PROSE_PRODUCT_SUFFIXES | {".txt"}
 
 # Watchdog limits for hung reductions. A healthy run writes to its log
 # continuously, so a long silence means it has stalled; the absolute cap is a
@@ -1209,18 +1211,79 @@ def log_path(inst: str, date: str, target: str, run_id: str = "") -> Path | None
     return p if p.is_file() else None
 
 
-def _full_reduction_exists(
+def _target_product_paths(rdir: Path, inst: str, target: str) -> list[Path]:
+    """Target-scoped prose products in a shared legacy date directory."""
+    t = target.replace(" ", "")
+    prefix = f"{t}_{inst}_"
+    try:
+        return [
+            p for p in rdir.iterdir()
+            if p.is_file()
+            and p.name.startswith(prefix)
+            and p.suffix.lower() in _TARGET_PRODUCT_SUFFIXES
+        ]
+    except OSError:
+        return []
+
+
+def _reduction_products_exist(
     inst: str,
     date: str,
     target: str,
     run_id: str,
 ) -> bool:
-    """Check if a full reduction already exists for the given run_id."""
+    """Check if prose products already exist for the given run."""
     try:
         rdir = run_output_dir(inst, date, target, run_id)
     except ValueError:
         return False
-    return rdir.is_dir()
+    if not rdir.is_dir():
+        return False
+    if run_id:
+        try:
+            return any(
+                p.is_file() and p.suffix.lower() in _PROSE_PRODUCT_SUFFIXES
+                for p in rdir.iterdir()
+            )
+        except OSError:
+            return False
+    return any(p.suffix.lower() in _PROSE_PRODUCT_SUFFIXES for p in _target_product_paths(rdir, inst, target))
+
+
+def _delete_reduction_files(inst: str, date: str, target: str, run_id: str = "") -> tuple[bool, int, str | None]:
+    """Delete on-disk products for one photometry run without touching job state."""
+    try:
+        rdir = run_output_dir(inst, date, target, run_id or None)
+    except ValueError as exc:
+        return False, 0, str(exc)
+    if not rdir.is_dir():
+        return True, 0, None
+
+    removed = 0
+    if run_id:
+        try:
+            for p in rdir.rglob("*"):
+                if p.is_file():
+                    removed += 1
+            shutil.rmtree(rdir)
+        except OSError as exc:
+            return False, removed, f"failed to delete run: {exc}"
+        return True, removed, None
+
+    for p in _target_product_paths(rdir, inst, target):
+        try:
+            p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    web_log = _run_log_path(rdir, inst, date, target, run_id)
+    if web_log.is_file():
+        try:
+            web_log.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return True, removed, None
 
 
 def start_run(
@@ -1279,13 +1342,12 @@ def start_run(
 
         at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
 
-        if run_type == "full":
-            if _full_reduction_exists(inst, date, target, run_id) and not overwrite:
-                logger.info(f"start_run: refusing to overwrite existing full reduction for {key} (overwrite=False)")
-                return {
-                    "ok": False,
-                    "error": "full reduction already exists for this target; enable 'Overwrite existing products' to replace",
-                }
+        if _reduction_products_exist(inst, date, target, run_id) and not overwrite:
+            logger.info(f"start_run: refusing to overwrite existing reduction for {key} (overwrite=False)")
+            return {
+                "ok": False,
+                "error": "reduction products already exist for this target; enable 'Overwrite existing products' to replace",
+            }
 
         # Queue full jobs when at capacity
         if at_capacity:
@@ -1307,19 +1369,13 @@ def start_run(
             rdir = run_output_dir(inst, date, target, run_id)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
+        if overwrite:
+            ok, removed, delete_error = _delete_reduction_files(inst, date, target, run_id)
+            if not ok:
+                return {"ok": False, "error": delete_error or "failed to delete previous reduction products"}
+            if removed:
+                logger.info(f"start_run: deleted {removed} previous product(s) for {key} before overwrite run")
         rdir.mkdir(parents=True, exist_ok=True)
-
-        # Clean up old product files before re-running with potentially different bands.
-        # Without this, re-running with fewer bands leaves stale product files from the
-        # previous run (e.g., zs-band products when re-running with only gp/rp/ip).
-        t = target.replace(" ", "")
-        stem = f"{t}_{inst}"
-        for p in list(rdir.glob("*.png")) + list(rdir.glob("*.gif")) + list(rdir.glob("*.csv")):
-            if p.is_file() and p.name.startswith(stem):
-                try:
-                    p.unlink()
-                except OSError:
-                    pass
 
         _write_run_meta(rdir, inst=inst, date=date, target=target, run_id=run_id, site=site, mode=mode, run_name=run_name, run_type=run_type)
         cmd = build_command(inst, date, target, opts, test_run=test_run, run_id=run_id)
@@ -1587,40 +1643,9 @@ def delete_reduction(inst: str, date: str, target: str, run_id: str = "") -> dic
     the web-run log. Also clears the persisted job record so the Jobs page
     no longer shows a stale entry. Never touches other targets.
     """
-    try:
-        rdir = run_output_dir(inst, date, target, run_id or None)
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
-    if not rdir.is_dir():
-        return {"ok": True, "count": 0}
-    t = target.replace(" ", "")
-    stem = f"{t}_{inst}"
-    web_log = _run_log_path(rdir, inst, date, target, run_id)
-    removed = 0
-    if run_id:
-        try:
-            for p in rdir.rglob("*"):
-                if p.is_file():
-                    removed += 1
-            shutil.rmtree(rdir)
-        except OSError as exc:
-            return {"ok": False, "error": f"failed to delete run: {exc}"}
-    else:
-        for p in list(rdir.iterdir()):
-            if not p.is_file():
-                continue
-            if p.name.startswith(stem):
-                try:
-                    p.unlink()
-                    removed += 1
-                except OSError:
-                    pass
-        if web_log.is_file():
-            try:
-                web_log.unlink()
-                removed += 1
-            except OSError:
-                pass
+    ok, removed, error = _delete_reduction_files(inst, date, target, run_id)
+    if not ok:
+        return {"ok": False, "error": error or "failed to delete reduction"}
     get_job_store().delete(f"photometry:{job_key(inst, date, target, run_id)}")
     try:
         del _JOBS[job_key(inst, date, target, run_id)]

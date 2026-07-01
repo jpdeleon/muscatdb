@@ -1026,6 +1026,7 @@ def save_job(
                  state      = excluded.state,
                  returncode = excluded.returncode,
                  elapsed    = excluded.elapsed,
+                 started_at = excluded.started_at,
                  error_desc = excluded.error_desc,
                  run_type   = CASE WHEN excluded.run_type != '' THEN excluded.run_type ELSE run_type END,
                  params     = CASE WHEN excluded.params != '' THEN excluded.params ELSE params END,
