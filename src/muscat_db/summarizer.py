@@ -46,16 +46,13 @@ def summarize_csv(inst_name: str, obsdate: str, ccd: int) -> list[SummaryRow]:
     delim = _delim_for(inst_name, ccd, obsdate)
     with open(csv_path) as f:
         reader = csv.DictReader(f)
-        colnames = reader.fieldnames or []
         keys_in_order: list[str] = []
         seen_keys: dict[str, int] = {}
         key_fnum_prev: dict[str, int] = {}
         key_id: dict[str, int] = {}
         key_data: dict[str, SummaryRow] = {}
-        n: dict[str, int] = {}
         fnum_start: dict[str, str] = {}
         ut_start: dict[str, str] = {}
-        ut_end: dict[str, str] = {}
         for row in reader:
             obj = row.get("OBJECT", "")
             exptime = row.get("EXPTIME (s)", "")

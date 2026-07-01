@@ -702,6 +702,64 @@ class TestStartRun:
         s = phot.job_status(INST, "111111", "Nobody")
         assert s["state"] == "none"
 
+    def test_existing_full_job_reused_before_capacity_queue(self, monkeypatch, tmp_path):
+        """Same-key running jobs must not be converted to pending rows just
+        because the full-job queue is at capacity."""
+        from dataclasses import replace
+        from muscat_db.instruments import INSTRUMENTS
+
+        class RunningProc:
+            pid = 12345
+
+            def poll(self):
+                return None
+
+        class NoQueueStore:
+            def enqueue(self, **_kwargs):
+                pytest.fail("same-key running job must be reused, not queued")
+
+        raw_root = tmp_path / "raw"
+        (raw_root / DATE).mkdir(parents=True)
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path / "out"))
+        patched = dict(INSTRUMENTS)
+        patched[INST] = replace(INSTRUMENTS[INST], data_dir=str(raw_root))
+        monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
+        monkeypatch.setattr(phot, "_count_running_full", lambda: 1)
+        monkeypatch.setattr(phot, "get_job_store", lambda: NoQueueStore())
+
+        log_path = tmp_path / "running.log"
+        logf = log_path.open("w")
+        key = phot.job_key(INST, DATE, TARGET, "default")
+        with phot._LOCK:
+            phot._JOBS.clear()
+            phot._JOBS[key] = phot.Job(
+                key=key,
+                inst=INST,
+                date=DATE,
+                target=TARGET,
+                cmd=["prose"],
+                proc=RunningProc(),
+                logf=logf,
+                log_path=log_path,
+                run_type="full",
+                run_id="default",
+                run_name="default",
+            )
+        try:
+            result = phot.start_run(
+                INST, DATE, TARGET, options={"overwrite": False}, test_run=False
+            )
+            assert result == {
+                "ok": True,
+                "key": key,
+                "already_running": True,
+                "run_id": "default",
+            }
+        finally:
+            logf.close()
+            with phot._LOCK:
+                phot._JOBS.clear()
+
     def test_job_status_reports_persisted_error_when_job_gone(
         self, monkeypatch, tmp_path
     ):

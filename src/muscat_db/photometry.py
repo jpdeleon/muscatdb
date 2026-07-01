@@ -582,13 +582,14 @@ def list_outputs(
             out["has_any"] = True
 
     if inst in ("muscat", "muscat2"):
-        try:
-            cal_dir = Path(str(raw_data_dir(inst, date)) + "_calibrated")
-            for p in sorted(cal_dir.glob("master_*.png")):
-                if p.is_file():
-                    out["masters"].append(p.name)
-        except OSError:
-            pass
+        for base_dir in (results_dir(inst, date), raw_data_dir(inst, date)):
+            try:
+                cal_dir = Path(str(base_dir) + "_calibrated")
+                for p in sorted(cal_dir.glob("master_*.png")):
+                    if p.is_file() and p.name not in out["masters"]:
+                        out["masters"].append(p.name)
+            except OSError:
+                pass
 
     if logs:
         out["log"] = max(logs, key=lambda p: p.stat().st_mtime).name
@@ -761,16 +762,18 @@ def safe_artifact_path(inst: str, date: str, name: str) -> Path | None:
     if Path(name).suffix.lower() not in ALLOWED_EXTS:
         return None
 
-    # For muscat/muscat2 master images, they live in <raw_data_dir>_calibrated
+    # For muscat/muscat2 master images, they live in <results_dir>_calibrated or <raw_data_dir>_calibrated
     if inst in ("muscat", "muscat2") and name.startswith("master_") and name.endswith(".png"):
-        raw_dir = raw_data_dir(inst, date)
-        cal_dir = Path(str(raw_dir) + "_calibrated").resolve()
-        candidate = (cal_dir / name).resolve()
-        try:
-            candidate.relative_to(cal_dir)
-        except ValueError:
-            return None
-        return candidate if candidate.is_file() else None
+        for base_dir in (results_dir(inst, date), raw_data_dir(inst, date)):
+            cal_dir = Path(str(base_dir) + "_calibrated").resolve()
+            candidate = (cal_dir / name).resolve()
+            try:
+                candidate.relative_to(cal_dir)
+                if candidate.is_file():
+                    return candidate
+            except ValueError:
+                pass
+        return None
 
     base = output_base().resolve()
     candidate = (base / inst / date / name).resolve()
@@ -1253,18 +1256,15 @@ def start_run(
 
     with _LOCK:
         existing = _JOBS.get(key)
-        # For full runs at capacity, allow queuing even if a job with the same key exists
-        # (the existing job will be reused if still running; if not, a new one will be queued)
-        at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
         overwrite = opts.get("overwrite", True)
-        logger.info(f"start_run: {inst}/{date}/{target} run_id={run_id} overwrite={overwrite} existing={existing is not None} at_capacity={at_capacity}")
+        logger.info(f"start_run: {inst}/{date}/{target} run_id={run_id} overwrite={overwrite} existing={existing is not None}")
 
-        if existing is not None and existing.proc.poll() is None and not at_capacity:
-            # If overwrite is True, cancel the existing job and start a new one
+        if existing is not None and existing.proc.poll() is None:
             if overwrite:
                 logger.info(f"start_run: cancelling existing job for {key} (overwrite=True)")
                 try:
-                    existing.proc.terminate()
+                    existing.cancelled = True
+                    jobs.terminate_pg(existing.proc)
                     if existing.logf:
                         try:
                             existing.logf.close()
@@ -1276,6 +1276,8 @@ def start_run(
             else:
                 logger.info(f"start_run: reusing existing job for {key} (overwrite=False)")
                 return {"ok": True, "key": key, "already_running": True, "run_id": run_id}
+
+        at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
 
         if run_type == "full":
             if _full_reduction_exists(inst, date, target, run_id) and not overwrite:

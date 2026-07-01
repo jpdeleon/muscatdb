@@ -13,9 +13,7 @@ Requirements:
 """
 
 import requests
-import json
 import sys
-import math
 from datetime import datetime, timezone
 from typing import List, Tuple, Optional
 
@@ -84,13 +82,13 @@ def fetch_local_windows(planet: str, start_date: str, end_date: str) -> Optional
         period = catalog_ephem[planet_letter].get("period")
         duration = catalog_ephem[planet_letter].get("duration")
 
-        print(f"✓ Retrieved ephemeris:")
+        print("✓ Retrieved ephemeris:")
         print(f"  t0: {t0}")
         print(f"  period: {period}")
         print(f"  duration: {duration}")
 
         if t0 is None or period is None:
-            print(f"❌ Missing t0 or period")
+            print("❌ Missing t0 or period")
             return None
 
     except requests.RequestException as e:
@@ -128,7 +126,7 @@ def fetch_local_windows(planet: str, start_date: str, end_date: str) -> Optional
         print(f"✓ Generated {len(windows)} transit windows")
 
         if windows:
-            print(f"\n  Sample windows:")
+            print("\n  Sample windows:")
             for i, w in enumerate(windows[:3]):
                 print(f"    {i}: epoch={w['epoch']}, mid={w['mid']}")
 
@@ -194,7 +192,7 @@ def fetch_ipac_transits(planet: str, start_date: str, end_date: str) -> Optional
         print(f"✓ Extracted {len(ipac_mids)} midpoint times")
 
         if ipac_mids:
-            print(f"\n  Sample IPAC transits:")
+            print("\n  Sample IPAC transits:")
             for i, (dt, jd) in enumerate(ipac_mids[:3]):
                 print(f"    {i}: {dt.isoformat()}")
 
@@ -301,7 +299,7 @@ def main():
         result = compare_predictions(local_windows, ipac_mids)
         return 0 if result else 1
     else:
-        print(f"\n❌ Could not obtain data from both sources")
+        print("\n❌ Could not obtain data from both sources")
         return 1
 
 

@@ -10,7 +10,6 @@ Verifies that all HTML form inputs are:
 Run with: pytest tests/test_frontend_input_audit.py -v
 """
 
-import json
 import re
 from pathlib import Path
 

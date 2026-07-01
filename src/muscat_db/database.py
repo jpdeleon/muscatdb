@@ -403,9 +403,8 @@ def build_db(db_path: str, progress=None) -> int:
         conn.execute("DROP INDEX IF EXISTS idx_summaries_inst_date;")
 
         # Phase 2: ingest frames.
-        ingest_task = None
         if progress is not None:
-            ingest_task = progress.add_task(
+            progress.add_task(
                 "[cyan]Ingesting CSVs[/]", total=len(csv_jobs), filename="",
             )
 

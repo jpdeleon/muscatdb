@@ -3,7 +3,6 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch, MagicMock
 import os
-import datetime
 
 from muscat_db import lco
 
