@@ -133,6 +133,12 @@ class LcoTest(unittest.TestCase):
         self.assertIn("results", result)
         self.assertEqual(result["results"][0]["filename"], "test.fits")
 
+        # Regression: the LCO Science Archive authenticates with the DRF
+        # "Token" scheme, not "Bearer". Using Bearer returns HTTP 401
+        # {"detail": "No Such User"}.
+        request = mock_urlopen.call_args[0][0]
+        self.assertEqual(request.get_header("Authorization"), "Token test-token")
+
     def test_generate_windows(self):
         windows = lco.generate_windows(
             t0=2459000.5,
