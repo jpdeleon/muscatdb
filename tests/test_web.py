@@ -105,6 +105,38 @@ def test_jobs_status_response_counts_and_started_at(mock_db, monkeypatch):
     assert default_user_found
 
 
+def test_jobs_status_elapsed_uses_latest_rerun_started_at(mock_db, monkeypatch):
+    save_job(
+        type_="photometry",
+        inst="muscat3",
+        date="260101",
+        target="WASP-12b",
+        state="done",
+        returncode=0,
+        elapsed=100,
+        started_at=1000.0,
+    )
+    save_job(
+        type_="photometry",
+        inst="muscat3",
+        date="260101",
+        target="WASP-12b",
+        state="running",
+        returncode=None,
+        elapsed=0,
+        started_at=2000.0,
+    )
+    monkeypatch.setattr("muscat_db.web._last_running", set())
+    monkeypatch.setattr("muscat_db.web.time.time", lambda: 2030.0)
+
+    response = TestClient(app).get("/jobs/status")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["running"]) == 1
+    assert data["running"][0]["elapsed"] == 30
+
+
 def test_target_without_name_redirects_to_database_search(mock_db):
     response = TestClient(app).get("/target", follow_redirects=False)
 
@@ -157,7 +189,48 @@ def test_target_detail_stores_last_viewed_target(mock_db, monkeypatch):
     assert response.status_code == 200
     html = response.text
     assert 'id="target-nav-link" href="/target"' in html
-    assert "localStorage.setItem('target:lastName', \"V1298TAU\")" in html
+    assert 'id="photometry-nav-link" href="/photometry"' in html
+    assert 'id="transit-fit-nav-link" href="/transit-fit"' in html
+    assert 'id="ephemeris-nav-link" href="/ephemeris"' in html
+    assert "MuscatRouteState.rememberTarget(\"V1298TAU\")" in html
+
+
+def test_ephemeris_targets_are_normalized_unique_names(mock_db):
+    save_job(
+        type_="transit_fit",
+        inst="muscat4",
+        date="260101",
+        target="V1298Tau_b",
+        state="done",
+        returncode=0,
+        elapsed=10,
+        started_at=1000.0,
+    )
+    save_job(
+        type_="transit_fit",
+        inst="muscat4",
+        date="260102",
+        target="V1298Tauc",
+        state="done",
+        returncode=0,
+        elapsed=12,
+        started_at=1001.0,
+    )
+    save_job(
+        type_="transit_fit",
+        inst="sinistro",
+        date="260103",
+        target="HIP 67522",
+        state="done",
+        returncode=0,
+        elapsed=14,
+        started_at=1002.0,
+    )
+
+    response = TestClient(app).get("/api/ephemeris/targets")
+
+    assert response.status_code == 200
+    assert response.json()["targets"] == ["HIP67522", "V1298TAU"]
 
 
 def test_jobs_rerun_restores_persisted_run_identity(mock_db, monkeypatch):
@@ -356,10 +429,47 @@ def test_lco_archive_frames_search(monkeypatch):
         "muscat_db.lco.archive_search",
         lambda filters, token=None: {"count": 1, "results": [{"filename": "ogg2m001-ep05-20260102-0001-e91.fits.fz", "SITEID": "ogg", "TELID": "2m0a"}]},
     )
-    r = TestClient(app).get("/api/lco/archive/frames", params={"OBJECT": "WASP-12", "limit": "10"})
+    r = TestClient(app).get("/api/lco/archive/frames", params={"OBJECT": "WASP-12", "limit": "10", "fuzzy_name": "1"})
     assert r.status_code == 200
+    assert r.json()["match_mode"] == "name"
     assert r.json()["results"][0]["SITEID"] == "ogg"
     assert r.json()["results"][0]["archive_instrument"] == "muscat3"
+
+
+def test_lco_archive_frames_coordinate_primary_by_default(monkeypatch):
+    captured = {}
+
+    def _fake_search(filters, token=None):
+        captured.update(filters)
+        return {"count": 1, "results": [{"filename": "ogg2m001-ep05-20260102-0001-e91.fits.fz", "SITEID": "ogg", "TELID": "2m0a"}]}
+
+    monkeypatch.setattr("muscat_db.lco.archive_search", _fake_search)
+    monkeypatch.setattr("muscat_db.web._resolve_archive_coords", lambda name: (97.6367, 29.6725, "catalog"))
+
+    r = TestClient(app).get("/api/lco/archive/frames", params={"OBJECT": "WASP-12", "limit": "10"})
+    assert r.status_code == 200
+    data = r.json()
+    # Coordinate-primary: query by footprint coverage, not OBJECT header text.
+    assert captured.get("covers") == "POINT(97.6367 29.6725)"
+    assert "OBJECT" not in captured
+    assert data["match_mode"] == "coord"
+    assert data["resolved_ra"] == 97.6367
+    assert data["resolved_source"] == "catalog"
+
+
+def test_lco_archive_frames_coordinate_unresolved_returns_422(monkeypatch):
+    monkeypatch.setattr("muscat_db.lco.archive_search", lambda filters, token=None: {"count": 0, "results": []})
+    monkeypatch.setattr("muscat_db.web._resolve_archive_coords", lambda name: None)
+
+    r = TestClient(app).get("/api/lco/archive/frames", params={"OBJECT": "NoSuchTarget"})
+    assert r.status_code == 422
+    assert r.json()["ok"] is False
+
+
+def test_lco_archive_frames_coordinate_requires_name(monkeypatch):
+    monkeypatch.setattr("muscat_db.lco.archive_search", lambda filters, token=None: {"count": 0, "results": []})
+    r = TestClient(app).get("/api/lco/archive/frames", params={"limit": "10"})
+    assert r.status_code == 400
 
 
 def test_lco_archive_frames_telescope_class_filters_locally(monkeypatch):
@@ -373,7 +483,7 @@ def test_lco_archive_frames_telescope_class_filters_locally(monkeypatch):
             ],
         },
     )
-    r = TestClient(app).get("/api/lco/archive/frames", params={"TELID": "2m0"})
+    r = TestClient(app).get("/api/lco/archive/frames", params={"TELID": "2m0", "fuzzy_name": "1"})
     assert r.status_code == 200
     data = r.json()
     assert data["count"] == 1
@@ -416,7 +526,7 @@ def test_lco_archive_frames_groups_overnight_dataset_and_marks_existing(mock_db,
 
     r = TestClient(app).get(
         "/api/lco/archive/frames",
-        params={"instrument": "muscat3", "OBJECT": "WASP-12", "limit": "10"},
+        params={"instrument": "muscat3", "OBJECT": "WASP-12", "limit": "10", "fuzzy_name": "1"},
     )
     assert r.status_code == 200
     data = r.json()
@@ -464,7 +574,7 @@ def test_lco_archive_frames_same_date_same_target_same_site_stay_one_dataset(moc
 
     r = TestClient(app).get(
         "/api/lco/archive/frames",
-        params={"instrument": "sinistro", "OBJECT": "WASP-12", "limit": "10"},
+        params={"instrument": "sinistro", "OBJECT": "WASP-12", "limit": "10", "fuzzy_name": "1"},
     )
     assert r.status_code == 200
     data = r.json()
