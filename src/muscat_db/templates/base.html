@@ -16,9 +16,9 @@
   <a class="brand" href="/">MuSCAT-db</a>
   <a href="/logs">ObsLog</a>
   <a id="target-nav-link" href="/target">Target</a>
-  <a href="/photometry">Photometry</a>
-  <a href="/transit-fit">Transit Fit</a>
-  <a href="/ephemeris">Ephemeris</a>
+  <a id="photometry-nav-link" href="/photometry">Photometry</a>
+  <a id="transit-fit-nav-link" href="/transit-fit">Transit Fit</a>
+  <a id="ephemeris-nav-link" href="/ephemeris">Ephemeris</a>
   <a href="/jobs">Jobs</a>
   <span class="spacer"></span>
   <a href="/lco/schedule">LCO</a>
@@ -53,14 +53,7 @@
   (function () {
     const root = document.documentElement;
     const btn = document.getElementById('theme-toggle');
-    const targetLink = document.getElementById('target-nav-link');
-    try {
-      const lastTarget = localStorage.getItem('target:lastName');
-      if (targetLink && lastTarget) {
-        targetLink.href = '/target?name=' + encodeURIComponent(lastTarget);
-        targetLink.title = 'Last viewed target: ' + lastTarget;
-      }
-    } catch (_) {}
+    if (window.MuscatRouteState) window.MuscatRouteState.applyNavbar();
     const stored = localStorage.getItem('muscat-theme');
     apply(stored || 'light');
     btn.addEventListener('click', function () {

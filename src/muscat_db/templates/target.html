@@ -6,9 +6,10 @@
   {# Single target view #}
   <h1>Target: {{ target_name }}</h1>
   <script>
-    try {
-      localStorage.setItem('target:lastName', {{ target_name | tojson }});
-    } catch (_) {}
+    if (window.MuscatRouteState) {
+      window.MuscatRouteState.rememberTarget({{ target_name | tojson }});
+      window.MuscatRouteState.applyNavbar();
+    }
   </script>
   <p style="color: var(--text-dim); margin-bottom: 1.5rem;">
     <a href="/">← Back to database search</a>
