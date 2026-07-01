@@ -105,6 +105,61 @@ def test_jobs_status_response_counts_and_started_at(mock_db, monkeypatch):
     assert default_user_found
 
 
+def test_target_without_name_redirects_to_database_search(mock_db):
+    response = TestClient(app).get("/target", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
+
+
+def test_index_exposes_normalized_target_direct_link(mock_db, monkeypatch):
+    monkeypatch.setattr(
+        "muscat_db.web._get_targets",
+        lambda _db: [{
+            "object": "V1298Tau_b",
+            "is_identified": True,
+            "norm_name": "V1298TAU",
+            "ra": "04:05:23.4940",
+            "declination": "+20:11:36.595",
+            "filters": ["gp", "rp"],
+            "filter_chips": [
+                {"label": "gp", "color": "g", "narrow": False},
+                {"label": "rp", "color": "r", "narrow": False},
+            ],
+            "n_frames": 42,
+            "airmass_min": 1.1,
+            "airmass_max": 1.4,
+            "instruments": ["muscat4"],
+            "dates": ["260101"],
+            "date_to_inst": {"260101": "muscat4"},
+            "note": "young star",
+        }],
+    )
+
+    response = TestClient(app).get("/")
+
+    assert response.status_code == 200
+    html = response.text
+    assert "Normalized Target" in html
+    assert 'data-norm-name="V1298TAU"' in html
+    assert 'href="/target?name=V1298TAU"' in html
+    assert "V1298Tau_b V1298TAU" in html
+
+
+def test_target_detail_stores_last_viewed_target(mock_db, monkeypatch):
+    monkeypatch.setattr(
+        "muscat_db.web._get_datasets_for_normalized_target",
+        lambda _db, norm_name: ([], "2026-07-01"),
+    )
+
+    response = TestClient(app).get("/target?name=V1298Tau_b")
+
+    assert response.status_code == 200
+    html = response.text
+    assert 'id="target-nav-link" href="/target"' in html
+    assert "localStorage.setItem('target:lastName', \"V1298TAU\")" in html
+
+
 def test_jobs_rerun_restores_persisted_run_identity(mock_db, monkeypatch):
     import json
 

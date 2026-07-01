@@ -31,6 +31,7 @@
   <thead>
     <tr>
       <th data-sort-attr="name">Object</th>
+      <th data-sort-attr="normName">Normalized Target</th>
       <th data-sort-attr="dates">Dates</th>
       <th data-sort-attr="ra"          data-sort-type="ra">RA</th>
       <th data-sort-attr="dec"         data-sort-type="dec">Dec</th>
@@ -40,7 +41,8 @@
       <th style="width:1px;">Move</th>
     </tr>
     <tr class="filter-row">
-      <th><input type="text" data-col="name"        placeholder="contains…"></th>
+      <th><input type="text" data-col="name"        placeholder="raw OBJECT…"></th>
+      <th><input type="text" data-col="norm_name"   placeholder="V1298TAU"></th>
       <th><input type="text" data-col="date"        placeholder="YYMMDD"></th>
       <th><input type="text" data-col="ra"          placeholder="hr: >10  5-15"></th>
       <th><input type="text" data-col="dec"         placeholder="deg: >0  -30:30"></th>
@@ -52,7 +54,9 @@
   </thead>
   <tbody>
   {% for t in rows %}
+    {% set display_dates %}{% for d in t.dates %}{% set inst = t.date_to_inst.get(d, t.instruments[0] if t.instruments else '') %}{{ d }}{% if inst == 'muscat' %}(M1){% elif inst == 'muscat2' %}(M2){% elif inst == 'muscat3' %}(M3){% elif inst == 'muscat4' %}(M4){% elif inst == 'sinistro' %}(S){% endif %}{% if not loop.last %},{% endif %}{% endfor %}{% endset %}
     <tr data-name="{{ t.object }}"
+        data-norm-name="{{ t.norm_name }}"
         data-ra="{{ t.ra }}"
         data-dec="{{ t.declination }}"
         data-filters="{{ t.filters|join(',') }}"
@@ -60,9 +64,11 @@
         data-airmass-min="{{ t.airmass_min if t.airmass_min is not none else '' }}"
         data-airmass-max="{{ t.airmass_max if t.airmass_max is not none else '' }}"
         data-instruments="{{ t.instruments|join(',') }}"
-        data-dates="{% for d in t.dates %}{% set inst = t.date_to_inst.get(d, t.instruments[0] if t.instruments else '') %}{{ d }}{% if inst == 'muscat' %}(M1){% elif inst == 'muscat2' %}(M2){% elif inst == 'muscat3' %}(M3){% elif inst == 'muscat4' %}(M4){% elif inst == 'sinistro' %}(S){% endif %}{% if not loop.last %},{% endif %}{% endfor %}"
-        data-note="{{ t.note|default('', true) }}">
-      <td><a href="/target?name={{ t.norm_name | urlencode }}" style="text-decoration:none; color:inherit;"><strong>{{ t.object }}</strong></a></td>
+        data-dates="{{ display_dates|trim }}"
+        data-note="{{ t.note|default('', true) }}"
+        data-search="{{ t.object }} {{ t.norm_name }} {{ t.ra }} {{ t.declination }} {{ t.filters|join(' ') }} {{ t.instruments|join(' ') }} {{ display_dates|trim }} {{ t.note|default('', true) }}">
+      <td><strong>{{ t.object }}</strong></td>
+      <td><a href="/target?name={{ t.norm_name | urlencode }}" style="text-decoration:none;"><strong>{{ t.norm_name }}</strong></a></td>
       <td class="mono" style="white-space:nowrap; vertical-align:top;">
         {% for d in t.dates %}
           {% set inst = t.date_to_inst.get(d, t.instruments[0] if t.instruments else '') %}
@@ -319,6 +325,7 @@
     // Map data-col → (row → value, parser builder)
     const colSpec = {
       name:       { val: r => r.dataset.name,        build: makeText    },
+      norm_name:  { val: r => r.dataset.normName,    build: makeText    },
       ra:         { val: r => raToHours(r.dataset.ra),   build: makeNumeric },
       dec:        { val: r => decToDegrees(r.dataset.dec), build: makeNumeric },
       filter:     { val: r => r.dataset.filters,     build: makeText    },
@@ -365,7 +372,7 @@
       const colPreds = buildColPredicates();
       let visible = 0;
       rows.forEach(r => {
-        let ok = textTest(r.dataset.name || '');
+        let ok = textTest(r.dataset.search || '');
         for (let i = 0; ok && i < colPreds.length; i++) ok = colPreds[i](r);
         if (ok && activeInstrument) {
           const tokens = (r.dataset.instruments || '').toLowerCase().split(',').map(t => t.trim()).filter(Boolean);
