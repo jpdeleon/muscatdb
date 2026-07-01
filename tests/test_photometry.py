@@ -698,6 +698,105 @@ class TestStartRun:
         assert r["ok"] is False
         assert "raw data not found" in r["error"]
 
+    def test_overwrite_false_refuses_existing_products_without_deleting(
+        self, monkeypatch, tmp_path
+    ):
+        from dataclasses import replace
+        from muscat_db.instruments import INSTRUMENTS
+
+        raw_root = tmp_path / "raw"
+        (raw_root / DATE).mkdir(parents=True)
+        out_root = tmp_path / "out"
+        rdir = out_root / INST / DATE / "_runs" / TARGET.replace(" ", "") / "default"
+        rdir.mkdir(parents=True)
+        stale_csv = rdir / f"{TARGET}_{INST}_gp_{DATE}.csv"
+        stale_png = rdir / f"{TARGET}_{INST}_{DATE}_lightcurves.png"
+        stale_csv.write_text("old\n")
+        stale_png.write_bytes(b"old")
+
+        patched = dict(INSTRUMENTS)
+        patched[INST] = replace(INSTRUMENTS[INST], data_dir=str(raw_root))
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(out_root))
+        monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
+        monkeypatch.setattr(phot.subprocess, "Popen", lambda *_a, **_k: pytest.fail("pipeline should not launch"))
+
+        result = phot.start_run(
+            INST,
+            DATE,
+            TARGET,
+            options={"run_name": "", "overwrite": False},
+            test_run=True,
+        )
+
+        assert result["ok"] is False
+        assert "already exist" in result["error"]
+        assert stale_csv.read_text() == "old\n"
+        assert stale_png.read_bytes() == b"old"
+
+    def test_overwrite_true_deletes_previous_products_before_launch(
+        self, monkeypatch, tmp_path
+    ):
+        from dataclasses import replace
+        from muscat_db.instruments import INSTRUMENTS
+
+        class FakeProc:
+            pid = os.getpid()
+
+            def poll(self):
+                return None
+
+        class Store:
+            def save(self, **_kwargs):
+                pass
+
+            def delete(self, _key):
+                pass
+
+        raw_root = tmp_path / "raw"
+        (raw_root / DATE).mkdir(parents=True)
+        out_root = tmp_path / "out"
+        rdir = out_root / INST / DATE / "_runs" / TARGET.replace(" ", "") / "default"
+        rdir.mkdir(parents=True)
+        old_files = [
+            rdir / f"{TARGET}_{INST}_gp_{DATE}.csv",
+            rdir / f"{TARGET}_{INST}_{DATE}.npz",
+            rdir / f"{TARGET}_{INST}_{DATE}_ref_header.txt",
+        ]
+        for p in old_files:
+            p.write_text("old\n")
+        other_target = out_root / INST / DATE / f"Other_{INST}_{DATE}.npz"
+        other_target.write_text("keep\n")
+
+        patched = dict(INSTRUMENTS)
+        patched[INST] = replace(INSTRUMENTS[INST], data_dir=str(raw_root))
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(out_root))
+        monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
+        monkeypatch.setattr(phot, "get_job_store", lambda: Store())
+        monkeypatch.setattr(phot.subprocess, "Popen", lambda *_a, **_k: FakeProc())
+
+        with phot._LOCK:
+            phot._JOBS.clear()
+        try:
+            result = phot.start_run(
+                INST,
+                DATE,
+                TARGET,
+                options={"run_name": "", "overwrite": True},
+                test_run=True,
+            )
+            assert result["ok"] is True
+            assert all(not p.exists() for p in old_files)
+            assert other_target.read_text() == "keep\n"
+            assert phot._run_log_path(rdir, INST, DATE, TARGET, "default").is_file()
+        finally:
+            with phot._LOCK:
+                for job in phot._JOBS.values():
+                    try:
+                        job.logf.close()
+                    except OSError:
+                        pass
+                phot._JOBS.clear()
+
     def test_job_status_none_when_not_started(self):
         s = phot.job_status(INST, "111111", "Nobody")
         assert s["state"] == "none"
@@ -1114,6 +1213,7 @@ class TestRoutes:
         assert r.status_code == 200
         assert f"{TARGET}_{INST}_{DATE}_lightcurves.png" in r.text
         assert "Per-band products" in r.text
+        assert "MuscatRouteState.rememberPhotometry" in r.text
 
     def test_photometry_page_versions_artifact_urls(self, client):
         r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
@@ -1455,6 +1555,7 @@ class TestRoutes:
         assert r.status_code == 200
         assert "dummy_muscat3_250717.csv" in r.text
         assert "Created:" in r.text
+        assert "MuscatRouteState.rememberTransitFit" in r.text
 
     def test_transit_fit_sinistro_site_mode_chips(self, client, tmp_path, mocker):
         import os
