@@ -1,0 +1,665 @@
+{% extends "base.html" %}
+{% block title %}TOI Catalog — MuSCAT-db{% endblock %}
+{% block content %}
+<script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
+
+<style>
+  .toi-meta { color: var(--text-dim); font-size: 0.85rem; margin: 0.25rem 0 1rem; }
+  .chip-bar { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.5rem; }
+  .chip-bar .chip-label { font-size: 0.85rem; color: var(--text-dim); font-weight: 500; min-width: 6rem; }
+  .toi-chip { cursor: pointer; }
+  .toi-section > summary { cursor: pointer; padding: 0.5rem 0; color: var(--text-dim); font-size: 1rem; font-weight: 600; }
+  #toi-table th, #toi-table td { white-space: nowrap; }
+  #toi-table td.num { font-variant-numeric: tabular-nums; text-align: right; }
+  #toi-table thead tr:first-child th { cursor: pointer; user-select: none; }
+  .sort-ind { font-size: 0.7rem; color: var(--accent); margin-left: 0.15rem; }
+  .plot-controls { display: flex; gap: 0.6rem 1rem; align-items: center; flex-wrap: wrap; margin: 0.75rem 0; }
+  .plot-controls label { font-size: 0.85rem; color: var(--text-dim); display: flex; align-items: center; gap: 0.35rem; }
+  .plot-controls select, .plot-controls input[type="range"] { background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 0.25rem 0.4rem; font-size: 0.85rem; }
+  #toi-plot { width: 100%; height: 600px; }
+</style>
+
+<h1>TESS Objects of Interest</h1>
+<p class="toi-meta">
+  Source: <code>data/TOIs.csv</code> — {{ '{:,}'.format(n_rows) }} objects, all TFOPWG dispositions
+  · <strong>{{ '{:,}'.format(n_indb) }}</strong> in muscat-db (★ markers, click a point to open its target page)
+  {% if toi_updated %}· catalog last updated {{ toi_updated }}{% endif %}.
+</p>
+
+<div class="search-bar">
+  <input id="toi-search" type="text" placeholder="Search TOI, TIC ID, or planet name…" autocomplete="off">
+  <span id="toi-count" class="hint"></span>
+  <a id="toi-export" href="#" class="csv-btn" download="tois_filtered.csv">⬇ CSV (filtered)</a>
+</div>
+
+<div class="chip-bar">
+  <span class="chip-label">Planet type:</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="USP">USP</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Hot Jupiter">Hot Jupiter</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Jupiter-size">Jupiter-size</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Neptune-size">Neptune-size</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Sub-Neptune">Sub-Neptune</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Super-Earth">Super-Earth</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Earth-size">Earth-size</span>
+</div>
+<div class="chip-bar">
+  <span class="chip-label">Host star:</span>
+  <span class="badge instrument-badge toi-chip" data-group="star" data-key="M">M dwarf</span>
+  <span class="badge instrument-badge toi-chip" data-group="star" data-key="K">K type</span>
+  <span class="badge instrument-badge toi-chip" data-group="star" data-key="G">G type</span>
+  <span class="badge instrument-badge toi-chip" data-group="star" data-key="F">F type</span>
+  <span class="badge instrument-badge toi-chip" data-group="star" data-key="A+">A / hotter</span>
+</div>
+<div class="chip-bar">
+  <span class="chip-label">Candidate type:</span>
+  <span class="badge instrument-badge toi-chip" data-group="disp" data-key="PC"  title="Planet Candidate">PC</span>
+  <span class="badge instrument-badge toi-chip" data-group="disp" data-key="CP"  title="Confirmed Planet">CP</span>
+  <span class="badge instrument-badge toi-chip" data-group="disp" data-key="KP"  title="Known Planet">KP</span>
+  <span class="badge instrument-badge toi-chip" data-group="disp" data-key="APC" title="Ambiguous Planet Candidate">APC</span>
+  <span class="badge instrument-badge toi-chip" data-group="disp" data-key="FP"  title="False Positive">FP</span>
+  <span class="badge instrument-badge toi-chip" data-group="disp" data-key="FA"  title="False Alarm">FA</span>
+  <span class="badge instrument-badge toi-chip" data-group="disp" data-key="__blank__" title="No TFOPWG disposition">Unset</span>
+</div>
+
+<details id="toi-table-section" class="toi-section" open style="margin-top:1rem;">
+  <summary>Catalog table</summary>
+  <div class="csv-wrap">
+    <table id="toi-table">
+      <thead>
+        <tr id="toi-head-labels"></tr>
+        <tr class="filter-row" id="toi-head-filters"></tr>
+      </thead>
+      <tbody id="toi-tbody"></tbody>
+    </table>
+  </div>
+  <p id="toi-cap-note" class="hint" style="margin-top:0.5rem;"></p>
+</details>
+
+<details id="toi-plot-section" class="toi-section" open style="margin-top:1.25rem;">
+  <summary>Interactive plot</summary>
+  <div class="plot-controls">
+    <label>X <select id="plot-x"></select></label>
+    <label>Y <select id="plot-y"></select></label>
+    <label>Color <select id="plot-color"></select></label>
+    <label><input type="checkbox" id="plot-logx"> log X</label>
+    <label><input type="checkbox" id="plot-logy"> log Y</label>
+    <label title="Show 1σ error bars on the X axis (where the catalog provides them)"><input type="checkbox" id="plot-errx"> ± X unc</label>
+    <label title="Show 1σ error bars on the Y axis (where the catalog provides them)"><input type="checkbox" id="plot-erry"> ± Y unc</label>
+    <label>Size <input type="range" id="plot-size" min="3" max="14" step="1" value="6"></label>
+    <span id="plot-count" class="hint"></span>
+  </div>
+  <div id="toi-plot"></div>
+</details>
+
+<script>
+  const TOI = {{ toi_json | safe }};
+</script>
+<script>
+(function () {
+  "use strict";
+  const N = TOI.toi ? TOI.toi.length : 0;
+  const CAP = 1000;  // max rows painted into the DOM at once (plot uses all)
+
+  // ── column model (drives table, filter row, and plot axis menus) ───────────
+  const COLS = [
+    { key: 'toi',      label: 'TOI',         type: 'text' },
+    { key: 'tic',      label: 'TIC ID',      type: 'text' },
+    { key: 'name',     label: 'Planet Name', type: 'text' },
+    { key: 'disp',     label: 'Disp',        type: 'text' },
+    { key: 'period',   label: 'Period (d)',  type: 'num', plot: 'Period (days)',        err: 'period_err' },
+    { key: 'duration', label: 'Dur (h)',     type: 'num', plot: 'Duration (hours)',     err: 'duration_err' },
+    { key: 'depth',    label: 'Depth (ppm)', type: 'num', plot: 'Depth (ppm)',          err: 'depth_err' },
+    { key: 'radius',   label: 'Rₚ (R⊕)',     type: 'num', plot: 'Planet Radius (R⊕)',   err: 'radius_err' },
+    { key: 'teq',      label: 'T_eq (K)',    type: 'num', plot: 'Equil Temp (K)' },
+    { key: 'insol',    label: 'Insol (S⊕)',  type: 'num', plot: 'Insolation (S⊕)' },
+    { key: 'tmag',     label: 'TESS mag',    type: 'num', plot: 'TESS Mag',             err: 'tmag_err' },
+    { key: 'steff',    label: 'Teff (K)',    type: 'num', plot: 'Stellar Teff (K)',     err: 'steff_err' },
+    { key: 'srad',     label: 'R★ (R☉)',     type: 'num', plot: 'Stellar Radius (R☉)',  err: 'srad_err' },
+    { key: 'dist',     label: 'Dist (pc)',   type: 'num', plot: 'Distance (pc)',        err: 'dist_err' },
+    { key: 'ra',       label: 'RA (°)',      type: 'num', plot: 'RA (deg)' },
+    { key: 'dec',      label: 'Dec (°)',     type: 'num', plot: 'Dec (deg)' },
+  ];
+  const NUM_COLS = COLS.filter(c => c.type === 'num');
+  const colByKey = {};
+  COLS.forEach(c => { colByKey[c.key] = c; });
+
+  // ── classification (thresholds confirmed with the user) ────────────────────
+  function sizeClassOf(r) {
+    if (r == null) return null;
+    if (r < 1.25) return 'Earth-size';
+    if (r < 2)    return 'Super-Earth';
+    if (r < 4)    return 'Sub-Neptune';
+    if (r < 8)    return 'Neptune-size';
+    return 'Jupiter-size';
+  }
+  function planetTagsOf(r, p) {
+    const tags = [];
+    const sc = sizeClassOf(r);
+    if (sc) tags.push(sc);
+    if (p != null && p < 1) tags.push('USP');
+    if (r != null && p != null && r > 8 && p < 10) tags.push('Hot Jupiter');
+    return tags;
+  }
+  function starClassOf(teff) {
+    if (teff == null) return null;
+    if (teff < 3900) return 'M';
+    if (teff < 5300) return 'K';
+    if (teff < 6000) return 'G';
+    if (teff < 7300) return 'F';
+    return 'A+';
+  }
+
+  // Precompute derived per-row classifications once.
+  const planetTags = new Array(N);   // array of tag-sets (as arrays)
+  const sizeClass  = new Array(N);
+  const starClass  = new Array(N);
+  for (let i = 0; i < N; i++) {
+    const r = TOI.radius[i], p = TOI.period[i];
+    planetTags[i] = planetTagsOf(r, p);
+    sizeClass[i]  = sizeClassOf(r);
+    starClass[i]  = starClassOf(TOI.steff[i]);
+  }
+
+  const STAR_COLORS = { M: '#d1495b', K: '#e8a03d', G: '#57a773', F: '#3b7dd8', 'A+': '#9b59b6', '—': '#9aa0a6' };
+  const SIZE_COLORS = { 'Earth-size': '#4e79a7', 'Super-Earth': '#59a14f', 'Sub-Neptune': '#e0b13a',
+                        'Neptune-size': '#b07aa1', 'Jupiter-size': '#e15759', '—': '#9aa0a6' };
+  const DISP_COLORS = { PC: '#3b7dd8', CP: '#57a773', KP: '#17a2b8', APC: '#e8a03d',
+                        FP: '#e15759', FA: '#b07aa1', '—': '#9aa0a6' };
+  const STAR_ORDER = ['M', 'K', 'G', 'F', 'A+', '—'];
+  const SIZE_ORDER = ['Earth-size', 'Super-Earth', 'Sub-Neptune', 'Neptune-size', 'Jupiter-size', '—'];
+  const DISP_ORDER = ['PC', 'CP', 'KP', 'APC', 'FP', 'FA', '—'];
+
+  // ── DOM refs ───────────────────────────────────────────────────────────────
+  const searchEl  = document.getElementById('toi-search');
+  const countEl   = document.getElementById('toi-count');
+  const capNoteEl = document.getElementById('toi-cap-note');
+  const tbodyEl   = document.getElementById('toi-tbody');
+  const headLabels = document.getElementById('toi-head-labels');
+  const headFilters = document.getElementById('toi-head-filters');
+  const exportEl  = document.getElementById('toi-export');
+  const chips     = Array.from(document.querySelectorAll('.toi-chip'));
+
+  const selX = document.getElementById('plot-x');
+  const selY = document.getElementById('plot-y');
+  const selColor = document.getElementById('plot-color');
+  const logXEl = document.getElementById('plot-logx');
+  const logYEl = document.getElementById('plot-logy');
+  const errXEl = document.getElementById('plot-errx');
+  const errYEl = document.getElementById('plot-erry');
+  const sizeEl = document.getElementById('plot-size');
+  const plotCountEl = document.getElementById('plot-count');
+  const plotDiv = document.getElementById('toi-plot');
+
+  // ── build table header + filter row ────────────────────────────────────────
+  COLS.forEach(c => {
+    const th = document.createElement('th');
+    th.className = 'no-sort';           // opt out of base.html's DOM sorter
+    th.dataset.key = c.key;
+    th.innerHTML = c.label + ' <span class="sort-ind"></span>';
+    headLabels.appendChild(th);
+
+    const fth = document.createElement('th');
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.dataset.col = c.key;
+    inp.placeholder = c.type === 'num' ? '<1  1-4  >10' : 'text…';
+    fth.appendChild(inp);
+    headFilters.appendChild(fth);
+  });
+  const colInputs = Array.from(headFilters.querySelectorAll('input'));
+
+  // ── populate plot menus ────────────────────────────────────────────────────
+  NUM_COLS.forEach(c => {
+    selX.add(new Option(c.plot, c.key));
+    selY.add(new Option(c.plot, c.key));
+  });
+  [['none', 'None'], ['star', 'Star type'], ['size', 'Planet size'], ['disp', 'Disposition'],
+   ['steff', 'Stellar Teff'], ['teq', 'Equil Temp'], ['insol', 'Insolation'], ['tmag', 'TESS mag']]
+    .forEach(([v, t]) => selColor.add(new Option(t, v)));
+  selX.value = 'period'; selY.value = 'radius'; selColor.value = 'star';
+  logXEl.checked = true; logYEl.checked = true;
+
+  // ── filter parsers (mirrors index.html) ────────────────────────────────────
+  function makeNumeric(raw) {
+    const s = raw.trim();
+    if (!s) return null;
+    let m;
+    if ((m = s.match(/^(<=|>=|<|>|=)?\s*(-?\d+(?:\.\d+)?)$/))) {
+      const op = m[1] || '=', v = parseFloat(m[2]);
+      return x => {
+        if (x == null || isNaN(x)) return false;
+        if (op === '<')  return x <  v;
+        if (op === '<=') return x <= v;
+        if (op === '>')  return x >  v;
+        if (op === '>=') return x >= v;
+        return Math.abs(x - v) < 1e-9;
+      };
+    }
+    if ((m = s.match(/^(-?\d+(?:\.\d+)?)\s*(?:-|\.\.|:|to)\s*(-?\d+(?:\.\d+)?)$/))) {
+      const a = parseFloat(m[1]), b = parseFloat(m[2]);
+      const lo = Math.min(a, b), hi = Math.max(a, b);
+      return x => x != null && !isNaN(x) && x >= lo && x <= hi;
+    }
+    return 'INVALID';
+  }
+  function makeText(raw) {
+    const s = raw.trim();
+    if (!s) return null;
+    const needles = s.toLowerCase().split(/\s*,\s*/).filter(Boolean);
+    return hay => {
+      const h = (hay == null ? '' : String(hay)).toLowerCase();
+      return needles.some(n => h.includes(n));
+    };
+  }
+
+  // ── filter state ───────────────────────────────────────────────────────────
+  const selectedPlanet = new Set();
+  const selectedStar = new Set();
+  const selectedDisp = new Set();          // TFOPWG codes; '' matches the "Unset" chip
+  let sortState = { key: null, dir: 0 };   // dir: 1 asc, -1 desc
+
+  function buildColPredicates() {
+    const preds = [];
+    colInputs.forEach(inp => {
+      const c = colByKey[inp.dataset.col];
+      if (!c) return;
+      const build = c.type === 'num' ? makeNumeric : makeText;
+      const p = build(inp.value);
+      inp.classList.remove('invalid');
+      if (p === 'INVALID') { inp.classList.add('invalid'); return; }
+      if (p) preds.push({ key: c.key, fn: p });
+    });
+    return preds;
+  }
+
+  function computeFiltered() {
+    const q = searchEl.value.trim().toLowerCase();
+    const colPreds = buildColPredicates();
+    const usePlanet = selectedPlanet.size > 0;
+    const useStar = selectedStar.size > 0;
+    const useDisp = selectedDisp.size > 0;
+    const out = [];
+    for (let i = 0; i < N; i++) {
+      if (q) {
+        const hay = (TOI.toi[i] + ' ' + TOI.tic[i] + ' ' + TOI.name[i]).toLowerCase();
+        if (hay.indexOf(q) === -1) continue;
+      }
+      let ok = true;
+      for (let k = 0; k < colPreds.length; k++) {
+        if (!colPreds[k].fn(TOI[colPreds[k].key][i])) { ok = false; break; }
+      }
+      if (!ok) continue;
+      if (usePlanet) {
+        const tags = planetTags[i];
+        let hit = false;
+        for (let t = 0; t < tags.length; t++) { if (selectedPlanet.has(tags[t])) { hit = true; break; } }
+        if (!hit) continue;
+      }
+      if (useStar) {
+        if (!selectedStar.has(starClass[i])) continue;
+      }
+      if (useDisp) {
+        if (!selectedDisp.has((TOI.disp[i] || '').toUpperCase())) continue;
+      }
+      out.push(i);
+    }
+    if (sortState.key) applySort(out);
+    return out;
+  }
+
+  function applySort(idx) {
+    const c = colByKey[sortState.key];
+    const key = sortState.key, dir = sortState.dir;
+    if (c.type === 'num') {
+      idx.sort((a, b) => {
+        const va = TOI[key][a], vb = TOI[key][b];
+        if (va == null && vb == null) return 0;
+        if (va == null) return 1;          // nulls always last
+        if (vb == null) return -1;
+        return (va - vb) * dir;
+      });
+    } else {
+      idx.sort((a, b) => {
+        const va = TOI[key][a] || '', vb = TOI[key][b] || '';
+        if (!va && !vb) return 0;
+        if (!va) return 1;
+        if (!vb) return -1;
+        return va.localeCompare(vb, undefined, { numeric: true }) * dir;
+      });
+    }
+  }
+
+  // ── number formatting (≤6 decimals, precision-aware) ───────────────────────
+  function fmtNum(v) {
+    if (v == null || v === '') return '—';
+    const x = +v;
+    if (!isFinite(x)) return '—';
+    if (Number.isInteger(x)) return String(x);
+    const a = Math.abs(x);
+    let s;
+    if (a >= 1000)     s = x.toFixed(0);
+    else if (a >= 100) s = x.toFixed(1);
+    else if (a >= 1)   s = x.toFixed(3);
+    else               s = x.toPrecision(3);
+    return String(parseFloat(s));
+  }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, ch =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+  }
+
+  function rowHtml(i) {
+    const cells = COLS.map(c => {
+      const v = TOI[c.key][i];
+      if (c.key === 'toi') {
+        const tic = TOI.tic[i];
+        const label = v ? ('TOI-' + v) : (TOI.name[i] || TOI.tic[i] || '—');
+        if (tic) {
+          return '<td><a href="https://exofop.ipac.caltech.edu/tess/target.php?id=' +
+            encodeURIComponent(tic) + '" target="_blank" rel="noopener">' + esc(label) + '</a></td>';
+        }
+        return '<td>' + esc(label) + '</td>';
+      }
+      if (c.type === 'num') return '<td class="num">' + fmtNum(v) + '</td>';
+      return '<td>' + esc(v || '—') + '</td>';
+    });
+    return '<tr>' + cells.join('') + '</tr>';
+  }
+
+  function renderTable(idx) {
+    const shown = Math.min(idx.length, CAP);
+    let html = '';
+    for (let k = 0; k < shown; k++) html += rowHtml(idx[k]);
+    tbodyEl.innerHTML = html;
+    capNoteEl.textContent = idx.length > CAP
+      ? ('Showing first ' + CAP.toLocaleString() + ' of ' + idx.length.toLocaleString() +
+         ' matching rows — refine filters to narrow the table. The plot below uses all matching rows.')
+      : '';
+  }
+
+  function updateSortIndicators() {
+    headLabels.querySelectorAll('th').forEach(th => {
+      const ind = th.querySelector('.sort-ind');
+      if (!ind) return;
+      ind.textContent = (th.dataset.key === sortState.key)
+        ? (sortState.dir === 1 ? '▲' : '▼') : '';
+    });
+  }
+
+  // ── plot ───────────────────────────────────────────────────────────────────
+  function categoryOf(i, mode) {
+    if (mode === 'star') return starClass[i] || '—';
+    if (mode === 'size') return sizeClass[i] || '—';
+    if (mode === 'disp') return TOI.disp[i] || '—';
+    return '';
+  }
+  function catMeta(mode) {
+    if (mode === 'star') return { order: STAR_ORDER, colors: STAR_COLORS };
+    if (mode === 'size') return { order: SIZE_ORDER, colors: SIZE_COLORS };
+    if (mode === 'disp') return { order: DISP_ORDER, colors: DISP_COLORS };
+    return null;
+  }
+
+  function pointText(i) {
+    const t = TOI.toi[i] ? ('TOI-' + TOI.toi[i]) : (TOI.name[i] || TOI.tic[i] || '');
+    return TOI.name[i] ? (t + ' · ' + TOI.name[i]) : t;
+  }
+
+  function buildTraces(idx) {
+    const xk = selX.value, yk = selY.value, mode = selColor.value;
+    const logx = logXEl.checked, logy = logYEl.checked;
+    const size = +sizeEl.value;
+    const xlabel = colByKey[xk].plot, ylabel = colByKey[yk].plot;
+    const xErrCol = colByKey[xk].err, yErrCol = colByKey[yk].err;
+    // Error bars only where the catalog carries an uncertainty column. Plotly's
+    // WebGL (scattergl) traces ignore error bars, so fall back to SVG scatter
+    // whenever a bar is actually drawn.
+    const showErrX = errXEl.checked && !!xErrCol;
+    const showErrY = errYEl.checked && !!yErrCol;
+    const traceType = (showErrX || showErrY) ? 'scatter' : 'scattergl';
+    const hovertmpl = '%{text}<br>' + xlabel + ': %{x}<br>' + ylabel + ': %{y}<extra></extra>';
+
+    function usable(i) {
+      const x = TOI[xk][i], y = TOI[yk][i];
+      if (x == null || y == null) return false;
+      if (logx && !(x > 0)) return false;
+      if (logy && !(y > 0)) return false;
+      return true;
+    }
+    function errX(i) { const e = TOI[xErrCol][i]; return e == null ? 0 : Math.abs(e); }
+    function errY(i) { const e = TOI[yErrCol][i]; return e == null ? 0 : Math.abs(e); }
+    // muscat-db members get a (slightly larger) star; everyone else a circle.
+    const indb = i => TOI.indb && TOI.indb[i];
+    const symOf = i => (indb(i) ? 'star' : 'circle');
+    const sizeOf = i => (indb(i) ? size + 3 : size);
+    const textOf = i => pointText(i) + (indb(i) ? ' ★ (in muscat-db)' : '');
+    const linkOf = i => (TOI.tname ? TOI.tname[i] : '');
+
+    function push(a, i) {
+      a.x.push(TOI[xk][i]); a.y.push(TOI[yk][i]); a.text.push(textOf(i));
+      a.sym.push(symOf(i)); a.sz.push(sizeOf(i)); a.cd.push(linkOf(i));
+      if (showErrX) a.ex.push(errX(i));
+      if (showErrY) a.ey.push(errY(i));
+    }
+    const newAcc = () => ({ x: [], y: [], text: [], sym: [], sz: [], cd: [], ex: [], ey: [], c: [] });
+
+    function finish(trace, a, barColor) {
+      trace.type = traceType;
+      trace.mode = 'markers';
+      trace.hovertemplate = hovertmpl;
+      trace.customdata = a.cd;          // per-point target-page link (click handler)
+      trace.marker = trace.marker || {};
+      if (trace.marker.opacity == null) trace.marker.opacity = 0.72;
+      trace.marker.symbol = a.sym;
+      trace.marker.size = a.sz;
+      if (showErrX) trace.error_x = { type: 'data', array: a.ex, visible: true, thickness: 1, width: 0, color: barColor };
+      if (showErrY) trace.error_y = { type: 'data', array: a.ey, visible: true, thickness: 1, width: 0, color: barColor };
+      return trace;
+    }
+
+    const numericColor = ['steff', 'teq', 'insol', 'tmag'].includes(mode);
+    let plotted = 0;
+    let traces;
+
+    if (numericColor) {
+      const a = newAcc();
+      for (let k = 0; k < idx.length; k++) {
+        const i = idx[k];
+        if (!usable(i) || TOI[mode][i] == null) continue;
+        push(a, i); a.c.push(TOI[mode][i]);
+      }
+      plotted = a.x.length;
+      traces = [finish({
+        x: a.x, y: a.y, text: a.text,
+        marker: { color: a.c, colorscale: 'Viridis', showscale: true,
+                  colorbar: { title: { text: colByKey[mode].plot, side: 'right' }, thickness: 12 } },
+      }, a, 'rgba(130,130,130,0.45)')];
+    } else {
+      const meta = catMeta(mode);
+      if (!meta) {
+        const a = newAcc();
+        for (let k = 0; k < idx.length; k++) {
+          const i = idx[k];
+          if (!usable(i)) continue;
+          push(a, i);
+        }
+        plotted = a.x.length;
+        traces = [finish({ x: a.x, y: a.y, text: a.text, name: 'TOI', marker: { color: '#3b7dd8' } },
+                         a, 'rgba(59,125,216,0.4)')];
+      } else {
+        const groups = {};
+        meta.order.forEach(cat => { groups[cat] = newAcc(); });
+        for (let k = 0; k < idx.length; k++) {
+          const i = idx[k];
+          if (!usable(i)) continue;
+          const cat = categoryOf(i, mode);
+          push(groups[cat] || (groups[cat] = newAcc()), i);
+          plotted++;
+        }
+        traces = meta.order.filter(cat => groups[cat] && groups[cat].x.length).map(cat => {
+          const a = groups[cat], color = meta.colors[cat] || '#9aa0a6';
+          return finish({ x: a.x, y: a.y, text: a.text, name: cat + ' (' + a.x.length + ')',
+                          marker: { color } }, a, color);
+        });
+      }
+    }
+    return { traces, plotted, xlabel, ylabel, logx, logy };
+  }
+
+  function drawPlot(idx) {
+    if (!window.Plotly) return;
+    const { traces, plotted, xlabel, ylabel, logx, logy } = buildTraces(idx);
+    const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const grid = dark ? '#30363d' : '#e1e4e8';
+    const layout = {
+      margin: { l: 64, r: 20, t: 10, b: 52 },
+      paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+      font: { color: dark ? '#c9d1d9' : '#24292f', size: 12 },
+      xaxis: { title: { text: xlabel }, type: logx ? 'log' : 'linear', gridcolor: grid, zeroline: false, automargin: true },
+      yaxis: { title: { text: ylabel }, type: logy ? 'log' : 'linear', gridcolor: grid, zeroline: false, automargin: true },
+      hovermode: 'closest',
+      legend: { orientation: 'v', bgcolor: 'rgba(0,0,0,0)' },
+      showlegend: traces.length > 1,
+    };
+    Plotly.react(plotDiv, traces, layout, { responsive: true, displayModeBar: true, displaylogo: false });
+    plotCountEl.textContent = plotted.toLocaleString() + ' points plotted';
+    bindPlotClick();
+  }
+
+  // Clicking a point opens that TOI's target page in a new tab. Bound once;
+  // Plotly.react preserves handlers attached to the div.
+  let plotClickBound = false;
+  function bindPlotClick() {
+    if (plotClickBound || !plotDiv.on) return;
+    plotClickBound = true;
+    plotDiv.on('plotly_click', function (ev) {
+      const pt = ev && ev.points && ev.points[0];
+      const name = pt && pt.customdata;
+      if (name) window.open('/target?name=' + encodeURIComponent(name), '_blank', 'noopener');
+    });
+  }
+
+  // ── persistence ────────────────────────────────────────────────────────────
+  const LS = window.MuscatStorage;
+  function saveState() {
+    if (!LS) return;
+    const cols = {};
+    colInputs.forEach(inp => { if (inp.value) cols[inp.dataset.col] = inp.value; });
+    LS.setJSON('toi:state', {
+      q: searchEl.value, cols,
+      planet: Array.from(selectedPlanet), star: Array.from(selectedStar),
+      disp: Array.from(selectedDisp),
+      sort: sortState,
+      plot: { x: selX.value, y: selY.value, color: selColor.value,
+              logx: logXEl.checked, logy: logYEl.checked,
+              errx: errXEl.checked, erry: errYEl.checked, size: sizeEl.value },
+    });
+  }
+  function restoreState() {
+    if (!LS) return;
+    const s = LS.getJSON('toi:state', null);
+    if (!s) return;
+    if (s.q) searchEl.value = s.q;
+    if (s.cols) colInputs.forEach(inp => { if (s.cols[inp.dataset.col]) inp.value = s.cols[inp.dataset.col]; });
+    (s.planet || []).forEach(k => selectedPlanet.add(k));
+    (s.star || []).forEach(k => selectedStar.add(k));
+    (s.disp || []).forEach(k => selectedDisp.add(k));
+    chips.forEach(ch => {
+      if (setForGroup(ch.dataset.group).has(keyForChip(ch))) ch.classList.add('active');
+    });
+    if (s.sort && s.sort.key) sortState = s.sort;
+    if (s.plot) {
+      if (s.plot.x) selX.value = s.plot.x;
+      if (s.plot.y) selY.value = s.plot.y;
+      if (s.plot.color) selColor.value = s.plot.color;
+      logXEl.checked = !!s.plot.logx; logYEl.checked = !!s.plot.logy;
+      errXEl.checked = !!s.plot.errx; errYEl.checked = !!s.plot.erry;
+      if (s.plot.size) sizeEl.value = s.plot.size;
+    }
+  }
+
+  // ── CSV export of the current filtered set ─────────────────────────────────
+  function buildCsv(idx) {
+    const header = COLS.map(c => c.label).join(',');
+    const lines = [header];
+    for (let k = 0; k < idx.length; k++) {
+      const i = idx[k];
+      lines.push(COLS.map(c => {
+        let v = TOI[c.key][i];
+        if (v == null) return '';
+        v = String(v);
+        return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+      }).join(','));
+    }
+    return lines.join('\n');
+  }
+  let csvUrl = null;
+  function refreshCsv(idx) {
+    if (csvUrl) URL.revokeObjectURL(csvUrl);
+    csvUrl = URL.createObjectURL(new Blob([buildCsv(idx)], { type: 'text/csv' }));
+    exportEl.href = csvUrl;
+  }
+
+  // ── main apply ─────────────────────────────────────────────────────────────
+  let lastIdx = [];
+  function apply() {
+    const idx = computeFiltered();
+    lastIdx = idx;
+    countEl.textContent = idx.length.toLocaleString() + ' / ' + N.toLocaleString() + ' objects';
+    updateSortIndicators();
+    renderTable(idx);
+    refreshCsv(idx);
+    drawPlot(idx);
+    saveState();
+  }
+
+  // debounce text-driven filtering; keep chips/plot changes immediate
+  let t = null;
+  function applySoon() { clearTimeout(t); t = setTimeout(apply, 140); }
+
+  searchEl.addEventListener('input', applySoon);
+  colInputs.forEach(inp => inp.addEventListener('input', applySoon));
+  function setForGroup(group) {
+    return group === 'planet' ? selectedPlanet : group === 'star' ? selectedStar : selectedDisp;
+  }
+  function keyForChip(ch) {
+    // The "Unset" disposition chip uses a sentinel so the attribute is non-empty.
+    return ch.dataset.key === '__blank__' ? '' : ch.dataset.key;
+  }
+  chips.forEach(ch => ch.addEventListener('click', function () {
+    const set = setForGroup(ch.dataset.group);
+    const key = keyForChip(ch);
+    if (set.has(key)) { set.delete(key); ch.classList.remove('active'); }
+    else { set.add(key); ch.classList.add('active'); }
+    apply();
+  }));
+  headLabels.querySelectorAll('th').forEach(th => th.addEventListener('click', function () {
+    const key = th.dataset.key;
+    if (sortState.key !== key) sortState = { key, dir: 1 };
+    else if (sortState.dir === 1) sortState.dir = -1;
+    else sortState = { key: null, dir: 0 };
+    apply();
+  }));
+  [selX, selY, selColor].forEach(el => el.addEventListener('change', () => { drawPlot(lastIdx); saveState(); }));
+  [logXEl, logYEl, errXEl, errYEl].forEach(el => el.addEventListener('change', () => { drawPlot(lastIdx); saveState(); }));
+  sizeEl.addEventListener('input', () => { drawPlot(lastIdx); saveState(); });
+
+  // Re-theme the plot when the global light/dark toggle flips.
+  new MutationObserver(() => drawPlot(lastIdx))
+    .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+  // Persist the two <details> open states.
+  ['toi-table-section', 'toi-plot-section'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el || !LS) return;
+    const v = LS.get('toi:open:' + id, null);
+    if (v === 'closed') el.open = false;
+    el.addEventListener('toggle', () => LS.set('toi:open:' + id, el.open ? 'open' : 'closed'));
+  });
+
+  restoreState();
+  apply();
+})();
+</script>
+{% endblock %}

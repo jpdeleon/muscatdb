@@ -337,6 +337,173 @@ def workflow_redirect():
     return RedirectResponse(url="/guide", status_code=301)
 
 
+# --------------------------- TOI catalog page ------------------------------
+
+# (csv header, json key, kind) — kind "s" keeps the raw string, "f" parses a
+# float (or null). Only this subset of the 69 raw columns is surfaced on the
+# /toi page; it drives both the preview table and the interactive plot.
+_TOI_COLUMNS: list[tuple[str, str, str]] = [
+    ("TOI", "toi", "s"),
+    ("TIC ID", "tic", "s"),
+    ("Planet Name", "name", "s"),
+    ("TFOPWG Disposition", "disp", "s"),
+    ("Period (days)", "period", "f"),
+    ("Duration (hours)", "duration", "f"),
+    ("Depth (ppm)", "depth", "f"),
+    ("Planet Radius (R_Earth)", "radius", "f"),
+    ("Planet Equil Temp (K)", "teq", "f"),
+    ("Planet Insolation (Earth Flux)", "insol", "f"),
+    ("TESS Mag", "tmag", "f"),
+    ("Stellar Eff Temp (K)", "steff", "f"),
+    ("Stellar Radius (R_Sun)", "srad", "f"),
+    ("Stellar Distance (pc)", "dist", "f"),
+    ("ra_deg", "ra", "f"),
+    ("dec_deg", "dec", "f"),
+    # 1-sigma uncertainties for axes that carry them (drive the plot error bars).
+    ("Period (days) err", "period_err", "f"),
+    ("Duration (hours) err", "duration_err", "f"),
+    ("Depth (ppm) err", "depth_err", "f"),
+    ("Planet Radius (R_Earth) err", "radius_err", "f"),
+    ("TESS Mag err", "tmag_err", "f"),
+    ("Stellar Eff Temp (K) err", "steff_err", "f"),
+    ("Stellar Radius (R_Sun) err", "srad_err", "f"),
+    ("Stellar Distance (pc) err", "dist_err", "f"),
+]
+
+_toi_cache: dict = {}
+
+
+def _toi_float(v) -> float | None:
+    """Parse a finite float from a raw CSV cell, or None."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    try:
+        x = float(s)
+    except ValueError:
+        return None
+    # Reject NaN/inf so the JSON stays strict (allow_nan=False).
+    if x != x or x in (float("inf"), float("-inf")):
+        return None
+    return x
+
+
+def _load_toi_catalog() -> dict:
+    """Read ``data/TOIs.csv`` into column-oriented arrays for the /toi page.
+    All rows (every TFOPWG disposition, including FP/FA) are included so the
+    candidate-type chips can filter them client-side. Cached by file mtime so
+    the 8k-row CSV is parsed at most once per update."""
+    path = HERE.parent.parent / "data" / "TOIs.csv"
+    empty = {"data": {k: [] for _, k, _ in _TOI_COLUMNS}, "n": 0, "updated": ""}
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        return empty
+
+    cached = _toi_cache.get("catalog")
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+
+    data: dict[str, list] = {key: [] for _, key, _ in _TOI_COLUMNS}
+    updated = ""
+    with open(path, encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            for header, key, kind in _TOI_COLUMNS:
+                raw = row.get(header)
+                data[key].append(_toi_float(raw) if kind == "f" else (raw or "").strip())
+            u = (row.get("Date TOI Updated (UTC)") or "").strip()
+            if u > updated:
+                updated = u
+
+    result = {"data": data, "n": len(data["toi"]), "updated": updated}
+    _toi_cache["catalog"] = (mtime, result)
+    return result
+
+
+_toi_db_cache: dict = {}
+
+
+def _db_target_identifiers(db: str) -> dict:
+    """Index muscat-db target OBJECT names by the identifiers a TOI can be
+    matched on — TIC id, TOI number (full and integer part), and normalized
+    name — each mapped back to the DB target's normalized name (used as the
+    target-page link). Cached by DB mtime."""
+    key = _db_mtime(db)
+    cached = _toi_db_cache.get("ids")
+    if cached is not None and cached[0] == key:
+        return cached[1]
+
+    tic_to_norm: dict[int, str] = {}
+    toi_to_norm: dict[str, str] = {}
+    names: set[str] = set()
+    for t in _get_targets(db):
+        obj = t.get("object") or ""
+        norm = _normalize_target_name(obj)
+        names.add(norm)
+        up = obj.upper()
+        for m in re.finditer(r"TIC[\s_-]*0*(\d+)", up):
+            tic_to_norm.setdefault(int(m.group(1)), norm)
+        for m in re.finditer(r"TOI[\s_-]*0*(\d+(?:\.\d+)?)", up):
+            num = m.group(1)
+            toi_to_norm.setdefault(num, norm)
+            toi_to_norm.setdefault(num.split(".")[0], norm)
+
+    ids = {"tic": tic_to_norm, "toi": toi_to_norm, "names": names}
+    _toi_db_cache["ids"] = (key, ids)
+    return ids
+
+
+def _toi_db_membership(cat_data: dict, db: str) -> tuple[list[int], list[str]]:
+    """Return ``(indb, tname)`` per TOI row: ``indb`` is 1 when the object is in
+    muscat-db, ``tname`` is the target-page link name (the matched DB target's
+    normalized name, or a best-effort TOI/name fallback when not in the DB)."""
+    ids = _db_target_identifiers(db)
+    tic_map, toi_map, names = ids["tic"], ids["toi"], ids["names"]
+    tics, tois, nms = cat_data["tic"], cat_data["toi"], cat_data["name"]
+    n = len(tois)
+    indb = [0] * n
+    tname = [""] * n
+    for i in range(n):
+        link = None
+        digits = re.sub(r"\D", "", tics[i]) if tics[i] else ""
+        if digits:
+            link = tic_map.get(int(digits))
+        if link is None and tois[i]:
+            link = toi_map.get(tois[i]) or toi_map.get(tois[i].split(".")[0])
+        if link is None and nms[i]:
+            nn = _normalize_target_name(nms[i])
+            if nn in names:
+                link = nn
+        if link is not None:
+            indb[i] = 1
+            tname[i] = link
+        elif tois[i]:
+            tname[i] = _normalize_target_name(f"TOI-{tois[i]}")
+        elif nms[i]:
+            tname[i] = _normalize_target_name(nms[i])
+    return indb, tname
+
+
+@app.get("/toi", response_class=HTMLResponse)
+def toi_page():
+    import json
+
+    cat = _load_toi_catalog()
+    indb, tname = _toi_db_membership(cat["data"], _db_path())
+    payload = dict(cat["data"])
+    payload["indb"] = indb
+    payload["tname"] = tname
+    return _render(
+        "toi.html",
+        toi_json=json.dumps(payload, separators=(",", ":"), allow_nan=False),
+        n_rows=cat["n"],
+        n_indb=sum(indb),
+        toi_updated=cat["updated"],
+    )
+
+
 @app.get("/api/targets/export.csv")
 def export_targets_csv():
     db = _db_path()
