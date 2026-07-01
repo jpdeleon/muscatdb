@@ -2953,10 +2953,24 @@ def jobs_page():
 _last_running: set[str] = set()
 
 @app.get("/jobs/status", response_class=JSONResponse)
-def jobs_status():
+def jobs_status(active_only: bool = False):
     phot.sync_jobs()
     fit.sync_jobs()
     all_jobs = get_job_store().all()
+
+    if active_only:
+        # Lightweight path for the site-wide loading indicator. Reports only
+        # which jobs are currently active (running/cancelling/pending) and
+        # deliberately does NOT touch the module-global `_last_running`
+        # baseline — that diff belongs to the full Jobs-page poll, and letting
+        # a second site-wide poller mutate it would steal `finished`
+        # transitions from the Jobs page.
+        active = [
+            {"key": j["key"], "state": j["state"]}
+            for j in all_jobs
+            if j["state"] in ("running", "cancelling", "pending")
+        ]
+        return {"active": active}
 
     # Discover fits completed on-disk outside the web UI.
     existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
