@@ -51,10 +51,16 @@ def config_state() -> dict:
     }
 
 
-def _lco_api_request(url: str, method: str = "GET", data: dict | None = None, is_archive: bool = False) -> dict:
-    """Make an authenticated request to the LCO API."""
+def _lco_api_request(url: str, method: str = "GET", data: dict | None = None) -> dict:
+    """Make an authenticated request to the LCO API.
+
+    Both the observation portal (observe.lco.global) and the Science Archive
+    (archive-api.lco.global) authenticate with the same DRF token using the
+    ``Token`` scheme. Using ``Bearer`` makes the archive return HTTP 401
+    ``{"detail": "No Such User"}``.
+    """
     token = _get_lco_api_token()
-    headers = {"Authorization": ("Bearer " if is_archive else "Token ") + token, "Content-Type": "application/json"}
+    headers = {"Authorization": "Token " + token, "Content-Type": "application/json"}
     body = json.dumps(data).encode("utf-8") if data is not None else None
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
 
@@ -95,7 +101,7 @@ def archive_search(filters: dict) -> dict:
     base_url = "https://archive-api.lco.global/frames/"
     params = urllib.parse.urlencode({k: v for k, v in filters.items() if v})
     url = f"{base_url}?{params}"
-    return _lco_api_request(url, is_archive=True)
+    return _lco_api_request(url)
 
 
 def infer_archive_instrument(frame: dict) -> str:
