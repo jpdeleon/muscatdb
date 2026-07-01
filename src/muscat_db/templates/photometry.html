@@ -1387,6 +1387,8 @@
       }
       stopPolling();
       poll();
+      // Light up the site-wide loading indicator immediately for this run.
+      if (window.MuscatJobIndicator) window.MuscatJobIndicator.refresh();
     }).catch(function (err) {
       clearJob();
       setRunning(false);
