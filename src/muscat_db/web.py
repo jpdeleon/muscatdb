@@ -1739,11 +1739,12 @@ def api_lco_archive_frames(
     start: str = "",
     end: str = "",
     limit: str = "50",
+    fuzzy_name: str = "",
 ):
+    use_fuzzy = fuzzy_name.strip().lower() in ("1", "true", "yes", "on")
     tel_class = TELID if TELID in ("0m4", "1m0", "2m0") else ""
     filters = {
         "proposal_id": proposal_id,
-        "OBJECT": OBJECT,
         "SITEID": SITEID,
         "TELID": "" if tel_class else TELID,
         "INSTRUME": INSTRUME,
@@ -1753,6 +1754,28 @@ def api_lco_archive_frames(
         "end": end,
         "limit": limit,
     }
+    # Default: coordinate-primary. Resolve the target name to RA/Dec (ICRS deg)
+    # and return every frame whose footprint covers that position. This is robust
+    # to OBJECT-header naming variants (WASP-12 vs Wasp-12 vs WASP12). The
+    # 'Fuzzy name match' checkbox falls back to the OBJECT header substring match.
+    resolved: tuple[float, float, str] | None = None
+    if use_fuzzy:
+        filters["OBJECT"] = OBJECT
+    else:
+        name = OBJECT.strip()
+        if not name:
+            return JSONResponse(
+                {"ok": False, "error": "Enter a target name to resolve its coordinates, or enable 'Fuzzy name match'."},
+                status_code=400,
+            )
+        resolved = _resolve_archive_coords(name)
+        if resolved is None:
+            return JSONResponse(
+                {"ok": False, "error": f"Could not resolve coordinates for '{name}'. Check the name or enable 'Fuzzy name match'."},
+                status_code=422,
+            )
+        ra_deg, dec_deg, _source = resolved
+        filters["covers"] = f"POINT({ra_deg} {dec_deg})"
     try:
         result = lco.archive_search(filters)
         rows = result.get("results") or []
@@ -1766,7 +1789,12 @@ def api_lco_archive_frames(
             result = dict(result)
             result["results"] = annotated
             result["dataset_count"] = dataset_count
-        return JSONResponse({"ok": True, **result})
+        payload = {"ok": True, "match_mode": "name" if use_fuzzy else "coord", **result}
+        if resolved is not None:
+            payload["resolved_ra"] = round(resolved[0], 5)
+            payload["resolved_dec"] = round(resolved[1], 5)
+            payload["resolved_source"] = resolved[2]
+        return JSONResponse(payload)
     except lco.LcoError as e:
         return _lco_error_response(e)
 
@@ -1997,6 +2025,28 @@ def _query_target_coordinates(target: str) -> dict | None:
         logger.debug("failed local coordinate lookup in TOI cache for %s", target, exc_info=True)
 
     return _store(None)
+
+
+def _resolve_archive_coords(target: str) -> tuple[float, float, str] | None:
+    """Resolve a target name to (ra_deg, dec_deg, source) for archive searches.
+
+    Tries the offline NASA/TOI catalogs first (fast, cached, no network), then
+    falls back to SIMBAD name resolution. Returns None when the name cannot be
+    resolved by any source. Both results are cached.
+    """
+    coords = _query_target_coordinates(target)
+    if coords is not None:
+        return float(coords["ra"]), float(coords["dec"]), str(coords.get("source") or "catalog")
+
+    cache_key = "simbad_" + target.strip().upper()
+    cached = _CATALOG_CACHE.get(cache_key, _CACHE_MISS)
+    if cached is not _CACHE_MISS:
+        return cached
+
+    radec = exp_calc.resolve_target_coords(target)
+    result = (float(radec[0]), float(radec[1]), "simbad") if radec else None
+    _CATALOG_CACHE[cache_key] = result
+    return result
 
 
 def _parse_lco_obs_dt(frame: dict) -> datetime.datetime | None:
@@ -2529,7 +2579,7 @@ def api_ephemeris_targets():
         orphan_fits = fit._discover_orphan_fits(existing_keys)
         all_jobs.extend(orphan_fits)
         completed = [j for j in all_jobs if j["type"] == "transit_fit" and j["state"] == "done"]
-        targets = sorted(list(set(j["target"] for j in completed)))
+        targets = sorted({_normalize_target_name(j["target"]) for j in completed if j.get("target")})
     return JSONResponse({"ok": True, "targets": targets})
 
 

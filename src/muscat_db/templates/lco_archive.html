@@ -8,7 +8,13 @@
   <h3>Search LCO Archive</h3>
   <div class="lco-grid">
     <div class="lco-field"><label for="dl-proposal">Proposal ID</label><input id="dl-proposal" type="text" placeholder="LCO2026A-001"></div>
-    <div class="lco-field"><label for="dl-object">Object</label><input id="dl-object" type="text" placeholder="WASP-12"></div>
+    <div class="lco-field">
+      <label for="dl-object">Object</label>
+      <input id="dl-object" type="text" placeholder="WASP-12">
+      <label style="display: flex; align-items: center; gap: 0.35rem; margin-top: 0.3rem; font-size: 0.78rem; color: var(--text-dim);">
+        <input type="checkbox" id="dl-fuzzy-name"> Fuzzy name match
+      </label>
+    </div>
     <div class="lco-field"><label for="dl-tel">Telescope</label>
       <select id="dl-tel">
         <option value="">none</option>
@@ -30,6 +36,7 @@
     <button class="btn primary" type="button" id="btn-search">Search frames</button>
     <span class="lco-msg" id="msg-search" style="margin: 0;"></span>
   </div>
+  <p class="lco-note">By default the <strong>Object</strong> name is resolved to sky coordinates (NASA/TOI catalog, then SIMBAD) and every frame whose footprint <em>covers</em> that position is returned — robust to naming variants (WASP-12 / Wasp-12 / WASP12). Enable <strong>Fuzzy name match</strong> to fall back to matching the raw OBJECT header text instead.</p>
   <p class="lco-note">Files save to <code>&lt;MUSCAT_LCO_DIR&gt;/&lt;inferred instrument&gt;/&lt;date&gt;/</code> (or that instrument's data dir). The destination instrument is inferred from the archive metadata: OGG 2m0 MuSCAT → muscat3, COJ 2m0 MuSCAT → muscat4, and LCO 1m0 → sinistro.</p>
 </div>
 
@@ -77,7 +84,7 @@
     'dl-proposal','dl-object','dl-site','dl-tel','dl-instrume',
     'dl-filter','dl-rlevel','dl-start','dl-end','dl-limit'
   ];
-  var CHECK_IDS = ['dl-overwrite'];
+  var CHECK_IDS = ['dl-overwrite', 'dl-fuzzy-name'];
   var DL_SITE_OPTIONS = {
     '': [],
     '0m4': ['ogg', 'coj', 'lsc', 'cpt', 'tfn', 'elp'],
@@ -265,13 +272,20 @@
       start: 'dl-start', end: 'dl-end', limit: 'dl-limit'
     };
     Object.keys(map).forEach(function (k) { var v = val(map[k]); if (v) q.set(k, v); });
+    if (chk('dl-fuzzy-name')) q.set('fuzzy_name', '1');
     fetch('/api/lco/archive/frames?' + q.toString()).then(function (r) { return r.json(); }).then(function (d) {
       if (!d.ok) { msg('msg-search', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
       lastFrames = d.results || [];
       renderFrameGroups();
       saveArchiveState();
       var datasetMsg = d.dataset_count !== undefined ? (' across ' + d.dataset_count + ' dataset' + (d.dataset_count === 1 ? '' : 's')) : '';
-      msg('msg-search', 'Found ' + (d.count !== undefined ? d.count : lastFrames.length) + ' frames (showing ' + lastFrames.length + ')' + datasetMsg, 'ok');
+      var modeMsg = '';
+      if (d.match_mode === 'coord' && d.resolved_ra !== undefined) {
+        modeMsg = ' — resolved to RA ' + d.resolved_ra + ', Dec ' + d.resolved_dec + ' (' + (d.resolved_source || 'catalog') + ')';
+      } else if (d.match_mode === 'name') {
+        modeMsg = ' — fuzzy name match';
+      }
+      msg('msg-search', 'Found ' + (d.count !== undefined ? d.count : lastFrames.length) + ' frames (showing ' + lastFrames.length + ')' + datasetMsg + modeMsg, 'ok');
     }).catch(function (e) { msg('msg-search', String(e), 'err'); });
   });
 
