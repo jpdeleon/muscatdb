@@ -655,8 +655,7 @@
   // ----- restore the last selection on a bare /photometry visit -----
   (function () {
     if (inst || date || target || window.location.search) return;
-    var saved;
-    try { saved = JSON.parse(localStorage.getItem(SEL_KEY) || 'null'); } catch (e) { saved = null; }
+    var saved = MuscatStorage.getJSON(SEL_KEY, null);
     if (saved && saved.inst) {
       var qs = ['inst', 'date', 'target'].filter(function (k) { return saved[k]; })
         .map(function (k) { return k + '=' + encodeURIComponent(saved[k]); }).join('&');
@@ -665,12 +664,12 @@
   })();
   // ...and remember the current selection for next time.
   if (inst) {
-    try { localStorage.setItem(SEL_KEY, JSON.stringify({ inst: inst, date: date, target: target })); } catch (e) {}
+    MuscatStorage.setJSON(SEL_KEY, { inst: inst, date: date, target: target });
   }
 
   // ----- persistent job: resume or show banner across page navigations -----
-  function saveJob() { try { localStorage.setItem(JOB_KEY, JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })); } catch (e) {} }
-  function clearJob() { try { localStorage.removeItem(JOB_KEY); } catch (e) {} }
+  function saveJob() { MuscatStorage.setJSON(JOB_KEY, { inst: inst, date: date, target: target, run_id: runId }); }
+  function clearJob() { MuscatStorage.remove(JOB_KEY); }
   // Defined here but invoked at the end of the script, after cancelBtn, logEl,
   // runBtns, and polling are assigned. Calling it inline would run setRunning()
   // while those vars are still undefined, so the cancel button would never show
@@ -743,18 +742,17 @@
   function orderKey(container) { return 'figorder:' + (container.dataset.sortKey || 'default'); }
 
   function restoreOrder(container) {
-    var saved;
-    try { saved = JSON.parse(localStorage.getItem(orderKey(container)) || 'null'); } catch (e) { saved = null; }
+    var saved = MuscatStorage.getJSON(orderKey(container), null);
     if (!saved || !saved.length) return;
     var byId = {};
     figItems(container).forEach(function (el) { byId[el.dataset.figId] = el; });
     saved.forEach(function (id) { if (byId[id]) { container.appendChild(byId[id]); delete byId[id]; } });
   }
   function saveOrder(container) {
-    try {
-      localStorage.setItem(orderKey(container),
-        JSON.stringify(figItems(container).map(function (el) { return el.dataset.figId; })));
-    } catch (e) {}
+    MuscatStorage.setJSON(
+      orderKey(container),
+      figItems(container).map(function (el) { return el.dataset.figId; })
+    );
   }
 
   // FLIP: animate siblings smoothly to their new positions after a DOM move.
@@ -876,11 +874,10 @@
     };
   }
   function saveOptions() {
-    try { localStorage.setItem(OPT_KEY, JSON.stringify(collectOptions())); } catch (e) {}
+    MuscatOptions.save(OPT_KEY, collectOptions);
   }
   function restoreOptions() {
-    var saved;
-    try { saved = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); } catch (e) { saved = null; }
+    var saved = MuscatOptions.restore(OPT_KEY);
     if (!saved) return;
     // migrate legacy persisted value after the 'nova' -> 'astrometry.net' rename
     if (saved.wcs_method === 'nova') saved.wcs_method = 'astrometry.net';
@@ -986,14 +983,7 @@
   }
   (function () {
     var panel = document.getElementById('opt-panel');
-    if (!panel) return;
-    var savedOpen;
-    try { savedOpen = JSON.parse(localStorage.getItem(PANEL_KEY) || 'null'); } catch (e) { savedOpen = null; }
-    if (savedOpen === true) panel.open = true;
-    else if (savedOpen === false) panel.open = false;
-    panel.addEventListener('toggle', function () {
-      try { localStorage.setItem(PANEL_KEY, JSON.stringify(panel.open)); } catch (e) {}
-    });
+    MuscatOptions.bindPanel(PANEL_KEY, panel);
   })();
 
   var cmdEl     = document.getElementById('full-cmd');
@@ -1012,8 +1002,7 @@
   // ----- restore the log if it was previously saved -----
   (function restoreLog() {
     if (!logEl) return;
-    var savedLog;
-    try { savedLog = localStorage.getItem(logKey()); } catch (e) { savedLog = null; }
+    var savedLog = MuscatStorage.get(logKey(), null);
     if (savedLog) {
       logEl.style.display = 'block';
       logEl.textContent = savedLog;
@@ -1021,7 +1010,7 @@
     }
   })();
   var hasOptError = false;
-  var pollTimer = null;
+  var poller = window.MuscatJobPolling.createTimeoutPoller(poll);
   var jobActive = false;
 
   // ----- centralized active job tracking for batch polling -----
@@ -1032,8 +1021,7 @@
       jobs.push({ inst: inst, date: date, target: target, run: runId || '' });
     }
     // Background job(s) from saved state
-    var saved;
-    try { saved = JSON.parse(localStorage.getItem(JOB_KEY) || 'null'); } catch (e) { saved = null; }
+    var saved = MuscatStorage.getJSON(JOB_KEY, null);
     if (saved && saved.inst && !(saved.inst === inst && saved.date === date && saved.target === target)) {
       jobs.push({ inst: saved.inst, date: saved.date, target: saved.target, run: saved.run_id || '' });
     }
@@ -1193,11 +1181,8 @@
     var oa = document.getElementById('output-area');
     if (oa) oa.style.display = on ? 'none' : '';
   }
-  function stopPolling() { if (pollTimer !== null) { clearTimeout(pollTimer); pollTimer = null; } }
-  function schedulePoll(delayMs) {
-    if (pollTimer !== null) return;
-    pollTimer = setTimeout(function () { pollTimer = null; poll(); }, delayMs);
-  }
+  function stopPolling() { poller.stop(); }
+  function schedulePoll(delayMs) { poller.schedule(delayMs); }
 
   function poll() {
     var jobs = getActiveJobs();
@@ -1264,7 +1249,7 @@
       if (s.log) {
         logEl.textContent = s.log;
         logEl.scrollTop = logEl.scrollHeight;
-        try { localStorage.setItem(logKey(), s.log); } catch (e) {}
+        MuscatStorage.set(logKey(), s.log);
       }
       if (s.state === 'running' || s.state === 'cancelling' || s.state === 'finalizing') {
         setRunning(true);
@@ -1272,7 +1257,7 @@
       } else if (s.state === 'done') {
         setRunning(false);
         logEl.textContent = (s.log || '') + '\n\n✓ done (' + s.elapsed + 's) — reloading…';
-        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+        MuscatStorage.set(logKey(), logEl.textContent);
         if (typeof window.showLoading === 'function') {
           window.showLoading('Reloading…');
         }
@@ -1288,7 +1273,7 @@
       } else if (s.state === 'error') {
         setRunning(false);
         logEl.textContent = (s.log || '') + '\n\n✗ pipeline exited with code ' + s.returncode;
-        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+        MuscatStorage.set(logKey(), logEl.textContent);
         if (typeof window.showLoading === 'function') {
           window.showLoading('Reloading…');
         }
@@ -1303,7 +1288,7 @@
       } else if (s.state === 'cancelled') {
         setRunning(false); clearJob();
         logEl.textContent = (s.log || '') + '\n\n■ cancelled';
-        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+        MuscatStorage.set(logKey(), logEl.textContent);
         if (typeof window.showLoading === 'function') {
           window.showLoading('Reloading…');
         }
@@ -1357,18 +1342,20 @@
 
   function launch(testRun) {
     // Unhide this job on the Jobs page
-    try {
-      var h = JSON.parse(localStorage.getItem('jobs:hidden') || '[]');
-      var key = inst + '/' + date + '/' + target.replace(/ /g, '');
-      var jk = 'photometry:' + key;
-      var hi = h.indexOf(jk); if (hi !== -1) { h.splice(hi, 1); localStorage.setItem('jobs:hidden', JSON.stringify(h)); }
-    } catch (_) {}
+    var h = MuscatStorage.getJSON('jobs:hidden', []);
+    var key = inst + '/' + date + '/' + target.replace(/ /g, '');
+    var jk = 'photometry:' + key;
+    var hi = h.indexOf(jk);
+    if (hi !== -1) {
+      h.splice(hi, 1);
+      MuscatStorage.setJSON('jobs:hidden', h);
+    }
 
     stopPolling();
     setRunning(true);
     logEl.style.display = 'block';
     logEl.textContent = 'Launching ' + (testRun ? 'test' : 'full') + ' reduction…';
-    try { localStorage.removeItem(logKey()); } catch (e) {}
+    MuscatStorage.remove(logKey());
 
     saveOptions();  // Persist current form state before launching
     var opts = collectOptions();
@@ -1383,7 +1370,7 @@
         setRunning(false);
         logEl.style.display = 'block';
         logEl.textContent = 'Error: ' + (res.error || 'failed to start');
-        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+        MuscatStorage.set(logKey(), logEl.textContent);
         return;
       }
       if (res.run_id !== undefined) {
@@ -1392,7 +1379,7 @@
       }
       if (res.queued) {
         logEl.textContent = '⏳ Queued — waiting for the running full reduction to finish…';
-        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+        MuscatStorage.set(logKey(), logEl.textContent);
       }
       stopPolling();
       poll();
@@ -1401,7 +1388,7 @@
       setRunning(false);
       logEl.style.display = 'block';
       logEl.textContent = 'Error: ' + err.message;
-      try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+      MuscatStorage.set(logKey(), logEl.textContent);
     });
   }
 
@@ -1410,7 +1397,7 @@
   if (cancelBtn) cancelBtn.addEventListener('click', function () {
     cancelBtn.disabled = true;
     logEl.textContent += '\n\n■ cancelling…';
-    try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+    MuscatStorage.set(logKey(), logEl.textContent);
     fetch('/photometry/cancel', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })

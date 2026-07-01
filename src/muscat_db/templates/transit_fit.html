@@ -781,8 +781,7 @@
   // ----- restore the last selection on a bare /transit-fit visit -----
   (function () {
     if (inst || date || target || window.location.search) return;
-    var saved;
-    try { saved = JSON.parse(localStorage.getItem(SEL_KEY) || 'null'); } catch (e) { saved = null; }
+    var saved = MuscatStorage.getJSON(SEL_KEY, null);
     if (saved && saved.inst) {
       var qs = ['inst', 'date', 'target'].filter(function (k) { return saved[k]; })
         .map(function (k) { return k + '=' + encodeURIComponent(saved[k]); }).join('&');
@@ -791,7 +790,7 @@
   })();
   // ...and remember the current selection for next time.
   if (inst) {
-    try { localStorage.setItem(SEL_KEY, JSON.stringify({ inst: inst, date: date, target: target })); } catch (e) {}
+    MuscatStorage.setJSON(SEL_KEY, { inst: inst, date: date, target: target });
   }
 
   // ----- cascading selectors -----
@@ -820,7 +819,7 @@
   var cancelBtn = document.getElementById('cancel-btn');
   var logEl     = document.getElementById('run-log');
   var errEl     = document.getElementById('opt-error');
-  var pollTimer = null;
+  var poller = window.MuscatJobPolling.createTimeoutPoller(poll);
 
   function val(id) { var e = document.getElementById(id); return e ? e.value : ''; }
   function chk(id) { var e = document.getElementById(id); return e ? e.checked : false; }
@@ -1049,7 +1048,7 @@
   }
 
   function saveOptions() {
-    try { localStorage.setItem(OPT_KEY, JSON.stringify(collectOptions())); } catch (e) {}
+    MuscatOptions.save(OPT_KEY, collectOptions);
   }
 
   function syncPlanetsInput() {
@@ -1583,8 +1582,7 @@
   }
 
   function restoreOptions() {
-    var saved;
-    try { saved = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); } catch (e) { saved = null; }
+    var saved = MuscatOptions.restore(OPT_KEY);
 
     var container = document.getElementById('planet-cards-container');
     if (container) container.innerHTML = '';
@@ -1668,7 +1666,7 @@
   if (clearBtn) {
     clearBtn.addEventListener('click', function () {
       try {
-        localStorage.setItem(BACKUP_KEY, JSON.stringify(collectOptions()));
+        MuscatStorage.setJSON(BACKUP_KEY, collectOptions());
       } catch (e) {}
 
       ['teff','teff_unc','logg','logg_unc','feh','feh_unc'].forEach(function (id) {
@@ -1732,7 +1730,7 @@
     saveBtn.addEventListener('click', function () {
       var currentOpts = collectOptions();
       try {
-        localStorage.setItem(BACKUP_KEY, JSON.stringify(currentOpts));
+        MuscatStorage.setJSON(BACKUP_KEY, currentOpts);
         alert('Current values saved.');
       } catch (e) {
         alert('Failed to save values.');
@@ -1744,7 +1742,7 @@
   if (restoreBtn) {
     restoreBtn.addEventListener('click', function () {
       var backup;
-      try { backup = JSON.parse(localStorage.getItem(BACKUP_KEY) || 'null'); } catch (e) { backup = null; }
+      backup = MuscatStorage.getJSON(BACKUP_KEY, null);
       if (backup) {
         ['teff','teff_unc','logg','logg_unc','feh','feh_unc',
          'tune','draws','chains','cores','spline_knots','clip_nsig','chunk_thresh','trim_beg','trim_end',
@@ -2170,13 +2168,7 @@
   (function () {
     var panel = document.getElementById('opt-panel');
     if (!panel) return;
-    var savedOpen;
-    try { savedOpen = JSON.parse(localStorage.getItem(PANEL_KEY) || 'null'); } catch (e) { savedOpen = null; }
-    if (savedOpen === true) panel.open = true;
-    else if (savedOpen === false) panel.open = false;
-    panel.addEventListener('toggle', function () {
-      try { localStorage.setItem(PANEL_KEY, JSON.stringify(panel.open)); } catch (e) {}
-    });
+    MuscatOptions.bindPanel(PANEL_KEY, panel);
   })();
 
   // Listen to inputs
@@ -2196,8 +2188,7 @@
   // ----- restore the log if it was previously saved -----
   (function restoreLog() {
     if (!logEl) return;
-    var savedLog;
-    try { savedLog = localStorage.getItem(logKey()); } catch (e) { savedLog = null; }
+    var savedLog = MuscatStorage.get(logKey(), null);
     if (savedLog) {
       logEl.style.display = 'block';
       logEl.textContent = savedLog;
@@ -2208,7 +2199,7 @@
   // ---- CSV selection ----
   var csvCards = document.querySelectorAll('.csv-card');
   function saveCsvSelection() {
-    try { localStorage.setItem(CSV_KEY, JSON.stringify(getSelectedCsvs())); } catch (e) {}
+    MuscatStorage.setJSON(CSV_KEY, getSelectedCsvs());
   }
   function updateCsvCount() {
     var el = document.getElementById('csv-count');
@@ -2227,8 +2218,7 @@
     return paths;
   }
   function restoreCsvSelection() {
-    var saved;
-    try { saved = JSON.parse(localStorage.getItem(CSV_KEY) || 'null'); } catch (e) { saved = null; }
+    var saved = MuscatStorage.getJSON(CSV_KEY, null);
     if (!saved || !Array.isArray(saved)) return;
     var selected = new Set(saved);
     csvCards.forEach(function (card) {
@@ -2327,13 +2317,10 @@
     if (runTestBtn) runTestBtn.disabled = on;
     if (cancelBtn) cancelBtn.style.display = on ? '' : 'none';
   }
-  function stopPolling() { if (pollTimer !== null) { clearTimeout(pollTimer); pollTimer = null; } }
-  function schedulePoll(delayMs) {
-    if (pollTimer !== null) return;
-    pollTimer = setTimeout(function () { pollTimer = null; poll(); }, delayMs);
-  }
-  function saveJob() { try { localStorage.setItem(JOB_KEY, JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })); } catch (e) {} }
-  function clearJob() { try { localStorage.removeItem(JOB_KEY); } catch (e) {} }
+  function stopPolling() { poller.stop(); }
+  function schedulePoll(delayMs) { poller.schedule(delayMs); }
+  function saveJob() { MuscatStorage.setJSON(JOB_KEY, { inst: inst, date: date, target: target, run_id: runId }); }
+  function clearJob() { MuscatStorage.remove(JOB_KEY); }
 
   function poll() {
     var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
@@ -2342,7 +2329,7 @@
       if (s.log) {
         logEl.textContent = s.log;
         logEl.scrollTop = logEl.scrollHeight;
-        try { localStorage.setItem(logKey(), s.log); } catch (e) {}
+        MuscatStorage.set(logKey(), s.log);
       }
       if (s.state === 'running' || s.state === 'cancelling') {
         setRunning(true);
@@ -2351,7 +2338,7 @@
       if (s.state === 'done') {
         stopPolling(); clearJob();
         logEl.textContent += '\n\n✓ done — reloading…';
-        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+        MuscatStorage.set(logKey(), logEl.textContent);
         if (typeof window.showLoading === 'function') {
           window.showLoading('Reloading…');
         }
@@ -2360,11 +2347,11 @@
       } else if (s.state === 'error') {
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent += '\n\n✗ fit run exited with code ' + s.returncode;
-        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+        MuscatStorage.set(logKey(), logEl.textContent);
       } else if (s.state === 'cancelled') {
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent += '\n\n■ cancelled';
-        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+        MuscatStorage.set(logKey(), logEl.textContent);
       } else if (s.state === 'pending') {
         // Queued behind the running full job; keep the Cancel button and poll
         // until the slot frees and the run is promoted to 'running'.
@@ -2395,18 +2382,20 @@
     }
     saveJob();
     // Unhide this job on the Jobs page
-    try {
-      var h = JSON.parse(localStorage.getItem('jobs:hidden') || '[]');
-      var key = inst + '/' + date + '/' + target.replace(/ /g, '');
-      var jk = 'transit_fit:' + key;
-      var hi = h.indexOf(jk); if (hi !== -1) { h.splice(hi, 1); localStorage.setItem('jobs:hidden', JSON.stringify(h)); }
-    } catch (_) {}
+    var h = MuscatStorage.getJSON('jobs:hidden', []);
+    var key = inst + '/' + date + '/' + target.replace(/ /g, '');
+    var jk = 'transit_fit:' + key;
+    var hi = h.indexOf(jk);
+    if (hi !== -1) {
+      h.splice(hi, 1);
+      MuscatStorage.setJSON('jobs:hidden', h);
+    }
 
     setRunning(true);
     if (errEl) errEl.textContent = '';
     logEl.style.display = 'block';
     logEl.textContent = 'Launching transit fitting run…';
-    try { localStorage.removeItem(logKey()); } catch (e) {}
+    MuscatStorage.remove(logKey());
 
     fetch('/transit-fit/run', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2417,16 +2406,16 @@
         setRunning(false);
         logEl.style.display = 'block';
         logEl.textContent = 'Error: ' + (res.error || 'failed to start');
-        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+        MuscatStorage.set(logKey(), logEl.textContent);
         return;
       }
       // Track the launched run so polling/log/cancel target it.
       runId = res.run_id || '';
       saveJob();
-      try { localStorage.removeItem(logKey()); } catch (e) {}
+      MuscatStorage.remove(logKey());
       if (res.queued) {
         logEl.textContent = '⏳ Queued — waiting for the running full fit to finish…';
-        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+        MuscatStorage.set(logKey(), logEl.textContent);
       }
       stopPolling();
       poll();
@@ -2435,7 +2424,7 @@
       setRunning(false);
       logEl.style.display = 'block';
       logEl.textContent = 'Error: ' + err.message;
-      try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+      MuscatStorage.set(logKey(), logEl.textContent);
     });
   }
 
@@ -2481,7 +2470,7 @@
   if (cancelBtn) cancelBtn.addEventListener('click', function () {
     cancelBtn.disabled = true;
     logEl.textContent += '\n\n■ cancelling…';
-    try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+    MuscatStorage.set(logKey(), logEl.textContent);
     fetch('/transit-fit/cancel', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })
@@ -2527,8 +2516,7 @@
   // Check saved job on page load — validate server state first so we don't
   // flash a Cancel button for a run that already completed.
   (function checkSavedJob() {
-    var saved;
-    try { saved = JSON.parse(localStorage.getItem(JOB_KEY) || 'null'); } catch (e) { saved = null; }
+    var saved = MuscatStorage.getJSON(JOB_KEY, null);
     if (!saved || !saved.inst) return;
     if (saved.inst === inst && saved.date === date && saved.target === target) {
       var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);

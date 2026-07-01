@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import datetime
 import json
+import logging
 import math
 import os
 import pathlib
@@ -32,6 +33,7 @@ from muscat_db.photometry import (
 from muscat_db.cache import register_cache
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent.resolve()
+logger = logging.getLogger(__name__)
 
 _TIMER_VERSION: str | None = None
 _TIMER_VERSION_LOCK = threading.Lock()
@@ -70,7 +72,7 @@ def _write_log_banner(logf: IO, cmd: list[str], options: dict | None = None) -> 
     now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     logf.write(f"{separator}\n")
     logf.write(f"muscat-db v{__version__}  |  timer-fit v{_timer_version()}  |  {now_utc}\n")
-    logf.write(f"command: transit-fit\n")
+    logf.write("command: transit-fit\n")
     logf.write(f"{separator}\n\n")
     logf.write(f"$ {shlex.join(cmd)}\n\n")
 
@@ -365,7 +367,7 @@ def get_target_parameters(target_name: str) -> dict:
                         except ValueError: pass
                     break
     except Exception:
-        pass
+        logger.debug("failed to read default target parameters for %s", target_name, exc_info=True)
 
     return params
 
@@ -1307,7 +1309,7 @@ def start_fit(
             with open(rdir / "timer-fit.pid", "w") as pidf:
                 pidf.write(str(proc.pid))
         except Exception:
-            pass
+            logger.debug("failed to write timer-fit.pid in %s", rdir, exc_info=True)
     except (FileNotFoundError, OSError) as exc:
         logf.write(f"\nfailed to launch fitting: {exc}\n")
         logf.close()
@@ -1364,7 +1366,7 @@ def _pending_status(inst: str, date: str, target: str, run_id: str = "") -> dict
                     "elapsed": round(time.time() - started),
                 }
     except Exception:
-        pass
+        logger.debug("failed to read pending transit-fit status for %s/%s/%s/%s", inst, date, target, run_id, exc_info=True)
     return None
 
 
@@ -1398,7 +1400,7 @@ def _running_status(inst: str, date: str, target: str, run_id: str = "") -> dict
                     "elapsed": round(time.time() - started),
                 }
     except Exception:
-        pass
+        logger.debug("failed to read running transit-fit status for %s/%s/%s/%s", inst, date, target, run_id, exc_info=True)
     return None
 
 
@@ -1429,7 +1431,7 @@ def _persisted_status(inst: str, date: str, target: str, run_id: str = "") -> di
                 "elapsed": round(entry.get("elapsed") or 0),
             }
     except Exception:
-        pass
+        logger.debug("failed to read persisted transit-fit status for %s/%s/%s/%s", inst, date, target, run_id, exc_info=True)
     return None
 
 
@@ -1694,7 +1696,7 @@ def get_fit_outputs(inst: str, date: str, target: str, run_id: str | None = None
                 }
                 outputs["has_any"] = True
         except Exception:
-            pass
+            logger.debug("failed to read timer summary preview from %s", out_dir / "summary.csv", exc_info=True)
 
     return outputs
 
@@ -1804,7 +1806,7 @@ def _detect_run_type(rdir: pathlib.Path) -> str:
             if "run_type" in meta and meta["run_type"]:
                 return str(meta["run_type"])
     except Exception:
-        pass
+        logger.debug("failed to detect run_type for %s from meta.yaml", rdir, exc_info=True)
 
     # 2. Try reading timer-fit.log to see if "--test_run" was used
     try:
@@ -1818,7 +1820,7 @@ def _detect_run_type(rdir: pathlib.Path) -> str:
                     if line.startswith("$ ") and "--test_run" in line:
                         return "test"
     except Exception:
-        pass
+        logger.debug("failed to detect run_type for %s from timer-fit.log", rdir, exc_info=True)
 
     return "full"
 
@@ -1901,7 +1903,7 @@ def _detect_process_running(rdir: pathlib.Path) -> bool:
                 pid = int(f.read().strip())
             return _is_pid_running(pid)
         except Exception:
-            pass
+            logger.debug("failed to read timer-fit.pid in %s", rdir, exc_info=True)
     return False
 
 
@@ -1998,7 +2000,7 @@ def sync_jobs() -> None:
                             if "Timer-fit completed successfully" in log_content:
                                 completed_ok = True
             except Exception:
-                pass
+                logger.debug("failed to inspect orphan fit completion for %s", rdir, exc_info=True)
                 
             if completed_ok:
                 store.save(
@@ -2102,7 +2104,7 @@ def sync_jobs() -> None:
                         with open(rdir / "timer-fit.pid", "w") as pidf:
                             pidf.write(str(proc.pid))
                     except Exception:
-                        pass
+                        logger.debug("failed to write timer-fit.pid for queued run %s", rdir, exc_info=True)
                 except (FileNotFoundError, OSError) as exc:
                     try: logf.close()
                     except OSError: pass
@@ -2113,6 +2115,7 @@ def sync_jobs() -> None:
                 try:
                     store.save(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="running", returncode=None, elapsed=0, started_at=_FIT_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""), run_name=run_name)
                 except Exception:
+                    logger.debug("failed to persist queued transit-fit launch for %s", run_id, exc_info=True)
                     try: proc.terminate()
                     except OSError: pass
                     try: logf.close()

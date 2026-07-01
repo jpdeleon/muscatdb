@@ -22,11 +22,14 @@ shape ``get_persisted_jobs`` already produces, so callers keep reading
 
 from __future__ import annotations
 
+import logging
 from typing import Protocol, runtime_checkable
 
 # Imported as a module (not by name) so the concrete store sees monkeypatched
 # muscat_db.database.save_job / get_persisted_jobs in tests and any runtime swap.
 from muscat_db import database
+
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -150,7 +153,7 @@ class DatabaseJobStore(JobRepository, JobQueue):
                 conn.commit()
             database.clear_all_caches()
         except Exception:
-            pass
+            logger.debug("failed to delete job row %s", key, exc_info=True)
 
     def enqueue(
         self,

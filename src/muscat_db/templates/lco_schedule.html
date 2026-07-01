@@ -47,8 +47,8 @@
         <option value="nautical" selected>Nautical (−12°)</option>
         <option value="astronomical">Astronomical (−18°)</option>
       </select></div>
-    <div class="lco-field"><label for="sch-max-airmass">Max airmass</label><input id="sch-max-airmass" type="number" step="any" value="2"></div>
-    <div class="lco-field"><label for="sch-min-lunar">Min lunar (deg)</label><input id="sch-min-lunar" type="number" step="any" value="30"></div>
+    <div class="lco-field"><label for="sch-obs-airmass">Max airmass</label><input id="sch-obs-airmass" type="number" step="any" value="2"></div>
+    <div class="lco-field"><label for="sch-moon-sep">Min lunar (deg)</label><input id="sch-moon-sep" type="number" step="any" value="30"></div>
     <button class="btn" type="button" id="btn-fov" title="Optimize field-of-view pointing for this target">Show FOV</button>
   </div>
   <div class="lco-actions">
@@ -268,7 +268,7 @@
     'sch-sin-count','sch-site',
     'sch-type','sch-observation-type','sch-guiding-config',
     'sch-effective-filter','sch-effective-exptime','sch-effective-mode',
-    'sch-max-airmass','sch-min-lunar','sch-ipp'
+    'sch-obs-airmass','sch-moon-sep','sch-ipp'
   ];
 
   var CHECK_IDS = ['sch-include-padding'];
@@ -1035,11 +1035,11 @@
     if (padBefore === null || padBefore < 0 || padAfter === null || padAfter < 0) {
       msg('msg-windows', 'Padding values must be zero or greater.', 'err'); return;
     }
-    var airmass = num('sch-max-airmass');
+    var airmass = num('sch-obs-airmass');
     if (airmass === null || airmass < 1) {
       msg('msg-windows', 'Airmass limit must be ≥ 1.', 'err'); return;
     }
-    var moonSep = num('sch-min-lunar');
+    var moonSep = num('sch-moon-sep');
     if (moonSep === null || moonSep < 0) {
       msg('msg-windows', 'Minimum moon separation must be ≥ 0.', 'err'); return;
     }
@@ -1099,8 +1099,8 @@
     Promise.all(sites.map(function (s) {
       var q = new URLSearchParams({
         ra: ra, dec: dec, mid: w.mid, duration: String(dur), site: s,
-        obs_airmass: val('sch-max-airmass') || '2.0', twilight: val('sch-twilight'),
-        moon_sep_min: val('sch-min-lunar') || '30'
+        obs_airmass: val('sch-obs-airmass') || '2.0', twilight: val('sch-twilight'),
+        moon_sep_min: val('sch-moon-sep') || '30'
       });
       return fetch('/api/lco/visibility?' + q.toString())
         .then(function (r) { return r.json(); })
@@ -1141,7 +1141,7 @@
     var p = {
       kind: kind, name: val('sch-name'), proposal: val('sch-proposal'),
       target_name: val('sch-target'), ra: coords.ra, dec: coords.dec,
-      max_airmass: num('sch-max-airmass'), min_lunar_distance: num('sch-min-lunar'),
+      max_airmass: num('sch-obs-airmass'), min_lunar_distance: num('sch-moon-sep'),
       ipp_value: num('sch-ipp'), windows: selectedWindows(),
       type: val('sch-type'),
       observation_type: val('sch-observation-type'),

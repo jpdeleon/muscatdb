@@ -848,7 +848,7 @@ def _calculate_photometry_status(inst: str, date: str, target: str, rdir: Path) 
                         if row_count > max_rows:
                             max_rows = row_count
                 except Exception:
-                    pass
+                    logger.debug("failed to count photometry CSV rows in %s", csv_path, exc_info=True)
     if csv_found and max_rows > 15:
         return "full"
 
@@ -871,7 +871,7 @@ def _calculate_photometry_status(inst: str, date: str, target: str, rdir: Path) 
                     has_full_log = True
                     break
         except Exception:
-            pass
+            logger.debug("failed to read photometry log %s while determining status", lf, exc_info=True)
 
     if has_target_log:
         return "full" if has_full_log else "test"
@@ -1475,7 +1475,7 @@ def _pending_status(inst: str, date: str, target: str, run_id: str = "") -> dict
                     "elapsed": round(time.time() - started),
                 }
     except Exception:
-        pass
+        logger.debug("failed to read pending photometry status for %s/%s/%s/%s", inst, date, target, run_id, exc_info=True)
     return None
 
 
@@ -1512,7 +1512,7 @@ def _persisted_status(inst: str, date: str, target: str, run_id: str = "") -> di
                 "error_desc": error_desc,
             }
     except Exception:
-        pass
+        logger.debug("failed to read persisted photometry status for %s/%s/%s/%s", inst, date, target, run_id, exc_info=True)
     return None
 
 

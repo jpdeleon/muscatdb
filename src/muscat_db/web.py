@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import logging
 import math
 import os
 import pathlib
@@ -57,6 +58,8 @@ from muscat_db.coord import (
     clean_ra as _clean_ra,
     clean_dec as _clean_dec,
 )
+
+logger = logging.getLogger(__name__)
 
 HERE = pathlib.Path(__file__).parent
 TEMPLATE_DIR = HERE / "templates"
@@ -545,7 +548,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
                 if obs_type and total_frames < 100:
                     obs_type += " (test)"
         except Exception:
-            pass
+            logger.debug("failed to load obs metadata for photometry page %s/%s/%s", inst, date, target, exc_info=True)
 
         # Restrict the site/mode run-option dropdowns to what the obslog actually
         # holds for this target+date, so you can't launch a reduction for a
@@ -1249,8 +1252,6 @@ def exposure_calibrate(payload: dict = Body(...)):
     inst = (payload.get("instrument") or "").strip()
     if inst not in INSTRUMENTS:
         return JSONResponse({"ok": False, "error": "Invalid instrument"}, status_code=400)
-    force = bool(payload.get("force", False))
-
     # Run in a thread to avoid blocking
     import threading
     result = {"ok": True, "message": f"Calibration started for {inst}"}
@@ -1900,7 +1901,7 @@ def _query_target_planets_nasa(target: str) -> dict:
                                 entry["duration_unc"] = dur_unc
                             results[pl_letter] = entry
     except Exception:
-        pass
+        logger.debug("failed local NASA ephemeris lookup for %s", target, exc_info=True)
 
     # 2. Online search
     if not results:
@@ -1944,7 +1945,7 @@ def _query_target_planets_nasa(target: str) -> dict:
                                 entry["duration_unc"] = dur_unc
                             results[letter] = entry
         except Exception:
-            pass
+            logger.debug("failed online NASA ephemeris lookup for %s", target, exc_info=True)
 
     _CATALOG_CACHE[cache_key] = results
     return results
@@ -2000,7 +2001,7 @@ def _query_target_coordinates(target: str) -> dict | None:
                         if coords:
                             return _store(coords)
     except Exception:
-        pass
+        logger.debug("failed local coordinate lookup in NASA cache for %s", target, exc_info=True)
 
     try:
         csv_path = pathlib.Path(HERE).parent.parent / "data" / "TOIs.csv"
@@ -2025,7 +2026,7 @@ def _query_target_coordinates(target: str) -> dict | None:
                         if coords:
                             return _store(coords)
     except Exception:
-        pass
+        logger.debug("failed local coordinate lookup in TOI cache for %s", target, exc_info=True)
 
     return _store(None)
 
@@ -2293,7 +2294,7 @@ def _annotate_lco_archive_results(inst: str, results: list[dict]) -> tuple[list[
                 if dest.exists() and dest.stat().st_size > 0:
                     row["saved_locally"] = True
             except Exception:
-                pass
+                logger.debug("failed local saved-frame check for %s/%s/%s", inferred_inst, obsdate, fname, exc_info=True)
         out.append(row)
     return out, len(dataset_meta)
 
@@ -2362,14 +2363,13 @@ def _query_target_planets_toi(target: str) -> dict:
                                 entry["duration_unc"] = dur_unc
                             results[letter] = entry
     except Exception:
-        pass
+        logger.debug("failed local TOI ephemeris lookup for %s", target, exc_info=True)
 
     # 2. Online search
     if not results:
         host = target.strip()
         if len(host) > 2 and host[-2] == " " and host[-1].lower() in "bcdefgh":
             host = host[:-2].strip()
-        clean_target = host.replace("TOI", "").replace("toi", "").replace("-", "").replace(" ", "").lstrip("0").split(".")[0].strip()
         q = f"SELECT toidisplay, pl_tranmid, pl_tranmiderr1, pl_tranmiderr2, pl_orbper, pl_orbpererr1, pl_orbpererr2, pl_trandurh, pl_trandurherr1, pl_trandurherr2 FROM toi WHERE toidisplay LIKE {_adql_literal(host + '%')}"
         url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -2404,7 +2404,7 @@ def _query_target_planets_toi(target: str) -> dict:
                                 entry["duration_unc"] = dur_unc
                             results[letter] = entry
         except Exception:
-            pass
+            logger.debug("failed online TOI ephemeris lookup for %s", target, exc_info=True)
 
     _CATALOG_CACHE[cache_key] = results
     return results
@@ -2455,7 +2455,7 @@ def _query_target_planets_catalog(target: str) -> dict:
                             }
                             break
         except Exception:
-            pass
+            logger.debug("failed legacy catalog fallback for %s", target, exc_info=True)
 
     # Final fallback if absolutely nothing was found
     if not results:
@@ -2548,7 +2548,7 @@ def _get_run_fitted_params(inst: str, date: str, target: str, run_id: str | None
                     except (ValueError, KeyError):
                         pass
     except Exception:
-        pass
+        logger.debug("failed to read fitted transit params for %s/%s/%s/%s", inst, date, target, run_id, exc_info=True)
     return fitted
 
 
@@ -2640,7 +2640,7 @@ def api_ephemeris_target_info(target: str):
                     cfg = yaml.safe_load(f) or {}
                     planets_fitted = str(cfg.get("planets", "b"))
         except Exception:
-            pass
+            logger.debug("failed to read ephemeris dataset metadata for %s/%s/%s/%s", inst, date, j["target"], run_id, exc_info=True)
         
         for pl in planets_fitted:
             seen_planets.add(pl)
