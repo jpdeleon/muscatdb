@@ -30,6 +30,7 @@
 <div class="search-bar">
   <input id="toi-search" type="text" placeholder="Search TOI, TIC ID, or planet name…" autocomplete="off">
   <span id="toi-count" class="hint"></span>
+  <button id="toi-clear" type="button" class="csv-btn" style="display: none; background: var(--border); color: var(--text); border: none; cursor: pointer; margin-right: 0.25rem;">✕ Clear filters</button>
   <a id="toi-export" href="#" class="csv-btn" download="tois_filtered.csv">⬇ CSV (filtered)</a>
 </div>
 
@@ -60,6 +61,14 @@
   <span class="badge instrument-badge toi-chip" data-group="disp" data-key="FP"  title="False Positive">FP</span>
   <span class="badge instrument-badge toi-chip" data-group="disp" data-key="FA"  title="False Alarm">FA</span>
   <span class="badge instrument-badge toi-chip" data-group="disp" data-key="__blank__" title="No TFOPWG disposition">Unset</span>
+</div>
+<div class="chip-bar">
+  <span class="chip-label">Multiplicity:</span>
+  <span class="badge instrument-badge toi-chip" data-group="multi" data-key="1">Single</span>
+  <span class="badge instrument-badge toi-chip" data-group="multi" data-key="2">2-planet</span>
+  <span class="badge instrument-badge toi-chip" data-group="multi" data-key="3">3-planet</span>
+  <span class="badge instrument-badge toi-chip" data-group="multi" data-key="4">4-planet</span>
+  <span class="badge instrument-badge toi-chip" data-group="multi" data-key="5+">5+ planet</span>
 </div>
 
 <details id="toi-table-section" class="toi-section" open style="margin-top:1rem;">
@@ -154,11 +163,41 @@
   const planetTags = new Array(N);   // array of tag-sets (as arrays)
   const sizeClass  = new Array(N);
   const starClass  = new Array(N);
+  const multiClass = new Array(N);
+
+  const ticCounts = {};
+  for (let i = 0; i < N; i++) {
+    const tic = TOI.tic[i];
+    if (tic) {
+      ticCounts[tic] = (ticCounts[tic] || 0) + 1;
+    }
+  }
+
+  function multiplicityClassOf(m) {
+    if (m === 1) return '1';
+    if (m === 2) return '2';
+    if (m === 3) return '3';
+    if (m === 4) return '4';
+    return '5+';
+  }
+
+  function multiLabelOf(c) {
+    if (c === '1') return 'Single';
+    if (c === '2') return '2-planet';
+    if (c === '3') return '3-planet';
+    if (c === '4') return '4-planet';
+    if (c === '5+') return '5+ planet';
+    return '—';
+  }
+
   for (let i = 0; i < N; i++) {
     const r = TOI.radius[i], p = TOI.period[i];
     planetTags[i] = planetTagsOf(r, p);
     sizeClass[i]  = sizeClassOf(r);
     starClass[i]  = starClassOf(TOI.steff[i]);
+    const tic = TOI.tic[i];
+    const m = tic ? (ticCounts[tic] || 1) : 1;
+    multiClass[i] = multiplicityClassOf(m);
   }
 
   const STAR_COLORS = { M: '#d1495b', K: '#e8a03d', G: '#57a773', F: '#3b7dd8', 'A+': '#9b59b6', '—': '#9aa0a6' };
@@ -166,9 +205,12 @@
                         'Neptune-size': '#b07aa1', 'Jupiter-size': '#e15759', '—': '#9aa0a6' };
   const DISP_COLORS = { PC: '#3b7dd8', CP: '#57a773', KP: '#17a2b8', APC: '#e8a03d',
                         FP: '#e15759', FA: '#b07aa1', '—': '#9aa0a6' };
+  const MULTI_COLORS = { 'Single': '#9aa0a6', '2-planet': '#57a773', '3-planet': '#3b7dd8',
+                         '4-planet': '#e8a03d', '5+ planet': '#9b59b6', '—': '#9aa0a6' };
   const STAR_ORDER = ['M', 'K', 'G', 'F', 'A+', '—'];
   const SIZE_ORDER = ['Earth-size', 'Super-Earth', 'Sub-Neptune', 'Neptune-size', 'Jupiter-size', '—'];
   const DISP_ORDER = ['PC', 'CP', 'KP', 'APC', 'FP', 'FA', '—'];
+  const MULTI_ORDER = ['Single', '2-planet', '3-planet', '4-planet', '5+ planet', '—'];
 
   // ── DOM refs ───────────────────────────────────────────────────────────────
   const searchEl  = document.getElementById('toi-search');
@@ -215,6 +257,7 @@
     selY.add(new Option(c.plot, c.key));
   });
   [['none', 'None'], ['star', 'Star type'], ['size', 'Planet size'], ['disp', 'Disposition'],
+   ['multi', 'System multiplicity'],
    ['steff', 'Stellar Teff'], ['teq', 'Equil Temp'], ['insol', 'Insolation'], ['tmag', 'TESS mag']]
     .forEach(([v, t]) => selColor.add(new Option(t, v)));
   selX.value = 'period'; selY.value = 'radius'; selColor.value = 'star';
@@ -257,6 +300,7 @@
   const selectedPlanet = new Set();
   const selectedStar = new Set();
   const selectedDisp = new Set();          // TFOPWG codes; '' matches the "Unset" chip
+  const selectedMulti = new Set();
   let sortState = { key: null, dir: 0 };   // dir: 1 asc, -1 desc
 
   function buildColPredicates() {
@@ -279,6 +323,7 @@
     const usePlanet = selectedPlanet.size > 0;
     const useStar = selectedStar.size > 0;
     const useDisp = selectedDisp.size > 0;
+    const useMulti = selectedMulti.size > 0;
     const out = [];
     for (let i = 0; i < N; i++) {
       if (q) {
@@ -301,6 +346,9 @@
       }
       if (useDisp) {
         if (!selectedDisp.has((TOI.disp[i] || '').toUpperCase())) continue;
+      }
+      if (useMulti) {
+        if (!selectedMulti.has(multiClass[i])) continue;
       }
       out.push(i);
     }
@@ -392,12 +440,14 @@
     if (mode === 'star') return starClass[i] || '—';
     if (mode === 'size') return sizeClass[i] || '—';
     if (mode === 'disp') return TOI.disp[i] || '—';
+    if (mode === 'multi') return multiLabelOf(multiClass[i]) || '—';
     return '';
   }
   function catMeta(mode) {
     if (mode === 'star') return { order: STAR_ORDER, colors: STAR_COLORS };
     if (mode === 'size') return { order: SIZE_ORDER, colors: SIZE_COLORS };
     if (mode === 'disp') return { order: DISP_ORDER, colors: DISP_COLORS };
+    if (mode === 'multi') return { order: MULTI_ORDER, colors: MULTI_COLORS };
     return null;
   }
 
@@ -550,6 +600,7 @@
       q: searchEl.value, cols,
       planet: Array.from(selectedPlanet), star: Array.from(selectedStar),
       disp: Array.from(selectedDisp),
+      multi: Array.from(selectedMulti),
       sort: sortState,
       plot: { x: selX.value, y: selY.value, color: selColor.value,
               logx: logXEl.checked, logy: logYEl.checked,
@@ -565,6 +616,7 @@
     (s.planet || []).forEach(k => selectedPlanet.add(k));
     (s.star || []).forEach(k => selectedStar.add(k));
     (s.disp || []).forEach(k => selectedDisp.add(k));
+    (s.multi || []).forEach(k => selectedMulti.add(k));
     chips.forEach(ch => {
       if (setForGroup(ch.dataset.group).has(keyForChip(ch))) ch.classList.add('active');
     });
@@ -602,6 +654,28 @@
   }
 
   // ── main apply ─────────────────────────────────────────────────────────────
+  const clearEl = document.getElementById('toi-clear');
+  function updateClearButtonVisibility() {
+    if (!clearEl) return;
+    const hasSearch = !!searchEl.value.trim();
+    const hasColFilters = colInputs.some(inp => !!inp.value.trim());
+    const hasChips = selectedPlanet.size > 0 || selectedStar.size > 0 || selectedDisp.size > 0 || selectedMulti.size > 0;
+    clearEl.style.display = (hasSearch || hasColFilters || hasChips) ? 'inline-flex' : 'none';
+  }
+
+  if (clearEl) {
+    clearEl.addEventListener('click', function () {
+      searchEl.value = '';
+      colInputs.forEach(inp => { inp.value = ''; inp.classList.remove('invalid'); });
+      selectedPlanet.clear();
+      selectedStar.clear();
+      selectedDisp.clear();
+      selectedMulti.clear();
+      chips.forEach(ch => ch.classList.remove('active'));
+      apply();
+    });
+  }
+
   let lastIdx = [];
   function apply() {
     const idx = computeFiltered();
@@ -611,6 +685,7 @@
     renderTable(idx);
     refreshCsv(idx);
     drawPlot(idx);
+    updateClearButtonVisibility();
     saveState();
   }
 
@@ -621,7 +696,7 @@
   searchEl.addEventListener('input', applySoon);
   colInputs.forEach(inp => inp.addEventListener('input', applySoon));
   function setForGroup(group) {
-    return group === 'planet' ? selectedPlanet : group === 'star' ? selectedStar : selectedDisp;
+    return group === 'planet' ? selectedPlanet : group === 'star' ? selectedStar : group === 'multi' ? selectedMulti : selectedDisp;
   }
   function keyForChip(ch) {
     // The "Unset" disposition chip uses a sentinel so the attribute is non-empty.
