@@ -787,7 +787,7 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
             except Exception:
                 mtime, created_at = 0.0, "Unknown"
             csite, cmode = fit.csv_site_mode(c.name) if inst == "sinistro" else (None, None)
-            crun = c.parent.name if c.parent.parent.name == "_runs" else ""
+            crun = c.parent.name if "_runs" in c.parts else ""
             rows.append({"path": str(c), "name": c.name, "created_at": created_at,
                          "_mtime": mtime, "_site": csite, "_mode": cmode, "run_id": crun})
 
