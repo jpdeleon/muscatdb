@@ -264,7 +264,7 @@
       {% for csv in csvs %}
         <div class="lightcurve-card csv-card" data-csv-path="{{ csv.path }}" data-csv-name="{{ csv.name }}" role="button" tabindex="0">
           <input type="checkbox" class="csv-checkbox" checked style="margin-right: 0.5rem;">
-          <span class="lc-name">📄 {{ csv.name }}</span>
+          <span class="lc-name">📄 {{ csv.name }}{% if csv.run_id %} <span style="font-size: 0.8rem; color: var(--text-dim);">({{ csv.run_id }})</span>{% endif %}</span>
           <span class="lc-date">Created: {{ csv.created_at }}</span>
         </div>
       {% endfor %}
