@@ -359,6 +359,72 @@ def _replace_target_rows(conn: sqlite3.Connection, objects: set[str]) -> None:
         )
 
 
+def _remove_sqlite_tmp(path: str) -> None:
+    """Remove a SQLite file and its WAL/SHM/journal sidecars, ignoring absent
+    ones. A WAL-mode build writes ``<path>-wal`` / ``<path>-shm`` next to the
+    main file, so removing only the main file (the previous cleanup) leaked a
+    multi-GB WAL on every failed build and could leave a stale sidecar that
+    corrupts the next build.
+    """
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        try:
+            os.remove(path + suffix)
+        except OSError:
+            pass
+
+
+def _set_temp_store_dir(conn: sqlite3.Connection, db_file: str) -> None:
+    """Direct SQLite's on-disk scratch files (sort / GROUP BY spills) to the
+    database's own directory instead of the default ``/tmp``.
+
+    The build spills the large ``summaries`` GROUP BY to a temp file; on a host
+    whose root volume (holding ``/tmp``) is small or full, that aborts the build
+    with "database or disk is full" even though the DB's own volume has ample
+    space. The bundled SQLite ignores the ``SQLITE_TMPDIR`` env var, so use the
+    per-connection ``temp_store_directory`` pragma (deprecated but honored),
+    pointing scratch at *db_file*'s directory. Single quotes are escaped for the
+    inlined literal because PRAGMA does not accept bound parameters.
+    """
+    tmp_dir = os.path.dirname(os.path.abspath(db_file)) or "."
+    conn.execute("PRAGMA temp_store_directory = '%s'" % tmp_dir.replace("'", "''"))
+
+
+# Tables owned by the app rather than derived from the obslog CSVs. build_db
+# rebuilds the observation tables (frames/summaries/targets) from scratch, so
+# these must be copied across the atomic swap or the daily cron silently wipes
+# user notes, manual identification overrides, exposure calibration coefficients,
+# job history, and saved ephemeris views on every successful build.
+_APP_OWNED_TABLES = (
+    "jobs",
+    "ephemeris_views",
+    "target_notes",
+    "target_overrides",
+    "exposure_coeffs",
+)
+
+
+def _restore_table(conn: sqlite3.Connection, table: str, rows: list[dict]) -> None:
+    """Re-insert preserved app-owned rows into the freshly rebuilt database.
+
+    Copies whatever columns each row carries (``INSERT OR REPLACE``), intersected
+    with the columns the new table actually has, so nothing is silently dropped
+    and a schema that has gained/lost columns since the row was written still
+    round-trips. *table* is a trusted module constant, never user input.
+    """
+    if not rows:
+        return
+    valid_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for row in rows:
+        cols = [c for c in row.keys() if c in valid_cols]
+        if not cols:
+            continue
+        placeholders = ",".join("?" for _ in cols)
+        conn.execute(
+            f"INSERT OR REPLACE INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
+            tuple(row[c] for c in cols),
+        )
+
+
 def build_db(db_path: str, progress=None) -> int:
     """Rebuild the SQLite database from obslog CSVs.
 
@@ -370,18 +436,28 @@ def build_db(db_path: str, progress=None) -> int:
     """
     tmp_path = db_path + ".tmp"
 
-    # Preserve app-owned tables from the existing database so they survive the
-    # temp-file rebuild of observation-derived tables.
-    preserved_jobs: list[dict] = []
-    preserved_ephemeris_views: list[dict] = []
+    # A previously crashed build can leave <tmp>-wal / <tmp>-shm next to the
+    # (already-removed) main tmp file. If SQLite replays that stale WAL against
+    # the fresh tmp DB the build aborts with a malformed-image error, so clear
+    # any leftover sidecars before opening the new connection.
+    _remove_sqlite_tmp(tmp_path)
+
+    # Preserve every app-owned table (user notes, manual identification
+    # overrides, exposure calibration, job history, saved ephemeris views) from
+    # the existing database so the temp-file rebuild of the observation-derived
+    # tables doesn't wipe them. Rows are copied verbatim (all columns) so nothing
+    # is silently dropped; missing tables/columns are tolerated for older DBs.
+    preserved: dict[str, list[dict]] = {t: [] for t in _APP_OWNED_TABLES}
     if os.path.exists(db_path):
         try:
             with get_conn(db_path, row_factory=sqlite3.Row) as old_conn:
                 old_conn.executescript(SCHEMA)
-                rows = old_conn.execute("SELECT * FROM jobs").fetchall()
-                preserved_jobs = [dict(r) for r in rows]
-                rows = old_conn.execute("SELECT * FROM ephemeris_views").fetchall()
-                preserved_ephemeris_views = [dict(r) for r in rows]
+                for table in _APP_OWNED_TABLES:
+                    try:
+                        rows = old_conn.execute(f"SELECT * FROM {table}").fetchall()
+                        preserved[table] = [dict(r) for r in rows]
+                    except sqlite3.OperationalError:
+                        pass
         except sqlite3.OperationalError:
             pass
 
@@ -396,6 +472,8 @@ def build_db(db_path: str, progress=None) -> int:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=OFF;")
         conn.execute("PRAGMA cache_size=100000;")
+        # Keep GROUP BY / sort spills on the DB's own (roomy) volume, not /tmp.
+        _set_temp_store_dir(conn, tmp_path)
         conn.executescript("DROP TABLE IF EXISTS frames; DROP TABLE IF EXISTS summaries; DROP TABLE IF EXISTS targets;")
         conn.executescript(SCHEMA)
         conn.execute("DROP INDEX IF EXISTS idx_frames_inst_date;")
@@ -445,55 +523,16 @@ def build_db(db_path: str, progress=None) -> int:
             (datetime.datetime.now().isoformat(),)
         )
 
-        # Restore preserved jobs so build-db doesn't wipe job history.
-        for job in preserved_jobs:
-            conn.execute(
-                """INSERT OR REPLACE INTO jobs
-                   (key, type, instrument, obsdate, target, state, returncode,
-                    elapsed, started_at, error_desc, run_type, params, run_id, run_name)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    job.get("key", ""),
-                    job.get("type", ""),
-                    job.get("instrument", ""),
-                    job.get("obsdate", ""),
-                    job.get("target", ""),
-                    job.get("state", ""),
-                    job.get("returncode"),
-                    job.get("elapsed", 0),
-                    job.get("started_at", 0.0),
-                    job.get("error_desc", ""),
-                    job.get("run_type", ""),
-                    job.get("params", ""),
-                    job.get("run_id", ""),
-                    job.get("run_name", ""),
-                ),
-            )
-
-        # Restore saved ephemeris view URLs so build-db doesn't wipe shareable
-        # reproducibility state.
-        for view in preserved_ephemeris_views:
-            conn.execute(
-                """INSERT OR REPLACE INTO ephemeris_views
-                   (slug, state_hash, state_json, targets_json, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?)""",
-                (
-                    view.get("slug", ""),
-                    view.get("state_hash", ""),
-                    view.get("state_json", "{}"),
-                    view.get("targets_json", "[]"),
-                    view.get("created_at") or datetime.datetime.now().isoformat(),
-                    view.get("updated_at") or datetime.datetime.now().isoformat(),
-                ),
-            )
+        # Restore every preserved app-owned table verbatim so build-db never
+        # wipes user notes, identification overrides, exposure calibration, job
+        # history, or saved ephemeris views.
+        for table in _APP_OWNED_TABLES:
+            _restore_table(conn, table, preserved.get(table) or [])
 
         conn.commit()
         conn.close()
     except BaseException:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+        _remove_sqlite_tmp(tmp_path)
         raise
 
     os.replace(tmp_path, db_path)
@@ -534,6 +573,8 @@ def ingest_date(db_path: str, instrument: str, obsdate: str, progress=None) -> i
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=OFF;")
         conn.execute("PRAGMA cache_size=100000;")
+        # Keep GROUP BY / sort spills on the DB's own (roomy) volume, not /tmp.
+        _set_temp_store_dir(conn, db_path)
         conn.executescript(SCHEMA)
 
         old_objects = {

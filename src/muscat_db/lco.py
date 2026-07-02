@@ -9,9 +9,14 @@ import hashlib
 import json
 import math
 import os
+import re
 import urllib.request
 import urllib.parse
 from pathlib import Path
+
+# A frame filename / path segment: letters, digits and the punctuation LCO uses
+# in archive names. Excludes "/" and "\" so a crafted payload can't traverse.
+_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._+:\-]+$")
 
 
 class LcoError(Exception):
@@ -144,6 +149,25 @@ def infer_archive_instrument(frame: dict) -> str:
     )
 
 
+def _safe_segment(value: str, kind: str) -> str:
+    """Return *value* if it is a single safe path segment, else raise.
+
+    Blocks the traversal vector where a crafted frame payload (filename,
+    DATE_OBS-derived obsdate, ...) escapes the download root via ``/`` or ``..``.
+    """
+    v = (value or "").strip()
+    if (
+        not v
+        or v in (".", "..")
+        or "/" in v
+        or "\\" in v
+        or ".." in v
+        or not _SAFE_SEGMENT_RE.match(v)
+    ):
+        raise LcoError(f"unsafe {kind}: {value!r}", status=400)
+    return v
+
+
 def frame_dest(instrument: str, obsdate: str, filename: str) -> Path:
     """Return the destination path for a downloaded frame."""
     lco_dir = os.environ.get("MUSCAT_LCO_DIR")
@@ -154,7 +178,37 @@ def frame_dest(instrument: str, obsdate: str, filename: str) -> Path:
         if not data_dir:
             raise LcoError("MUSCAT_LCO_DIR or MUSCAT_DATA_DIR must be set", status=503)
         root = Path(data_dir)
-    return root / instrument / obsdate / filename
+    # Validate every segment so a crafted frame payload can't traverse out of the
+    # download root (arbitrary file write via urlretrieve). Confirm the resolved
+    # path stays under the root as a final backstop.
+    instrument = _safe_segment(instrument, "instrument")
+    obsdate = _safe_segment(obsdate, "obsdate")
+    filename = _safe_segment(filename, "filename")
+    root = root.resolve()
+    dest = (root / instrument / obsdate / filename).resolve()
+    try:
+        dest.relative_to(root)
+    except ValueError as exc:
+        raise LcoError(f"unsafe frame path: {filename!r}", status=400) from exc
+    return dest
+
+
+def _validate_download_url(url: str) -> str:
+    """Only allow fetching over https from the LCO archive or its S3 backing.
+
+    The download endpoint hands the frame's ``url`` straight to ``urlretrieve``;
+    without this an arbitrary URL (or a ``file://`` path) turns the endpoint into
+    an SSRF / local-file-read primitive.
+    """
+    parsed = urllib.parse.urlparse(url or "")
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or not (
+        host == "archive-api.lco.global"
+        or host.endswith(".lco.global")
+        or host.endswith(".amazonaws.com")
+    ):
+        raise LcoError("refusing to download from untrusted URL", status=400, detail=url)
+    return url
 
 
 def download_frames(frames: list[dict], overwrite: bool = False) -> list[dict]:
@@ -191,6 +245,7 @@ def download_frames(frames: list[dict], overwrite: bool = False) -> list[dict]:
                 status["error"] = "missing download url"
                 continue
 
+            _validate_download_url(url)
             urllib.request.urlretrieve(url, dest)
             status["status"] = "downloaded"
 

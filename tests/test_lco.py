@@ -155,5 +155,47 @@ class LcoTest(unittest.TestCase):
         self.assertEqual(windows[1]["epoch"], 1)
         self.assertEqual(windows[2]["epoch"], 2)
 
+class FrameDestSecurityTest(unittest.TestCase):
+    """frame_dest / URL validation must block path traversal and SSRF."""
+
+    def setUp(self):
+        self._env = patch.dict(os.environ, {"MUSCAT_LCO_DIR": "/tmp/lco-root"}, clear=False)
+        self._env.start()
+
+    def tearDown(self):
+        self._env.stop()
+
+    def test_valid_frame_resolves_under_root(self):
+        dest = lco.frame_dest("sinistro", "230101", "cpt1m010-fa16-20230101-0123-e91.fits.fz")
+        self.assertEqual(
+            str(dest),
+            "/tmp/lco-root/sinistro/230101/cpt1m010-fa16-20230101-0123-e91.fits.fz",
+        )
+
+    def test_filename_traversal_rejected(self):
+        with self.assertRaises(lco.LcoError):
+            lco.frame_dest("sinistro", "230101", "../../../../etc/passwd")
+
+    def test_slash_in_filename_rejected(self):
+        with self.assertRaises(lco.LcoError):
+            lco.frame_dest("sinistro", "230101", "sub/dir/frame.fits")
+
+    def test_obsdate_traversal_rejected(self):
+        # A crafted DATE_OBS could otherwise inject "../.." via obsdate.
+        with self.assertRaises(lco.LcoError):
+            lco.frame_dest("sinistro", "../secret", "frame.fits")
+
+    def test_url_must_be_https_lco_or_s3(self):
+        for bad in ("http://archive-api.lco.global/x", "https://evil.example.com/x",
+                    "file:///etc/passwd", "", None):
+            with self.assertRaises(lco.LcoError):
+                lco._validate_download_url(bad)
+
+    def test_url_allows_archive_and_s3(self):
+        for ok in ("https://archive-api.lco.global/frames/1/",
+                   "https://archive-lco-global.s3.amazonaws.com/x?sig=1"):
+            self.assertEqual(lco._validate_download_url(ok), ok)
+
+
 if __name__ == "__main__":
     unittest.main()
