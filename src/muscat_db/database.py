@@ -92,7 +92,9 @@ CREATE TABLE IF NOT EXISTS targets (
     declination   TEXT,
     airmass_min   REAL,
     airmass_max   REAL,
-    is_identified INTEGER NOT NULL DEFAULT 1
+    is_identified INTEGER NOT NULL DEFAULT 1,
+    phot_status   TEXT NOT NULL DEFAULT 'none',
+    fit_status    TEXT NOT NULL DEFAULT 'none'
 );
 
 CREATE TABLE IF NOT EXISTS target_notes (
@@ -340,7 +342,34 @@ def _target_rows(conn: sqlite3.Connection, objects: set[str] | None = None) -> l
            GROUP BY object""",
         params,
     )
-    return [(*r[:8], *_unpack_coord(r[8]), r[9], r[10], r[11]) for r in cur.fetchall()]
+
+    from muscat_db import photometry as phot
+    from muscat_db import transit_fit as fit_mod
+
+    result = []
+    for r in cur.fetchall():
+        base_row = (*r[:8], *_unpack_coord(r[8]), r[9], r[10], r[11])
+
+        obj_name = r[0]
+        inst_dates_str = r[5]
+        date_to_inst = {d: i for d, i in _parse_inst_dates(inst_dates_str).items() if _is_obsdate(d)}
+
+        phot_status = "none"
+        fit_status = "none"
+        for d, inst in date_to_inst.items():
+            status = phot.get_photometry_status(inst, d, obj_name)
+            if status == "full":
+                phot_status = "full"
+            elif status == "test" and phot_status != "full":
+                phot_status = "test"
+
+            fit_out = fit_mod.get_fit_outputs(inst, d, obj_name)
+            if fit_out.get("has_any"):
+                fit_status = "full"
+
+        result.append((*base_row, phot_status, fit_status))
+
+    return result
 
 
 def _replace_target_rows(conn: sqlite3.Connection, objects: set[str]) -> None:
@@ -353,8 +382,8 @@ def _replace_target_rows(conn: sqlite3.Connection, objects: set[str]) -> None:
             """INSERT INTO targets
                (object, n_dates, n_frames, instruments, dates, inst_dates,
                 filters, total_exptime, ra, declination, airmass_min, airmass_max,
-                is_identified)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                is_identified, phot_status, fit_status)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             rows,
         )
 
@@ -555,8 +584,8 @@ def _populate_targets(conn: sqlite3.Connection) -> None:
             """INSERT INTO targets
                (object, n_dates, n_frames, instruments, dates, inst_dates,
                 filters, total_exptime, ra, declination, airmass_min, airmass_max,
-                is_identified)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                is_identified, phot_status, fit_status)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             rows,
         )
 
@@ -774,33 +803,18 @@ def _targets_from_conn(conn: sqlite3.Connection) -> list[dict]:
     cur = conn.execute(
         """SELECT t.object, t.n_dates, t.n_frames, t.instruments, t.dates, t.filters,
                   t.total_exptime, t.ra, t.declination, t.airmass_min, t.airmass_max,
-                  t.is_identified, COALESCE(n.note, ''), COALESCE(t.inst_dates, '')
+                  t.is_identified, COALESCE(n.note, ''), COALESCE(t.inst_dates, ''),
+                  COALESCE(t.phot_status, 'none'), COALESCE(t.fit_status, 'none')
            FROM targets t
            LEFT JOIN target_notes n ON n.object = t.object
            ORDER BY t.object COLLATE NOCASE"""
     )
     result = []
-    from muscat_db import photometry as phot
     for r in cur.fetchall():
-        # Keep only canonical YYMMDD obsdates; drop junk like '240129.org'.
         dates = sorted(d for d in set((r[4] or "").split(",")) if _is_obsdate(d)) if r[4] else []
         filters = sorted(f for f in set((r[5] or "").split(",")) if f) if r[5] else []
         total_s = r[6] or 0.0
         date_to_inst = {d: i for d, i in _parse_inst_dates(r[13]).items() if _is_obsdate(d)}
-        
-        phot_status = "none"
-        fit_status = "none"
-        from muscat_db import transit_fit as fit_mod
-        for d, inst in date_to_inst.items():
-            status = phot.get_photometry_status(inst, d, r[0])
-            if status == "full":
-                phot_status = "full"
-            elif status == "test" and phot_status != "full":
-                phot_status = "test"
-                
-            fit_out = fit_mod.get_fit_outputs(inst, d, r[0])
-            if fit_out.get("has_any"):
-                fit_status = "full"
 
         result.append({
             "object": r[0],
@@ -818,8 +832,8 @@ def _targets_from_conn(conn: sqlite3.Connection) -> list[dict]:
             "note": r[12] or "",
             "date_to_inst": date_to_inst,
             "filter_chips": _normalize_filters(filters),
-            "phot": phot_status,
-            "fit": fit_status,
+            "phot": r[14],
+            "fit": r[15],
         })
     return result
 
