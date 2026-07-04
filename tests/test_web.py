@@ -1173,6 +1173,13 @@ def test_toi_page_includes_boyle_payload(monkeypatch):
     assert '"ruwe":[1.01]' in r.text
     assert '"sector_periods":["2.19,2.19"]' in r.text
     assert "Boyle2026" in r.text
+    # Fast-rotator (P_rot < 10 d) filter chip and its Boyle+2026 provenance note.
+    # The filter itself runs client-side, but the chip markup, the note element,
+    # and the arXiv citation link are rendered server-side and must be present.
+    assert 'data-group="rot"' in r.text
+    assert 'data-key="fast"' in r.text
+    assert 'id="toi-rot-note"' in r.text
+    assert "arxiv.org/abs/2603.05586" in r.text
 
 
 def test_photometry_download_all_endpoints(mock_db, monkeypatch, tmp_path):
