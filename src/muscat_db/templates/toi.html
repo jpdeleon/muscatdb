@@ -71,6 +71,11 @@
   <span class="badge instrument-badge toi-chip" data-group="multi" data-key="4">4-planet</span>
   <span class="badge instrument-badge toi-chip" data-group="multi" data-key="5+">5+ planet</span>
 </div>
+<div class="chip-bar">
+  <span class="chip-label">Rotation:</span>
+  <span class="badge instrument-badge toi-chip" data-group="rot" data-key="fast" title="Host-star rotation period P_rot < 10 days (Boyle+2026)">Fast rotator (P<sub>rot</sub> &lt; 10 d)</span>
+</div>
+<p class="toi-meta" id="toi-rot-note" style="margin-top:0.25rem;"></p>
 
 <details id="toi-table-section" class="toi-section" open style="margin-top:1rem;">
   <summary>Catalog table</summary>
@@ -176,12 +181,19 @@
     if (teff < 7300) return 'F';
     return 'A+';
   }
+  function rotClassOf(p) {
+    // Fast rotators spin with P_rot < 10 d. Null P_rot (host star absent from
+    // the Boyle+2026 catalog) stays unclassified and never matches the chip.
+    if (p == null) return null;
+    return p < 10 ? 'fast' : 'slow';
+  }
 
   // Precompute derived per-row classifications once.
   const planetTags = new Array(N);   // array of tag-sets (as arrays)
   const sizeClass  = new Array(N);
   const starClass  = new Array(N);
   const multiClass = new Array(N);
+  const rotClass   = new Array(N);
 
   const ticCounts = {};
   for (let i = 0; i < N; i++) {
@@ -213,6 +225,7 @@
     planetTags[i] = planetTagsOf(r, p);
     sizeClass[i]  = sizeClassOf(r);
     starClass[i]  = starClassOf(TOI.steff[i]);
+    rotClass[i]   = rotClassOf(TOI.adopted_period[i]);
     const tic = TOI.tic[i];
     const m = tic ? (ticCounts[tic] || 1) : 1;
     multiClass[i] = multiplicityClassOf(m);
@@ -234,6 +247,7 @@
   const searchEl  = document.getElementById('toi-search');
   const countEl   = document.getElementById('toi-count');
   const capNoteEl = document.getElementById('toi-cap-note');
+  const rotNoteEl = document.getElementById('toi-rot-note');
   const tbodyEl   = document.getElementById('toi-tbody');
   const headLabels = document.getElementById('toi-head-labels');
   const headFilters = document.getElementById('toi-head-filters');
@@ -319,6 +333,7 @@
   const selectedStar = new Set();
   const selectedDisp = new Set();          // TFOPWG codes; '' matches the "Unset" chip
   const selectedMulti = new Set();
+  const selectedRot = new Set();           // 'fast' = P_rot < 10 d (Boyle+2026)
   let sortState = { key: null, dir: 0 };   // dir: 1 asc, -1 desc
 
   function buildColPredicates() {
@@ -342,6 +357,7 @@
     const useStar = selectedStar.size > 0;
     const useDisp = selectedDisp.size > 0;
     const useMulti = selectedMulti.size > 0;
+    const useRot = selectedRot.size > 0;
     const out = [];
     for (let i = 0; i < N; i++) {
       if (q) {
@@ -367,6 +383,9 @@
       }
       if (useMulti) {
         if (!selectedMulti.has(multiClass[i])) continue;
+      }
+      if (useRot) {
+        if (!selectedRot.has(rotClass[i])) continue;
       }
       out.push(i);
     }
@@ -619,6 +638,7 @@
       planet: Array.from(selectedPlanet), star: Array.from(selectedStar),
       disp: Array.from(selectedDisp),
       multi: Array.from(selectedMulti),
+      rot: Array.from(selectedRot),
       sort: sortState,
       plot: { x: selX.value, y: selY.value, color: selColor.value,
               logx: logXEl.checked, logy: logYEl.checked,
@@ -635,6 +655,7 @@
     (s.star || []).forEach(k => selectedStar.add(k));
     (s.disp || []).forEach(k => selectedDisp.add(k));
     (s.multi || []).forEach(k => selectedMulti.add(k));
+    (s.rot || []).forEach(k => selectedRot.add(k));
     chips.forEach(ch => {
       if (setForGroup(ch.dataset.group).has(keyForChip(ch))) ch.classList.add('active');
     });
@@ -677,7 +698,7 @@
     if (!clearEl) return;
     const hasSearch = !!searchEl.value.trim();
     const hasColFilters = colInputs.some(inp => !!inp.value.trim());
-    const hasChips = selectedPlanet.size > 0 || selectedStar.size > 0 || selectedDisp.size > 0 || selectedMulti.size > 0;
+    const hasChips = selectedPlanet.size > 0 || selectedStar.size > 0 || selectedDisp.size > 0 || selectedMulti.size > 0 || selectedRot.size > 0;
     clearEl.style.display = (hasSearch || hasColFilters || hasChips) ? 'inline-flex' : 'none';
   }
 
@@ -689,6 +710,7 @@
       selectedStar.clear();
       selectedDisp.clear();
       selectedMulti.clear();
+      selectedRot.clear();
       chips.forEach(ch => ch.classList.remove('active'));
       apply();
     });
@@ -699,6 +721,14 @@
     const idx = computeFiltered();
     lastIdx = idx;
     countEl.textContent = idx.length.toLocaleString() + ' / ' + N.toLocaleString() + ' objects';
+    if (rotNoteEl) {
+      let nRot = 0;
+      for (let k = 0; k < idx.length; k++) { if (TOI.adopted_period[idx[k]] != null) nRot++; }
+      rotNoteEl.innerHTML =
+        'P<sub>rot</sub> data from <a href="https://arxiv.org/abs/2603.05586" target="_blank" rel="noopener">Boyle+2026</a>' +
+        ' (rotation periods measured from TESS light curves) — only <strong>' + nRot.toLocaleString() +
+        '</strong> of ' + idx.length.toLocaleString() + ' filtered targets have P<sub>rot</sub> data.';
+    }
     updateSortIndicators();
     renderTable(idx);
     refreshCsv(idx);
@@ -714,7 +744,7 @@
   searchEl.addEventListener('input', applySoon);
   colInputs.forEach(inp => inp.addEventListener('input', applySoon));
   function setForGroup(group) {
-    return group === 'planet' ? selectedPlanet : group === 'star' ? selectedStar : group === 'multi' ? selectedMulti : selectedDisp;
+    return group === 'planet' ? selectedPlanet : group === 'star' ? selectedStar : group === 'multi' ? selectedMulti : group === 'rot' ? selectedRot : selectedDisp;
   }
   function keyForChip(ch) {
     // The "Unset" disposition chip uses a sentinel so the attribute is non-empty.
