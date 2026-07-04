@@ -4,6 +4,7 @@ import csv
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import datetime
@@ -15,6 +16,8 @@ from contextlib import contextmanager
 from muscat_db.instruments import INSTRUMENTS, OBSLOG_BASE
 from muscat_db.cache import clear_all_caches
 from muscat_db.coord import CoordRepr, unpack as _unpack_coord
+
+logger = logging.getLogger(__name__)
 
 
 def format_elapsed(seconds: int) -> str:
@@ -343,33 +346,44 @@ def _target_rows(conn: sqlite3.Connection, objects: set[str] | None = None) -> l
         params,
     )
 
-    from muscat_db import photometry as phot
-    from muscat_db import transit_fit as fit_mod
-
     result = []
     for r in cur.fetchall():
         base_row = (*r[:8], *_unpack_coord(r[8]), r[9], r[10], r[11])
-
-        obj_name = r[0]
-        inst_dates_str = r[5]
-        date_to_inst = {d: i for d, i in _parse_inst_dates(inst_dates_str).items() if _is_obsdate(d)}
-
-        phot_status = "none"
-        fit_status = "none"
-        for d, inst in date_to_inst.items():
-            status = phot.get_photometry_status(inst, d, obj_name)
-            if status == "full":
-                phot_status = "full"
-            elif status == "test" and phot_status != "full":
-                phot_status = "test"
-
-            fit_out = fit_mod.get_fit_outputs(inst, d, obj_name)
-            if fit_out.get("has_any"):
-                fit_status = "full"
-
+        phot_status, fit_status = _aggregate_target_status(r[0], r[5])
         result.append((*base_row, phot_status, fit_status))
 
     return result
+
+
+def _aggregate_target_status(obj: str, inst_dates_str: str) -> tuple[str, str]:
+    """Aggregate (phot_status, fit_status) across all of a target's observation
+    dates.
+
+    A target is observed on many (instrument, date) pairs; its status is the
+    strongest reduction found on *any* of them — ``"full"`` if any date has a
+    full photometry reduction / fit output, else ``"test"`` (phot only), else
+    ``"none"``. This is the single source of truth shared by the daily build
+    (:func:`_target_rows`) and the per-job live refresh
+    (:func:`refresh_target_status`), so both agree on what a status means.
+    """
+    from muscat_db import photometry as phot
+    from muscat_db import transit_fit as fit_mod
+
+    date_to_inst = {d: i for d, i in _parse_inst_dates(inst_dates_str).items() if _is_obsdate(d)}
+
+    phot_status = "none"
+    fit_status = "none"
+    for d, inst in date_to_inst.items():
+        status = phot.get_photometry_status(inst, d, obj)
+        if status == "full":
+            phot_status = "full"
+        elif status == "test" and phot_status != "full":
+            phot_status = "test"
+
+        if fit_mod.has_fit_outputs(inst, d, obj):
+            fit_status = "full"
+
+    return phot_status, fit_status
 
 
 def _replace_target_rows(conn: sqlite3.Connection, objects: set[str]) -> None:
@@ -1171,3 +1185,36 @@ def get_last_build_date(db_path: str) -> str:
         return datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
     except OSError:
         return datetime.date.today().strftime("%Y-%m-%d")
+
+
+def refresh_target_status(obj: str) -> None:
+    """Recompute and persist a single target's phot_status/fit_status immediately.
+
+    Called by photometry.py / transit_fit.py after a job reaches a terminal state
+    so the Targets page reflects new outputs without waiting for the daily
+    ``build_db`` cron. Aggregates across *all* of the target's observation dates
+    (via :func:`_aggregate_target_status`), so a reduction finishing on one date
+    never clobbers a "full" status earned on another.
+
+    Best-effort: a failed refresh (e.g. read-only DB, unknown target) is logged
+    but never propagated, so it cannot break the surrounding job sync.
+    """
+    try:
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(inst_dates, '') FROM targets WHERE object = ?",
+                (obj,),
+            ).fetchone()
+            if row is None:
+                # No target row yet (e.g. unidentified object, or built after the
+                # last daily run). Nothing to update until the next build_db.
+                return
+            phot_status, fit_status = _aggregate_target_status(obj, row[0])
+            conn.execute(
+                "UPDATE targets SET phot_status = ?, fit_status = ? WHERE object = ?",
+                (phot_status, fit_status, obj),
+            )
+            conn.commit()
+        clear_all_caches()
+    except sqlite3.Error:
+        logger.debug("failed to refresh target status for %s", obj, exc_info=True)

@@ -153,11 +153,25 @@ def _render(name: str, **kwargs) -> str:
 
 def _db_mtime(db: str):
     """Cache key for the DB file. Note edits and `build-db` both rewrite the
-    SQLite file, bumping its mtime, so this auto-invalidates the index cache."""
+    SQLite file, bumping its mtime, so this auto-invalidates the index cache.
+
+    The DB runs in WAL mode, where a commit is durable once it lands in the
+    `-wal` sidecar file; the main file's mtime only advances when SQLite
+    happens to checkpoint the WAL back into it (e.g. on the last connection
+    closing), which frequently does not happen while the server has
+    concurrent requests open. Folding the `-wal` file's mtime/size into the
+    key ensures every commit invalidates the cache, not just checkpoints."""
     try:
-        return os.stat(db).st_mtime_ns
+        stat = os.stat(db)
+        key = (stat.st_mtime_ns, stat.st_size)
     except OSError:
         return None
+    try:
+        wal_stat = os.stat(db + "-wal")
+        key = (*key, wal_stat.st_mtime_ns, wal_stat.st_size)
+    except OSError:
+        pass
+    return key
 
 
 # Rendering the ~2.85 MB targets page costs ~1.3s. Cache the rendered HTML
@@ -258,8 +272,7 @@ def _get_datasets_for_normalized_target(db: str, normalized_name: str) -> tuple[
             status = phot.get_photometry_status(inst, date, obj_name)
             phot_status = "full" if status == "full" else ("test" if status == "test" else "none")
 
-            fit_out = fit.get_fit_outputs(inst, date, obj_name)
-            fit_status = "full" if fit_out.get("has_any") else "none"
+            fit_status = "full" if fit.has_fit_outputs(inst, date, obj_name) else "none"
 
             stats = obs_stats.get((inst, date, obj_name), {})
             dataset = {
@@ -3003,7 +3016,19 @@ def api_ephemeris_target_info(target: str):
         all_jobs.extend(orphan_fits)
         
         norm_t = _normalize_target_name(target)
-        completed = [j for j in all_jobs if j["type"] == "transit_fit" and j["state"] == "done" and _normalize_target_name(j["target"]) == norm_t]
+        # A job can stay "done" in the DB after its fit outputs are deleted from
+        # disk (e.g. a re-run under a new run_id, or manual cleanup). Only surface
+        # datasets whose outputs still exist so the ephemeris table never links to
+        # a fit that no longer exists.
+        completed = [
+            j for j in all_jobs
+            if j["type"] == "transit_fit"
+            and j["state"] == "done"
+            and _normalize_target_name(j["target"]) == norm_t
+            and fit.get_fit_outputs(
+                j["instrument"], j["obsdate"], j["target"], (j.get("run_id") or "") or None
+            ).get("has_any")
+        ]
     
     # 1. Query all planets from catalog
     nasa_ephem = _query_target_planets_nasa(target)

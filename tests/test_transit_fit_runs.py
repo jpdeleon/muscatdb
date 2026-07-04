@@ -137,6 +137,46 @@ class TestRunDiscovery:
         empty = fit.get_fit_outputs("sinistro", "250710", "HIP67522", run_id="does-not-exist")
         assert empty["has_any"] is False
 
+    def test_has_fit_outputs_detects_run_scoped_only(self, monkeypatch, tmp_path):
+        """Regression: a fit written only to ``{target}/{run_id}/out/`` (no legacy
+        ``{target}/out/``) must be reported present. ``get_fit_outputs(None)``
+        checks only the legacy layout, so the Targets/target pages reported Fit
+        status 'none' for every run-scoped fit."""
+        monkeypatch.setenv("MUSCAT_TIMER_DIR", str(tmp_path))
+        tdir = tmp_path / "muscat" / "260123" / "HAT-P-32b"
+        _make_run(tdir, "default", "", "", "default", 1_000_100)
+
+        assert fit.has_fit_outputs("muscat", "260123", "HAT-P-32b") is True
+        # The legacy-only probe still misses it, which is exactly the old bug.
+        assert fit.get_fit_outputs("muscat", "260123", "HAT-P-32b")["has_any"] is False
+        # A target with nothing on disk stays False.
+        assert fit.has_fit_outputs("muscat", "260123", "NoSuchTarget") is False
+
+    def test_get_fit_outputs_busts_cache_when_outputs_appear(self, monkeypatch, tmp_path):
+        """Regression: outputs written after a first (empty) read must be seen on
+        the next read *without* a manual cache clear — the run dir mtime is part
+        of the cache key. The old flat-TTL cache returned the stale 'empty' dict
+        for up to 300s, freezing the Targets/Transit-fit Fit status after a job."""
+        monkeypatch.setenv("MUSCAT_TIMER_DIR", str(tmp_path))
+        rdir = tmp_path / "sinistro" / "250710" / "HIP67522" / "lsc-g"
+        rdir.mkdir(parents=True)
+        os.utime(rdir, (1_000_000, 1_000_000))
+
+        fit._fit_outputs_cache.clear()
+        before = fit.get_fit_outputs("sinistro", "250710", "HIP67522", run_id="lsc-g")
+        assert before["has_any"] is False
+
+        # The fit job finishes and writes its outputs; force a newer dir mtime so
+        # the assertion is deterministic across coarse-resolution filesystems.
+        (rdir / "out").mkdir()
+        (rdir / "out" / "fit.png").write_bytes(b"\x89PNG\r\n")
+        os.utime(rdir / "out", (1_000_200, 1_000_200))
+        os.utime(rdir, (1_000_200, 1_000_200))
+
+        after = fit.get_fit_outputs("sinistro", "250710", "HIP67522", run_id="lsc-g")
+        assert after["has_any"] is True
+        assert any(p["file"] == "fit.png" for p in after["plots"])
+
 
 # ── DB run_id column ───────────────────────────────────────────────────────
 

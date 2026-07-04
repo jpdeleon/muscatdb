@@ -2660,16 +2660,16 @@
 })();
 </script>
 <div style="text-align:center; margin:2em 0; display: flex; justify-content: center; gap: 1rem; align-items: center;">
-  <a href="#" style="display:inline-block; padding:0.5em 2em; background:#0056b3; color:#fff; text-decoration:none; border-radius:4px;">Back to Top</a>
+  <a href="#" style="display:inline-block; padding:0.5em 2em; background:#0056b3; color:#fff; border:1px solid #0056b3; text-decoration:none; border-radius:4px;">Back to Top</a>
   {% if sel_target %}
-    <a href="/target?name={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; line-height: 1.2;">To Target</a>
+    <a href="/target?name={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To Target</a>
   {% endif %}
-  <a href="/jobs" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Jobs</a>
+  <a href="/jobs" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To Jobs</a>
   {% if sel_inst and sel_date and sel_target %}
-    <a href="/photometry?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Photometry</a>
+    <a href="/photometry?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To Photometry</a>
   {% else %}
-    <a href="/photometry" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Photometry</a>
+    <a href="/photometry" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To Photometry</a>
   {% endif %}
-  <a href="/lco/schedule" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To LCO</a>
+  <a href="/lco/schedule" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To LCO</a>
 </div>
 {% endblock %}

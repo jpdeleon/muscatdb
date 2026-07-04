@@ -40,7 +40,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from muscat_db import jobs
+from muscat_db import jobs, database
 from muscat_db.job_store import get_job_store
 from muscat_db.instruments import INSTRUMENTS
 from muscat_db.cache import register_cache
@@ -808,38 +808,84 @@ _phot_status_cache = register_cache(ttl=300.0)
 
 
 def get_photometry_status(inst: str, date: str, target: str) -> str:
-    """Determine the status of photometry for a target: none, test, or full.
+    """Determine the strongest photometry status across all of a target's runs:
+    ``none``, ``test``, or ``full``.
 
-    Uses the results-directory mtime as the cache key so the result is
-    automatically invalidated whenever files are created or removed there,
-    while still benefiting from the global ``clear_all_caches()`` call that
-    fires after every ``build-db`` run.
+    Reductions land either in the legacy ``{inst}/{date}/`` directory or in a
+    per-run ``{inst}/{date}/_runs/{target}/{run_id}/`` subdirectory. The status
+    is aggregated over *every* run (via :func:`list_photometry_runs`) so a modern
+    run-scoped reduction is not missed — checking only the legacy dir made the
+    Targets/target pages report ``none`` for run-scoped photometry.
+
+    The combined mtime of the legacy dir and the target's ``_runs`` subtree is
+    the cache key, so the result auto-invalidates whenever any run's products are
+    created or removed, on top of the global ``clear_all_caches()`` fired after
+    every ``build-db`` run.
     """
-    rdir = results_dir(inst, date)
-    try:
-        mtime = rdir.stat().st_mtime
-    except OSError:
-        return "none"
+    return _get_status_mtime(inst, date, target, _photometry_status_mtime(inst, date, target))
 
-    return _get_status_mtime(inst, date, target, mtime)
+
+def _photometry_status_mtime(inst: str, date: str, target: str) -> float:
+    """Max mtime across the legacy results dir and the target's ``_runs`` subtree
+    (one level deep), so the status cache busts when any run writes or removes
+    products under ``_runs/{target}/{run_id}/``."""
+    mtime = 0.0
+    base = results_dir(inst, date)
+    try:
+        mtime = max(mtime, base.stat().st_mtime)
+    except OSError:
+        pass
+    try:
+        runs_root = base / _RUNS_DIR_NAME / _target_dir_name(target)
+    except ValueError:
+        return mtime
+    try:
+        mtime = max(mtime, runs_root.stat().st_mtime)
+        for d in runs_root.iterdir():
+            try:
+                mtime = max(mtime, d.stat().st_mtime)
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return mtime
 
 
 @_phot_status_cache
 def _get_status_mtime(inst: str, date: str, target: str, mtime: float) -> str:
     """Inner cached worker keyed on (inst, date, target, mtime)."""
-    rdir = results_dir(inst, date)
-    return _calculate_photometry_status(inst, date, target, rdir)
+    return _aggregate_photometry_status(inst, date, target)
 
 
-def _calculate_photometry_status(inst: str, date: str, target: str, rdir: Path) -> str:
-    out = list_outputs(inst, date, target)
-    if not out.get("has_any"):
+def _aggregate_photometry_status(inst: str, date: str, target: str) -> str:
+    """Strongest status over all of a target's runs: ``full`` if any run has a
+    full reduction, else ``test`` if any run has products, else ``none``."""
+    runs, run_outputs = list_photometry_runs(inst, date, target)
+    best = "none"
+    for run in runs:
+        key = None if run.is_legacy else run.run_id
+        outputs = run_outputs.get(key)
+        if not outputs or not outputs.get("has_any"):
+            continue
+        rdir = run_output_dir(inst, date, target, key)
+        status = _calculate_photometry_status(target, rdir, outputs)
+        if status == "full":
+            return "full"
+        if status == "test":
+            best = "test"
+    return best
+
+
+def _calculate_photometry_status(target: str, rdir: Path, outputs: dict) -> str:
+    """Classify one run's products as ``full``/``test``/``none`` from its
+    ``list_outputs`` result (``outputs``) and its output directory (``rdir``)."""
+    if not outputs.get("has_any"):
         return "none"
 
     # Fallback/Optimization: Check CSV files. If any CSV has more than 15 lines, it is a full run.
     csv_found = False
     max_rows = 0
-    for band_data in out.get("bands", {}).values():
+    for band_data in outputs.get("bands", {}).values():
         csv_info = band_data.get("csv")
         if csv_info:
             csv_path = rdir / csv_info["file"]
@@ -1469,6 +1515,10 @@ _TERMINAL_LOG_MARKERS = (
     "photometry FAILED",
 )
 _PARTIAL_FAILURE_MARKER = "photometry PARTIAL FAILURE"
+# prose logs this only after every band's outputs are written, so it is a
+# reliable proxy for "the reduction finished successfully" even when the tracked
+# parent was lost/killed (server --reload, watchdog) before muscat-db saw it exit.
+_SUCCESS_MARKER = "photometry SUCCEEDED"
 
 
 def _finalize_config() -> jobs.FinalizeConfig:
@@ -1480,6 +1530,7 @@ def _finalize_config() -> jobs.FinalizeConfig:
         grace_terminal_s=_FINALIZE_GRACE_TERMINAL_S,
         terminal_markers=_TERMINAL_LOG_MARKERS,
         partial_failure_marker=_PARTIAL_FAILURE_MARKER,
+        success_marker=_SUCCESS_MARKER,
     )
 
 
@@ -1496,6 +1547,10 @@ def _terminal_job_state(returncode: int, cancelled: bool, log_path_: Path | None
 
 def _log_has_terminal_marker(path: Path | None) -> bool:
     return jobs.log_has_terminal_marker(path, _finalize_config())
+
+
+def _log_has_success(path: Path | None) -> bool:
+    return jobs.log_has_success(path, _finalize_config())
 
 
 def _finalize_grace_s(log_path_: Path | None) -> int:
@@ -1841,6 +1896,12 @@ def sync_jobs() -> None:
                 run_id=job.run_id,
             )
 
+            # A terminal transition may have produced new outputs; refresh the
+            # target's persisted Phot/Fit status so the Targets page reflects it
+            # on the next refresh instead of waiting for the daily build_db cron.
+            if persist_state in ("done", "error", "cancelled"):
+                database.refresh_target_status(job.target)
+
         for db_key in running_keys:
             _, rest = db_key.split(":", 1)
             parts = rest.split("/")
@@ -1855,18 +1916,28 @@ def sync_jobs() -> None:
                     started_at = j["started_at"]
                     elapsed = j["elapsed"]
                     break
+            # The tracked parent is gone (server --reload / restart lost _JOBS),
+            # but prose's detached workers run independently and may well have
+            # finished. Trust the log's success marker over the lost parent so a
+            # completed reduction is not falsely reported as "exited with code -1".
+            lp = log_path(inst, date, target, run_id)
+            if _log_has_success(lp) and not _log_has_partial_failure(lp):
+                lost_state, lost_rc, lost_desc = "done", 0, ""
+            else:
+                lost_state, lost_rc, lost_desc = "error", -1, "Process lost (server restart)"
             store.save(
                 type_="photometry",
                 inst=inst,
                 date=date,
                 target=target,
-                state="error",
-                returncode=-1,
+                state=lost_state,
+                returncode=lost_rc,
                 elapsed=elapsed,
                 started_at=started_at,
-                error_desc="Process lost (server restart)",
+                error_desc=lost_desc,
                 run_id=run_id,
             )
+            database.refresh_target_status(target)
 
         # Launch pending full jobs if capacity allows
         if _count_running_full() < _MAX_FULL_JOBS:
