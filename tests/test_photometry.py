@@ -412,6 +412,33 @@ class TestListOutputs:
         status = phot.get_photometry_status(INST, DATE, TARGET)
         assert status == "test"
 
+    def test_get_photometry_status_detects_run_scoped_only(self, prose_dir):
+        """Regression: photometry written *only* to a
+        ``_runs/<target>/<run_id>/`` subdir (no legacy dir) must still be
+        detected. Aggregating only the legacy dir made the Targets/target pages
+        report 'none' for every modern run-scoped reduction."""
+        target = "RUN-ONLY"  # not seeded in the legacy dir by the fixture
+        rdir = _make_run_outputs(prose_dir, "default", target=target)
+        bstem = f"{target}_{INST}_gp_{DATE}"
+        (rdir / (bstem + ".csv")).write_text(
+            "BJD_TDB,Flux,Flux_Err\n" + "\n".join("2460807.84,1.0001,0.0019" for _ in range(20))
+        )
+        assert phot.get_photometry_status(INST, DATE, target) == "full"
+
+    def test_get_photometry_status_full_wins_across_runs(self, prose_dir):
+        """A full run anywhere makes the target full even if another run is only a
+        stub, and the result is not clobbered by run iteration order."""
+        target = "MULTI-RUN"
+        # A stub run (short CSV, no full log) plus a full run (long CSV).
+        stub = _make_run_outputs(prose_dir, "stub", target=target)
+        (stub / "run.log").write_text("--test_run option enabled\n")
+        full = _make_run_outputs(prose_dir, "full", target=target)
+        bstem = f"{target}_{INST}_gp_{DATE}"
+        (full / (bstem + ".csv")).write_text(
+            "BJD_TDB,Flux,Flux_Err\n" + "\n".join("2460807.84,1.0001,0.0019" for _ in range(20))
+        )
+        assert phot.get_photometry_status(INST, DATE, target) == "full"
+
 
 # ── safe file serving ────────────────────────────────────────────────────────
 

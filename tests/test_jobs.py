@@ -62,12 +62,13 @@ class _FakeProc:
         return self._rc
 
 
-def _cfg(grace_s=8, grace_terminal_s=2, markers=("DONE",), partial=None):
+def _cfg(grace_s=8, grace_terminal_s=2, markers=("DONE",), partial=None, success=None):
     return jobs.FinalizeConfig(
         grace_s=grace_s,
         grace_terminal_s=grace_terminal_s,
         terminal_markers=markers,
         partial_failure_marker=partial,
+        success_marker=success,
     )
 
 
@@ -129,6 +130,50 @@ class TestResolveJobState:
         state, _rc, terminal = jobs.resolve_job_state(
             job, _cfg(grace_s=0, partial="PARTIAL FAILURE")
         )
+        assert state == "error" and terminal is True
+
+    def test_success_marker_overrides_lost_parent(self, tmp_path):
+        """A non-zero/lost parent (e.g. server --reload, SIGHUP -> rc -1) must be
+        reported 'done' when the log shows the reduction succeeded, because the
+        real work runs in detached workers independent of the tracked parent."""
+        job, log = _make_job(tmp_path, rc=-1)
+        with open(log, "a") as f:
+            f.write("INFO: photometry SUCCEEDED: 4/4 bands (1004s elapsed)\n")
+        state, rc, terminal = jobs.resolve_job_state(
+            job, _cfg(grace_s=0, success="photometry SUCCEEDED")
+        )
+        assert (state, rc, terminal) == ("done", -1, True)
+
+    def test_nonzero_exit_without_success_marker_still_error(self, tmp_path):
+        """Regression: with a success marker configured but absent from the log,
+        a non-zero exit stays an error (the marker only *upgrades* real successes)."""
+        job, log = _make_job(tmp_path, rc=-1)
+        with open(log, "a") as f:
+            f.write("INFO: crashed before finishing\n")
+        state, _rc, terminal = jobs.resolve_job_state(
+            job, _cfg(grace_s=0, success="photometry SUCCEEDED")
+        )
+        assert state == "error" and terminal is True
+
+    def test_partial_failure_beats_success_marker(self, tmp_path):
+        """If both markers appear, partial failure wins (do not report success)."""
+        job, log = _make_job(tmp_path, rc=-1)
+        with open(log, "a") as f:
+            f.write("INFO: photometry SUCCEEDED: 3/4 bands\n")
+            f.write("ERROR: photometry PARTIAL FAILURE: 3/4 bands\n")
+        state, _rc, terminal = jobs.resolve_job_state(
+            job,
+            _cfg(grace_s=0, partial="photometry PARTIAL FAILURE", success="photometry SUCCEEDED"),
+        )
+        assert state == "error" and terminal is True
+
+    def test_success_marker_ignored_when_not_configured(self, tmp_path):
+        """Pipelines without a success_marker (e.g. transit-fit) keep the parent
+        return code authoritative even if the success text happens to be logged."""
+        job, log = _make_job(tmp_path, rc=-1)
+        with open(log, "a") as f:
+            f.write("INFO: photometry SUCCEEDED: 4/4 bands\n")
+        state, _rc, terminal = jobs.resolve_job_state(job, _cfg(grace_s=0))  # success=None
         assert state == "error" and terminal is True
 
     def test_cancelled_finalizes_immediately(self, tmp_path):

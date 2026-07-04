@@ -146,12 +146,20 @@ class FinalizeConfig:
       decided. Any of them shrinks the quiescence window to ``grace_terminal_s``.
     - ``partial_failure_marker``: a log substring that turns a zero-exit run into
       the ``error`` state (photometry partial runs). ``None`` disables the mapping.
+    - ``success_marker``: a log substring the pipeline emits only after all real
+      work has succeeded (photometry writes it last, after every output file).
+      When present it makes success authoritative over a non-zero/lost parent
+      return code — the reduction runs in detached workers that outlive and are
+      independent of the tracked parent, so a killed/reloaded/lost parent must
+      not override a logged success. ``None`` disables the mapping (the parent's
+      return code stays authoritative, e.g. transit-fit).
     """
 
     grace_s: int
     grace_terminal_s: int
     terminal_markers: tuple[str, ...]
     partial_failure_marker: str | None = None
+    success_marker: str | None = None
 
 
 def tail(path: Path, n: int = 200) -> str:
@@ -182,6 +190,14 @@ def log_has_partial_failure(path: Path | None, cfg: FinalizeConfig) -> bool:
     return cfg.partial_failure_marker in tail(path, n=1000)
 
 
+def log_has_success(path: Path | None, cfg: FinalizeConfig) -> bool:
+    """True when the log records a successful result line. Always False when the
+    pipeline defines no success marker (its parent return code stays authoritative)."""
+    if cfg.success_marker is None or path is None or not path.is_file():
+        return False
+    return cfg.success_marker in tail(path, n=1000)
+
+
 def finalize_grace_s(path: Path | None, cfg: FinalizeConfig) -> int:
     """Effective finalize quiescence window for a log: the short terminal window
     once a result line is logged, else the conservative default. The ``min``
@@ -210,14 +226,23 @@ def terminal_job_state(
     log_path: Path | None,
     cfg: FinalizeConfig,
 ) -> str:
-    """Map process completion to a terminal state, treating a logged partial
-    failure as an error even on a zero exit."""
+    """Map process completion to a terminal state.
+
+    Two log markers override the raw parent return code:
+
+    - a logged *partial failure* is an error even on a zero exit; and
+    - a logged *success* is a success even on a non-zero/lost parent, because the
+      real work runs in detached workers that outlive the tracked parent (a
+      ``--reload`` restart, watchdog, or SIGHUP can leave the parent non-zero
+      while the reduction completed and wrote every output). Partial failure
+      wins over success when both somehow appear.
+    """
     if cancelled:
         return "cancelled"
-    if returncode != 0:
-        return "error"
     if log_has_partial_failure(log_path, cfg):
         return "error"
+    if returncode != 0:
+        return "done" if log_has_success(log_path, cfg) else "error"
     return "done"
 
 

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import IO
 import yaml
 
-from muscat_db import jobs
+from muscat_db import jobs, database
 from muscat_db.job_store import get_job_store
 from muscat_db import __meta__, __muscatdb_version__, __version__
 from muscat_db.instruments import INSTRUMENTS
@@ -1608,9 +1608,51 @@ def cancel_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
 _fit_outputs_cache = register_cache(ttl=300.0)
 
 
-@_fit_outputs_cache
+def has_fit_outputs(inst: str, date: str, target: str) -> bool:
+    """True when *any* transit-fit run (legacy or named) has produced outputs.
+
+    Fits are written to either the legacy ``{target}/out/`` directory or a
+    per-run ``{target}/{run_id}/out/`` subdirectory. Checking only the legacy
+    layout via ``get_fit_outputs(run_id=None)`` misses every modern run and made
+    the Targets/target pages report Fit status ``none`` for run-scoped fits.
+    Delegates to :func:`list_fit_runs`, which enumerates both layouts and only
+    counts runs that actually hold outputs.
+    """
+    return bool(list_fit_runs(inst, date, target))
+
+
 def get_fit_outputs(inst: str, date: str, target: str, run_id: str | None = None) -> dict:
-    """Check and retrieve output files, plots, and summary values from completed run."""
+    """Check and retrieve output files, plots, and summary values from a completed run.
+
+    The run directory's (and its ``out/`` subdir's) mtime is folded into the
+    cache key so the result auto-invalidates the moment fit outputs are written
+    or removed — mirroring :func:`photometry.get_photometry_status` — instead of
+    lingering for up to the cache TTL after a job finishes. This keeps the
+    Targets and Transit-fit pages' Fit status live and lets
+    :func:`database.refresh_target_status` persist an accurate ``fit_status``.
+    """
+    try:
+        rdir = fit_output_dir(inst, date, target, run_id or None)
+    except ValueError:
+        # No resolvable run dir (bad run_id / target): key on a stable sentinel;
+        # the inner worker re-raises→handles the ValueError and returns "empty".
+        return _get_fit_outputs_mtime(inst, date, target, run_id, -1.0)
+
+    mtime = 0.0
+    for d in (rdir, rdir / "out"):
+        try:
+            mtime = max(mtime, d.stat().st_mtime)
+        except OSError:
+            pass
+    return _get_fit_outputs_mtime(inst, date, target, run_id, mtime)
+
+
+@_fit_outputs_cache
+def _get_fit_outputs_mtime(
+    inst: str, date: str, target: str, run_id: str | None, _cache_mtime: float
+) -> dict:
+    """Inner cached worker. ``_cache_mtime`` participates only in the cache key
+    (see :func:`get_fit_outputs`) and is otherwise unused."""
     outputs = {
         "has_any": False,
         "plots": [],
@@ -1978,6 +2020,12 @@ def sync_jobs() -> None:
                 run_name=job.run_name,
             )
 
+            # A terminal transition may have produced new fit outputs; refresh the
+            # target's persisted Phot/Fit status so the Targets page reflects it
+            # on the next refresh instead of waiting for the daily build_db cron.
+            if persist_state in ("done", "error", "cancelled"):
+                database.refresh_target_status(job.target)
+
         for db_key in running_keys:
             # Read identity from the DB row's columns (robust to run_id in the key).
             row = next((j for j in db_jobs if j["key"] == db_key), None)
@@ -2016,6 +2064,7 @@ def sync_jobs() -> None:
                     started_at=row["started_at"],
                     error_desc=""
                 )
+                database.refresh_target_status(target)
             elif rdir is not None and _detect_process_running(rdir):
                 # Process is still running on the system, leave state as "running"
                 continue
@@ -2032,6 +2081,7 @@ def sync_jobs() -> None:
                     started_at=row["started_at"],
                     error_desc="Process lost (server restart)"
                 )
+                database.refresh_target_status(target)
 
         # Launch pending full jobs if capacity allows
         if _count_running_full() < _MAX_FULL_JOBS:
