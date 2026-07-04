@@ -658,6 +658,10 @@
             <input type="checkbox" id="opt-use_custom_optimizer" checked>
             <label for="opt-use_custom_optimizer">Custom optimizer <span class="help-tooltip" title="Use timer's custom MAP optimizer instead of PyMC's default for the initial solution. Default on.">?</span></label>
           </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-secondary_eclipse">
+            <label for="opt-secondary_eclipse">Secondary eclipse <span class="help-tooltip" title="Fit a secondary eclipse (at phase 0.5) instead of a primary transit. Default off.">?</span></label>
+          </div>
           <details class="opt-collapse" open style="grid-column: 1 / -1;">
             <summary>⚙️ Run Mode <span class="help-tooltip" title="Choose whether to start a new fit or continue sampling from previous results.">?</span></summary>
             <div style="display: flex; gap: 1.5rem; align-items: center;">
@@ -967,6 +971,7 @@
       cores: val('opt-cores'),
       include_mean: chk('opt-include_mean') ? 'true' : 'false',
       use_custom_optimizer: chk('opt-use_custom_optimizer') ? 'true' : 'false',
+      secondary_eclipse: chk('opt-secondary_eclipse') ? 'true' : 'false',
       spline: chk('opt-spline') ? 'true' : 'false',
       spline_knots: val('opt-spline_knots'),
       add_bias: chk('opt-add_bias') ? 'true' : 'false',
@@ -1616,7 +1621,7 @@
       }
     });
 
-    ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset',
+    ['include_mean','use_custom_optimizer','secondary_eclipse','spline','add_bias','quadratic','clip','chunk_offset',
      'use_gp','gp_per_dataset_log_amp','gp_per_dataset_log_scale',
      'include_bump','chromatic_bump',
      'include_flare','chromatic_flare',
@@ -1703,7 +1708,7 @@
                          'opt-fit_basis':'duration'};
       Object.keys(numDefaults).forEach(function (id) { var el = document.getElementById(id); if (el) el.value = numDefaults[id]; });
 
-      var checkDefaults = {'opt-include_mean':true,'opt-use_custom_optimizer':true,'opt-spline':false,
+      var checkDefaults = {'opt-include_mean':true,'opt-use_custom_optimizer':true,'opt-secondary_eclipse':false,'opt-spline':false,
                            'opt-add_bias':false,'opt-quadratic':false,'opt-clip':false,'opt-chunk_offset':false,
                            'opt-use_gp':false,'opt-gp_per_dataset_log_amp':false,'opt-gp_per_dataset_log_scale':false,
                            'opt-include_bump':false,'opt-chromatic_bump':false,
@@ -1761,7 +1766,7 @@
           }
         });
 
-        ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset',
+        ['include_mean','use_custom_optimizer','secondary_eclipse','spline','add_bias','quadratic','clip','chunk_offset',
          'use_gp','gp_per_dataset_log_amp','gp_per_dataset_log_scale',
          'plot_midtransit','plot_ingress_egress'].forEach(function (id) {
           var el = document.getElementById('opt-'+id);
