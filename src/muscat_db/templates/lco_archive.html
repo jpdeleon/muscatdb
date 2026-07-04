@@ -5,6 +5,23 @@
 {% include "_lco_shared.html" %}
 
 <div class="lco-section">
+  <h3>Search by Request ID</h3>
+  <div class="lco-grid">
+    <div class="lco-field">
+      <label for="dl-request-id">Request ID</label>
+      <input id="dl-request-id" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="4236675">
+    </div>
+    <div class="lco-field"><label for="dl-req-rlevel">Reduction level</label>
+      <select id="dl-req-rlevel"><option value="">any</option><option value="91" selected>91 (reduced)</option><option value="0">0 (raw)</option></select></div>
+  </div>
+  <div class="lco-actions">
+    <button class="btn primary" type="button" id="btn-fetch-request">Fetch request</button>
+    <span class="lco-msg" id="msg-request" style="margin: 0;"></span>
+  </div>
+  <p class="lco-note">Enter the numeric request ID from an observation portal URL (e.g. <code>4236675</code> from <code>observe.lco.global/requests/4236675</code>) to pull every frame for that request. It ignores the search fields above; results appear below for selection and download.</p>
+</div>
+
+<div class="lco-section">
   <h3>Search LCO Archive</h3>
   <div class="lco-grid">
     <div class="lco-field"><label for="dl-proposal">Proposal ID</label><input id="dl-proposal" type="text" placeholder="LCO2026A-001"></div>
@@ -82,7 +99,8 @@
 
   var TEXT_IDS = [
     'dl-proposal','dl-object','dl-site','dl-tel','dl-instrume',
-    'dl-filter','dl-rlevel','dl-start','dl-end','dl-limit'
+    'dl-filter','dl-rlevel','dl-start','dl-end','dl-limit',
+    'dl-request-id','dl-req-rlevel'
   ];
   var CHECK_IDS = ['dl-overwrite', 'dl-fuzzy-name'];
   var DL_SITE_OPTIONS = {
@@ -287,6 +305,27 @@
       }
       msg('msg-search', 'Found ' + (d.count !== undefined ? d.count : lastFrames.length) + ' frames (showing ' + lastFrames.length + ')' + datasetMsg + modeMsg, 'ok');
     }).catch(function (e) { msg('msg-search', String(e), 'err'); });
+  });
+
+  el('btn-fetch-request').addEventListener('click', function () {
+    var reqId = val('dl-request-id');
+    if (!reqId) { msg('msg-request', 'Enter a request ID', 'err'); return; }
+    if (!/^[0-9]+$/.test(reqId)) { msg('msg-request', 'Request ID must be numeric', 'err'); return; }
+    msg('msg-request', 'Fetching request ' + reqId + '…');
+    var q = new URLSearchParams();
+    q.set('request_id', reqId);
+    var rlevel = val('dl-req-rlevel');
+    if (rlevel) q.set('reduction_level', rlevel);
+    fetch('/api/lco/archive/frames?' + q.toString()).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d.ok) { msg('msg-request', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
+      lastFrames = d.results || [];
+      renderFrameGroups();
+      saveArchiveState();
+      if (!lastFrames.length) { msg('msg-request', 'No frames found for request ' + reqId, 'err'); return; }
+      var datasetMsg = d.dataset_count !== undefined ? (' across ' + d.dataset_count + ' dataset' + (d.dataset_count === 1 ? '' : 's')) : '';
+      var truncMsg = d.truncated ? ' — capped, refine reduction level to narrow' : '';
+      msg('msg-request', 'Found ' + (d.count !== undefined ? d.count : lastFrames.length) + ' frames (showing ' + lastFrames.length + ')' + datasetMsg + truncMsg, d.truncated ? 'err' : 'ok');
+    }).catch(function (e) { msg('msg-request', String(e), 'err'); });
   });
 
   el('btn-download').addEventListener('click', function () {
