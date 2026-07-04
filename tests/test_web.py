@@ -1173,3 +1173,113 @@ def test_toi_page_includes_boyle_payload(monkeypatch):
     assert '"ruwe":[1.01]' in r.text
     assert '"sector_periods":["2.19,2.19"]' in r.text
     assert "Boyle2026" in r.text
+
+
+def test_photometry_download_all_endpoints(mock_db, monkeypatch, tmp_path):
+    # Mock MUSCAT_PROSE_DIR environment variable
+    monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+
+    # Create output directories for legacy and named run
+    inst, date, target = "muscat3", "260101", "WASP12"
+
+    # Legacy output files
+    legacy_dir = tmp_path / inst / date
+    legacy_dir.mkdir(parents=True)
+
+    csv_file = legacy_dir / "WASP12_muscat3_gp_260101.csv"
+    csv_file.write_text("BJD,flux\n1,1")
+
+    log_file = legacy_dir / "WASP12_muscat3_260101.log"
+    log_file.write_text("INFO: log content")
+
+    npz_file = legacy_dir / "WASP12_muscat3_260101.npz"
+    npz_file.write_text("dummy npz")
+
+    # Other target's file in legacy dir (should NOT be zipped)
+    other_csv = legacy_dir / "HAT-P-1_muscat3_gp_260101.csv"
+    other_csv.write_text("BJD,flux\n1,1")
+
+    # Named run output files
+    run_id = "test-run"
+    run_dir = legacy_dir / "_runs" / "WASP12" / "test-run"
+    run_dir.mkdir(parents=True)
+
+    run_csv = run_dir / "WASP12_muscat3_gp_260101.csv"
+    run_csv.write_text("BJD,flux\n2,2")
+
+    # Test client
+    client = TestClient(app)
+
+    # 1. Test legacy download-all
+    r = client.get(f"/photometry/download-all/{inst}/{date}/{target}")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
+
+    import zipfile
+    import io
+    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+        namelist = z.namelist()
+        assert "WASP12_muscat3_gp_260101.csv" in namelist
+        assert "WASP12_muscat3_260101.log" in namelist
+        assert "WASP12_muscat3_260101.npz" in namelist
+        assert "HAT-P-1_muscat3_gp_260101.csv" not in namelist
+
+    # 2. Test named run download-all
+    r = client.get(f"/photometry/download-all/{inst}/{date}/{target}/run/{run_id}")
+    assert r.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+        namelist = z.namelist()
+        assert "WASP12_muscat3_gp_260101.csv" in namelist
+
+
+def test_transit_fit_download_all_endpoints(mock_db, monkeypatch, tmp_path):
+    # Mock MUSCAT_TIMER_DIR environment variable
+    monkeypatch.setenv("MUSCAT_TIMER_DIR", str(tmp_path))
+
+    inst, date, target = "muscat3", "260101", "WASP12"
+
+    # Legacy fit output files
+    legacy_dir = tmp_path / inst / date / "WASP12"
+    legacy_dir.mkdir(parents=True)
+
+    fit_yaml = legacy_dir / "fit.yaml"
+    fit_yaml.write_text("fit settings")
+    sys_yaml = legacy_dir / "sys.yaml"
+    sys_yaml.write_text("sys settings")
+
+    # Legacy fit plots in out/
+    out_dir = legacy_dir / "out"
+    out_dir.mkdir()
+    plot_file = out_dir / "fit.png"
+    plot_file.write_text("dummy png")
+
+    # Subdirectory of a named run inside the legacy directory (should NOT be zipped in legacy download)
+    named_run_dir = legacy_dir / "run-abc"
+    named_run_dir.mkdir()
+    named_run_fit = named_run_dir / "fit.yaml"
+    named_run_fit.write_text("named run fit settings")
+
+    # Test client
+    client = TestClient(app)
+
+    # 1. Test legacy transit-fit download-all
+    r = client.get(f"/transit-fit/download-all/{inst}/{date}/{target}")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
+
+    import zipfile
+    import io
+    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+        namelist = z.namelist()
+        assert "fit.yaml" in namelist
+        assert "sys.yaml" in namelist
+        assert "out/fit.png" in namelist
+        # Make sure it did not recurse into run-abc
+        assert "run-abc/fit.yaml" not in namelist
+
+    # 2. Test named run transit-fit download-all
+    r = client.get(f"/transit-fit/download-all/{inst}/{date}/{target}/run/run-abc")
+    assert r.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+        namelist = z.namelist()
+        assert "fit.yaml" in namelist

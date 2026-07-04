@@ -1419,6 +1419,95 @@ def transit_fit_file(inst: str, date: str, target: str, name: str):
     return _serve_transit_file(inst, date, target, name, None)
 
 
+def _create_zip_response(files_to_zip: list[tuple[pathlib.Path, str]], archive_name: str) -> FileResponse:
+    import tempfile
+    import zipfile
+    from starlette.background import BackgroundTask
+
+    tmp_dir = phot.prose_tmpdir()
+    pathlib.Path(tmp_dir).mkdir(parents=True, exist_ok=True)
+    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix=".zip", dir=tmp_dir)
+    temp_zip_path = pathlib.Path(temp_zip.name)
+    temp_zip.close()
+
+    try:
+        with zipfile.ZipFile(temp_zip_path, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            for filepath, arcname in files_to_zip:
+                if filepath.is_file():
+                    zip_file.write(filepath, arcname)
+    except Exception as exc:
+        try:
+            temp_zip_path.unlink()
+        except OSError:
+            pass
+        raise HTTPException(500, f"failed to create zip archive: {exc}")
+
+    def cleanup():
+        try:
+            temp_zip_path.unlink()
+        except OSError:
+            pass
+
+    return FileResponse(
+        str(temp_zip_path),
+        media_type="application/zip",
+        filename=archive_name,
+        background=BackgroundTask(cleanup),
+    )
+
+
+def _transit_fit_download_all(inst: str, date: str, target: str, run_id: str | None):
+    if inst not in INSTRUMENTS or not phot.valid_date(date):
+        raise HTTPException(400, "invalid parameters")
+    if run_id and (".." in run_id or "/" in run_id):
+        raise HTTPException(400, "invalid run id")
+
+    try:
+        rdir = fit.fit_output_dir(inst, date, target, run_id or None)
+    except ValueError:
+        raise HTTPException(400, "invalid target")
+
+    if not rdir.is_dir():
+        raise HTTPException(404, "no fit directory found")
+
+    files_to_zip = []
+    if run_id:
+        # Zip all files recursively
+        for p in rdir.rglob("*"):
+            if p.is_file():
+                files_to_zip.append((p, str(p.relative_to(rdir))))
+    else:
+        # Legacy run: only include files directly in rdir and in rdir / "out"
+        for p in rdir.iterdir():
+            if p.is_file():
+                files_to_zip.append((p, p.name))
+        out_dir = rdir / "out"
+        if out_dir.is_dir():
+            for p in out_dir.iterdir():
+                if p.is_file():
+                    files_to_zip.append((p, f"out/{p.name}"))
+
+    if not files_to_zip:
+        raise HTTPException(404, "no files to download")
+
+    archive_name = f"{target.replace(' ', '')}_fit_{date}"
+    if run_id:
+        archive_name += f"_{run_id}"
+    archive_name += ".zip"
+
+    return _create_zip_response(files_to_zip, archive_name)
+
+
+@app.get("/transit-fit/download-all/{inst}/{date}/{target}/run/{run_id}")
+def transit_fit_download_all_run(inst: str, date: str, target: str, run_id: str):
+    return _transit_fit_download_all(inst, date, target, run_id)
+
+
+@app.get("/transit-fit/download-all/{inst}/{date}/{target}")
+def transit_fit_download_all(inst: str, date: str, target: str):
+    return _transit_fit_download_all(inst, date, target, None)
+
+
 # ---------------------------------------------------------------------------
 # Exposure Time Calculator
 # ---------------------------------------------------------------------------
@@ -1697,6 +1786,13 @@ def api_fov_optimize(payload: dict = Body(...)):
         comp_margin = payload.get("comp_margin_arcsec")
         comp_margin = float(comp_margin) if comp_margin not in (None, "") else None
         mag_limit = float(payload.get("mag_limit", 18.0))
+        
+        min_mag = payload.get("mag_min")
+        min_mag = float(min_mag) if min_mag not in (None, "") else 0.0
+        max_mag = payload.get("mag_max")
+        max_mag = float(max_mag) if max_mag not in (None, "") else 18.0
+        mag_delta = payload.get("mag_delta")
+        mag_delta = float(mag_delta) if mag_delta not in (None, "") else None
     except (TypeError, ValueError):
         return JSONResponse({"ok": False, "error": "Invalid numeric parameter"}, status_code=400)
 
@@ -1719,6 +1815,9 @@ def api_fov_optimize(payload: dict = Body(...)):
         mag_limit=mag_limit,
         pa_step_deg=pa_step_deg,
         sinistro_mode=sinistro_mode,
+        min_mag=min_mag,
+        max_mag=max_mag,
+        mag_delta=mag_delta,
     )
     status = 200 if result.ok else 422
     return JSONResponse(result.to_dict(), status_code=status)
@@ -3559,6 +3658,90 @@ def photometry_file(inst: str, date: str, name: str):
     if path is None:
         raise HTTPException(404, "artifact not found")
     return FileResponse(str(path), headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
+
+
+def _photometry_download_all(inst: str, date: str, target: str, run_id: str | None):
+    if inst not in INSTRUMENTS or not phot.valid_date(date):
+        raise HTTPException(400, "invalid parameters")
+    if run_id and (".." in run_id or "/" in run_id):
+        raise HTTPException(400, "invalid run id")
+
+    try:
+        rdir = phot.run_output_dir(inst, date, target, run_id or None)
+    except ValueError:
+        raise HTTPException(400, "invalid target")
+
+    outputs = phot.list_outputs(inst, date, target, run_id=run_id or None)
+    if not outputs.get("has_any") and not outputs.get("masters"):
+        raise HTTPException(404, "no files to download")
+
+    files_to_zip = []
+
+    if run_id:
+        # Zip all files recursively in rdir
+        if rdir.is_dir():
+            for p in rdir.rglob("*"):
+                if p.is_file():
+                    files_to_zip.append((p, str(p.relative_to(rdir))))
+    else:
+        # Legacy run: extract target-specific files from outputs
+        if rdir.is_dir():
+            # Gather single-file keys
+            for key in ("npz", "log", "ref_header"):
+                name = outputs.get(key)
+                if name:
+                    p = rdir / name
+                    if p.is_file():
+                        files_to_zip.append((p, name))
+            # Gather summary files
+            for item in outputs.get("summary_items", []):
+                name = item.get("file")
+                if name:
+                    p = rdir / name
+                    if p.is_file():
+                        files_to_zip.append((p, name))
+            # Gather nearby stars if any
+            nearby = outputs.get("summary", {}).get("nearby_stars")
+            if nearby and nearby.get("file"):
+                p = rdir / nearby["file"]
+                if p.is_file():
+                    files_to_zip.append((p, nearby["file"]))
+            # Gather band files
+            for band_data in outputs.get("bands", {}).values():
+                for prod in band_data.values():
+                    name = prod.get("file")
+                    if name:
+                        p = rdir / name
+                        if p.is_file():
+                            files_to_zip.append((p, name))
+
+    # Include masters for both modes if present
+    for name in outputs.get("masters", []):
+        for base_dir in (phot.results_dir(inst, date), phot.raw_data_dir(inst, date)):
+            cal_p = pathlib.Path(str(base_dir) + "_calibrated") / name
+            if cal_p.is_file():
+                files_to_zip.append((cal_p, f"masters/{name}"))
+                break
+
+    if not files_to_zip:
+        raise HTTPException(404, "no files to download")
+
+    archive_name = f"{target.replace(' ', '')}_phot_{date}"
+    if run_id:
+        archive_name += f"_{run_id}"
+    archive_name += ".zip"
+
+    return _create_zip_response(files_to_zip, archive_name)
+
+
+@app.get("/photometry/download-all/{inst}/{date}/{target}/run/{run_id}")
+def photometry_download_all_run(inst: str, date: str, target: str, run_id: str):
+    return _photometry_download_all(inst, date, target, run_id)
+
+
+@app.get("/photometry/download-all/{inst}/{date}/{target}")
+def photometry_download_all(inst: str, date: str, target: str):
+    return _photometry_download_all(inst, date, target, None)
 
 
 @app.post("/photometry/run")

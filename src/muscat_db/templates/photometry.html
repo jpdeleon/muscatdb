@@ -351,6 +351,8 @@
 
     <div class="phot-section">
       <div class="dl-row">
+        {% set dl_all_url = '/photometry/download-all/' ~ sel_inst ~ '/' ~ sel_date ~ '/' ~ sel_target ~ (('/run/' ~ sel_run) if sel_run else '') %}
+        <a href="{{ dl_all_url }}" download style="font-weight: 600; color: var(--accent2);">📦 Download all output (.zip)</a>
         {% if outputs.npz %}<a href="{{ file_base }}/{{ outputs.npz }}" download>⬇ data archive (.npz)</a>{% endif %}
         {% if outputs.log %}<a href="{{ file_base }}/{{ outputs.log }}" target="_blank">📄 pipeline log</a>{% endif %}
         {% if outputs.ref_header %}<a href="{{ file_base }}/{{ outputs.ref_header }}" target="_blank">🧾 view ref header</a>{% endif %}

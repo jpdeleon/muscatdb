@@ -147,3 +147,35 @@ def test_optimize_pointing_rejects_oversized_margin():
             np.array([0.0]), np.array([0.0]), np.array([1.0]),
             half=100.0, margin=120.0,
         )
+
+
+def test_optimize_magnitude_filtering(monkeypatch):
+    # Mock query_gaia_field to return a specific set of stars
+    mock_stars = fov.StarField(
+        ra=np.array([10.0, 10.01, 10.02, 10.03, 10.04]),
+        dec=np.array([-20.0, -20.01, -20.02, -20.03, -20.04]),
+        gmag=np.array([12.0, 10.0, 11.5, 14.5, 17.0]), # target is star index 0 (12.0 mag)
+        bp_rp=np.array([0.8, 0.8, 0.8, 0.8, 0.8]),
+        source="mock"
+    )
+    monkeypatch.setattr(fov, "query_gaia_field", lambda *args, **kwargs: mock_stars)
+
+    # 1. Absolute limits: min_mag=11.0, max_mag=15.0
+    # Expected comps: stars in [11.0, 15.0] (index 2: 11.5, index 3: 14.5)
+    res = fov.optimize("muscat3", ra=10.0, dec=-20.0, min_mag=11.0, max_mag=15.0)
+    assert res.ok
+    comp_gmags = [c["gmag"] for c in res.comps]
+    assert 11.5 in comp_gmags
+    assert 14.5 in comp_gmags
+    assert 10.0 not in comp_gmags
+    assert 17.0 not in comp_gmags
+
+    # 2. Relative limits (mag_delta=1.0)
+    # Target Gmag is 12.0. Expected range: [11.0, 13.0]
+    # Expected comps: stars in [11.0, 13.0] (index 2: 11.5)
+    res = fov.optimize("muscat3", ra=10.0, dec=-20.0, mag_delta=1.0)
+    assert res.ok
+    comp_gmags = [c["gmag"] for c in res.comps]
+    assert 11.5 in comp_gmags
+    assert 10.0 not in comp_gmags
+    assert 14.5 not in comp_gmags

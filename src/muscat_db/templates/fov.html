@@ -100,7 +100,21 @@
         <div class="fov-field"><label for="fov-dec">Dec (deg)</label><input id="fov-dec" type="text" inputmode="decimal" placeholder="optional"></div>
         <div class="fov-field"><label for="fov-margin" title="Keep the target at least this far from any field edge.">Target margin (″)</label><input id="fov-margin" type="number" step="any" value="30"></div>
         <div class="fov-field"><label for="fov-comp-margin" title="Keep comparisons at least this far from any field edge. Leave empty to use target margin.">Comp margin (″)</label><input id="fov-comp-margin" type="number" step="any" placeholder="(use target)"></div>
-        <div class="fov-field"><label for="fov-maglim" title="Faint cutoff for comparison candidates (Gaia G).">Mag limit (G)</label><input id="fov-maglim" type="number" step="any" value="18"></div>
+        <div class="fov-field">
+          <label for="fov-mag-mode">Mag filter mode</label>
+          <select id="fov-mag-mode">
+            <option value="absolute">Absolute limits</option>
+            <option value="relative">Delta Gmag (relative)</option>
+          </select>
+        </div>
+        <div class="fov-field" id="fov-mag-range-field">
+          <label for="fov-mag-range" title="Brighter and faint Gmag limits for comparison candidates, separated by a comma (min, max).">Gmag range (min, max)</label>
+          <input id="fov-mag-range" type="text" placeholder="e.g. 10, 18" value="10, 18">
+        </div>
+        <div class="fov-field" id="fov-mag-delta-field" style="display: none;">
+          <label for="fov-mag-delta" title="Keep comps within this delta magnitude of the target (target G ± delta).">Delta Gmag</label>
+          <input id="fov-mag-delta" type="number" step="any" value="3">
+        </div>
       </div>
       <div style="margin-top: 0.7rem; display: flex; align-items: center; gap: 0.6rem;">
         <input id="fov-allow-rotation" type="checkbox" checked style="width: 1.1rem; height: 1.1rem; cursor: pointer;">
@@ -318,6 +332,14 @@
   }
 
   function getParams() {
+    const rangeVal = $('fov-mag-range').value.trim();
+    let magMin = '10';
+    let magMax = '18';
+    if (rangeVal) {
+      const parts = rangeVal.split(',');
+      if (parts.length >= 1) magMin = parts[0].trim();
+      if (parts.length >= 2) magMax = parts[1].trim();
+    }
     return {
       inst: $('fov-inst').value,
       readoutMode: $('fov-sinistro-mode').value,
@@ -326,7 +348,11 @@
       dec: $('fov-dec').value.trim(),
       margin: $('fov-margin').value,
       compMargin: $('fov-comp-margin').value,
-      maglim: $('fov-maglim').value,
+      magMode: $('fov-mag-mode').value,
+      magRange: rangeVal,
+      magMin: magMin,
+      magMax: magMax,
+      magDelta: $('fov-mag-delta').value,
       allowRotation: $('fov-allow-rotation').checked,
     };
   }
@@ -339,7 +365,20 @@
     if (p.dec !== undefined) $('fov-dec').value = p.dec;
     if (p.margin) $('fov-margin').value = p.margin;
     if (p.compMargin !== undefined) $('fov-comp-margin').value = p.compMargin;
-    if (p.maglim) $('fov-maglim').value = p.maglim;
+    
+    if (p.magMode) {
+      $('fov-mag-mode').value = p.magMode;
+      // Trigger display toggle
+      const event = new Event('change');
+      $('fov-mag-mode').dispatchEvent(event);
+    }
+    if (p.magRange !== undefined) {
+      $('fov-mag-range').value = p.magRange;
+    } else if (p.magMin !== undefined && p.magMax !== undefined) {
+      $('fov-mag-range').value = p.magMin + ', ' + p.magMax;
+    }
+    if (p.magDelta !== undefined) $('fov-mag-delta').value = p.magDelta;
+
     if (p.allowRotation !== undefined) $('fov-allow-rotation').checked = p.allowRotation;
     updateReadoutModeOptions($('fov-inst').value, p.readoutMode);
   }
@@ -413,7 +452,9 @@
     if (p.dec) sp.set('dec', p.dec);
     if (p.margin && p.margin !== '30') sp.set('margin', p.margin);
     if (p.compMargin) sp.set('cmarg', p.compMargin);
-    if (p.maglim && p.maglim !== '18') sp.set('maglim', p.maglim);
+    if (p.magMode) sp.set('magmode', p.magMode);
+    if (p.magRange && p.magRange !== '10, 18' && p.magRange !== '10,18') sp.set('magrange', p.magRange);
+    if (p.magDelta && p.magDelta !== '3') sp.set('magdelta', p.magDelta);
     if (!p.allowRotation) sp.set('fixpa', '1');
     const qs = sp.toString();
     const url = qs ? '/fov?' + qs : '/fov';
@@ -438,6 +479,12 @@
     const sp = new URLSearchParams(window.location.search);
     // URL params take precedence; fall back to localStorage.
     const stored = loadFromStorage();
+    let magRange = sp.get('magrange') || stored?.magRange;
+    if (!magRange) {
+      const minVal = sp.get('magmin') || stored?.magMin || '10';
+      const maxVal = sp.get('magmax') || sp.get('maglim') || stored?.magMax || stored?.maglim || '18';
+      magRange = minVal + ', ' + maxVal;
+    }
     const p = {
       inst: sp.get('inst') || (stored?.inst || ''),
       readoutMode: sp.get('smode') || (stored?.readoutMode || stored?.sinistroMode || 'MUSCAT_FAST'),
@@ -446,7 +493,9 @@
       dec: sp.get('dec') || (stored?.dec || ''),
       margin: sp.get('margin') || (stored?.margin || '30'),
       compMargin: sp.get('cmarg') || (stored?.compMargin || ''),
-      maglim: sp.get('maglim') || (stored?.maglim || '18'),
+      magMode: sp.get('magmode') || (stored?.magMode || 'absolute'),
+      magRange: magRange,
+      magDelta: sp.get('magdelta') || (stored?.magDelta || '3'),
       allowRotation: !sp.has('fixpa') && (stored?.allowRotation !== false),
     };
     setParams(p);
@@ -476,7 +525,11 @@
           dec: params.dec || null,
           margin_arcsec: parseFloat(params.margin) || 30,
           comp_margin_arcsec: params.compMargin ? parseFloat(params.compMargin) : null,
-          mag_limit: parseFloat(params.maglim) || 18,
+          mag_limit: params.magMode === 'absolute' ? (parseFloat(params.magMax) || 18) : 18,
+          mag_mode: params.magMode,
+          mag_min: params.magMode === 'absolute' ? (parseFloat(params.magMin) || 0) : null,
+          mag_max: params.magMode === 'absolute' ? (parseFloat(params.magMax) || 18) : null,
+          mag_delta: params.magMode === 'relative' ? (parseFloat(params.magDelta) || 3) : null,
           allow_rotation: params.allowRotation,
         }),
       });
@@ -540,7 +593,9 @@
     if (params.dec) sp.set('dec', params.dec);
     if (params.margin && params.margin !== '30') sp.set('margin', params.margin);
     if (params.compMargin) sp.set('cmarg', params.compMargin);
-    if (params.maglim && params.maglim !== '18') sp.set('maglim', params.maglim);
+    if (params.magMode) sp.set('magmode', params.magMode);
+    if (params.magRange && params.magRange !== '10, 18' && params.magRange !== '10,18') sp.set('magrange', params.magRange);
+    if (params.magDelta && params.magDelta !== '3') sp.set('magdelta', params.magDelta);
     if (!params.allowRotation) sp.set('fixpa', '1');
     const url = window.location.origin + '/fov' + (sp.toString() ? '?' + sp.toString() : '');
     navigator.clipboard.writeText(url).then(() => {
@@ -579,6 +634,16 @@
   $('fov-inst').addEventListener('change', () => updateReadoutModeOptions($('fov-inst').value));
   $('fov-dec').addEventListener('change', updateInstrumentAvailability);
   $('fov-target').addEventListener('keydown', (e) => { if (e.key === 'Enter') resolveTarget(); });
+  $('fov-mag-mode').addEventListener('change', function () {
+    const mode = this.value;
+    if (mode === 'absolute') {
+      $('fov-mag-range-field').style.display = '';
+      $('fov-mag-delta-field').style.display = 'none';
+    } else {
+      $('fov-mag-range-field').style.display = 'none';
+      $('fov-mag-delta-field').style.display = '';
+    }
+  });
 
   loadObservableRanges().then(() => updateInstrumentAvailability());
 

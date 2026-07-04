@@ -391,13 +391,18 @@ def query_gaia_field(
     ra: float,
     dec: float,
     radius_arcsec: float,
-    mag_limit: float = 18.0,
+    min_mag: float = 0.0,
+    max_mag: float = 18.0,
+    mag_limit: float | None = None,
 ) -> StarField:
     """Cone-search Gaia DR3 (Vizier I/355/gaiadr3) around (ra, dec).
 
     Returns a :class:`StarField`; on failure the arrays are empty and ``error``
     explains why (callers should surface it rather than crash).
     """
+    if mag_limit is not None:
+        max_mag = mag_limit
+
     empty = StarField(
         np.array([]), np.array([]), np.array([]), np.array([]), "Gaia DR3"
     )
@@ -411,9 +416,10 @@ def query_gaia_field(
 
     try:
         coord = SkyCoord(ra=ra, dec=dec, unit=(u.deg, u.deg), frame="icrs")
+        gmag_filter = f"{min_mag}..{max_mag}" if min_mag > 0 else f"<{max_mag}"
         viz = Vizier(
             columns=["RA_ICRS", "DE_ICRS", "Gmag", "BP-RP", "_r"],
-            column_filters={"Gmag": f"<{mag_limit}"},
+            column_filters={"Gmag": gmag_filter},
             row_limit=-1,
         )
         result = viz.query_region(
@@ -498,6 +504,9 @@ def optimize(
     max_comps: int = 60,
     pa_step_deg: float | None = None,
     sinistro_mode: str | None = None,
+    min_mag: float = 0.0,
+    max_mag: float = 18.0,
+    mag_delta: float | None = None,
 ) -> FovResult:
     """Resolve a target, pull Gaia neighbours, and optimize pointing + PA.
 
@@ -513,6 +522,9 @@ def optimize(
     For Sinistro, ``sinistro_mode`` selects "full_frame" (26'x26') or
     "central_2k_2x2" (13'x13', default).
     """
+    if mag_limit != 18.0 and max_mag == 18.0:
+        max_mag = mag_limit
+
     res = FovResult(ok=False, instrument=instrument, target=target)
 
     # --- field size ---
@@ -544,7 +556,14 @@ def optimize(
 
     # --- candidate stars ---
     radius = half * math.sqrt(2.0) * QUERY_RADIUS_FACTOR
-    stars = query_gaia_field(ra, dec, radius, mag_limit=mag_limit)
+
+    query_min_mag = min_mag
+    query_max_mag = max_mag
+    if mag_delta is not None:
+        query_min_mag = 0.0
+        query_max_mag = max(max_mag, 18.0)
+
+    stars = query_gaia_field(ra, dec, radius, min_mag=query_min_mag, max_mag=query_max_mag)
     if stars.error:
         res.error = stars.error
         return res
@@ -571,6 +590,16 @@ def optimize(
     if t_idx is not None:
         weights[t_idx] = 0.0
     weights = np.where(np.isfinite(weights), weights, 0.0)
+
+    # Magnitude filtering mask
+    mag_mask = np.ones(len(stars), dtype=bool)
+    if mag_delta is not None:
+        mag_mask &= (stars.gmag >= res.target_gmag - mag_delta) & (stars.gmag <= res.target_gmag + mag_delta)
+    mag_mask &= (stars.gmag >= min_mag) & (stars.gmag <= max_mag)
+    if t_idx is not None:
+        mag_mask[t_idx] = True
+
+    weights = np.where(mag_mask, weights, 0.0)
     weights = np.where(weights >= WEIGHT_FLOOR, weights, 0.0)
     weights = _blend_penalty(east, north, stars.gmag, weights)
 

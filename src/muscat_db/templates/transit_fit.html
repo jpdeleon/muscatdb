@@ -348,6 +348,8 @@
     {% endif %}
 
     <div class="dl-row">
+      {% set dl_all_url = '/transit-fit/download-all/' ~ sel_inst ~ '/' ~ sel_date ~ '/' ~ sel_target ~ ('/run/' ~ sel_run if sel_run else '') %}
+      <a href="{{ dl_all_url }}" download style="font-weight: 600; color: var(--accent2);">📦 Download all output (.zip)</a>
       {% if outputs.has_log %}<a href="{{ file_base }}/timer-fit.log" target="_blank">📄 fit run log</a>{% endif %}
       {% if outputs.has_fit_yaml %}<a href="{{ file_base }}/fit.yaml" target="_blank">⚙ fit.yaml</a>{% endif %}
       {% if outputs.has_sys_yaml %}<a href="{{ file_base }}/sys.yaml" target="_blank">🪐 sys.yaml</a>{% endif %}
@@ -662,27 +664,6 @@
             <input type="checkbox" id="opt-secondary_eclipse">
             <label for="opt-secondary_eclipse">Secondary eclipse <span class="help-tooltip" title="Fit a secondary eclipse (at phase 0.5) instead of a primary transit. Default off.">?</span></label>
           </div>
-          <details class="opt-collapse" open style="grid-column: 1 / -1;">
-            <summary>⚙️ Run Mode <span class="help-tooltip" title="Choose whether to start a new fit or continue sampling from previous results.">?</span></summary>
-            <div style="display: flex; gap: 1.5rem; align-items: center;">
-              <label class="opt-check-item" style="margin: 0;">
-                <input type="radio" name="run-mode" value="new" checked>
-                <span>New Fit (start fresh)</span>
-              </label>
-              <label class="opt-check-item" id="continue-label" style="margin: 0; display: none;">
-                <input type="radio" name="run-mode" value="continue">
-                <span>Continue Sampling <span class="help-tooltip" title="Resume from previous trace, adding more samples.">?</span></span>
-              </label>
-            </div>
-          </details>
-          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-plot_midtransit" checked>
-            <label for="opt-plot_midtransit">Plot midtransit <span class="help-tooltip" title="Plot a solid vertical line at the nearest midtransit time on data.png.">?</span></label>
-          </div>
-          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-plot_ingress_egress" checked>
-            <label for="opt-plot_ingress_egress">Plot ing/egr <span class="help-tooltip" title="Plot dashed vertical lines at ingress and egress times on data.png.">?</span></label>
-          </div>
           <div style="margin-top: 0; display: inline-flex; align-items: center; gap: 0.45rem; white-space: nowrap;">
             <label for="opt-fit_basis" style="margin: 0; font-size: 0.85rem; color: var(--text); display: inline-flex; align-items: center; gap: 0.25rem;">
               Fit basis
@@ -692,6 +673,27 @@
               <option value="duration" selected>duration</option>
               <option value="standard">standard</option>
             </select>
+          </div>
+          <div style="margin-top: 0; display: inline-flex; align-items: center; gap: 0.45rem; white-space: nowrap;">
+            <label for="run-mode-select" style="margin: 0; font-size: 0.85rem; color: var(--text); display: inline-flex; align-items: center; gap: 0.25rem;">
+              Run Mode
+            </label>
+            <select id="run-mode-select" name="run-mode" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.15rem 0.4rem; font-size: 0.8rem; margin: 0; height: 24px; box-sizing: border-box; line-height: 1; cursor: pointer;">
+              <option value="new">New Fit (start fresh)</option>
+              <option value="continue" id="continue-option" style="display: none;">Continue Sampling</option>
+            </select>
+            <span class="help-tooltip" title="Choose whether to start a new fit or continue sampling from previous results.">?</span>
+          </div>
+        </div>
+
+        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: nowrap; align-items: flex-end; padding-bottom: 0.45rem;">
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-plot_midtransit" checked>
+            <label for="opt-plot_midtransit">Plot midtransit <span class="help-tooltip" title="Plot a solid vertical line at the nearest midtransit time on data.png.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-plot_ingress_egress" checked>
+            <label for="opt-plot_ingress_egress">Plot ing/egr <span class="help-tooltip" title="Plot dashed vertical lines at ingress and egress times on data.png.">?</span></label>
           </div>
         </div>
       </div>
@@ -770,9 +772,9 @@
 
   // Show/hide "Continue Sampling" option based on whether results exist
   (function() {
-    var continueLabel = document.getElementById('continue-label');
-    if (continueLabel) {
-      continueLabel.style.display = fitResultsExist ? 'block' : 'none';
+    var continueOption = document.getElementById('continue-option');
+    if (continueOption) {
+      continueOption.style.display = fitResultsExist ? 'block' : 'none';
     }
   })();
 
@@ -962,7 +964,7 @@
       chromatic: chk('opt-chromatic') ? 'true' : 'false',
       fit_basis: val('opt-fit_basis'),
       trend: chk('opt-trend') ? 'true' : 'false',
-      run_mode: document.querySelector('input[name="run-mode"]:checked')?.value || 'new',
+      run_mode: document.getElementById('run-mode-select')?.value || 'new',
       plot_midtransit: chk('opt-plot_midtransit') ? 'true' : 'false',
       plot_ingress_egress: chk('opt-plot_ingress_egress') ? 'true' : 'false',
       tune: val('opt-tune'),
@@ -1642,12 +1644,13 @@
     var trEl = document.getElementById('opt-trend');
     if (trEl && saved.trend !== undefined) trEl.checked = saved.trend === 'true';
 
-    if (saved.run_mode !== undefined) {
-      var rmEl = document.querySelector('input[name="run-mode"][value="' + saved.run_mode + '"]');
-      if (rmEl) rmEl.checked = true;
-    } else if (saved.overwrite !== undefined) {
-      var rmEl = document.querySelector('input[name="run-mode"][value="' + (saved.overwrite === 'true' ? 'new' : 'continue') + '"]');
-      if (rmEl) rmEl.checked = true;
+    var selectEl = document.getElementById('run-mode-select');
+    if (selectEl) {
+      if (saved.run_mode !== undefined) {
+        selectEl.value = saved.run_mode;
+      } else if (saved.overwrite !== undefined) {
+        selectEl.value = saved.overwrite === 'true' ? 'new' : 'continue';
+      }
     }
 
     document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
@@ -1692,8 +1695,8 @@
       var trEl = document.getElementById('opt-trend');
       if (trEl) trEl.checked = false;
 
-      var rmEl = document.querySelector('input[name="run-mode"][value="new"]');
-      if (rmEl) rmEl.checked = true;
+      var selectEl = document.getElementById('run-mode-select');
+      if (selectEl) selectEl.value = 'new';
 
       var numDefaults = {'opt-tune':'2000','opt-draws':'2000','opt-chains':'2','opt-cores':'2',
                          'opt-spline_knots':'5','opt-clip_nsig':'7','opt-chunk_thresh':'0','opt-trim_beg':'','opt-trim_end':'',
@@ -1784,12 +1787,13 @@
         var trEl = document.getElementById('opt-trend');
         if (trEl && backup.trend !== undefined) trEl.checked = backup.trend === 'true';
 
-        if (backup.run_mode !== undefined) {
-          var rmEl = document.querySelector('input[name="run-mode"][value="' + backup.run_mode + '"]');
-          if (rmEl) rmEl.checked = true;
-        } else if (backup.overwrite !== undefined) {
-          var rmEl = document.querySelector('input[name="run-mode"][value="' + (backup.overwrite === 'true' ? 'new' : 'continue') + '"]');
-          if (rmEl) rmEl.checked = true;
+        var selectEl = document.getElementById('run-mode-select');
+        if (selectEl) {
+          if (backup.run_mode !== undefined) {
+            selectEl.value = backup.run_mode;
+          } else if (backup.overwrite !== undefined) {
+            selectEl.value = backup.overwrite === 'true' ? 'new' : 'continue';
+          }
         }
 
         document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
@@ -2383,7 +2387,7 @@
     }
     // For full fits with existing results, validate that a run mode is selected
     if (!testRun && fitResultsExist) {
-      var runModeSelected = document.querySelector('input[name="run-mode"]:checked')?.value;
+      var runModeSelected = document.getElementById('run-mode-select')?.value;
       if (!runModeSelected) {
         if (errEl) errEl.textContent = 'Fit results exist. Choose \'New Fit\' or \'Continue Sampling\' to proceed.';
         return;
