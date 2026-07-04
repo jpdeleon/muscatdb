@@ -74,13 +74,10 @@ nav .spacer { flex: 1; }
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 1.25rem;
-  transition: border-color 0.15s, transform 0.15s;
 }
-.card:hover { border-color: var(--accent); transform: translateY(-2px); }
 .card a { color: var(--text); text-decoration: none; }
 .card .name  { font-size: 1.1rem; font-weight: 600; }
 .card .meta  { font-size: 0.85rem; color: var(--text-dim); margin-top: 0.35rem; }
-.card .count { font-size: 0.85rem; color: var(--accent2); margin-top: 0.35rem; }
 
 /* ---------- Tables ---------- */
 table {
