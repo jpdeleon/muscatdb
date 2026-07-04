@@ -50,6 +50,17 @@
   <span class="dot"></span>
   <span id="status-text">Loading…</span>
 </div>
+
+<div id="message-modal">
+  <div class="modal-box">
+    <p id="message-modal-title" style="margin-bottom:0.75rem;font-size:0.95rem;font-weight:600;"></p>
+    <p id="message-modal-text" style="color:var(--text-dim);font-size:0.85rem;margin-bottom:1.5rem;line-height:1.5;"></p>
+    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+      <button class="btn" onclick="closeMessageModal()">OK</button>
+    </div>
+  </div>
+</div>
+
 <script>
   (function () {
     const root = document.documentElement;
@@ -606,7 +617,7 @@
           if (!res.ok) throw new Error('HTTP ' + res.status);
           close(value);
         } catch (err) {
-          alert('Save failed: ' + err.message);
+          showMessageModal('Error', 'Save failed: ' + err.message);
         }
       }
       async function destroy() {
@@ -615,7 +626,7 @@
           if (!res.ok) throw new Error('HTTP ' + res.status);
           close('');
         } catch (err) {
-          alert('Delete failed: ' + err.message);
+          showMessageModal('Error', 'Delete failed: ' + err.message);
         }
       }
 
@@ -645,6 +656,15 @@
       }
     }, true);
   })();
+
+  window.showMessageModal = function(title, text) {
+    document.getElementById('message-modal-title').textContent = title;
+    document.getElementById('message-modal-text').textContent = text;
+    document.getElementById('message-modal').classList.add('visible');
+  };
+  window.closeMessageModal = function() {
+    document.getElementById('message-modal').classList.remove('visible');
+  };
 </script>
 {% block scripts %}{% endblock %}
 </body>

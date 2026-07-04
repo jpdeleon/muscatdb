@@ -1429,12 +1429,12 @@
         if (typeof window.showLoading === 'function') window.showLoading('Reloading…');
         setTimeout(function () { window.location.reload(); }, 800);
       } else {
-        alert('Delete failed: ' + (res.error || 'unknown error'));
+        window.showMessageModal('Error', 'Delete failed: ' + (res.error || 'unknown error'));
         deleteBtn.disabled = false;
         deleteBtn.textContent = '🗑 Delete Reduction';
       }
     }).catch(function (err) {
-      alert('Delete failed: ' + err.message);
+      window.showMessageModal('Error', 'Delete failed: ' + err.message);
       deleteBtn.disabled = false;
       deleteBtn.textContent = '🗑 Delete Reduction';
     });
