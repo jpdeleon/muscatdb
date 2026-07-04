@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import math
 import os
@@ -2097,8 +2098,22 @@ def api_lco_archive_download(payload: dict = Body(...)):
         frames = payload.get("frames")
         if not isinstance(frames, list) or not frames:
             return JSONResponse({"ok": False, "error": "no frames selected"}, status_code=400)
+        if payload.get("background"):
+            job = lco.start_archive_download(frames, overwrite=bool(payload.get("overwrite")))
+            return JSONResponse({"ok": True, **job})
         results = lco.download_frames(frames, overwrite=bool(payload.get("overwrite")))
         return JSONResponse({"ok": True, "results": results})
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+
+
+@app.get("/api/lco/archive/download/{job_id}", response_class=JSONResponse)
+def api_lco_archive_download_status(job_id: str):
+    try:
+        job = lco.archive_download_status(job_id)
+        if job.get("state") in {"done", "error", "cancelled"}:
+            _persist_lco_archive_download_row(_lco_archive_download_row(job))
+        return JSONResponse({"ok": True, **job})
     except lco.LcoError as e:
         return _lco_error_response(e)
 
@@ -3215,18 +3230,174 @@ def _live_elapsed(job: dict) -> int:
     return round(job.get("elapsed") or 0)
 
 
+def _lco_archive_download_row(job: dict) -> dict:
+    objects = job.get("objects") or []
+    instruments = job.get("instruments") or []
+    obsdates = job.get("obsdates") or []
+    dest_dirs = job.get("dest_dirs") or []
+    frames_done = int(job.get("frames_done") or 0)
+    frames_total = int(job.get("frames_total") or 0)
+    funpack_done = int(job.get("funpack_done") or 0)
+    funpack_total = int(job.get("funpack_total") or 0)
+    started_at = float(job.get("started_at") or 0)
+    finished_at = job.get("finished_at")
+    state = job.get("state") or "pending"
+    phase = job.get("phase") or state
+    elapsed = round(((finished_at or time.time()) - started_at) if started_at else 0)
+    if phase == "funpacking":
+        run_name = f"funpack {funpack_done}/{funpack_total}"
+    else:
+        run_name = f"{frames_done}/{frames_total} frames"
+    details = "; ".join(dest_dirs) if dest_dirs else "Destination pending"
+    if phase and phase not in {"done", state}:
+        details = f"{phase}: {details}"
+    can_run_dataset_action = state == "done" and len(instruments) == 1 and len(obsdates) == 1
+    job_id = job.get("job_id") or ""
+    return {
+        "key": f"lco_archive_download:{job_id}",
+        "type": "lco_archive_download",
+        "inst": ",".join(instruments) if instruments else "lco",
+        "date": ",".join(obsdates) if obsdates else "mixed",
+        "target": ", ".join(objects) if objects else "LCO archive",
+        "state": state,
+        "returncode": None if state in ("pending", "running") else (0 if state == "done" else 1),
+        "elapsed": elapsed,
+        "started_at": started_at,
+        "error_desc": job.get("error") or "",
+        "run_type": "archive",
+        "run_id": job_id,
+        "run_name": run_name,
+        "user_name": "",
+        "details": details,
+        "action_inst": instruments[0] if len(instruments) == 1 else "",
+        "action_date": obsdates[0] if len(obsdates) == 1 else "",
+        "can_run_dataset_action": can_run_dataset_action,
+    }
+
+
+def _persist_lco_archive_download_row(row: dict) -> None:
+    if row.get("state") not in {"done", "error", "cancelled"}:
+        return
+    params = {
+        "job_id": row.get("run_id") or "",
+        "details": row.get("details") or "",
+        "action_inst": row.get("action_inst") or "",
+        "action_date": row.get("action_date") or "",
+        "can_run_dataset_action": bool(row.get("can_run_dataset_action")),
+    }
+    try:
+        get_job_store().save(
+            type_="lco_archive_download",
+            inst=row.get("action_inst") or row.get("inst") or "lco",
+            date=row.get("action_date") or row.get("date") or "mixed",
+            target=row.get("target") or "LCO archive",
+            state=row.get("state") or "done",
+            returncode=row.get("returncode"),
+            elapsed=int(row.get("elapsed") or 0),
+            started_at=float(row.get("started_at") or time.time()),
+            error_desc=row.get("error_desc") or "",
+            run_type="archive",
+            params=json.dumps(params, sort_keys=True, separators=(",", ":")),
+            run_id=row.get("run_id") or "",
+            run_name=row.get("run_name") or "",
+            user_name="",
+        )
+    except Exception:
+        logger.debug("failed to persist LCO archive download job %s", row.get("run_id"), exc_info=True)
+
+
+def _adapt_persisted_lco_archive_row(job: dict) -> dict:
+    row = dict(job)
+    try:
+        params = json.loads(row.get("params") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        params = {}
+    job_id = str(params.get("job_id") or row.get("run_id") or "").strip()
+    if job_id:
+        row["key"] = f"lco_archive_download:{job_id}"
+    row["details"] = str(params.get("details") or row.get("details") or "")
+    row["action_inst"] = str(params.get("action_inst") or row.get("inst") or "")
+    row["action_date"] = str(params.get("action_date") or row.get("date") or "")
+    row["can_run_dataset_action"] = bool(
+        params.get("can_run_dataset_action")
+        or (row.get("state") == "done" and row["action_inst"] in INSTRUMENTS and re.fullmatch(r"\d{6}", row["action_date"]))
+    )
+    return row
+
+
+def _lco_archive_download_rows() -> list[dict]:
+    rows = []
+    for job in lco.archive_download_jobs():
+        row = _lco_archive_download_row(job)
+        _persist_lco_archive_download_row(row)
+        rows.append(row)
+    return rows
+
+
+def _jobs_with_lco_archive_rows() -> list[dict]:
+    merged: dict[str, dict] = {}
+    for job in get_job_store().all():
+        row = _adapt_persisted_lco_archive_row(job) if job.get("type") == "lco_archive_download" else job
+        merged[row["key"]] = row
+    for row in _lco_archive_download_rows():
+        merged[row["key"]] = row
+    return list(merged.values())
+
+
+def _validate_lco_dataset_action(payload: dict) -> tuple[str, str]:
+    inst = (payload.get("inst") or "").strip()
+    obsdate = (payload.get("date") or payload.get("obsdate") or "").strip()
+    if inst not in INSTRUMENTS:
+        raise HTTPException(status_code=400, detail="Invalid instrument")
+    if not re.fullmatch(r"\d{6}", obsdate):
+        raise HTTPException(status_code=400, detail="Invalid obsdate")
+    return inst, obsdate
+
+
+@app.post("/jobs/lco-archive/scan", response_class=JSONResponse)
+def jobs_lco_archive_scan(payload: dict = Body(...)):
+    inst, obsdate = _validate_lco_dataset_action(payload)
+    try:
+        from muscat_db.scanner import scan_date as _scan_date
+
+        result = _scan_date(inst, obsdate)
+        return JSONResponse({
+            "ok": True,
+            "command": f"muscat-db scan {inst} {obsdate}",
+            "result": result,
+        })
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/jobs/lco-archive/ingest-date", response_class=JSONResponse)
+def jobs_lco_archive_ingest_date(payload: dict = Body(...)):
+    inst, obsdate = _validate_lco_dataset_action(payload)
+    try:
+        from muscat_db.database import ingest_date as _ingest_date
+
+        count = _ingest_date(str(_db_path()), inst, obsdate)
+        return JSONResponse({
+            "ok": True,
+            "command": f"muscat-db ingest-date {inst} {obsdate}",
+            "count": count,
+        })
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
 @app.get("/jobs", response_class=HTMLResponse)
 def jobs_page():
     phot.sync_jobs()
     fit.sync_jobs()
-    all_jobs = get_job_store().all()
+    all_jobs = _jobs_with_lco_archive_rows()
 
     # Discover fits completed on-disk outside the web UI.
     existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
     orphan_fits = fit._discover_orphan_fits(existing_keys)
     if orphan_fits:
         all_jobs.extend(orphan_fits)
-        all_jobs.sort(key=lambda j: j.get("started_at", 0), reverse=True)
+    all_jobs.sort(key=lambda j: j.get("started_at", 0), reverse=True)
 
     for j in all_jobs:
         j["elapsed"] = _live_elapsed(j)
@@ -3248,7 +3419,7 @@ _last_running: set[str] = set()
 def jobs_status(active_only: bool = False):
     phot.sync_jobs()
     fit.sync_jobs()
-    all_jobs = get_job_store().all()
+    all_jobs = _jobs_with_lco_archive_rows()
 
     if active_only:
         # Lightweight path for the site-wide loading indicator. Reports only
@@ -3271,11 +3442,20 @@ def jobs_status(active_only: bool = False):
         all_jobs.extend(orphan_fits)
 
     global _last_running
-    current_running = {j["key"] for j in all_jobs if j["state"] in ("running", "cancelling")}
+    current_running = {j["key"] for j in all_jobs if j["state"] in ("running", "cancelling", "pending")}
     finished = {}
     for j in all_jobs:
-        if j["key"] in _last_running and j["key"] not in current_running:
+        is_terminal_lco_archive = (
+            j.get("type") == "lco_archive_download"
+            and j.get("state") in {"done", "error", "cancelled"}
+        )
+        if (j["key"] in _last_running and j["key"] not in current_running) or is_terminal_lco_archive:
             finished[j["key"]] = {
+                "key": j["key"],
+                "type": j.get("type", ""),
+                "inst": j.get("inst", ""),
+                "date": j.get("date", ""),
+                "target": j.get("target", ""),
                 "state": j["state"],
                 "elapsed": j["elapsed"],
                 "error_desc": j.get("error_desc", "") or "",
@@ -3283,18 +3463,32 @@ def jobs_status(active_only: bool = False):
                 "started_at": j.get("started_at"),
                 "started_at_str": _datetime_from_timestamp(int(j["started_at"])) if j.get("started_at") else "—",
                 "user_name": j.get("user_name", ""),
+                "run_name": j.get("run_name", ""),
+                "details": j.get("details", ""),
+                "action_inst": j.get("action_inst", ""),
+                "action_date": j.get("action_date", ""),
+                "can_run_dataset_action": bool(j.get("can_run_dataset_action")),
             }
     _last_running = current_running
     running = [
         {
             "key": j["key"],
+            "type": j.get("type", ""),
+            "inst": j.get("inst", ""),
+            "date": j.get("date", ""),
+            "target": j.get("target", ""),
             "state": j["state"],
             "elapsed": _live_elapsed(j),
             "started_at": j.get("started_at"),
             "started_at_str": _datetime_from_timestamp(int(j["started_at"])) if j.get("started_at") else "—",
             "user_name": j.get("user_name", ""),
+            "run_name": j.get("run_name", ""),
+            "details": j.get("details", ""),
+            "action_inst": j.get("action_inst", ""),
+            "action_date": j.get("action_date", ""),
+            "can_run_dataset_action": bool(j.get("can_run_dataset_action")),
         }
-        for j in all_jobs if j["state"] in ("running", "cancelling")
+        for j in all_jobs if j["state"] in ("running", "cancelling", "pending")
     ]
     counts = {"running": 0, "done": 0, "error": 0, "cancelled": 0, "pending": 0}
     for j in all_jobs:

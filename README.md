@@ -67,7 +67,8 @@ API key is irrelevant for those instruments.
 
 The `/lco` page integrates with the LCO Observation Portal for scheduling
 MUSCAT and Sinistro observations, optimizing pointing offsets/orientations, and downloading
-reduced data from the LCO archive. The feature is split into three workflows:
+reduced data from the LCO archive (requires funpack: "apt install libcfitsio-bin"). 
+The feature is split into three workflows:
 
 - **Schedule Observations**: Load your proposals, select target and planet, 
   generate batch transit windows across a UTC date range, configure imaging 

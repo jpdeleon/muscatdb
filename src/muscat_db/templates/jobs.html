@@ -10,6 +10,7 @@
 <div class="jobs-summary" id="type-summary">
   <span class="job-count" data-type="photometry" onclick="toggleType(this, 'photometry')">Photometry</span>
   <span class="job-count" data-type="transit_fit" onclick="toggleType(this, 'transit_fit')">Transit Fit</span>
+  <span class="job-count" data-type="lco_archive_download" onclick="toggleType(this, 'lco_archive_download')">LCO Archive</span>
 </div>
 <div class="jobs-summary" id="inst-summary"></div>
 
@@ -19,15 +20,36 @@
   {% for j in job_list %}
     {% set link_url -%}
       {%- if j.type == 'photometry' -%}/photometry?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}{% if j.run_id %}&run={{ j.run_id }}{% endif %}
-      {%- else -%}/transit-fit?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}{% if j.run_id %}&run={{ j.run_id }}{% endif %}
+      {%- elif j.type == 'transit_fit' -%}/transit-fit?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}{% if j.run_id %}&run={{ j.run_id }}{% endif %}
+      {%- else -%}/lco/archive
       {%- endif -%}
     {%- endset %}
     <tr class="job-row" data-key="{{ j.key }}" data-status="{{ j.state }}" data-type="{{ j.type }}"
         data-started-at="{{ j.started_at | default(0) | int }}"
         data-user-name="{{ j.user_name or '' }}"
-        data-search="{{ (j.target + ' ' + (j.run_name or '') + ' ' + j.inst + ' ' + j.date + ' ' + j.type + ' ' + (j.user_name or '')) | lower }}">
+        data-action-inst="{{ j.action_inst or '' }}"
+        data-action-date="{{ j.action_date or '' }}"
+        data-lco-followup-ready="{% if j.type == 'lco_archive_download' and j.can_run_dataset_action %}1{% else %}0{% endif %}"
+        data-search="{{ (j.target + ' ' + (j.run_name or '') + ' ' + j.inst + ' ' + j.date + ' ' + j.type + ' ' + (j.user_name or '') + ' ' + (j.details or '')) | lower }}">
+      {% if j.type == 'lco_archive_download' %}
+      <td class="job-actions lco-actions-cell">
+        {% if j.can_run_dataset_action %}
+          <button class="btn sm"
+                  data-inst="{{ j.action_inst }}"
+                  data-date="{{ j.action_date }}"
+                  onclick="runLcoArchiveCommand(this, 'scan')"
+                  title="muscat-db scan {{ j.action_inst }} {{ j.action_date }}">Scan</button>
+          <button class="btn sm"
+                  data-inst="{{ j.action_inst }}"
+                  data-date="{{ j.action_date }}"
+                  onclick="runLcoArchiveCommand(this, 'ingest-date')"
+                  title="muscat-db ingest-date {{ j.action_inst }} {{ j.action_date }}">Ingest</button>
+        {% endif %}
+        <button class="btn sm hide-btn" onclick="hideRow(this, '{{ j.key }}')" title="Hide this row">Hide</button>
+      </td>
+      {% endif %}
       <td><strong><a href="{{ link_url }}">{{ j.target }}</a></strong></td>
-      <td class="mono" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ j.run_name or '' }}">{{ j.run_name or '—' }}</td>
+      <td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ j.run_name or '' }}">{{ j.run_name or '—' }}</td>
       <td class="inst-cell"><span class="badge badge-blue">{{ j.inst }}</span></td>
       <td class="mono">{{ j.date }}</td>
       <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">{{ j.user_name or '—' }}</td>
@@ -61,7 +83,11 @@
         {% if j.state == 'error' and j.error_desc %}
           <span class="error-desc mono" style="color:var(--red);margin-left:0.5rem;">{{ j.error_desc }}</span>
         {% endif %}
+        {% if j.details %}
+          <span class="details-text mono" style="color:var(--text-dim);margin-left:0.5rem;" title="{{ j.details }}">{{ j.details }}</span>
+        {% endif %}
       </td>
+      {% if j.type != 'lco_archive_download' %}
       <td class="job-actions">
         {% if j.state == 'running' %}
           <button class="btn sm danger"
@@ -89,6 +115,7 @@
         <button class="btn sm log-btn" onclick="viewLog(this, '{{ j.type }}', '{{ j.inst }}', '{{ j.date }}', '{{ j.target }}', '{{ j.run_id }}')" title="View log" style="margin-left:0.25rem;">📄 Log</button>
         <button class="btn sm hide-btn" onclick="hideRow(this, '{{ j.key }}')" title="Hide this row" style="margin-left:0.25rem;">✕</button>
       </td>
+      {% endif %}
     </tr>
     <tr class="log-row" style="display:none;">
       <td colspan="10">
@@ -115,6 +142,7 @@
   <span id="search-status" class="hint"></span>
 </div>
 
+{% set lco_archive_jobs = jobs | selectattr('type', 'equalto', 'lco_archive_download') | list %}
 {% if jobs %}
 <details class="adv job-section" id="photometry-jobs-section" open data-job-section="photometry">
   <summary>Photometry Jobs</summary>
@@ -165,11 +193,37 @@
   </table>
   </div>
 </details>
-{% else %}
-<div style="background:var(--surface);border:1px dashed var(--border);border-radius:10px;padding:2rem;text-align:center;margin-top:1rem;">
-  <p style="color:var(--text-dim);">No jobs have been launched yet.</p>
-</div>
 {% endif %}
+
+<details class="adv job-section" id="lco-archive-jobs-section" open data-job-section="lco_archive_download" data-always-visible="1" style="margin-top:1rem;">
+  <summary>LCO Archive Downloads</summary>
+  <div class="csv-wrap">
+  <table class="jobs-table" data-job-type="lco_archive_download">
+    <thead>
+      <tr>
+        <th class="lco-actions-head">Actions</th>
+        <th data-sort-attr="target" class="sortable">Target</th>
+        <th data-sort-attr="run_name" class="sortable">Progress</th>
+        <th data-sort-attr="instrument" class="sortable">Instrument</th>
+        <th data-sort-attr="obsdate" class="sortable">Date Obs</th>
+        <th data-sort-attr="userName" class="sortable">User</th>
+        <th data-sort-attr="startedAt" data-sort-type="number" class="sortable">Date Run</th>
+        <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
+        <th data-sort-attr="state" class="sortable">Status</th>
+        <th>Details</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{ render_job_rows(lco_archive_jobs) }}
+      <tr class="empty-job-row" data-empty-for="lco_archive_download" {% if lco_archive_jobs %}style="display:none;"{% endif %}>
+        <td colspan="10" style="color:var(--text-dim);text-align:center;padding:1rem;">
+          No LCO archive downloads are currently tracked in this server process.
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</details>
 
 <div id="hide-confirm-overlay">
   <div class="modal-box">
@@ -214,6 +268,27 @@
   var activeType = '';
   var activeInst = '';
   var activeRecent = '';
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function addInstFilterIfMissing(inst) {
+    if (!inst) return;
+    var container = document.getElementById('inst-summary');
+    if (!container || container.querySelector('.job-count[data-inst="' + inst + '"]')) return;
+    var span = document.createElement('span');
+    span.className = 'job-count';
+    span.setAttribute('data-inst', inst);
+    span.onclick = function() { toggleInst(this, inst); };
+    span.textContent = inst;
+    container.appendChild(span);
+  }
 
   // Get today's date at midnight for comparison
   function getTodayMidnight() {
@@ -271,16 +346,74 @@
     return null;
   }
 
+  function ensureLcoArchiveRow(job) {
+    if (!job || job.type !== 'lco_archive_download') return null;
+    var existing = rowByKey(job.key);
+    if (existing) return existing;
+
+    var tbody = document.querySelector('table[data-job-type="lco_archive_download"] tbody');
+    if (!tbody) return null;
+    var row = document.createElement('tr');
+    row.className = 'job-row';
+    row.setAttribute('data-key', job.key || '');
+    row.setAttribute('data-status', job.state || '');
+    row.setAttribute('data-type', 'lco_archive_download');
+    row.setAttribute('data-started-at', Math.round(job.started_at || 0));
+    row.setAttribute('data-user-name', job.user_name || '');
+    row.setAttribute('data-action-inst', job.action_inst || '');
+    row.setAttribute('data-action-date', job.action_date || '');
+    row.setAttribute('data-lco-followup-ready', job.can_run_dataset_action ? '1' : '0');
+    row.setAttribute('data-search', [
+      job.target || '',
+      job.run_name || '',
+      job.inst || '',
+      job.date || '',
+      'lco_archive_download',
+      job.user_name || '',
+      job.details || ''
+    ].join(' ').toLowerCase());
+    row.innerHTML =
+      '<td class="job-actions lco-actions-cell"></td>' +
+      '<td><strong><a href="/lco/archive">' + escapeHtml(job.target || 'LCO archive') + '</a></strong></td>' +
+      '<td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></td>' +
+      '<td class="inst-cell"><span class="badge badge-blue">' + escapeHtml(job.inst || 'lco') + '</span></td>' +
+      '<td class="mono">' + escapeHtml(job.date || 'mixed') + '</td>' +
+      '<td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">' + escapeHtml(job.user_name || '—') + '</td>' +
+      '<td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">' + escapeHtml(job.started_at_str || '—') + '</td>' +
+      '<td class="mono elapsed-cell" data-elapsed="' + escapeHtml(job.elapsed || 0) + '">' + escapeHtml(formatElapsed(job.elapsed || 0)) + '</td>' +
+      '<td class="status-cell"></td>' +
+      '<td class="details-cell" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;"><span class="badge badge-blue">archive</span></td>';
+
+    var empty = tbody.querySelector('tr.empty-job-row');
+    tbody.insertBefore(row, empty || null);
+    var logRow = document.createElement('tr');
+    logRow.className = 'log-row';
+    logRow.style.display = 'none';
+    logRow.innerHTML = '<td colspan="10"><pre class="log-content">Loading…</pre></td>';
+    tbody.insertBefore(logRow, empty || null);
+    allRows.push(row);
+    addInstFilterIfMissing(job.inst || '');
+    replaceStatusBadge(row, job.state || '');
+    updateRunName(row, job.run_name || '');
+    updateDetails(row, job.details || '');
+    replaceActions(row, job.state || '', job.key || '', 'lco_archive_download', job.inst || '', job.date || '', job.target || '', '');
+    return row;
+  }
+
   function updateSectionVisibility() {
     allSections.forEach(function(section) {
       var type = section.getAttribute('data-job-section') || '';
+      var alwaysVisible = section.getAttribute('data-always-visible') === '1';
       var rows = Array.from(section.querySelectorAll('tbody tr.job-row'));
       var anyVisible = rows.some(function(r) { return r.style.display !== 'none'; });
+      section.querySelectorAll('tbody tr.empty-job-row').forEach(function(row) {
+        row.style.display = anyVisible ? 'none' : '';
+      });
       if (activeType && activeType !== type) {
         section.style.display = 'none';
         return;
       }
-      section.style.display = anyVisible ? '' : 'none';
+      section.style.display = (anyVisible || alwaysVisible) ? '' : 'none';
     });
   }
 
@@ -302,6 +435,21 @@
     var td = row.querySelector('td.job-actions');
     if (!td) return;
     runId = runId || '';
+    if (type === 'lco_archive_download') {
+      var actionInst = row.getAttribute('data-action-inst') || '';
+      var actionDate = row.getAttribute('data-action-date') || '';
+      var htmlLco = '';
+      if (state === 'done' && actionInst && actionDate) {
+        row.setAttribute('data-lco-followup-ready', '1');
+        htmlLco += '<button class="btn sm" data-inst="' + actionInst + '" data-date="' + actionDate + '" onclick="runLcoArchiveCommand(this, \'scan\')" title="muscat-db scan ' + actionInst + ' ' + actionDate + '">Scan</button>';
+        htmlLco += '<button class="btn sm" data-inst="' + actionInst + '" data-date="' + actionDate + '" onclick="runLcoArchiveCommand(this, \'ingest-date\')" title="muscat-db ingest-date ' + actionInst + ' ' + actionDate + '">Ingest</button>';
+      } else {
+        row.setAttribute('data-lco-followup-ready', '0');
+      }
+      htmlLco += '<button class="btn sm hide-btn" onclick="hideRow(this, \'' + key + '\')" title="Hide this row">Hide</button>';
+      td.innerHTML = htmlLco;
+      return;
+    }
     var cancelAttrs = 'data-key="' + key + '" data-type="' + type + '" data-inst="' + inst + '" data-date="' + date + '" data-target="' + target + '" data-run="' + runId + '"';
     var html = '';
     if (state === 'running') {
@@ -330,6 +478,32 @@
       span.style.cssText = 'color:var(--red);font-size:0.8rem;font-family:monospace;margin-left:0.3rem;';
       span.textContent = text;
       td.appendChild(span);
+    }
+  }
+
+  function updateRunName(row, text) {
+    if (text == null) return;
+    var td = row.querySelector('.run-name-cell');
+    if (!td) return;
+    td.textContent = text || '—';
+    td.title = text || '';
+  }
+
+  function updateDetails(row, text) {
+    if (text == null) return;
+    var td = row.querySelector('.details-cell');
+    if (!td) return;
+    var span = td.querySelector('.details-text');
+    if (!span && text) {
+      span = document.createElement('span');
+      span.className = 'details-text mono';
+      span.style.cssText = 'color:var(--text-dim);margin-left:0.5rem;';
+      td.appendChild(span);
+    }
+    if (span) {
+      span.textContent = text || '';
+      span.title = text || '';
+      span.style.display = text ? '' : 'none';
     }
   }
 
@@ -403,8 +577,11 @@
       }
       if (ok && activeStatus) {
         var s = r.getAttribute('data-status');
+        var keepLcoFollowupVisible = activeStatus === 'running'
+          && r.getAttribute('data-type') === 'lco_archive_download'
+          && r.getAttribute('data-lco-followup-ready') === '1';
         if (activeStatus === 'running') {
-          ok = (s === 'running' || s === 'cancelling');
+          ok = (s === 'running' || s === 'cancelling' || keepLcoFollowupVisible);
         } else {
           ok = s === activeStatus;
         }
@@ -535,15 +712,53 @@
       .catch(function(err) { pre.textContent = 'Error: ' + err.message; });
   };
 
+  window.runLcoArchiveCommand = function(btn, action) {
+    var inst = btn.getAttribute('data-inst') || '';
+    var date = btn.getAttribute('data-date') || '';
+    var endpoint = action === 'ingest-date' ? '/jobs/lco-archive/ingest-date' : '/jobs/lco-archive/scan';
+    var label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Running…';
+    fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date })
+    })
+    .then(function(r) {
+      return r.json().then(function(d) {
+        if (!r.ok || !d.ok) throw new Error(d.error || d.detail || 'Command failed');
+        return d;
+      });
+    })
+    .then(function(d) {
+      btn.textContent = 'Done';
+      window.alert((d.command || action) + ' completed');
+    })
+    .catch(function(err) {
+      window.alert('Error: ' + err.message);
+      btn.disabled = false;
+      btn.textContent = label;
+    });
+  };
+
   // ── Live polling (in-place updates, no page reload) ────────────────────
-  function pollRunning() {
-    // Client-side elapsed bump
-    document.querySelectorAll('.job-row[data-status="running"] .elapsed-cell, .job-row[data-status="cancelling"] .elapsed-cell').forEach(function(cell) {
+  function refreshLiveElapsed() {
+    var now = Math.floor(Date.now() / 1000);
+    document.querySelectorAll('.job-row[data-status="running"] .elapsed-cell, .job-row[data-status="cancelling"] .elapsed-cell, .job-row[data-status="pending"] .elapsed-cell').forEach(function(cell) {
+      var row = cell.closest('.job-row');
+      var startedAt = row ? parseInt(row.getAttribute('data-started-at') || '0', 10) : 0;
       var e = parseInt(cell.getAttribute('data-elapsed') || '0', 10);
-      cell.setAttribute('data-elapsed', ++e);
+      if (startedAt > 0) {
+        e = Math.max(0, now - startedAt);
+      } else {
+        e += 1;
+      }
+      cell.setAttribute('data-elapsed', e);
       cell.textContent = formatElapsed(e);
     });
+  }
 
+  function pollRunning() {
     fetch('/jobs/status')
       .then(function(r) { return r.json(); })
       .then(function(data) {
@@ -552,9 +767,14 @@
           if (!data.finished.hasOwnProperty(key)) continue;
           var f = data.finished[key];
           var row = rowByKey(key);
-          if (!row || row.getAttribute('data-status') === f.state) continue;
+          if (!row && f.type === 'lco_archive_download') row = ensureLcoArchiveRow(f);
+          if (!row) continue;
+          var rowType = row.getAttribute('data-type') || f.type || '';
+          if (row.getAttribute('data-status') === f.state && rowType !== 'lco_archive_download') continue;
 
           row.setAttribute('data-status', f.state);
+          if (f.action_inst != null) row.setAttribute('data-action-inst', f.action_inst || '');
+          if (f.action_date != null) row.setAttribute('data-action-date', f.action_date || '');
           replaceStatusBadge(row, f.state);
           var td = row.querySelector('.elapsed-cell');
           if (td && f.elapsed != null) {
@@ -574,6 +794,8 @@
             row.setAttribute('data-user-name', f.user_name);
           }
           if (f.error_desc) updateErrorDesc(row, f.error_desc);
+          updateRunName(row, f.run_name);
+          updateDetails(row, f.details);
 
           // Get inst/date/target from log-btn onclick
           var logBtn = row.querySelector('.log-btn');
@@ -582,15 +804,16 @@
             var m = logBtn.getAttribute('onclick').match(/'([^']+)'/g);
             if (m) parts = m.map(function(x) { return x.replace(/'/g, ''); });
           }
-          var type = parts[0] || row.getAttribute('data-type') || '';
-          type = type === 'transit_fit' ? 'transit_fit' : 'photometry';
-          replaceActions(row, f.state, key, type, parts[1] || '', parts[2] || '', parts[3] || '', parts[4] || '');
+          var type = rowType || parts[0] || '';
+          if (type !== 'transit_fit' && type !== 'lco_archive_download') type = 'photometry';
+          replaceActions(row, f.state, key, type, f.inst || parts[1] || '', f.date || parts[2] || '', f.target || parts[3] || '', parts[4] || '');
         }
 
         // Update running jobs in-place
         if (data.running) {
           data.running.forEach(function(rj) {
             var row = rowByKey(rj.key);
+            if (!row && rj.type === 'lco_archive_download') row = ensureLcoArchiveRow(rj);
             if (row) {
               var dateRunTd = row.querySelector('.date-run-cell');
               if (dateRunTd && rj.started_at_str) {
@@ -599,6 +822,10 @@
               if (rj.started_at) {
                 row.setAttribute('data-started-at', Math.round(rj.started_at));
               }
+              if (rj.action_inst != null) row.setAttribute('data-action-inst', rj.action_inst || '');
+              if (rj.action_date != null) row.setAttribute('data-action-date', rj.action_date || '');
+              updateRunName(row, rj.run_name);
+              updateDetails(row, rj.details);
               var userTd = row.querySelector('.user-cell');
               if (userTd && rj.user_name) {
                 userTd.textContent = rj.user_name;
@@ -614,8 +841,8 @@
                   var m = logBtn.getAttribute('onclick').match(/'([^']+)'/g);
                   if (m) parts = m.map(function(x) { return x.replace(/'/g, ''); });
                 }
-                var type = parts[0] || row.getAttribute('data-type') || '';
-                type = type === 'transit_fit' ? 'transit_fit' : 'photometry';
+                var type = row.getAttribute('data-type') || parts[0] || '';
+                if (type !== 'transit_fit' && type !== 'lco_archive_download') type = 'photometry';
                 replaceActions(row, rj.state, rj.key, type, parts[1] || '', parts[2] || '', parts[3] || '', parts[4] || '');
               }
             }
@@ -760,7 +987,7 @@
   });
   requestAnimationFrame(restoreSort);
 
-  ['photometry-jobs-section', 'transit-fit-jobs-section'].forEach(function(id) {
+  ['photometry-jobs-section', 'transit-fit-jobs-section', 'lco-archive-jobs-section'].forEach(function(id) {
     var el = document.getElementById(id);
     if (!el) return;
     var key = 'jobs:details:' + id;
@@ -774,9 +1001,10 @@
     });
   });
 
-  // Start polling
-  var hasRunning = document.querySelectorAll('.job-row[data-status="running"], .job-row[data-status="cancelling"]').length > 0;
-  if (hasRunning) setInterval(pollRunning, 3000);
+  // Poll while the Jobs page is open so archive downloads submitted from other
+  // pages can appear here even if no active row existed at initial page load.
+  setInterval(refreshLiveElapsed, 1000);
+  setInterval(pollRunning, 3000);
 })();
 </script>
 {% endblock %}
