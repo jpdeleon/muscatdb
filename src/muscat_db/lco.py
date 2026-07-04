@@ -109,6 +109,35 @@ def archive_search(filters: dict) -> dict:
     return _lco_api_request(url)
 
 
+# Safety cap so a single request-id fetch can't spin forever paginating a
+# pathologically large observation request.
+_ARCHIVE_MAX_FRAMES = 10_000
+
+
+def archive_search_all(filters: dict, max_frames: int = _ARCHIVE_MAX_FRAMES) -> dict:
+    """Search the LCO archive, following pagination until exhausted or capped.
+
+    The archive paginates ``frames/`` results (``next`` holds the fully-formed
+    next-page URL, already carrying the same query params). A single observation
+    request can span thousands of frames, so ``archive_search`` (one page) is not
+    enough to pull a whole dataset by ``request_id``. Stops at ``max_frames`` and
+    reports ``truncated`` so the caller can warn the user.
+    """
+    base_url = "https://archive-api.lco.global/frames/"
+    params = urllib.parse.urlencode({k: v for k, v in filters.items() if v})
+    url: str | None = f"{base_url}?{params}"
+    results: list[dict] = []
+    total: int | None = None
+    while url and len(results) < max_frames:
+        page = _lco_api_request(url)
+        if total is None:
+            total = page.get("count")
+        results.extend(page.get("results") or [])
+        url = page.get("next")
+    truncated = bool(url) and len(results) >= max_frames
+    return {"count": total, "results": results[:max_frames], "truncated": truncated}
+
+
 def infer_archive_instrument(frame: dict) -> str:
     """Infer the muscat-db instrument name from LCO archive frame metadata."""
     site = str(frame.get("SITEID") or "").lower()

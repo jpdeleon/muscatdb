@@ -1908,7 +1908,34 @@ def api_lco_archive_frames(
     end: str = "",
     limit: str = "50",
     fuzzy_name: str = "",
+    request_id: str = "",
 ):
+    # Request-id path: a single observation request (e.g. the id in
+    # https://observe.lco.global/requests/4236675) fully specifies a dataset on
+    # its own, so it short-circuits the coordinate/name search and pulls every
+    # frame for that request (paginated) filtered only by reduction level.
+    req = request_id.strip()
+    if req:
+        if not req.isdigit():
+            return JSONResponse(
+                {"ok": False, "error": f"Request ID must be numeric, got '{req}'."},
+                status_code=400,
+            )
+        # limit=1000 is the archive's max page size; use it so a multi-thousand
+        # frame request paginates in a few calls rather than dozens.
+        req_filters = {"request_id": req, "reduction_level": reduction_level, "limit": "1000"}
+        try:
+            result = lco.archive_search_all(req_filters)
+            rows = result.get("results") or []
+            if isinstance(rows, list):
+                annotated, dataset_count = _annotate_lco_archive_results(instrument, rows)
+                result = dict(result)
+                result["results"] = annotated
+                result["dataset_count"] = dataset_count
+            return JSONResponse({"ok": True, "match_mode": "request_id", "request_id": req, **result})
+        except lco.LcoError as e:
+            return _lco_error_response(e)
+
     use_fuzzy = fuzzy_name.strip().lower() in ("1", "true", "yes", "on")
     tel_class = TELID if TELID in ("0m4", "1m0", "2m0") else ""
     filters = {

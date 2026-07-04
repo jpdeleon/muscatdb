@@ -436,6 +436,43 @@ def test_lco_archive_frames_search(monkeypatch):
     assert r.json()["results"][0]["archive_instrument"] == "muscat3"
 
 
+def test_lco_archive_frames_by_request_id(monkeypatch):
+    captured = {}
+
+    def _fake_search_all(filters, max_frames=5000):
+        captured.update(filters)
+        return {
+            "count": 2,
+            "truncated": False,
+            "results": [
+                {"filename": "coj2m002-ep07-20260703-0874-e91.fits.fz", "SITEID": "coj", "TELID": "2m0a", "INSTRUME": "ep07", "OBJECT": "TOI-4381", "DATE_OBS": "2026-07-03T10:00:00"},
+                {"filename": "coj2m002-ep08-20260703-0874-e91.fits.fz", "SITEID": "coj", "TELID": "2m0a", "INSTRUME": "ep08", "OBJECT": "TOI-4381", "DATE_OBS": "2026-07-03T10:00:00"},
+            ],
+        }
+
+    # Should not touch the coordinate resolver at all on the request-id path.
+    def _boom(name):
+        raise AssertionError("coordinate resolution must be skipped for request_id")
+
+    monkeypatch.setattr("muscat_db.lco.archive_search_all", _fake_search_all)
+    monkeypatch.setattr("muscat_db.web._resolve_archive_coords", _boom)
+
+    r = TestClient(app).get("/api/lco/archive/frames", params={"request_id": "4236675", "reduction_level": "91"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["match_mode"] == "request_id"
+    assert data["request_id"] == "4236675"
+    assert data["count"] == 2
+    assert captured == {"request_id": "4236675", "reduction_level": "91", "limit": "1000"}
+    assert data["results"][0]["archive_instrument"] == "muscat4"
+
+
+def test_lco_archive_frames_request_id_must_be_numeric():
+    r = TestClient(app).get("/api/lco/archive/frames", params={"request_id": "4236675abc"})
+    assert r.status_code == 400
+    assert r.json()["ok"] is False
+
+
 def test_lco_archive_frames_coordinate_primary_by_default(monkeypatch):
     captured = {}
 
