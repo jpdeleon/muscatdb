@@ -746,16 +746,6 @@
     </div>
   </div>
 </div>
-
-<div id="message-modal">
-  <div class="modal-box">
-    <p id="message-modal-title" style="margin-bottom:0.75rem;font-size:0.95rem;font-weight:600;"></p>
-    <p id="message-modal-text" style="color:var(--text-dim);font-size:0.85rem;margin-bottom:1.5rem;line-height:1.5;"></p>
-    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
-      <button class="btn" onclick="closeMessageModal()">OK</button>
-    </div>
-  </div>
-</div>
 {% endblock %}
 
 {% block scripts %}
@@ -1743,9 +1733,9 @@
       var currentOpts = collectOptions();
       try {
         MuscatStorage.setJSON(BACKUP_KEY, currentOpts);
-        alert('Current values saved.');
+        window.showMessageModal('Success', 'Current values saved.');
       } catch (e) {
-        alert('Failed to save values.');
+        window.showMessageModal('Error', 'Failed to save values.');
       }
     });
   }
@@ -1817,9 +1807,9 @@
 
         saveOptions();
         updateChromaticForBands();
-        alert('Values restored.');
+        window.showMessageModal('Success', 'Values restored.');
       } else {
-        alert('No saved backup found to restore.');
+        window.showMessageModal('Notice', 'No saved backup found to restore.');
       }
     });
   }
@@ -2510,12 +2500,12 @@
         if (typeof window.showLoading === 'function') window.showLoading('Reloading…');
         setTimeout(function () { window.location.reload(); }, 800);
       } else {
-        alert('Delete failed: ' + (res.error || 'unknown error'));
+        window.showMessageModal('Error', 'Delete failed: ' + (res.error || 'unknown error'));
         deleteBtn.disabled = false;
         deleteBtn.textContent = '🗑 Delete Fit Results';
       }
     }).catch(function (err) {
-      alert('Delete failed: ' + err.message);
+      window.showMessageModal('Error', 'Delete failed: ' + err.message);
       deleteBtn.disabled = false;
       deleteBtn.textContent = '🗑 Delete Fit Results';
     });
@@ -2549,15 +2539,6 @@
     }
   })();
 
-  // ── Message Modal ────────────────────────────────────────────────────────
-  window.showMessageModal = function(title, text) {
-    document.getElementById('message-modal-title').textContent = title;
-    document.getElementById('message-modal-text').textContent = text;
-    document.getElementById('message-modal').classList.add('visible');
-  };
-  window.closeMessageModal = function() {
-    document.getElementById('message-modal').classList.remove('visible');
-  };
 
   // NASA Exoplanet Archive Query Handler
   var queryBtn = document.getElementById('archive-query-btn');
