@@ -29,6 +29,7 @@ def mock_db(monkeypatch):
     monkeypatch.setattr("muscat_db.transit_fit.sync_jobs", lambda: None)
     # Mock discover_orphan_fits so it doesn't load production files from disk
     monkeypatch.setattr("muscat_db.transit_fit._discover_orphan_fits", lambda existing: [])
+    monkeypatch.setattr("muscat_db.lco.archive_download_jobs", lambda: [])
     
     yield path
     try:
@@ -135,6 +136,209 @@ def test_jobs_status_elapsed_uses_latest_rerun_started_at(mock_db, monkeypatch):
     data = response.json()
     assert len(data["running"]) == 1
     assert data["running"][0]["elapsed"] == 30
+
+
+def test_jobs_page_always_shows_lco_archive_download_section(mock_db):
+    r = TestClient(app).get("/jobs")
+
+    assert r.status_code == 200
+    assert "LCO Archive Downloads" in r.text
+    assert 'id="lco-archive-jobs-section"' in r.text
+    assert 'data-always-visible="1"' in r.text
+    assert "No LCO archive downloads are currently tracked" in r.text
+
+
+def test_jobs_page_includes_lco_archive_download(mock_db, monkeypatch):
+    monkeypatch.setattr(
+        "muscat_db.lco.archive_download_jobs",
+        lambda: [{
+            "job_id": "abc123",
+            "state": "running",
+            "frames_total": 2628,
+            "frames_done": 1119,
+            "results": [],
+            "instruments": ["muscat3"],
+            "obsdates": ["260102"],
+            "objects": ["WASP-12"],
+            "dest_dirs": ["/data/MuSCAT3/260102"],
+            "started_at": 1700000000.0,
+            "finished_at": None,
+            "error": None,
+        }],
+    )
+    r = TestClient(app).get("/jobs")
+    assert r.status_code == 200
+    assert "LCO Archive Downloads" in r.text
+    assert 'data-type="lco_archive_download"' in r.text
+    assert "1119/2628 frames" in r.text
+    assert "/data/MuSCAT3/260102" in r.text
+    assert "WASP-12" in r.text
+
+
+def test_jobs_page_lco_archive_done_row_has_scan_ingest_buttons(mock_db, monkeypatch):
+    monkeypatch.setattr(
+        "muscat_db.lco.archive_download_jobs",
+        lambda: [{
+            "job_id": "abc123",
+            "state": "done",
+            "frames_total": 2,
+            "frames_done": 2,
+            "phase": "done",
+            "funpack_total": 2,
+            "funpack_done": 2,
+            "results": [],
+            "funpack_results": [{"status": "unpacked"}, {"status": "exists"}],
+            "instruments": ["muscat3"],
+            "obsdates": ["260102"],
+            "objects": ["WASP-12"],
+            "dest_dirs": ["/data/MuSCAT3/260102"],
+            "started_at": 1700000000.0,
+            "finished_at": 1700000010.0,
+            "error": None,
+        }],
+    )
+    r = TestClient(app).get("/jobs")
+    assert r.status_code == 200
+    assert "muscat-db scan muscat3 260102" in r.text
+    assert "muscat-db ingest-date muscat3 260102" in r.text
+    assert "lco-actions-head" in r.text
+    assert "lco-actions-cell" in r.text
+    assert 'data-lco-followup-ready="1"' in r.text
+    assert "runLcoArchiveCommand(this, 'scan')" in r.text
+    assert "runLcoArchiveCommand(this, 'ingest-date')" in r.text
+
+
+def test_jobs_page_persists_lco_archive_done_row_across_refresh(mock_db, monkeypatch):
+    completed_job = {
+        "job_id": "abc123",
+        "state": "done",
+        "frames_total": 2,
+        "frames_done": 2,
+        "phase": "done",
+        "funpack_total": 2,
+        "funpack_done": 2,
+        "results": [],
+        "funpack_results": [{"status": "unpacked"}, {"status": "exists"}],
+        "instruments": ["muscat3"],
+        "obsdates": ["260102"],
+        "objects": ["WASP-12"],
+        "dest_dirs": ["/data/MuSCAT3/260102"],
+        "started_at": 1700000000.0,
+        "finished_at": 1700000010.0,
+        "error": None,
+    }
+    monkeypatch.setattr("muscat_db.lco.archive_download_jobs", lambda: [completed_job])
+    first = TestClient(app).get("/jobs")
+    assert first.status_code == 200
+    assert "muscat-db scan muscat3 260102" in first.text
+
+    monkeypatch.setattr("muscat_db.lco.archive_download_jobs", lambda: [])
+    refreshed = TestClient(app).get("/jobs")
+
+    assert refreshed.status_code == 200
+    assert "muscat-db scan muscat3 260102" in refreshed.text
+    assert "muscat-db ingest-date muscat3 260102" in refreshed.text
+    assert 'data-key="lco_archive_download:abc123"' in refreshed.text
+
+
+def test_jobs_status_includes_lco_archive_download(mock_db, monkeypatch):
+    monkeypatch.setattr(
+        "muscat_db.lco.archive_download_jobs",
+        lambda: [{
+            "job_id": "abc123",
+            "state": "running",
+            "frames_total": 2628,
+            "frames_done": 1119,
+            "results": [],
+            "instruments": ["muscat3"],
+            "obsdates": ["260102"],
+            "objects": ["WASP-12"],
+            "dest_dirs": ["/data/MuSCAT3/260102"],
+            "started_at": 1700000000.0,
+            "finished_at": None,
+            "error": None,
+        }],
+    )
+    data = TestClient(app).get("/jobs/status").json()
+    assert data["counts"]["running"] == 1
+    assert data["running"][0]["key"] == "lco_archive_download:abc123"
+    assert data["running"][0]["type"] == "lco_archive_download"
+    assert data["running"][0]["inst"] == "muscat3"
+    assert data["running"][0]["date"] == "260102"
+    assert data["running"][0]["target"] == "WASP-12"
+    assert data["running"][0]["run_name"] == "1119/2628 frames"
+    assert data["running"][0]["details"] == "/data/MuSCAT3/260102"
+    active = TestClient(app).get("/jobs/status?active_only=1").json()["active"]
+    assert active == [{"key": "lco_archive_download:abc123", "state": "running"}]
+
+
+def test_jobs_status_returns_terminal_lco_archive_even_if_baseline_missed(mock_db, monkeypatch):
+    monkeypatch.setattr("muscat_db.web._last_running", set())
+    monkeypatch.setattr(
+        "muscat_db.lco.archive_download_jobs",
+        lambda: [{
+            "job_id": "abc123",
+            "state": "done",
+            "frames_total": 2,
+            "frames_done": 2,
+            "phase": "done",
+            "funpack_total": 2,
+            "funpack_done": 2,
+            "results": [],
+            "funpack_results": [{"status": "unpacked"}, {"status": "exists"}],
+            "instruments": ["muscat3"],
+            "obsdates": ["260102"],
+            "objects": ["WASP-12"],
+            "dest_dirs": ["/data/MuSCAT3/260102"],
+            "started_at": 1700000000.0,
+            "finished_at": 1700000010.0,
+            "error": None,
+        }],
+    )
+
+    data = TestClient(app).get("/jobs/status").json()
+
+    finished = data["finished"]["lco_archive_download:abc123"]
+    assert finished["key"] == "lco_archive_download:abc123"
+    assert finished["type"] == "lco_archive_download"
+    assert finished["inst"] == "muscat3"
+    assert finished["date"] == "260102"
+    assert finished["target"] == "WASP-12"
+    assert finished["state"] == "done"
+    assert finished["run_name"] == "2/2 frames"
+    assert finished["details"] == "/data/MuSCAT3/260102"
+    assert finished["action_inst"] == "muscat3"
+    assert finished["action_date"] == "260102"
+    assert finished["can_run_dataset_action"] is True
+
+
+def test_jobs_lco_archive_scan_endpoint(mock_db, monkeypatch):
+    called = {}
+
+    def fake_scan(inst, obsdate):
+        called["args"] = (inst, obsdate)
+        return {"total": 2, "per_ccd": {0: 2}}
+
+    monkeypatch.setattr("muscat_db.scanner.scan_date", fake_scan)
+    r = TestClient(app).post("/jobs/lco-archive/scan", json={"inst": "muscat3", "date": "260102"})
+    assert r.status_code == 200
+    assert r.json()["command"] == "muscat-db scan muscat3 260102"
+    assert called["args"] == ("muscat3", "260102")
+
+
+def test_jobs_lco_archive_ingest_date_endpoint(mock_db, monkeypatch):
+    called = {}
+
+    def fake_ingest(db, inst, obsdate):
+        called["args"] = (db, inst, obsdate)
+        return 2
+
+    monkeypatch.setattr("muscat_db.database.ingest_date", fake_ingest)
+    r = TestClient(app).post("/jobs/lco-archive/ingest-date", json={"inst": "muscat3", "date": "260102"})
+    assert r.status_code == 200
+    assert r.json()["command"] == "muscat-db ingest-date muscat3 260102"
+    assert r.json()["count"] == 2
+    assert called["args"][1:] == ("muscat3", "260102")
 
 
 def test_target_without_name_redirects_to_database_search(mock_db):
@@ -331,13 +535,22 @@ def test_lco_pages_render_and_nav_links_it():
 def test_lco_config_reports_booleans_and_hides_token(monkeypatch):
     monkeypatch.setenv("LCO_API_TOKEN", "super-secret-token")
     monkeypatch.delenv("MUSCAT_LCO_DIR", raising=False)
+    monkeypatch.delenv("MUSCAT_DATA_DIR", raising=False)
     client = TestClient(app)
     r = client.get("/api/lco/config")
     assert r.status_code == 200
     body = r.json()
     assert body == {"ok": True, "token_configured": True,
-                    "download_root_configured": False, "submit_allowed": False}
+                    "download_root_configured": False, "download_root": None,
+                    "submit_allowed": False}
     assert "super-secret-token" not in r.text
+
+
+def test_lco_config_exposes_download_root_path(monkeypatch):
+    monkeypatch.setenv("MUSCAT_LCO_DIR", "/data")
+    body = TestClient(app).get("/api/lco/config").json()
+    assert body["download_root_configured"] is True
+    assert body["download_root"] == "/data"
 
 
 def test_lco_proposals_proxied(monkeypatch):
@@ -661,6 +874,87 @@ def test_lco_archive_download_per_file_results(monkeypatch):
     assert r.status_code == 200
     assert r.json()["results"][0]["status"] == "downloaded"
     assert r.json()["results"][0]["instrument"] == "muscat3"
+
+
+def test_lco_archive_download_can_start_background_job(monkeypatch):
+    def fake_start(frames, overwrite=False):
+        assert overwrite is True
+        assert frames[0]["filename"] == "ogg2m001-ep05-20260102-0001-e91.fits.fz"
+        return {
+            "job_id": "job123",
+            "state": "pending",
+            "frames_total": 1,
+            "frames_done": 0,
+            "results": [],
+            "started_at": 123.0,
+            "finished_at": None,
+            "error": None,
+        }
+
+    monkeypatch.setattr("muscat_db.lco.start_archive_download", fake_start)
+    r = TestClient(app).post("/api/lco/archive/download", json={
+        "background": True,
+        "overwrite": True,
+        "frames": [{"filename": "ogg2m001-ep05-20260102-0001-e91.fits.fz", "SITEID": "ogg", "TELID": "2m0a"}],
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["job_id"] == "job123"
+    assert body["state"] == "pending"
+    assert body["frames_done"] == 0
+
+
+def test_lco_archive_download_status_endpoint(mock_db, monkeypatch):
+    monkeypatch.setattr(
+        "muscat_db.lco.archive_download_status",
+        lambda job_id: {
+            "job_id": job_id,
+            "state": "done",
+            "frames_total": 1,
+            "frames_done": 1,
+            "results": [{"filename": "f.fits", "status": "downloaded"}],
+            "started_at": 123.0,
+            "finished_at": 124.0,
+            "error": None,
+        },
+    )
+    r = TestClient(app).get("/api/lco/archive/download/job123")
+    assert r.status_code == 200
+    assert r.json()["state"] == "done"
+    assert r.json()["results"][0]["filename"] == "f.fits"
+
+
+def test_lco_archive_download_status_endpoint_persists_done_job(mock_db, monkeypatch):
+    monkeypatch.setattr(
+        "muscat_db.lco.archive_download_status",
+        lambda job_id: {
+            "job_id": job_id,
+            "state": "done",
+            "frames_total": 2,
+            "frames_done": 2,
+            "phase": "done",
+            "funpack_total": 2,
+            "funpack_done": 2,
+            "results": [],
+            "funpack_results": [{"status": "unpacked"}, {"status": "exists"}],
+            "instruments": ["muscat3"],
+            "obsdates": ["260102"],
+            "objects": ["WASP-12"],
+            "dest_dirs": ["/data/MuSCAT3/260102"],
+            "started_at": 1700000000.0,
+            "finished_at": 1700000010.0,
+            "error": None,
+        },
+    )
+
+    r = TestClient(app).get("/api/lco/archive/download/abc123")
+
+    assert r.status_code == 200
+    monkeypatch.setattr("muscat_db.lco.archive_download_jobs", lambda: [])
+    refreshed = TestClient(app).get("/jobs")
+    assert "muscat-db scan muscat3 260102" in refreshed.text
+    assert 'data-key="lco_archive_download:abc123"' in refreshed.text
 
 
 def test_lco_schedule_page_has_obs_column_constraints_plotly_and_persistence():

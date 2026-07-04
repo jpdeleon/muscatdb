@@ -5,18 +5,33 @@ Helper module for interacting with the LCO API.
 from __future__ import annotations
 
 import datetime
+import concurrent.futures
 import hashlib
 import json
 import math
 import os
 import re
+import shutil
+import socket
+import subprocess
+import urllib.error
 import urllib.request
 import urllib.parse
 from pathlib import Path
+import threading
+import time
+import uuid
 
 # A frame filename / path segment: letters, digits and the punctuation LCO uses
 # in archive names. Excludes "/" and "\" so a crafted payload can't traverse.
 _SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._+:\-]+$")
+_DOWNLOAD_INSTRUMENT_DIRS = {
+    "sinistro": "Sinistro",
+    "muscat": "MuSCAT",
+    "muscat2": "MuSCAT2",
+    "muscat3": "MuSCAT3",
+    "muscat4": "MuSCAT4",
+}
 
 
 class LcoError(Exception):
@@ -49,9 +64,11 @@ def config_state() -> dict:
     token_configured = bool(os.environ.get("LCO_API_TOKEN"))
     download_root_configured = bool(os.environ.get("MUSCAT_LCO_DIR"))
     submit_flag_enabled = os.environ.get("MUSCAT_LCO_ALLOW_SUBMIT") == "1"
+    root = download_root()
     return {
         "token_configured": token_configured,
         "download_root_configured": download_root_configured,
+        "download_root": str(root) if root else None,
         "submit_allowed": token_configured and download_root_configured and submit_flag_enabled,
     }
 
@@ -197,20 +214,38 @@ def _safe_segment(value: str, kind: str) -> str:
     return v
 
 
-def frame_dest(instrument: str, obsdate: str, filename: str) -> Path:
-    """Return the destination path for a downloaded frame."""
+def download_root() -> Path | None:
+    """Return the configured download root, or ``None`` if unset.
+
+    Single source of truth for where archive frames land: ``MUSCAT_LCO_DIR``
+    takes precedence, then ``MUSCAT_DATA_DIR``. Kept side-effect free (no raise)
+    so callers that only want to *display* the location (config, UI hints) share
+    the same resolution as the code that actually writes files.
+    """
     lco_dir = os.environ.get("MUSCAT_LCO_DIR")
     if lco_dir:
-        root = Path(lco_dir)
-    else:
-        data_dir = os.environ.get("MUSCAT_DATA_DIR")
-        if not data_dir:
-            raise LcoError("MUSCAT_LCO_DIR or MUSCAT_DATA_DIR must be set", status=503)
-        root = Path(data_dir)
+        return Path(lco_dir)
+    data_dir = os.environ.get("MUSCAT_DATA_DIR")
+    if data_dir:
+        return Path(data_dir)
+    return None
+
+
+def download_instrument_dir(instrument: str) -> str:
+    """Return the case-sensitive archive-download directory for an instrument."""
+    key = (instrument or "").strip().lower()
+    return _DOWNLOAD_INSTRUMENT_DIRS.get(key, instrument)
+
+
+def frame_dest(instrument: str, obsdate: str, filename: str) -> Path:
+    """Return the destination path for a downloaded frame."""
+    root = download_root()
+    if root is None:
+        raise LcoError("MUSCAT_LCO_DIR or MUSCAT_DATA_DIR must be set", status=503)
     # Validate every segment so a crafted frame payload can't traverse out of the
     # download root (arbitrary file write via urlretrieve). Confirm the resolved
     # path stays under the root as a final backstop.
-    instrument = _safe_segment(instrument, "instrument")
+    instrument = _safe_segment(download_instrument_dir(instrument), "instrument")
     obsdate = _safe_segment(obsdate, "obsdate")
     filename = _safe_segment(filename, "filename")
     root = root.resolve()
@@ -240,52 +275,383 @@ def _validate_download_url(url: str) -> str:
     return url
 
 
+# Per-frame download timeout (seconds), applied to each socket read. A stalled
+# archive/S3 connection must fail fast rather than block the request thread — and
+# under `serve --reload`, the whole server — indefinitely. Overridable via env
+# for slow links or unusually large frames.
+_DOWNLOAD_TIMEOUT_S = float(os.environ.get("MUSCAT_LCO_DOWNLOAD_TIMEOUT_S", "120"))
+_DOWNLOAD_CHUNK = 1 << 20  # 1 MiB
+_FUNPACK_TIMEOUT_S = float(os.environ.get("MUSCAT_LCO_FUNPACK_TIMEOUT_S", "300"))
+
+
+def _download_to_file(url: str, dest: Path, timeout: float = _DOWNLOAD_TIMEOUT_S) -> None:
+    """Stream *url* to *dest* atomically, with a per-read socket timeout.
+
+    Writes to a sibling ``.part`` file and atomically renames on success so an
+    interrupted or stalled download never leaves a truncated ``.fits.fz`` in
+    place. ``timeout`` applies to each socket read, so a hung connection raises
+    ``TimeoutError`` instead of blocking forever (the bug that wedged the server
+    when a bare ``urlretrieve`` stalled mid-dataset).
+    """
+    tmp = dest.with_name(dest.name + ".part")
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            with open(tmp, "wb") as fh:
+                shutil.copyfileobj(response, fh, _DOWNLOAD_CHUNK)
+        tmp.replace(dest)
+    except (urllib.error.URLError, socket.timeout, TimeoutError, OSError):
+        # Drop the partial file so a retry starts clean; re-raise for the caller
+        # to record as this frame's error without aborting the rest of the batch.
+        tmp.unlink(missing_ok=True)
+        raise
+    finally:
+        # Belt-and-suspenders: on success tmp was renamed away; on any exit path
+        # ensure no stray .part lingers.
+        tmp.unlink(missing_ok=True)
+
+
+def _download_frame(frame: dict, overwrite: bool = False) -> dict:
+    filename = frame.get("filename") or frame.get("basename")
+    if not filename:
+        return {"filename": "unknown", "status": "error", "error": "missing filename"}
+
+    status = {"filename": filename, "status": "pending"}
+    try:
+        instrument = infer_archive_instrument(frame)
+        date_obs = (frame.get("DATE_OBS") or frame.get("DAY_OBS") or "").split("T")[0].replace("-", "")
+        if len(date_obs) >= 6:
+            obsdate = date_obs[2:]
+        else:
+            raise LcoError("Could not determine obsdate")
+
+        dest = frame_dest(instrument, obsdate, filename)
+        status["dest"] = str(dest)
+
+        if dest.exists() and not overwrite:
+            status["status"] = "exists"
+            return status
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        url = frame.get("url")
+        if not url:
+            status["status"] = "error"
+            status["error"] = "missing download url"
+            return status
+
+        _validate_download_url(url)
+        _download_to_file(url, dest)
+        status["status"] = "downloaded"
+
+    except LcoError as e:
+        status["status"] = "error"
+        status["error"] = e.message
+    except Exception as e:
+        status["status"] = "error"
+        status["error"] = str(e)
+    return status
+
+
 def download_frames(frames: list[dict], overwrite: bool = False) -> list[dict]:
     """Download frames from the LCO archive."""
-    results = []
-    for frame in frames:
-        filename = frame.get("filename") or frame.get("basename")
-        if not filename:
-            results.append({"filename": "unknown", "status": "error", "error": "missing filename"})
-            continue
-        
-        status = {"filename": filename, "status": "pending"}
-        results.append(status)
+    return [_download_frame(frame, overwrite=overwrite) for frame in frames]
 
+
+def _funpack_dest(path: Path) -> Path | None:
+    if path.name.endswith(".fits.fz"):
+        return path.with_name(path.name[:-3])
+    if path.name.endswith(".fz"):
+        return path.with_name(path.name[:-3])
+    return None
+
+
+def _funpack_file(path: Path, timeout: float = _FUNPACK_TIMEOUT_S) -> dict:
+    out = _funpack_dest(path)
+    status = {
+        "filename": path.name,
+        "src": str(path),
+        "dest": str(out) if out else "",
+        "status": "pending",
+    }
+    if out is None:
+        status["status"] = "skipped"
+        status["error"] = "not an fpacked FITS filename"
+        return status
+    if out.exists():
+        status["status"] = "exists"
+        return status
+    funpack = shutil.which("funpack")
+    if not funpack:
+        status["status"] = "error"
+        status["error"] = "funpack is not installed"
+        return status
+    try:
+        proc = subprocess.run(
+            [funpack, "-O", str(out), str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except OSError as exc:
+        status["status"] = "error"
+        status["error"] = str(exc)
+        return status
+    except subprocess.TimeoutExpired:
+        status["status"] = "error"
+        status["error"] = f"funpack timed out after {timeout:g}s"
+        return status
+    if proc.returncode != 0:
+        status["status"] = "error"
+        status["error"] = (proc.stderr or proc.stdout or f"funpack exited {proc.returncode}").strip()
+        return status
+    status["status"] = "unpacked"
+    return status
+
+
+def _funpack_paths(results: list[dict]) -> list[Path]:
+    paths = []
+    seen: set[str] = set()
+    for result in results:
+        if result.get("status") not in {"downloaded", "exists"}:
+            continue
+        dest = result.get("dest")
+        if not dest:
+            continue
+        path = Path(dest)
+        if str(path) in seen:
+            continue
+        seen.add(str(path))
+        if path.name.endswith(".fz"):
+            paths.append(path)
+    return paths
+
+
+def _funpack_download_results(results: list[dict]) -> list[dict]:
+    return [_funpack_file(path) for path in _funpack_paths(results)]
+
+
+_ARCHIVE_DOWNLOAD_WORKERS = max(1, int(os.environ.get("MUSCAT_LCO_ARCHIVE_DOWNLOAD_WORKERS", "1")))
+_ARCHIVE_DOWNLOAD_FRAME_WORKERS = max(1, int(os.environ.get("MUSCAT_LCO_ARCHIVE_DOWNLOAD_FRAME_WORKERS", "8")))
+_ARCHIVE_FUNPACK_WORKERS = max(1, int(os.environ.get("MUSCAT_LCO_ARCHIVE_FUNPACK_WORKERS", "2")))
+_ARCHIVE_DOWNLOAD_JOB_TTL_S = max(60, int(os.environ.get("MUSCAT_LCO_ARCHIVE_DOWNLOAD_JOB_TTL_S", "86400")))
+_ARCHIVE_DOWNLOAD_MAX_JOBS = max(10, int(os.environ.get("MUSCAT_LCO_ARCHIVE_DOWNLOAD_MAX_JOBS", "200")))
+_ARCHIVE_DOWNLOAD_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=_ARCHIVE_DOWNLOAD_WORKERS,
+    thread_name_prefix="lco-archive-download",
+)
+_ARCHIVE_DOWNLOAD_LOCK = threading.Lock()
+_ARCHIVE_DOWNLOAD_JOBS: dict[str, dict] = {}
+
+
+def _archive_download_snapshot(job: dict) -> dict:
+    frames = list(job["frames"])
+    results = [dict(r) for r in job["results"]]
+    funpack_results = [dict(r) for r in job.get("funpack_results", [])]
+    instruments: list[str] = []
+    obsdates: list[str] = []
+    objects: list[str] = []
+    dest_dirs: list[str] = []
+
+    def add_unique(values: list[str], value: str | None) -> None:
+        if value and value not in values:
+            values.append(value)
+
+    for frame in frames:
+        add_unique(objects, str(frame.get("OBJECT") or frame.get("object") or "").strip())
         try:
-            instrument = infer_archive_instrument(frame)
+            inst = infer_archive_instrument(frame)
+            add_unique(instruments, inst)
             date_obs = (frame.get("DATE_OBS") or frame.get("DAY_OBS") or "").split("T")[0].replace("-", "")
             if len(date_obs) >= 6:
                 obsdate = date_obs[2:]
-            else:
-                raise LcoError("Could not determine obsdate")
+                add_unique(obsdates, obsdate)
+                filename = frame.get("filename") or frame.get("basename")
+                if filename:
+                    add_unique(dest_dirs, str(frame_dest(inst, obsdate, filename).parent))
+        except Exception:
+            pass
 
-            dest = frame_dest(instrument, obsdate, filename)
+    for result in results:
+        dest = result.get("dest")
+        if dest:
+            add_unique(dest_dirs, str(Path(dest).parent))
 
-            if dest.exists() and not overwrite:
-                status["status"] = "exists"
-                continue
+    return {
+        "job_id": job["job_id"],
+        "state": job["state"],
+        "frames_total": job["frames_total"],
+        "frames_done": len(results),
+        "results": results,
+        "phase": job.get("phase", "pending"),
+        "funpack_total": job.get("funpack_total", 0),
+        "funpack_done": len(funpack_results),
+        "funpack_results": funpack_results,
+        "instruments": instruments,
+        "obsdates": obsdates,
+        "objects": objects,
+        "dest_dirs": dest_dirs,
+        "started_at": job["started_at"],
+        "finished_at": job.get("finished_at"),
+        "error": job.get("error"),
+    }
 
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            
-            url = frame.get("url")
-            if not url:
-                status["status"] = "error"
-                status["error"] = "missing download url"
-                continue
 
-            _validate_download_url(url)
-            urllib.request.urlretrieve(url, dest)
-            status["status"] = "downloaded"
+def _prune_archive_download_jobs(now: float | None = None, reserve_slots: int = 0) -> None:
+    now = now if now is not None else time.time()
+    finished = [
+        (jid, job.get("finished_at") or 0)
+        for jid, job in _ARCHIVE_DOWNLOAD_JOBS.items()
+        if job["state"] in {"done", "error"}
+    ]
+    for jid, finished_at in finished:
+        if finished_at and now - finished_at > _ARCHIVE_DOWNLOAD_JOB_TTL_S:
+            _ARCHIVE_DOWNLOAD_JOBS.pop(jid, None)
 
-        except LcoError as e:
-            status["status"] = "error"
-            status["error"] = e.message
-        except Exception as e:
-            status["status"] = "error"
-            status["error"] = str(e)
-            
-    return results
+    target_size = max(0, _ARCHIVE_DOWNLOAD_MAX_JOBS - reserve_slots)
+    overflow = len(_ARCHIVE_DOWNLOAD_JOBS) - target_size
+    if overflow > 0:
+        finished = [
+            (jid, job.get("finished_at") or 0)
+            for jid, job in _ARCHIVE_DOWNLOAD_JOBS.items()
+            if job["state"] in {"done", "error"}
+        ]
+        for jid, _finished_at in sorted(finished, key=lambda item: item[1])[:overflow]:
+            _ARCHIVE_DOWNLOAD_JOBS.pop(jid, None)
+
+
+def _run_archive_download_job(job_id: str) -> None:
+    with _ARCHIVE_DOWNLOAD_LOCK:
+        job = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
+        if job is None:
+            return
+        job["state"] = "running"
+        job["phase"] = "downloading"
+        frames = list(job["frames"])
+        overwrite = bool(job["overwrite"])
+
+    try:
+        max_workers = min(_ARCHIVE_DOWNLOAD_FRAME_WORKERS, len(frames))
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix=f"lco-archive-frame-{job_id}",
+        ) as pool:
+            futures = [pool.submit(_download_frame, frame, overwrite=overwrite) for frame in frames]
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                with _ARCHIVE_DOWNLOAD_LOCK:
+                    current = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
+                    if current is None:
+                        return
+                    current["results"].append(result)
+        with _ARCHIVE_DOWNLOAD_LOCK:
+            current = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
+            if current is None:
+                return
+            current["phase"] = "funpacking"
+            results = [dict(r) for r in current["results"]]
+            funpack_paths = _funpack_paths(results)
+            current["funpack_total"] = len(funpack_paths)
+        funpack_failed = False
+        if funpack_paths:
+            max_workers = min(_ARCHIVE_FUNPACK_WORKERS, len(funpack_paths))
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max_workers,
+                thread_name_prefix=f"lco-archive-funpack-{job_id}",
+            ) as pool:
+                futures = {pool.submit(_funpack_file, path): path for path in funpack_paths}
+                for future in concurrent.futures.as_completed(futures):
+                    path = futures[future]
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        result = {
+                            "filename": path.name,
+                            "src": str(path),
+                            "dest": str(_funpack_dest(path) or ""),
+                            "status": "error",
+                            "error": str(exc),
+                        }
+                    if result.get("status") == "error":
+                        funpack_failed = True
+                    with _ARCHIVE_DOWNLOAD_LOCK:
+                        current = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
+                        if current is None:
+                            return
+                        current["funpack_results"].append(result)
+        with _ARCHIVE_DOWNLOAD_LOCK:
+            current = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
+            if current is not None:
+                current["phase"] = "done"
+                current["state"] = "error" if funpack_failed else "done"
+                if funpack_failed:
+                    current["error"] = "One or more funpack commands failed"
+                current["finished_at"] = time.time()
+                _prune_archive_download_jobs(current["finished_at"])
+    except Exception as exc:
+        with _ARCHIVE_DOWNLOAD_LOCK:
+            current = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
+            if current is not None:
+                current["state"] = "error"
+                current["error"] = str(exc)
+                current["finished_at"] = time.time()
+                _prune_archive_download_jobs(current["finished_at"])
+
+
+def start_archive_download(frames: list[dict], overwrite: bool = False) -> dict:
+    """Queue an LCO archive download in a dedicated worker and return its state."""
+    if not isinstance(frames, list) or not frames:
+        raise LcoError("no frames selected", status=400)
+    job_id = uuid.uuid4().hex[:16]
+    now = time.time()
+    job = {
+        "job_id": job_id,
+        "state": "pending",
+        "frames": [dict(frame) for frame in frames],
+        "frames_total": len(frames),
+        "overwrite": overwrite,
+        "results": [],
+        "funpack_results": [],
+        "funpack_total": 0,
+        "phase": "pending",
+        "started_at": now,
+        "finished_at": None,
+        "error": None,
+    }
+    with _ARCHIVE_DOWNLOAD_LOCK:
+        _prune_archive_download_jobs(now, reserve_slots=1)
+        if len(_ARCHIVE_DOWNLOAD_JOBS) >= _ARCHIVE_DOWNLOAD_MAX_JOBS:
+            raise LcoError(
+                "Too many LCO archive download jobs are queued",
+                status=429,
+                detail=(
+                    f"At most {_ARCHIVE_DOWNLOAD_MAX_JOBS} archive download jobs are tracked "
+                    "in this server process. Wait for queued jobs to finish before submitting more."
+                ),
+            )
+        _ARCHIVE_DOWNLOAD_JOBS[job_id] = job
+        snapshot = _archive_download_snapshot(job)
+    _ARCHIVE_DOWNLOAD_EXECUTOR.submit(_run_archive_download_job, job_id)
+    return snapshot
+
+
+def archive_download_status(job_id: str) -> dict:
+    """Return the current state for a queued archive-download job."""
+    with _ARCHIVE_DOWNLOAD_LOCK:
+        _prune_archive_download_jobs()
+        job = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
+        if job is None:
+            raise LcoError("LCO archive download job not found", status=404)
+        return _archive_download_snapshot(job)
+
+
+def archive_download_jobs() -> list[dict]:
+    """Return LCO archive-download jobs known to this server process."""
+    with _ARCHIVE_DOWNLOAD_LOCK:
+        _prune_archive_download_jobs()
+        jobs = [_archive_download_snapshot(job) for job in _ARCHIVE_DOWNLOAD_JOBS.values()]
+    jobs.sort(key=lambda job: job.get("started_at") or 0, reverse=True)
+    return jobs
 
 
 def generate_windows(t0: float, period: float, duration_h: float, start_dt: str, end_dt: str, pad_before_min: float, pad_after_min: float) -> list[dict]:

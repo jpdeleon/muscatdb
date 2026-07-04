@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import unittest
 from unittest.mock import patch, MagicMock
+import io
 import os
+import socket
+import shutil
+import tempfile
+import threading
+import time
+from pathlib import Path
 
 from muscat_db import lco
 
@@ -169,8 +176,21 @@ class FrameDestSecurityTest(unittest.TestCase):
         dest = lco.frame_dest("sinistro", "230101", "cpt1m010-fa16-20230101-0123-e91.fits.fz")
         self.assertEqual(
             str(dest),
-            "/tmp/lco-root/sinistro/230101/cpt1m010-fa16-20230101-0123-e91.fits.fz",
+            "/tmp/lco-root/Sinistro/230101/cpt1m010-fa16-20230101-0123-e91.fits.fz",
         )
+
+    def test_instrument_directory_uses_case_sensitive_data_mapping(self):
+        cases = {
+            "sinistro": "Sinistro",
+            "muscat": "MuSCAT",
+            "muscat2": "MuSCAT2",
+            "muscat3": "MuSCAT3",
+            "muscat4": "MuSCAT4",
+        }
+        for instrument, dirname in cases.items():
+            with self.subTest(instrument=instrument):
+                dest = lco.frame_dest(instrument, "230101", "frame.fits.fz")
+                self.assertEqual(dest.parts[-3], dirname)
 
     def test_filename_traversal_rejected(self):
         with self.assertRaises(lco.LcoError):
@@ -195,6 +215,271 @@ class FrameDestSecurityTest(unittest.TestCase):
         for ok in ("https://archive-api.lco.global/frames/1/",
                    "https://archive-lco-global.s3.amazonaws.com/x?sig=1"):
             self.assertEqual(lco._validate_download_url(ok), ok)
+
+
+class _StallingResponse:
+    """Fake urlopen result that yields no data and stalls on the first read,
+    mimicking a hung archive/S3 socket mid-stream."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, size=-1):
+        raise socket.timeout("stalled mid-stream")
+
+
+class DownloadToFileTest(unittest.TestCase):
+    """_download_to_file must stream atomically and never leave a partial file —
+    the regression that let a stalled urlretrieve wedge the whole server."""
+
+    def setUp(self):
+        base = os.path.join(os.path.expanduser("~/temp"), "muscatdb-test")
+        os.makedirs(base, exist_ok=True)
+        self.dir = tempfile.mkdtemp(dir=base)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_streams_atomically_and_leaves_no_part_file(self):
+        dest = Path(self.dir) / "frame.fits.fz"
+        payload = b"BINARYFITS" * 1000
+        with patch("muscat_db.lco.urllib.request.urlopen", return_value=io.BytesIO(payload)):
+            lco._download_to_file("https://archive-api.lco.global/frames/1/", dest)
+        self.assertEqual(dest.read_bytes(), payload)
+        self.assertFalse(dest.with_name(dest.name + ".part").exists())
+
+    def test_stall_raises_and_cleans_partial(self):
+        dest = Path(self.dir) / "frame.fits.fz"
+        with patch("muscat_db.lco.urllib.request.urlopen", return_value=_StallingResponse()):
+            with self.assertRaises(socket.timeout):
+                lco._download_to_file("https://archive-api.lco.global/frames/1/", dest, timeout=0.01)
+        # No truncated frame and no leftover .part after the stall.
+        self.assertFalse(dest.exists())
+        self.assertFalse(dest.with_name(dest.name + ".part").exists())
+
+    def test_download_root_prefers_lco_dir_then_data_dir(self):
+        with patch.dict(os.environ, {"MUSCAT_LCO_DIR": "/data", "MUSCAT_DATA_DIR": "/raw"}, clear=True):
+            self.assertEqual(str(lco.download_root()), "/data")
+        with patch.dict(os.environ, {"MUSCAT_DATA_DIR": "/raw"}, clear=True):
+            self.assertEqual(str(lco.download_root()), "/raw")
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(lco.download_root())
+
+    def test_download_frames_reports_dest_path(self):
+        frame = {
+            "filename": "ogg2m001-ep05-20260102-0001-e91.fits.fz",
+            "SITEID": "ogg", "TELID": "2m0a", "INSTRUME": "ep05",
+            "DATE_OBS": "2026-01-02T05:00:00",
+            "url": "https://archive-api.lco.global/frames/1/",
+        }
+        with patch.dict(os.environ, {"MUSCAT_LCO_DIR": self.dir}, clear=False), \
+                patch("muscat_db.lco._download_to_file") as dl:
+            results = lco.download_frames([frame])
+        dl.assert_called_once()
+        self.assertEqual(results[0]["status"], "downloaded")
+        # <root>/<inferred instrument>/<YYMMDD>/<filename>; frame_dest resolves
+        # symlinks in the root, so compare against the resolved base.
+        self.assertEqual(
+            results[0]["dest"],
+            os.path.join(str(Path(self.dir).resolve()), "MuSCAT3", "260102", frame["filename"]),
+        )
+
+    def test_funpack_file_writes_fits_next_to_fz_without_deleting_source(self):
+        src = Path(self.dir) / "frame.fits.fz"
+        src.write_bytes(b"packed")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            Path(cmd[2]).write_bytes(b"fits")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("muscat_db.lco.shutil.which", return_value="/usr/bin/funpack"), \
+                patch("muscat_db.lco.subprocess.run", side_effect=fake_run):
+            result = lco._funpack_file(src)
+
+        self.assertEqual(result["status"], "unpacked")
+        self.assertEqual(result["dest"], str(Path(self.dir) / "frame.fits"))
+        self.assertTrue(src.exists())
+        self.assertEqual(calls[0][0], ["/usr/bin/funpack", "-O", str(Path(self.dir) / "frame.fits"), str(src)])
+
+
+class ArchiveDownloadJobTest(unittest.TestCase):
+    def test_background_download_status_updates_without_blocking_submitter(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_download(frame, overwrite=False):
+            started.set()
+            release.wait(timeout=2)
+            return {"filename": frame["filename"], "status": "downloaded", "dest": ""}
+
+        with patch("muscat_db.lco._download_frame", side_effect=slow_download):
+            job = lco.start_archive_download([{"filename": "frame.fits.fz"}])
+            self.assertIn(job["state"], {"pending", "running"})
+            self.assertEqual(job["frames_total"], 1)
+            self.assertEqual(job["frames_done"], 0)
+            self.assertTrue(started.wait(timeout=1))
+
+            running = lco.archive_download_status(job["job_id"])
+            self.assertEqual(running["state"], "running")
+            self.assertEqual(running["frames_done"], 0)
+
+            release.set()
+            deadline = time.time() + 2
+            done = running
+            while time.time() < deadline:
+                done = lco.archive_download_status(job["job_id"])
+                if done["state"] == "done":
+                    break
+                time.sleep(0.01)
+
+        self.assertEqual(done["state"], "done")
+        self.assertEqual(done["frames_done"], 1)
+        self.assertEqual(done["results"][0]["status"], "downloaded")
+
+    def test_background_download_fetches_frames_in_parallel(self):
+        started: list[str] = []
+        started_lock = threading.Lock()
+        both_started = threading.Event()
+        release = threading.Event()
+
+        def slow_download(frame, overwrite=False):
+            with started_lock:
+                started.append(frame["filename"])
+                if len(started) == 2:
+                    both_started.set()
+            release.wait(timeout=2)
+            return {"filename": frame["filename"], "status": "downloaded", "dest": ""}
+
+        frames = [{"filename": "a.fits.fz"}, {"filename": "b.fits.fz"}]
+        with patch("muscat_db.lco._ARCHIVE_DOWNLOAD_FRAME_WORKERS", 2), \
+                patch("muscat_db.lco._download_frame", side_effect=slow_download):
+            job = lco.start_archive_download(frames)
+            self.assertTrue(both_started.wait(timeout=1))
+
+            running = lco.archive_download_status(job["job_id"])
+            self.assertEqual(running["state"], "running")
+            self.assertEqual(running["frames_done"], 0)
+
+            release.set()
+            deadline = time.time() + 2
+            done = running
+            while time.time() < deadline:
+                done = lco.archive_download_status(job["job_id"])
+                if done["state"] == "done":
+                    break
+                time.sleep(0.01)
+
+        self.assertEqual(done["state"], "done")
+        self.assertEqual(done["frames_done"], 2)
+        self.assertEqual(sorted(r["filename"] for r in done["results"]), ["a.fits.fz", "b.fits.fz"])
+
+    def test_funpack_progress_updates_after_each_file_finishes(self):
+        blocked_started = threading.Event()
+        release_blocked = threading.Event()
+
+        def fake_download(frame, overwrite=False):
+            return {
+                "filename": frame["filename"],
+                "status": "downloaded",
+                "dest": str(Path("/data/MuSCAT3/260102") / frame["filename"]),
+            }
+
+        def fake_funpack(path):
+            if path.name == "b.fits.fz":
+                blocked_started.set()
+                release_blocked.wait(timeout=2)
+            return {
+                "filename": path.name,
+                "src": str(path),
+                "dest": str(path.with_name(path.name[:-3])),
+                "status": "unpacked",
+            }
+
+        frames = [{"filename": "a.fits.fz"}, {"filename": "b.fits.fz"}]
+        with patch("muscat_db.lco._ARCHIVE_FUNPACK_WORKERS", 2), \
+                patch("muscat_db.lco._download_frame", side_effect=fake_download), \
+                patch("muscat_db.lco._funpack_file", side_effect=fake_funpack):
+            job = lco.start_archive_download(frames)
+            self.assertTrue(blocked_started.wait(timeout=1))
+
+            deadline = time.time() + 2
+            funpacking = None
+            while time.time() < deadline:
+                funpacking = lco.archive_download_status(job["job_id"])
+                if funpacking["phase"] == "funpacking" and funpacking["funpack_done"] == 1:
+                    break
+                time.sleep(0.01)
+
+            self.assertIsNotNone(funpacking)
+            self.assertEqual(funpacking["phase"], "funpacking")
+            self.assertEqual(funpacking["funpack_total"], 2)
+            self.assertEqual(funpacking["funpack_done"], 1)
+
+            release_blocked.set()
+            deadline = time.time() + 2
+            done = funpacking
+            while time.time() < deadline:
+                done = lco.archive_download_status(job["job_id"])
+                if done["state"] == "done":
+                    break
+                time.sleep(0.01)
+
+        self.assertEqual(done["state"], "done")
+        self.assertEqual(done["funpack_done"], 2)
+
+    def test_archive_download_rejects_when_active_queue_is_full(self):
+        active_job = {
+            "job_id": "active",
+            "state": "pending",
+            "frames": [{"filename": "active.fits.fz"}],
+            "frames_total": 1,
+            "overwrite": False,
+            "results": [],
+            "funpack_results": [],
+            "funpack_total": 0,
+            "phase": "pending",
+            "started_at": time.time(),
+            "finished_at": None,
+            "error": None,
+        }
+        with patch("muscat_db.lco._ARCHIVE_DOWNLOAD_MAX_JOBS", 1), \
+                patch("muscat_db.lco._ARCHIVE_DOWNLOAD_JOBS", {"active": active_job}):
+            with self.assertRaises(lco.LcoError) as ctx:
+                lco.start_archive_download([{"filename": "new.fits.fz"}])
+
+        self.assertEqual(ctx.exception.status, 429)
+
+    def test_archive_download_prunes_finished_job_to_make_queue_room(self):
+        finished_job = {
+            "job_id": "finished",
+            "state": "done",
+            "frames": [{"filename": "finished.fits.fz"}],
+            "frames_total": 1,
+            "overwrite": False,
+            "results": [],
+            "funpack_results": [],
+            "funpack_total": 0,
+            "phase": "done",
+            "started_at": time.time() - 20,
+            "finished_at": time.time() - 10,
+            "error": None,
+        }
+        jobs = {"finished": finished_job}
+        with patch("muscat_db.lco._ARCHIVE_DOWNLOAD_MAX_JOBS", 1), \
+                patch("muscat_db.lco._ARCHIVE_DOWNLOAD_JOBS", jobs), \
+                patch("muscat_db.lco._ARCHIVE_DOWNLOAD_EXECUTOR.submit") as submit:
+            job = lco.start_archive_download([{"filename": "new.fits.fz"}])
+
+        self.assertEqual(job["state"], "pending")
+        self.assertEqual(len(jobs), 1)
+        self.assertIn(job["job_id"], jobs)
+        self.assertNotIn("finished", jobs)
+        submit.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -666,6 +666,30 @@ th.drag-over-right {
 
 .job-actions { white-space: nowrap; }
 
+.jobs-table[data-job-type="lco_archive_download"] {
+  min-width: 980px;
+}
+.jobs-table[data-job-type="lco_archive_download"] .lco-actions-head,
+.jobs-table[data-job-type="lco_archive_download"] .lco-actions-cell {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: var(--surface);
+  box-shadow: 1px 0 0 var(--border);
+  min-width: 168px;
+  max-width: 184px;
+}
+.jobs-table[data-job-type="lco_archive_download"] .lco-actions-head {
+  background: var(--surface2);
+  z-index: 4;
+}
+.jobs-table[data-job-type="lco_archive_download"] .lco-actions-cell {
+  white-space: normal;
+}
+.jobs-table[data-job-type="lco_archive_download"] .lco-actions-cell .btn {
+  margin: 0.1rem 0.15rem 0.1rem 0;
+}
+
 .log-row td { padding: 0; background: var(--surface); }
 .log-row pre.log-content {
   margin: 0; padding: 1rem;
