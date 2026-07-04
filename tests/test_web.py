@@ -810,3 +810,72 @@ def test_lco_visibility_endpoint_rejects_unknown_site():
     })
     assert r.status_code == 400
     assert "site" in r.json()["error"].lower()
+
+
+# --------------------------- TOI page: Boyle2026 merge ------------------------
+
+def _boyle_cat_data(tics):
+    """Minimal TOI cat_data with just the tic column (all _merge_boyle_columns needs)."""
+    return {"tic": tics}
+
+
+def test_merge_boyle_columns_joins_by_tic_id(monkeypatch):
+    from muscat_db import web
+    cols = {k: [] for k, _ in web._BOYLE_COLUMNS}
+    cols["ruwe"] = [1.5, 2.5]
+    cols["non_single_star"] = [0, 1]
+    cols["adopted_period"] = [3.25, None]
+    cols["adopted_period_unc"] = [0.04, None]
+    cols["flag_multiple_periods"] = [0, 1]
+    cols["flag_possible_binary"] = [1, 0]
+    cols["final_n_contams"] = [0.0, 2.0]
+    cols["flag_doubled_period"] = [0, 0]
+    cols["n_secs"] = [2, 5]
+    cols["n_sec_ratio"] = [1.0, 0.5]
+    cols["median_amplitude"] = [0.94, 1.7]
+    cols["sectors"] = ["38,65", "1,2"]
+    cols["sector_periods"] = ["3.25,3.28", "9.9,9.8"]
+    monkeypatch.setattr(web, "_load_boyle_catalog", lambda: (cols, {358: 0, 529: 1}))
+
+    merged, n = web._merge_boyle_columns(_boyle_cat_data(["358", "999", "TIC 529"]))
+    assert n == 2
+    assert merged["ruwe"] == [1.5, None, 2.5]           # row 1 unmatched -> None
+    assert merged["flag_possible_binary"] == [1, None, 0]
+    assert merged["sectors"] == ["38,65", "", "1,2"]    # string columns default ""
+    assert merged["adopted_period"] == [3.25, None, None]
+
+
+def test_merge_boyle_columns_degrades_without_catalog(monkeypatch, tmp_path):
+    from muscat_db import web
+    monkeypatch.setattr(web, "_BOYLE_PATH", tmp_path / "missing.feather")
+    web._boyle_cache.clear()
+    merged, n = web._merge_boyle_columns(_boyle_cat_data(["358", ""]))
+    assert n == 0
+    assert merged["ruwe"] == [None, None]
+    assert merged["sectors"] == ["", ""]
+
+
+def test_toi_page_includes_boyle_payload(monkeypatch):
+    from muscat_db import web
+    cols = {k: [None] for k, _ in web._BOYLE_COLUMNS}
+    cols["ruwe"] = [1.01]
+    cols["sectors"] = ["38,65"]
+    cols["sector_periods"] = ["2.19,2.19"]
+    monkeypatch.setattr(web, "_load_boyle_catalog", lambda: (cols, {50365310: 0}))
+    monkeypatch.setattr(web, "_load_toi_catalog", lambda: {
+        "data": {
+            "toi": ["100.01"], "tic": ["50365310"], "name": [""], "disp": ["PC"],
+            "period": [1.0], "duration": [2.0], "depth": [500.0], "radius": [1.2],
+            "teq": [900.0], "insol": [10.0], "tmag": [9.5], "steff": [5000.0],
+            "srad": [0.9], "dist": [50.0], "ra": [10.0], "dec": [-20.0],
+            "period_err": [None], "duration_err": [None], "depth_err": [None],
+            "radius_err": [None], "tmag_err": [None], "steff_err": [None],
+            "srad_err": [None], "dist_err": [None],
+        },
+        "n": 1, "updated": "2026-07-01",
+    })
+    r = TestClient(app).get("/toi")
+    assert r.status_code == 200
+    assert '"ruwe":[1.01]' in r.text
+    assert '"sector_periods":["2.19,2.19"]' in r.text
+    assert "Boyle2026" in r.text
