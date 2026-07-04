@@ -422,6 +422,100 @@ def _load_toi_catalog() -> dict:
     return result
 
 
+# Boyle2026 stellar-rotation catalog (feather), merged onto TOIs by TIC ID.
+# Path overridable so a refreshed/moved catalog doesn't require a code change.
+_BOYLE_PATH = pathlib.Path(os.environ.get(
+    "MUSCAT_BOYLE_CATALOG",
+    "/ut2/jerome/github/research/project/wakai/data/Boyle2026/final_catalog.feather",
+))
+
+# (feather column == json key, kind) — kind "f" float, "i" int, "b" bool→0/1,
+# "s" string. Only this subset is merged onto the /toi payload.
+_BOYLE_COLUMNS: list[tuple[str, str]] = [
+    ("ruwe", "f"),
+    ("non_single_star", "i"),
+    ("adopted_period", "f"),
+    ("adopted_period_unc", "f"),
+    ("flag_multiple_periods", "b"),
+    ("flag_possible_binary", "b"),
+    ("final_n_contams", "f"),
+    ("flag_doubled_period", "b"),
+    ("n_secs", "i"),
+    ("n_sec_ratio", "f"),
+    ("median_amplitude", "f"),
+    ("sectors", "s"),
+    ("sector_periods", "s"),
+]
+
+_boyle_cache: dict = {}
+
+
+def _load_boyle_catalog() -> tuple[dict[str, list], dict[int, int]]:
+    """Read the Boyle2026 catalog into ``(columns, tic_to_row)`` where
+    ``columns`` holds JSON-safe per-column arrays (floats sanitized against
+    NaN/inf, bools as 0/1) and ``tic_to_row`` maps TIC ID → row index.
+    Cached by file mtime; returns empty structures when the file is absent
+    or unreadable so the /toi page degrades gracefully."""
+    empty: tuple[dict[str, list], dict[int, int]] = ({k: [] for k, _ in _BOYLE_COLUMNS}, {})
+    try:
+        mtime = _BOYLE_PATH.stat().st_mtime_ns
+    except OSError:
+        logger.warning("Boyle2026 catalog not found at %s; /toi merge columns will be empty", _BOYLE_PATH)
+        return empty
+
+    cached = _boyle_cache.get("catalog")
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+
+    try:
+        from pyarrow import feather
+
+        table = feather.read_table(_BOYLE_PATH, columns=["TICID"] + [k for k, _ in _BOYLE_COLUMNS])
+        raw = table.to_pydict()
+    except Exception:
+        logger.warning("failed to read Boyle2026 catalog %s", _BOYLE_PATH, exc_info=True)
+        return empty
+
+    cols: dict[str, list] = {}
+    for key, kind in _BOYLE_COLUMNS:
+        vals = raw[key]
+        if kind == "f":
+            cols[key] = [_toi_float(v) for v in vals]
+        elif kind == "i":
+            cols[key] = [None if v is None else int(v) for v in vals]
+        elif kind == "b":
+            cols[key] = [None if v is None else int(bool(v)) for v in vals]
+        else:
+            cols[key] = [(v or "").strip() if isinstance(v, str) else "" for v in vals]
+    tic_to_row = {int(t): i for i, t in enumerate(raw["TICID"]) if t is not None}
+
+    result = (cols, tic_to_row)
+    _boyle_cache["catalog"] = (mtime, result)
+    return result
+
+
+def _merge_boyle_columns(cat_data: dict) -> tuple[dict[str, list], int]:
+    """Left-join the Boyle2026 columns onto the TOI catalog rows by TIC ID.
+    Returns ``(columns, n_matched)`` with one aligned array per Boyle column;
+    unmatched rows get None (numeric) / "" (string)."""
+    cols, tic_to_row = _load_boyle_catalog()
+    tics = cat_data["tic"]
+    n = len(tics)
+    merged: dict[str, list] = {}
+    for key, kind in _BOYLE_COLUMNS:
+        merged[key] = ["" if kind == "s" else None] * n
+    n_matched = 0
+    for i in range(n):
+        digits = re.sub(r"\D", "", tics[i]) if tics[i] else ""
+        j = tic_to_row.get(int(digits)) if digits else None
+        if j is None:
+            continue
+        n_matched += 1
+        for key, _ in _BOYLE_COLUMNS:
+            merged[key][i] = cols[key][j]
+    return merged, n_matched
+
+
 _toi_db_cache: dict = {}
 
 
@@ -492,7 +586,9 @@ def toi_page():
 
     cat = _load_toi_catalog()
     indb, tname = _toi_db_membership(cat["data"], _db_path())
+    boyle, n_boyle = _merge_boyle_columns(cat["data"])
     payload = dict(cat["data"])
+    payload.update(boyle)
     payload["indb"] = indb
     payload["tname"] = tname
     return _render(
@@ -500,6 +596,7 @@ def toi_page():
         toi_json=json.dumps(payload, separators=(",", ":"), allow_nan=False),
         n_rows=cat["n"],
         n_indb=sum(indb),
+        n_boyle=n_boyle,
         toi_updated=cat["updated"],
     )
 

@@ -24,6 +24,7 @@
 <p class="toi-meta">
   Source: <code>data/TOIs.csv</code> — {{ '{:,}'.format(n_rows) }} objects, all TFOPWG dispositions
   · <strong>{{ '{:,}'.format(n_indb) }}</strong> in muscat-db (★ markers, click a point to open its target page)
+  · <strong>{{ '{:,}'.format(n_boyle) }}</strong> with Boyle2026 rotation data (RUWE, P<sub>rot</sub>, binarity flags)
   {% if toi_updated %}· catalog last updated {{ toi_updated }}{% endif %}.
 </p>
 
@@ -128,8 +129,25 @@
     { key: 'dist',     label: 'Dist (pc)',   type: 'num', plot: 'Distance (pc)',        err: 'dist_err' },
     { key: 'ra',       label: 'RA (°)',      type: 'num', plot: 'RA (deg)' },
     { key: 'dec',      label: 'Dec (°)',     type: 'num', plot: 'Dec (deg)' },
+    // Boyle2026 stellar-rotation catalog, left-joined by TIC ID (nulls where
+    // the TOI's host star is not in that catalog). Flags are 0/1.
+    { key: 'ruwe',                  label: 'RUWE',        type: 'num', plot: 'Gaia RUWE' },
+    { key: 'non_single_star',       label: 'NSS',         type: 'num' },
+    { key: 'adopted_period',        label: 'P_rot (d)',   type: 'num', plot: 'Rotation Period (days)', err: 'adopted_period_unc' },
+    { key: 'adopted_period_unc',    label: 'P_rot unc',   type: 'num' },
+    { key: 'flag_multiple_periods', label: 'Multi P',     type: 'num' },
+    { key: 'flag_possible_binary',  label: 'Binary?',     type: 'num' },
+    { key: 'final_n_contams',       label: 'N contam',    type: 'num', plot: 'N contaminants' },
+    { key: 'flag_doubled_period',   label: '2×P?',        type: 'num' },
+    { key: 'n_secs',                label: 'N sec',       type: 'num', plot: 'N sectors' },
+    { key: 'n_sec_ratio',           label: 'Sec ratio',   type: 'num', plot: 'Sector detection ratio' },
+    { key: 'median_amplitude',      label: 'Median amp',  type: 'num', plot: 'Median rot. amplitude' },
+    { key: 'sectors',               label: 'Sectors',     type: 'text' },
+    { key: 'sector_periods',        label: 'Sector P (d)', type: 'text' },
   ];
-  const NUM_COLS = COLS.filter(c => c.type === 'num');
+  // Plot axis menus only list numeric columns with a plot label (0/1 flag
+  // columns stay table-only: filterable and sortable, but not plottable).
+  const NUM_COLS = COLS.filter(c => c.type === 'num' && c.plot);
   const colByKey = {};
   COLS.forEach(c => { colByKey[c.key] = c; });
 
