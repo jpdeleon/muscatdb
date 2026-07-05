@@ -1204,21 +1204,26 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
             return None
             
         target_clean = re.sub(r"[^0-9a-zA-Z]", "", target).lower()
-        best_row = None
+        best_row_line = None
         best_score = -1
         
-        with open(csv_path, mode='r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                pl_name = (row.get("pl_name") or "").strip()
-                hostname = (row.get("hostname") or "").strip()
-                hip_name = (row.get("hip_name") or "").strip()
-                hd_name = (row.get("hd_name") or "").strip()
+        clean_re = re.compile(r"[^0-9a-zA-Z]")
+        
+        with open(csv_path, mode='r', encoding='utf-8', errors='ignore') as f:
+            header_line = f.readline()
+            for line in f:
+                parts = line.split(',', 9)
+                if len(parts) < 9:
+                    continue
+                pl_name = parts[0].strip('"')
+                hostname = parts[2].strip('"')
+                hd_name = parts[3].strip('"')
+                hip_name = parts[4].strip('"')
                 
-                pl_clean = re.sub(r"[^0-9a-zA-Z]", "", pl_name).lower()
-                host_clean = re.sub(r"[^0-9a-zA-Z]", "", hostname).lower()
-                hip_clean = re.sub(r"[^0-9a-zA-Z]", "", hip_name).lower()
-                hd_clean = re.sub(r"[^0-9a-zA-Z]", "", hd_name).lower()
+                pl_clean = clean_re.sub('', pl_name).lower()
+                host_clean = clean_re.sub('', hostname).lower()
+                hip_clean = clean_re.sub('', hip_name).lower()
+                hd_clean = clean_re.sub('', hd_name).lower()
                 
                 score = -1
                 if target_clean == pl_clean:
@@ -1229,19 +1234,29 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
                     score = 1
                     
                 if score > -1:
-                    is_default = (row.get("default_flag") == "1")
+                    is_default = (parts[8].strip('"') == '1')
                     if score > best_score:
                         best_score = score
-                        best_row = row
+                        best_row_line = line
                     elif score == best_score:
-                        if is_default and (best_row and best_row.get("default_flag") != "1"):
-                            best_row = row
+                        best_is_default = False
+                        if best_row_line:
+                            best_parts = best_row_line.split(',', 9)
+                            if len(best_parts) > 8:
+                                best_is_default = (best_parts[8].strip('"') == '1')
+                        if is_default and not best_is_default:
+                            best_row_line = line
                             
                     if best_score >= 2 and is_default:
                         break
                         
-        if not best_row:
+        if not best_row_line:
             return None
+            
+        import csv
+        header = [h.strip('"') for h in next(csv.reader([header_line]))]
+        row_values = next(csv.reader([best_row_line]))
+        best_row = dict(zip(header, row_values))
             
         def _float_or_none(val):
             if not val or val.strip() == "":
@@ -1299,24 +1314,40 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
         col_str = ", ".join(cols)
 
         clean_target = target.replace("TOI", "").replace("toi", "").replace("-", "").replace(" ", "").lstrip("0").split(".")[0].strip()
-        queries = [
-            f"SELECT {col_str} FROM toi WHERE toi = {_adql_literal(clean_target)}",
-            f"SELECT {col_str} FROM toi WHERE toidisplay LIKE {_adql_literal('%' + target + '%')}",
-            f"SELECT {col_str} FROM toi WHERE toi LIKE {_adql_literal('%' + clean_target + '%')}",
-        ]
-
+        target_lit = _adql_literal(clean_target)
+        target_like = _adql_literal(f"%{target}%")
+        clean_like = _adql_literal(f"%{clean_target}%")
+        
+        q = f"SELECT {col_str} FROM toi WHERE toi = {target_lit} OR toidisplay LIKE {target_like} OR toi LIKE {clean_like}"
         data = []
-        for q in queries:
-            url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            try:
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    res = json.loads(response.read().decode())
-                    if res:
-                        data = res
-                        break
-            except Exception:
-                continue
+        url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as response:
+                res = json.loads(response.read().decode())
+                if res:
+                    # Sort to prioritize: toi = clean_target (3), toidisplay LIKE target (2), toi LIKE clean_target (1)
+                    best_row = None
+                    best_score = -1
+                    for row in res:
+                        r_toi = str(row.get("toi", "")).strip()
+                        r_toidisplay = str(row.get("toidisplay", "")).strip()
+                        
+                        score = -1
+                        if r_toi == clean_target:
+                            score = 3
+                        elif target.lower() in r_toidisplay.lower():
+                            score = 2
+                        elif clean_target in r_toi:
+                            score = 1
+                            
+                        if score > best_score:
+                            best_score = score
+                            best_row = row
+                    if best_row:
+                        data = [best_row]
+        except Exception:
+            pass
 
         if not data:
             return JSONResponse({"ok": False, "error": f"No parameters found for target '{target}' in TOI Catalog."})
@@ -1374,36 +1405,68 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
 
         norm_target = re.sub(r'^([A-Za-z]+)(\d)', r'\1 \2', target)
 
-        queries = [
-            f"SELECT {col_str} FROM pscomppars WHERE pl_name = {_adql_literal(target)}",
-            f"SELECT {col_str} FROM pscomppars WHERE hostname = {_adql_literal(target)}",
-            f"SELECT {col_str} FROM pscomppars WHERE hip_name = {_adql_literal(target)}",
-            f"SELECT {col_str} FROM pscomppars WHERE hd_name = {_adql_literal(target)}",
-            f"SELECT {col_str} FROM pscomppars WHERE pl_name LIKE {_adql_literal('%' + target + '%')}",
-            f"SELECT {col_str} FROM pscomppars WHERE hostname LIKE {_adql_literal('%' + target + '%')}",
-            f"SELECT {col_str} FROM pscomppars WHERE hip_name LIKE {_adql_literal('%' + target + '%')}",
-            f"SELECT {col_str} FROM pscomppars WHERE hd_name LIKE {_adql_literal('%' + target + '%')}",
+        target_lit = _adql_literal(target)
+        target_like = _adql_literal(f"%{target}%")
+        conditions = [
+            f"pl_name = {target_lit}",
+            f"hostname = {target_lit}",
+            f"hip_name = {target_lit}",
+            f"hd_name = {target_lit}",
+            f"pl_name LIKE {target_like}",
+            f"hostname LIKE {target_like}",
+            f"hip_name LIKE {target_like}",
+            f"hd_name LIKE {target_like}"
         ]
-
         if norm_target != target:
-            queries.extend([
-                f"SELECT {col_str} FROM pscomppars WHERE hostname = {_adql_literal(norm_target)}",
-                f"SELECT {col_str} FROM pscomppars WHERE hip_name = {_adql_literal(norm_target)}",
-                f"SELECT {col_str} FROM pscomppars WHERE hd_name = {_adql_literal(norm_target)}",
+            norm_lit = _adql_literal(norm_target)
+            conditions.extend([
+                f"hostname = {norm_lit}",
+                f"hip_name = {norm_lit}",
+                f"hd_name = {norm_lit}"
             ])
 
+        q = f"SELECT {col_str} FROM pscomppars WHERE " + " OR ".join(conditions)
+
         data = []
-        for q in queries:
-            url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            try:
-                with urllib.request.urlopen(req, timeout=5) as response:
-                    res = json.loads(response.read().decode())
-                    if res:
-                        data = res
-                        break
-            except Exception:
-                continue
+        url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as response:
+                res = json.loads(response.read().decode())
+                if res:
+                    # Score and rank matching rows in memory
+                    target_clean = re.sub(r"[^0-9a-zA-Z]", "", target).lower()
+                    best_row = None
+                    best_score = -1
+                    clean_re = re.compile(r"[^0-9a-zA-Z]")
+                    
+                    for row in res:
+                        pl_name = (row.get("pl_name") or "").strip()
+                        hostname = (row.get("hostname") or "").strip()
+                        hip_name = (row.get("hip_name") or "").strip()
+                        hd_name = (row.get("hd_name") or "").strip()
+                        
+                        pl_clean = clean_re.sub('', pl_name).lower()
+                        host_clean = clean_re.sub('', hostname).lower()
+                        hip_clean = clean_re.sub('', hip_name).lower()
+                        hd_clean = clean_re.sub('', hd_name).lower()
+                        
+                        score = -1
+                        if target_clean == pl_clean:
+                            score = 3
+                        elif target_clean in (host_clean, hip_clean, hd_clean):
+                            score = 2
+                        elif (pl_clean and target_clean in pl_clean) or (host_clean and target_clean in host_clean):
+                            score = 1
+                            
+                        if score > best_score:
+                            best_score = score
+                            best_row = row
+                    
+                    if best_row:
+                        data = [best_row]
+        except Exception:
+            pass
 
         if not data:
             return JSONResponse({"ok": False, "error": f"No parameters found for target '{target}' in Exoplanet Archive."})

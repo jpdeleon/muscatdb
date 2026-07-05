@@ -37,6 +37,7 @@ PROJECT_ROOT = HERE.parent
 SRC = PROJECT_ROOT / "src" / "muscat_db"
 TEMPLATES_DIR = SRC / "templates"
 WEB_PY = SRC / "web.py"
+STYLES_CSS = SRC / "static" / "styles.css"
 
 
 # --------------------------------------------------------------------------- #
@@ -419,6 +420,25 @@ def test_transit_fit_detrending_options_wired(tmp_path):
     assert band["chunk_offset"] is True and band["chunk_thresh"] == 0.25
     assert band["trim_beg"] == 7 and band["trim_end"] == 8
     assert band["trend"] == 1
+
+
+def test_transit_fit_archive_query_modal_uses_shared_style_variants():
+    html = _read_template("transit_fit.html")
+    base = _read_template("base.html")
+    css = STYLES_CSS.read_text()
+
+    assert "function modalOptions(opts)" in base
+    assert 'id="message-modal" data-mode="message" data-kind="default"' in base
+    assert "modal.dataset.mode = 'message'" in base
+    assert "modal.dataset.mode = 'confirm'" in base
+    assert 'modal.dataset.kind = opts.kind || \'default\'' in base
+    assert '#message-modal[data-mode="message"] #message-modal-cancel' in css
+    assert '#message-modal[data-kind="success"] .modal-title' in css
+    assert '#message-modal[data-kind="error"] .modal-title' in css
+    assert '#message-modal[data-kind="notice"] .modal-title' in css
+    assert "showMessageModal('Notice', 'Please enter a target name.', 'notice')" in html
+    assert "showMessageModal('Error', err.message, 'error')" in html
+    assert "', 'success')" in html
 
 
 # --------------------------------------------------------------------------- #

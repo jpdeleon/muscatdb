@@ -1678,7 +1678,7 @@ class TestRoutes:
         r = client.get("/transit-fit/query-archive", params={"target": "TOI' OR '1'='1", "source": "toi"})
         assert r.status_code == 200
         assert seen_queries
-        assert "TOI'' OR ''1''=''1" in seen_queries[1]
+        assert "TOI'' OR ''1''=''1" in seen_queries[0]
 
     def test_transit_fit_query_archive_hip_target(self, client, mocker):
         hip_data = b'[{"pl_name": "HIP 67522 b", "hostname": "HIP 67522", "hip_name": "HIP 67522", "st_teff": 5675.0, "st_tefferr1": 75.0, "st_tefferr2": -75.0, "st_logg": 4.0, "st_loggerr1": null, "st_loggerr2": null, "st_met": 0.0, "st_meterr1": null, "st_meterr2": null, "pl_orbper": 6.9594731, "pl_orbpererr1": 2.2e-06, "pl_orbpererr2": -2.2e-06, "pl_tranmid": 2458604.02376, "pl_tranmiderr1": 0.00033, "pl_tranmiderr2": -0.00032, "pl_trandur": 4.85, "pl_trandurerr1": 1.13, "pl_trandurerr2": -0.36, "pl_ratror": 0.06644, "pl_ratrorerr1": 0.0015, "pl_ratrorerr2": -0.0014, "pl_imppar": 0.03, "pl_impparerr1": 0.19, "pl_impparerr2": -0.22, "st_teff_reflink": "", "pl_orbper_reflink": ""}]'

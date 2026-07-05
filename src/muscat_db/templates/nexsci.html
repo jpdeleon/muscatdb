@@ -501,12 +501,27 @@
     const { traces, plotted, xlabel, ylabel, logx, logy } = buildTraces(idx);
     const dark = document.documentElement.getAttribute('data-theme') === 'dark';
     const grid = dark ? '#30363d' : '#e1e4e8';
+    const minorGrid = dark ? '#21262d' : '#f0f1f2';
     const layout = {
       margin: { l: 64, r: 20, t: 10, b: 52 },
       paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
       font: { color: dark ? '#c9d1d9' : '#24292f', size: 12 },
-      xaxis: { title: { text: xlabel }, type: logx ? 'log' : 'linear', gridcolor: grid, zeroline: false, automargin: true },
-      yaxis: { title: { text: ylabel }, type: logy ? 'log' : 'linear', gridcolor: grid, zeroline: false, automargin: true },
+      xaxis: {
+        title: { text: xlabel },
+        type: logx ? 'log' : 'linear',
+        gridcolor: grid,
+        zeroline: false,
+        automargin: true,
+        minor: logx ? { ticks: 'outside', showgrid: true, gridcolor: minorGrid } : undefined
+      },
+      yaxis: {
+        title: { text: ylabel },
+        type: logy ? 'log' : 'linear',
+        gridcolor: grid,
+        zeroline: false,
+        automargin: true,
+        minor: logy ? { ticks: 'outside', showgrid: true, gridcolor: minorGrid } : undefined
+      },
       hovermode: 'closest',
       legend: { orientation: 'v', bgcolor: 'rgba(0,0,0,0)' },
       showlegend: traces.length > 1,

@@ -52,7 +52,7 @@
   <span id="status-text">Loading…</span>
 </div>
 
-<div id="message-modal">
+<div id="message-modal" data-mode="message" data-kind="default" role="dialog" aria-modal="true" aria-labelledby="message-modal-title" aria-describedby="message-modal-text">
   <div class="modal-box">
     <p id="message-modal-title" class="modal-title"></p>
     <p id="message-modal-text" class="modal-text"></p>
@@ -667,22 +667,33 @@
     var cancelBtn = document.getElementById('message-modal-cancel');
     var pendingResolve = null;
 
-    function showModal(title, text) {
+    function modalOptions(opts) {
+      if (typeof opts === 'string') return { kind: opts };
+      return opts || {};
+    }
+
+    function showModal(title, text, opts) {
+      opts = modalOptions(opts);
       titleEl.textContent = title || '';
       textEl.textContent = text || '';
+      modal.dataset.kind = opts.kind || 'default';
       modal.classList.add('visible');
       okBtn.focus();
     }
 
-    window.showMessageModal = function(title, text) {
+    window.showMessageModal = function(title, text, opts) {
+      opts = modalOptions(opts);
       pendingResolve = null;
+      modal.dataset.mode = 'message';
       okBtn.textContent = 'OK';
       okBtn.className = 'btn';
       cancelBtn.hidden = true;
-      showModal(title, text);
+      showModal(title, text, opts);
     };
     window.closeMessageModal = function(result) {
       modal.classList.remove('visible');
+      modal.dataset.mode = 'message';
+      modal.dataset.kind = 'default';
       if (pendingResolve) {
         var resolve = pendingResolve;
         pendingResolve = null;
@@ -693,11 +704,12 @@
       opts = opts || {};
       return new Promise(function (resolve) {
         pendingResolve = resolve;
+        modal.dataset.mode = 'confirm';
         okBtn.textContent = opts.confirmLabel || 'Confirm';
         okBtn.className = opts.confirmClass || 'btn primary';
         cancelBtn.textContent = opts.cancelLabel || 'Cancel';
         cancelBtn.hidden = false;
-        showModal(title, text);
+        showModal(title, text, opts);
       });
     };
     okBtn.addEventListener('click', function () {

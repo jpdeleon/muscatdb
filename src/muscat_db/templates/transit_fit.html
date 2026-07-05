@@ -1455,7 +1455,7 @@
     queryBtn.addEventListener('click', function() {
       var targetVal = queryTargetInput.value.trim();
       if (!targetVal) {
-        window.showMessageModal('Notice', 'Please enter a target name.');
+        window.showMessageModal('Notice', 'Please enter a target name.', 'notice');
         return;
       }
       queryBtn.disabled = true;
@@ -1510,10 +1510,10 @@
 
           validatePlanetCard(card);
           saveOptions();
-          window.showMessageModal('Success', 'Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '!');
+          window.showMessageModal('Success', 'Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '.', 'success');
         })
         .catch(function(err) {
-          window.showMessageModal('Error', err.message);
+          window.showMessageModal('Error', err.message, 'error');
         })
         .finally(function() {
           queryBtn.disabled = false;
@@ -2548,7 +2548,7 @@
       if (!targetInput) return;
       var targetVal = targetInput.value.trim();
       if (!targetVal) {
-        window.showMessageModal('Notice', 'Please enter a target name.');
+        window.showMessageModal('Notice', 'Please enter a target name.', 'notice');
         return;
       }
 
@@ -2646,10 +2646,10 @@
           syncPlanetsInput();
           validateAllPlanetCards();
           saveOptions();
-          window.showMessageModal('Success', 'Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '!');
+          window.showMessageModal('Success', 'Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '.', 'success');
         })
         .catch(function (err) {
-          window.showMessageModal('Error', err.message);
+          window.showMessageModal('Error', err.message, 'error');
         })
         .finally(function () {
           queryBtn.disabled = false;
