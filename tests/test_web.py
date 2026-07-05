@@ -1180,6 +1180,8 @@ def test_toi_page_includes_boyle_payload(monkeypatch):
     assert 'data-key="fast"' in r.text
     assert 'id="toi-rot-note"' in r.text
     assert "arxiv.org/abs/2603.05586" in r.text
+    # "In muscat-db" membership filter chip.
+    assert 'data-group="indb"' in r.text
 
 
 # ── /nexsci (NASA Exoplanet Archive) page ──────────────────────────────────
