@@ -329,6 +329,27 @@
     return s ? [s] : [];
   }
 
+  // ── URL slug encoding/decoding for bookmarkable form options ─────────────
+  function encodeOptions(opts) {
+    var parts = [];
+    // Encode only key scheduler parameters to keep URLs readable.
+    ['sch-proposal', 'sch-target', 'sch-planet', 'sch-kind', 'sch-coords', 'sch-range-start', 'sch-range-end'].forEach(function (id) {
+      if (opts[id]) parts.push(id.slice(4) + '=' + encodeURIComponent(opts[id]));
+    });
+    return parts.length ? '#' + parts.join('&') : '';
+  }
+  function decodeSlug() {
+    var hash = window.location.hash.slice(1);
+    if (!hash) return null;
+    var params = new URLSearchParams(hash);
+    var opts = {};
+    var keys = ['proposal', 'target', 'planet', 'kind', 'coords', 'range-start', 'range-end'];
+    keys.forEach(function (k) {
+      if (params.has(k)) opts['sch-' + k] = decodeURIComponent(params.get(k));
+    });
+    return Object.keys(opts).length ? opts : null;
+  }
+
   function collectOptions() {
     var o = {};
     TEXT_IDS.forEach(function (id) { o[id] = val(id); });
@@ -338,11 +359,17 @@
     return o;
   }
   function saveOptions() {
-    try { localStorage.setItem(OPT_KEY, JSON.stringify(collectOptions())); } catch (e) {}
+    var opts = collectOptions();
+    try { localStorage.setItem(OPT_KEY, JSON.stringify(opts)); } catch (e) {}
+    // Update URL slug for bookmarking/sharing.
+    window.history.replaceState(null, '', window.location.pathname + encodeOptions(opts));
   }
   function restoreOptions() {
-    var saved;
-    try { saved = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); } catch (e) { saved = null; }
+    // Priority: URL slug > localStorage > defaults.
+    var saved = decodeSlug();
+    if (!saved) {
+      try { saved = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); } catch (e) { saved = null; }
+    }
     if (!saved) return;
     TEXT_IDS.forEach(function (id) { if (saved[id] !== undefined && saved[id] !== '') setVal(id, saved[id]); });
     CHECK_IDS.forEach(function (id) { if (saved[id] !== undefined) setChk(id, saved[id]); });
@@ -1377,7 +1404,14 @@
   });
 
   function prefillFromView() {
-    var slug = new URLSearchParams(window.location.search).get('view');
+    var params = new URLSearchParams(window.location.search);
+    var target = params.get('target');
+    if (target && !val('sch-target')) {
+      setVal('sch-target', target);
+      saveOptions();
+      refreshTargetFields({ silent: true });
+    }
+    var slug = params.get('view');
     if (!slug) return;
     fetch('/api/ephemeris/view/' + encodeURIComponent(slug)).then(function (r) { return r.json(); }).then(function (d) {
       if (!d.ok || !d.state) return;
