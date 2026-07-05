@@ -614,6 +614,10 @@
       xaxis: {
         title: { text: xlabel },
         type: logx ? 'log' : 'linear',
+        // Plotly's default log-axis sub-decade ticks (2, 5, ...) label only the
+        // bare digit, not the actual value (e.g. "5" at position 50). '~r' forces
+        // every tick, including those, to render its real value.
+        tickformat: logx ? '~r' : undefined,
         gridcolor: grid,
         zeroline: false,
         automargin: true,
@@ -622,6 +626,7 @@
       yaxis: {
         title: { text: ylabel },
         type: logy ? 'log' : 'linear',
+        tickformat: logy ? '~r' : undefined,
         gridcolor: grid,
         zeroline: false,
         automargin: true,

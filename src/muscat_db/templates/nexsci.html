@@ -66,6 +66,26 @@
   <span class="chip-label">muscat-db:</span>
   <span class="badge instrument-badge nx-chip" data-group="indb" data-key="1" title="Only planets whose host star has data in muscat-db">★ In muscat-db</span>
 </div>
+<div class="chip-bar">
+  <span class="chip-label">System:</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="binary" title="Host system has exactly 2 stars (sy_snum = 2)">Binary</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="tertiary" title="Host system has 3+ stars (sy_snum ≥ 3)">Tertiary+</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="cb" title="Circumbinary planet — orbits both stars of a binary (cb_flag = 1)">Circumbinary</span>
+</div>
+<div class="chip-bar">
+  <span class="chip-label">Star / system:</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="young" title="Stellar age < 1 Gyr (st_age)">Young (&lt;1 Gyr)</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="nearby" title="System distance < 100 pc (sy_dist)">Nearby (&lt;100 pc)</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="bright" title="Gaia magnitude < 12 (sy_gaiamag)">Bright (G&lt;12)</span>
+</div>
+<div class="chip-bar">
+  <span class="chip-label">Follow-up data:</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="ttv" title="Transit timing variations measured (ttv_flag)">Has TTV</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="obliq" title="Spin-orbit obliquity measured (pl_projobliq)">Has obliquity</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="rv" title="More than 1 radial-velocity epoch (st_nrvc &gt; 1)">RV data</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="spec" title="More than 1 spectrum (st_nspec &gt; 1)">Spectra</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="phot" title="More than 1 photometric time series (st_nphot &gt; 1)">Photometry</span>
+</div>
 
 <details id="nx-table-section" class="nx-section" open style="margin-top:1rem;">
   <summary>Catalog table</summary>
@@ -254,17 +274,35 @@
     };
   }
 
+  // ── independent boolean filter chips (all share one group; chips AND together
+  // rather than OR, unlike the method/size/star category chips above) ────────
+  const FLAG_TESTS = {
+    binary:   i => NEXSCI.snum[i] === 2,
+    tertiary: i => NEXSCI.snum[i] != null && NEXSCI.snum[i] >= 3,
+    cb:       i => NEXSCI.cbflag[i] === 1,
+    young:    i => NEXSCI.age[i] != null && NEXSCI.age[i] < 1,
+    nearby:   i => NEXSCI.dist[i] != null && NEXSCI.dist[i] < 100,
+    bright:   i => NEXSCI.gmag[i] != null && NEXSCI.gmag[i] < 12,
+    ttv:      i => NEXSCI.ttv[i] === 1,
+    obliq:    i => NEXSCI.projobliq[i] != null,
+    rv:       i => NEXSCI.nrvc[i] != null && NEXSCI.nrvc[i] > 1,
+    spec:     i => NEXSCI.nspec[i] != null && NEXSCI.nspec[i] > 1,
+    phot:     i => NEXSCI.nphot[i] != null && NEXSCI.nphot[i] > 1,
+  };
+
   // ── filter state ───────────────────────────────────────────────────────────
   const selectedMethod = new Set();
   const selectedSize = new Set();
   const selectedStar = new Set();
   const selectedIndb = new Set();
+  const selectedFlags = new Set();
   let sortState = { key: null, dir: 0 };   // dir: 1 asc, -1 desc
 
   function setForGroup(group) {
     return group === 'method' ? selectedMethod
          : group === 'size'   ? selectedSize
          : group === 'star'   ? selectedStar
+         : group === 'flags'  ? selectedFlags
          : selectedIndb;
   }
 
@@ -289,6 +327,7 @@
     const useSize = selectedSize.size > 0;
     const useStar = selectedStar.size > 0;
     const useIndb = selectedIndb.size > 0;
+    const flagList = Array.from(selectedFlags);
     const out = [];
     for (let i = 0; i < N; i++) {
       if (q) {
@@ -304,6 +343,7 @@
       if (useSize && !selectedSize.has(sizeClass[i])) continue;
       if (useStar && !selectedStar.has(starClass[i])) continue;
       if (useIndb && !NEXSCI.indb[i]) continue;
+      if (flagList.length && !flagList.every(f => FLAG_TESTS[f](i))) continue;
       out.push(i);
     }
     if (sortState.key) applySort(out);
@@ -509,6 +549,10 @@
       xaxis: {
         title: { text: xlabel },
         type: logx ? 'log' : 'linear',
+        // Plotly's default log-axis sub-decade ticks (2, 5, ...) label only the
+        // bare digit, not the actual value (e.g. "5" at position 50). '~r' forces
+        // every tick, including those, to render its real value.
+        tickformat: logx ? '~r' : undefined,
         gridcolor: grid,
         zeroline: false,
         automargin: true,
@@ -517,6 +561,7 @@
       yaxis: {
         title: { text: ylabel },
         type: logy ? 'log' : 'linear',
+        tickformat: logy ? '~r' : undefined,
         gridcolor: grid,
         zeroline: false,
         automargin: true,
@@ -554,6 +599,7 @@
     if (state.size && state.size.length) parts.push('size=' + state.size.join(','));
     if (state.star && state.star.length) parts.push('star=' + state.star.join(','));
     if (state.indb && state.indb.length) parts.push('indb=' + state.indb.join(','));
+    if (state.flags && state.flags.length) parts.push('flags=' + state.flags.join(','));
     if (state.sort && state.sort.key) parts.push('sort=' + state.sort.key + ':' + state.sort.dir);
     if (state.plot) {
       if (state.plot.x) parts.push('x=' + state.plot.x);
@@ -561,7 +607,9 @@
       if (state.plot.color) parts.push('color=' + state.plot.color);
       if (state.plot.logx) parts.push('logx=1');
       if (state.plot.logy) parts.push('logy=1');
-      if (state.plot.size && state.plot.size !== '6') parts.push('size=' + state.plot.size);
+      // Named 'msize' (not 'size') to avoid colliding with the Planet-type
+      // filter-chip group above, which also serializes to a 'size=' param.
+      if (state.plot.size && state.plot.size !== '6') parts.push('msize=' + state.plot.size);
     }
     return parts.length ? '#' + parts.join('&') : '';
   }
@@ -571,7 +619,7 @@
     const state = {};
     const params = new URLSearchParams(hash);
     if (params.has('q')) searchEl.value = decodeURIComponent(params.get('q'));
-    ['method', 'size', 'star', 'indb'].forEach(k => {
+    ['method', 'size', 'star', 'indb', 'flags'].forEach(k => {
       if (params.has(k)) state[k] = params.get(k).split(',');
     });
     if (params.has('sort')) {
@@ -584,7 +632,7 @@
     if (params.has('color')) state.plot.color = params.get('color');
     if (params.has('logx')) state.plot.logx = true;
     if (params.has('logy')) state.plot.logy = true;
-    if (params.has('size')) state.plot.size = params.get('size');
+    if (params.has('msize')) state.plot.size = params.get('msize');
     return Object.keys(state).length ? state : null;
   }
 
@@ -595,6 +643,7 @@
       q: searchEl.value,
       method: Array.from(selectedMethod), size: Array.from(selectedSize),
       star: Array.from(selectedStar), indb: Array.from(selectedIndb),
+      flags: Array.from(selectedFlags),
       sort: sortState,
       plot: { x: selX.value, y: selY.value, color: selColor.value,
               logx: logXEl.checked, logy: logYEl.checked, size: sizeEl.value },
@@ -618,6 +667,7 @@
     (s.size || []).forEach(k => selectedSize.add(k));
     (s.star || []).forEach(k => selectedStar.add(k));
     (s.indb || []).forEach(k => selectedIndb.add(k));
+    (s.flags || []).forEach(k => selectedFlags.add(k));
     chips.forEach(ch => {
       if (setForGroup(ch.dataset.group).has(ch.dataset.key)) ch.classList.add('active');
     });
@@ -659,7 +709,8 @@
     if (!clearEl) return;
     const hasSearch = !!searchEl.value.trim();
     const hasColFilters = colInputs.some(inp => !!inp.value.trim());
-    const hasChips = selectedMethod.size > 0 || selectedSize.size > 0 || selectedStar.size > 0 || selectedIndb.size > 0;
+    const hasChips = selectedMethod.size > 0 || selectedSize.size > 0 || selectedStar.size > 0 ||
+      selectedIndb.size > 0 || selectedFlags.size > 0;
     clearEl.style.display = (hasSearch || hasColFilters || hasChips) ? 'inline-flex' : 'none';
   }
 
@@ -671,6 +722,7 @@
       selectedSize.clear();
       selectedStar.clear();
       selectedIndb.clear();
+      selectedFlags.clear();
       chips.forEach(ch => ch.classList.remove('active'));
       apply();
     });

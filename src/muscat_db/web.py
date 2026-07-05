@@ -692,6 +692,14 @@ _NEXSCI_COLUMNS: list[tuple[str, str, str]] = [
     ("sy_tmag", "tmag", "f"),
     ("sy_gaiamag", "gmag", "f"),
     ("sy_kmag", "kmag", "f"),
+    ("sy_snum", "snum", "f"),
+    ("cb_flag", "cbflag", "f"),
+    ("st_age", "age", "f"),
+    ("ttv_flag", "ttv", "f"),
+    ("pl_projobliq", "projobliq", "f"),
+    ("st_nrvc", "nrvc", "f"),
+    ("st_nspec", "nspec", "f"),
+    ("st_nphot", "nphot", "f"),
 ]
 
 _nexsci_cache: dict = {}
