@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import getpass
 import os
 import re
 import signal
+import subprocess
 import time
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 import click
 import typer
@@ -371,7 +374,175 @@ def _stop_running_servers(port: int, *, timeout: float = 5.0) -> list[int]:
     return pids
 
 
-def _run_server(db: str, host: str, port: int, reload: bool, workers: int = 1) -> None:
+# ---------------------------------------------------------------------------
+# htpasswd management  (nginx HTTP Basic Auth)
+# ---------------------------------------------------------------------------
+
+def _htpasswd_path() -> Path:
+    """Return the htpasswd file path, preferring /etc/nginx but falling back
+    to a writable project-local path when nginx is not installed (dev mode)."""
+    env_path = os.environ.get("MUSCAT_HTPASSWD_FILE", "").strip()
+    if env_path:
+        return Path(env_path)
+    default = Path("/etc/nginx/.htpasswd-muscatdb")
+    if default.parent.is_dir():
+        return default
+    return Path("data/.htpasswd-muscatdb")
+
+
+def _openssl_apr1(password: str) -> str:
+    """Hash *password* with Apache MD5 (``$apr1$``) via ``openssl passwd``."""
+    result = subprocess.run(
+        ["openssl", "passwd", "-apr1", password],
+        capture_output=True, text=True, check=True,
+    )
+    return result.stdout.strip()
+
+
+def _read_htpasswd() -> dict[str, str]:
+    """Parse the htpasswd file into ``{username: hash}``."""
+    ht_path = _htpasswd_path()
+    if not ht_path.is_file():
+        return {}
+    entries: dict[str, str] = {}
+    with open(ht_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" in line:
+                user, pw = line.split(":", 1)
+                entries[user] = pw
+    return entries
+
+
+def _write_htpasswd(entries: dict[str, str]) -> None:
+    """Atomically write the htpasswd file."""
+    ht_path = _htpasswd_path()
+    ht_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ht_path.with_suffix(".tmp")
+    tmp.write_text(
+        "# managed by muscat-db htpasswd\n"
+        + "\n".join(f"{u}:{h}" for u, h in sorted(entries.items()))
+        + "\n"
+    )
+    try:
+        tmp.chmod(0o644)
+    except OSError:
+        pass  # best-effort on non-Linux or permission-limited
+    tmp.rename(ht_path)  # atomic on same filesystem
+
+
+htpasswd_app = typer.Typer(
+    name="htpasswd",
+    help="Manage nginx HTTP Basic Auth users",
+    no_args_is_help=True,
+)
+app.add_typer(htpasswd_app)
+
+
+@htpasswd_app.command("add")
+def htpasswd_add(
+    username: str = typer.Argument(..., help="Username"),
+    admin: bool = typer.Option(False, "--admin", help="Mark user as admin"),
+    password: str | None = typer.Option(
+        None, "--password",
+        help="Password (omit for interactive prompt). Use with care in scripts.",
+    ),
+):
+    """Add or update a user in the nginx htpasswd file."""
+    if password is None:
+        password = getpass.getpass(f"Password for {username}: ")
+        confirm = getpass.getpass("Confirm password: ")
+        if password != confirm:
+            console.print("[red]Error: passwords do not match[/]")
+            raise typer.Exit(1)
+    elif not password:
+        console.print("[red]Error: password cannot be empty[/]")
+        raise typer.Exit(1)
+
+    hashed = _openssl_apr1(password)
+    entries = _read_htpasswd()
+    entries[username] = hashed
+    ht_path = _htpasswd_path()
+    _write_htpasswd(entries)
+
+    # Ensure SQLite users table row exists for settings storage (Phase 3).
+    try:
+        from muscat_db.database import db_path, get_conn
+        with get_conn(db_path()) as conn:
+            conn.executescript(
+                "CREATE TABLE IF NOT EXISTS users ("
+                "  username TEXT PRIMARY KEY,"
+                "  password_hash TEXT NOT NULL DEFAULT '',"
+                "  display_name TEXT NOT NULL DEFAULT '',"
+                "  is_admin INTEGER NOT NULL DEFAULT 0,"
+                "  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                "  last_login TEXT,"
+                "  settings TEXT NOT NULL DEFAULT '{}')"
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO users (username, display_name, is_admin) VALUES (?, ?, ?)",
+                (username, username, 1 if admin else 0),
+            )
+            if admin:
+                conn.execute("UPDATE users SET is_admin = 1 WHERE username = ?", (username,))
+            conn.commit()
+    except Exception as exc:
+        console.print(f"[yellow]Warning: could not update users table: {exc}[/]")
+
+    console.print(f"[green]User '{username}' added to {ht_path}[/]")
+
+
+@htpasswd_app.command("delete")
+def htpasswd_delete(
+    username: str = typer.Argument(..., help="Username"),
+):
+    """Remove a user from the nginx htpasswd file."""
+    entries = _read_htpasswd()
+    if username not in entries:
+        console.print(f"[yellow]User '{username}' not found[/]")
+        raise typer.Exit(1)
+    del entries[username]
+    _write_htpasswd(entries)
+    ht_path = _htpasswd_path()
+    console.print(f"[green]User '{username}' removed from {ht_path}[/]")
+
+    try:
+        from muscat_db.database import db_path, get_conn
+        with get_conn(db_path()) as conn:
+            conn.execute("DELETE FROM users WHERE username = ?", (username,))
+            conn.commit()
+    except Exception:
+        pass
+
+
+@htpasswd_app.command("list")
+def htpasswd_list():
+    """List all users in the nginx htpasswd file."""
+    entries = _read_htpasswd()
+    if not entries:
+        console.print("[yellow]No users configured[/]")
+        return
+    ht_path = _htpasswd_path()
+    table = Table(title=f"Users in {ht_path}")
+    table.add_column("Username", style="cyan")
+    for user in sorted(entries):
+        table.add_row(user)
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# Serve / Restart (nginx-aware defaults)
+# ---------------------------------------------------------------------------
+
+
+def _run_server(
+    db: str, host: str, port: int, reload: bool, workers: int,
+    nginx: bool,
+) -> None:
+    if nginx:
+        print("nginx mode: uvicorn bound to 127.0.0.1:8001 (nginx on :8000 expected)")
     os.environ["MUSCAT_DB_PATH"] = db
     import uvicorn
     if reload:
@@ -387,9 +558,15 @@ def serve(
     port: int = typer.Option(8000, "--port", "-p", help="Port number"),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes"),
     workers: int = typer.Option(1, "--workers", "-w", help="Number of worker processes"),
+    nginx: bool = typer.Option(
+        False, "--nginx",
+        help="Set safe defaults for nginx reverse proxy (127.0.0.1:8001)",
+    ),
 ):
     """Start the web frontend."""
-    _run_server(db, host, port, reload, workers)
+    if nginx:
+        host, port = "127.0.0.1", 8001
+    _run_server(db, host, port, reload, workers, nginx)
 
 
 @app.command(cls=_Cmd)
@@ -399,15 +576,21 @@ def restart(
     port: int = typer.Option(8000, "--port", "-p", help="Port number"),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes"),
     workers: int = typer.Option(1, "--workers", "-w", help="Number of worker processes"),
+    nginx: bool = typer.Option(
+        False, "--nginx",
+        help="Set safe defaults for nginx reverse proxy (127.0.0.1:8001)",
+    ),
 ):
     """Stop any server already running on the port, then start a fresh one."""
+    if nginx:
+        host, port = "127.0.0.1", 8001
     stopped = _stop_running_servers(port)
     if stopped:
         console.print(f"[yellow]Stopped running server (pid {', '.join(map(str, stopped))}) on port {port}[/]")
     else:
         console.print(f"[dim]No server running on port {port}[/]")
     console.print(f"[green]Starting server on {host}:{port}[/]")
-    _run_server(db, host, port, reload, workers)
+    _run_server(db, host, port, reload, workers, nginx)
 
 
 if __name__ == "__main__":

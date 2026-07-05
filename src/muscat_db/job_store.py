@@ -88,6 +88,7 @@ class JobQueue(Protocol):
         params: str = "",
         run_id: str = "",
         run_name: str = "",
+        user_name: str | None = None,
     ) -> None:
         """Record a job as pending (queued, not yet launched)."""
         ...
@@ -167,6 +168,7 @@ class DatabaseJobStore(JobRepository, JobQueue):
         params: str = "",
         run_id: str = "",
         run_name: str = "",
+        user_name: str | None = None,
     ) -> None:
         self.save(
             type_=type_,
@@ -181,6 +183,7 @@ class DatabaseJobStore(JobRepository, JobQueue):
             params=params,
             run_id=run_id,
             run_name=run_name,
+            user_name=user_name,
         )
 
     def pending(self, type_: str) -> list[dict]:

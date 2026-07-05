@@ -1338,6 +1338,7 @@ def start_run(
     target: str,
     options: dict | None = None,
     test_run: bool = True,
+    user_name: str | None = None,
 ) -> dict:
     """Launch a reduction in the background. Returns ``{ok, key}`` or
     ``{ok: False, error}``. A run already in flight for the same key is reused.
@@ -1406,6 +1407,7 @@ def start_run(
                     params=json.dumps({"test_run": test_run, "options": opts, "run_id": run_id, "site": site, "mode": mode, "run_name": run_name}, separators=(",", ":")),
                     run_id=run_id,
                     run_name=run_name,
+                    user_name=user_name,
                 )
             except sqlite3.OperationalError as exc:
                 return {"ok": False, "error": f"database not writable: {exc}"}
@@ -1466,6 +1468,7 @@ def start_run(
                 params=json.dumps({"test_run": test_run, "options": opts, "run_id": run_id, "site": site, "mode": mode, "run_name": run_name}, separators=(",", ":")),
                 run_id=run_id,
                 run_name=run_name,
+                user_name=user_name,
             )
         except sqlite3.OperationalError as exc:
             # DB write failed (e.g. read-only database). Roll back the launched
