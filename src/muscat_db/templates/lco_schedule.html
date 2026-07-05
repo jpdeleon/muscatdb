@@ -5,6 +5,27 @@
 {% set active_lco_page = "schedule" %}
 {% include "_lco_shared.html" %}
 
+<style>
+  /* Provenance badge shown next to each target-scoped ephemeris field so the
+     user can tell where a value came from (and that it belongs to the current
+     target) rather than trusting a possibly-stale leftover from another one. */
+  .ephem-src {
+    display: inline-block; font-size: 0.62rem; font-weight: 600;
+    letter-spacing: 0.03em; text-transform: uppercase; vertical-align: middle;
+    padding: 0.02rem 0.32rem; margin-left: 0.25rem; border-radius: 0.6rem;
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--accent);
+  }
+  .ephem-src.manual {
+    background: color-mix(in srgb, var(--text-dim) 18%, transparent);
+    color: var(--text-dim);
+  }
+  .ephem-src.none {
+    background: transparent; color: var(--text-dim);
+    font-weight: 500; opacity: 0.5;
+  }
+</style>
+
 <div class="lco-section">
   <h3>Target &amp; Transit Windows</h3>
   <div class="lco-grid">
@@ -17,12 +38,12 @@
         <option value="toi">TOI catalog</option>
         <option value="linear">linear fit</option>
       </select></div>
-    <div class="lco-field"><label for="sch-coords">RA, Dec (deg)</label><input id="sch-coords" type="text" placeholder="e.g. 97.64, 29.67"></div>
+    <div class="lco-field"><label for="sch-coords">RA, Dec (deg) <span class="ephem-src none" id="src-coords">—</span></label><input id="sch-coords" type="text" placeholder="e.g. 97.64, 29.67"></div>
     <div class="lco-field"><label for="sch-range-start">Range start (UTC)</label><input id="sch-range-start" type="date"></div>
     <div class="lco-field"><label for="sch-range-end">Range end (UTC)</label><input id="sch-range-end" type="date"></div>
-    <div class="lco-field"><label for="sch-t0" title="BJD_TDB. Enter mean,uncertainty. Populated by Fetch ephemeris; editable.">t0 (BJD)</label><input id="sch-t0" type="text" inputmode="decimal" placeholder="e.g. 2459000.5,0.0003"></div>
-    <div class="lco-field"><label for="sch-period">Period (days)</label><input id="sch-period" type="text" inputmode="decimal" placeholder="e.g. 1.0914,0.00001"></div>
-    <div class="lco-field"><label for="sch-duration" title="From the catalog when available; override here. Enter mean,uncertainty.">Duration (hr)</label><input id="sch-duration" type="text" inputmode="decimal" placeholder="e.g. 2.5,0.1"></div>
+    <div class="lco-field"><label for="sch-t0" title="BJD_TDB. Enter mean,uncertainty. Populated by Fetch ephemeris; editable.">t0 (BJD) <span class="ephem-src none" id="src-t0">—</span></label><input id="sch-t0" type="text" inputmode="decimal" placeholder="e.g. 2459000.5,0.0003"></div>
+    <div class="lco-field"><label for="sch-period">Period (days) <span class="ephem-src none" id="src-period">—</span></label><input id="sch-period" type="text" inputmode="decimal" placeholder="e.g. 1.0914,0.00001"></div>
+    <div class="lco-field"><label for="sch-duration" title="From the catalog when available; override here. Enter mean,uncertainty.">Duration (hr) <span class="ephem-src none" id="src-duration">—</span></label><input id="sch-duration" type="text" inputmode="decimal" placeholder="e.g. 2.5,0.1"></div>
     <div class="lco-field"><label for="sch-pad-before">Pre-ingress (min)</label><input id="sch-pad-before" type="number" step="any" value="45"></div>
     <div class="lco-field"><label for="sch-pad-after">Post-egress (min)</label><input id="sch-pad-after" type="number" step="any" value="45"></div>
     <div class="lco-field"><label for="sch-include-padding" style="margin: 0;" title="When on, the padded baseline (start→end) must also be observable for a transit to rate 'full'. When off, padding is used only for the displayed span and the observability check spans just the transit (mid ± duration/2).">Include padding in obs check</label>
@@ -226,6 +247,34 @@
     e.textContent = text || '';
     e.className = 'lco-msg' + (kind ? ' ' + kind : '');
   }
+
+  // --- Ephemeris field provenance -----------------------------------------
+  // These four fields are target-scoped: their value only makes sense for the
+  // target it was resolved for. We track which target the current values belong
+  // to (ephemTarget) and where each came from (fieldSources), so fetching a new
+  // target can't silently leave another target's numbers in place.
+  var EPHEM_FIELDS = ['sch-coords', 'sch-t0', 'sch-period', 'sch-duration'];
+  var SRC_BADGE = {
+    'sch-coords': 'src-coords', 'sch-t0': 'src-t0',
+    'sch-period': 'src-period', 'sch-duration': 'src-duration'
+  };
+  var fieldSources = {};   // field id -> source label ('NASA' | 'manual' | ...)
+  var ephemTarget = '';    // target the ephemeris fields currently describe
+
+  function setFieldSource(id, source) {
+    fieldSources[id] = source || '';
+    var b = el(SRC_BADGE[id]); if (!b) return;
+    if (source) {
+      b.textContent = source;
+      b.className = 'ephem-src' + (source === 'manual' ? ' manual' : '');
+    } else {
+      b.textContent = '—';
+      b.className = 'ephem-src none';
+    }
+  }
+  function clearEphemFields() {
+    EPHEM_FIELDS.forEach(function (id) { setVal(id, ''); setFieldSource(id, ''); });
+  }
   function parseTupleValue(raw) {
     var s = (raw || '').trim();
     if (!s) return { mean: null, unc: null, ok: true };
@@ -284,6 +333,8 @@
     var o = {};
     TEXT_IDS.forEach(function (id) { o[id] = val(id); });
     CHECK_IDS.forEach(function (id) { o[id] = chk(id); });
+    o['_ephemTarget'] = ephemTarget;
+    o['_fieldSources'] = fieldSources;
     return o;
   }
   function saveOptions() {
@@ -296,6 +347,9 @@
     TEXT_IDS.forEach(function (id) { if (saved[id] !== undefined && saved[id] !== '') setVal(id, saved[id]); });
     CHECK_IDS.forEach(function (id) { if (saved[id] !== undefined) setChk(id, saved[id]); });
     if (saved['sch-source']) pendingSource = saved['sch-source'];
+    if (typeof saved['_ephemTarget'] === 'string') ephemTarget = saved['_ephemTarget'];
+    var savedSrc = saved['_fieldSources'] || {};
+    EPHEM_FIELDS.forEach(function (id) { setFieldSource(id, savedSrc[id] || ''); });
   }
   document.addEventListener('change', function (e) {
     if (e.target && (TEXT_IDS.indexOf(e.target.id) !== -1 || CHECK_IDS.indexOf(e.target.id) !== -1)) {
@@ -559,14 +613,17 @@
     opts = opts || {};
     var coords = info && info.coordinates;
     if (!coords || coords.ra == null || coords.dec == null) {
-      setVal('sch-coords', '');
-      saveOptions();
+      // Catalog lookup returned nothing. Do NOT wipe the field: staleness is
+      // already handled by clearing on target change, so any value present here
+      // is either a manual entry for this target or a prior resolve — keep it.
+      if (val('sch-coords') && !fieldSources['sch-coords']) setFieldSource('sch-coords', 'manual');
       throw new Error('Coordinates not found for ' + (info && info.target ? info.target : 'that target'));
     }
     if (opts.isInitialLoad && val('sch-coords')) {
       return;
     }
     setVal('sch-coords', coords.ra.toFixed(5) + ', ' + coords.dec.toFixed(5));
+    setFieldSource('sch-coords', String(coords.source || 'catalog').toUpperCase());
     saveOptions();
   }
 
@@ -589,18 +646,20 @@
     // Duration follows the selected catalog when it provides one (toi -> TOI,
     // nasa -> NASA); other sources (auto / dataset / linear) have no duration of
     // their own, so fall back to NASA then TOI.
-    var dur = null, durUnc = null;
-    if (source === 'toi' && toi.duration != null) { dur = toi.duration; durUnc = toi.duration_unc; }
-    else if (source === 'nasa' && nasa.duration != null) { dur = nasa.duration; durUnc = nasa.duration_unc; }
-    else if (nasa.duration != null) { dur = nasa.duration; durUnc = nasa.duration_unc; }
-    else if (toi.duration != null) { dur = toi.duration; durUnc = toi.duration_unc; }
-    if (dur != null) setVal('sch-duration', tupleString(dur, durUnc));
+    var dur = null, durUnc = null, durSrc = null;
+    if (source === 'toi' && toi.duration != null) { dur = toi.duration; durUnc = toi.duration_unc; durSrc = 'TOI'; }
+    else if (source === 'nasa' && nasa.duration != null) { dur = nasa.duration; durUnc = nasa.duration_unc; durSrc = 'NASA'; }
+    else if (nasa.duration != null) { dur = nasa.duration; durUnc = nasa.duration_unc; durSrc = 'NASA'; }
+    else if (toi.duration != null) { dur = toi.duration; durUnc = toi.duration_unc; durSrc = 'TOI'; }
+    if (dur != null) { setVal('sch-duration', tupleString(dur, durUnc)); setFieldSource('sch-duration', durSrc); }
 
     if (!source) {
       var auto = autoEphemerisForPlanet(info, planet);
       if (!auto) { msg('msg-windows', 'No ephemeris found for ' + planet, 'err'); return; }
       setVal('sch-t0', tupleString(auto.data.t0, auto.data.t0_unc));
       setVal('sch-period', tupleString(auto.data.period, auto.data.period_unc));
+      setFieldSource('sch-t0', auto.label);
+      setFieldSource('sch-period', auto.label);
       saveOptions();
       msg('msg-windows', auto.label + ': t0=' + auto.data.t0 + ', P=' + auto.data.period + ' d' + (dur != null ? ', dur=' + dur + ' h' : ''), 'ok');
       return;
@@ -611,6 +670,8 @@
       if (ephem.t0 == null || ephem.period == null) { msg('msg-windows', 'No ' + source.toUpperCase() + ' ephemeris for ' + planet, 'err'); return; }
       setVal('sch-t0', tupleString(ephem.t0, ephem.t0_unc));
       setVal('sch-period', tupleString(ephem.period, ephem.period_unc));
+      setFieldSource('sch-t0', source.toUpperCase());
+      setFieldSource('sch-period', source.toUpperCase());
       saveOptions();
       msg('msg-windows', source.toUpperCase() + ': t0=' + ephem.t0 + ', P=' + ephem.period + ' d' + (dur != null ? ', dur=' + dur + ' h' : ''), 'ok');
       return;
@@ -623,9 +684,11 @@
       if (!pe) { msg('msg-windows', 'No fitted ephemeris for ' + planet + ' in that dataset', 'err'); return; }
       setVal('sch-t0', tupleString(pe.t0, pe.t0_unc));
       setVal('sch-period', tupleString(pe.period, pe.period_unc));
+      setFieldSource('sch-t0', 'FIT');
+      setFieldSource('sch-period', 'FIT');
       // Prefer the fit's own duration (hours); otherwise keep the catalog value
       // already set above.
-      if (pe.duration != null) { dur = pe.duration; setVal('sch-duration', tupleString(pe.duration, pe.duration_unc)); }
+      if (pe.duration != null) { dur = pe.duration; setVal('sch-duration', tupleString(pe.duration, pe.duration_unc)); setFieldSource('sch-duration', 'FIT'); }
       saveOptions();
       msg('msg-windows', datasetLabel(ds) + ': t0=' + pe.t0 + ', P=' + pe.period + ' d' + (dur != null ? ', dur=' + dur + ' h' : ''), 'ok');
       return;
@@ -649,6 +712,8 @@
         if (!res) { msg('msg-windows', 'Linear fit unavailable for ' + planet, 'err'); return; }
         setVal('sch-t0', tupleString(res.t0_fit, res.t0_fit_unc));
         setVal('sch-period', tupleString(res.period_fit, res.period_fit_unc));
+        setFieldSource('sch-t0', 'LINEAR');
+        setFieldSource('sch-period', 'LINEAR');
         saveOptions();
         var nfit = (res.points || []).filter(function (p) { return p.checked; }).length;
         msg('msg-windows', (res.was_fit ? 'Linear fit' : 'Seed (need ≥2 epochs)') + ': t0=' + res.t0_fit + ', P=' + res.period_fit + ' d (' + nfit + ' epochs)', 'ok');
@@ -659,6 +724,16 @@
     opts = opts || {};
     var target = val('sch-target');
     if (!target) return Promise.resolve();
+    // Target changed since these fields were last populated: blank the
+    // target-scoped ephemeris fields so nothing from the previous target
+    // lingers. A field left empty after the fetch honestly means "no data for
+    // this target" rather than a stale leftover. Skipped on the initial page
+    // load, where restored values already belong to the restored target.
+    if (!opts.isInitialLoad && target !== ephemTarget) {
+      clearEphemFields();
+      saveOptions();
+    }
+    ephemTarget = target;
     if (!opts.silent) msg('msg-windows', 'Fetching target info…');
     return fetchTargetInfo(target).then(function (info) {
       if (!info.ok) {
@@ -974,6 +1049,19 @@
       populateSourceOptions(lastTargetInfo);
       applySource(lastTargetInfo);
     }
+  });
+
+  // Hand-editing a target-scoped field tags it 'manual' and binds it to the
+  // current target, so a subsequent fetch of the same target won't clear it
+  // and its provenance reads 'manual' rather than a catalog name. Programmatic
+  // setVal() does not fire 'input', so this only reacts to real user edits.
+  EPHEM_FIELDS.forEach(function (id) {
+    var e = el(id); if (!e) return;
+    e.addEventListener('input', function () {
+      setFieldSource(id, val(id) ? 'manual' : '');
+      ephemTarget = val('sch-target');
+      saveOptions();
+    });
   });
 
   el('win-all').addEventListener('change', function () {
