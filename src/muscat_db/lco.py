@@ -713,10 +713,76 @@ def payload_hash(payload: dict) -> str:
     s = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
+# Front-padding (target setup / acquisition) the LCO scheduler reserves per
+# configuration before science exposures begin. A REPEAT_EXPOSE config must fit
+# within its window *including* this overhead, so we subtract it when deriving
+# repeat_duration from the window span. 180 s matches accepted 2m0 MUSCAT
+# requests; the dry-run (max_allowable_ipp) validates the final fit.
+_REPEAT_EXPOSE_SETUP_OVERHEAD_S = 180
+
+
+def _repeat_duration(params: dict) -> int | None:
+    """Seconds a REPEAT_EXPOSE config should repeat within its observing window.
+
+    An explicit ``repeat_duration`` wins. Otherwise derive it from the shortest
+    selected window (so one value fits every window) minus the setup overhead.
+    Returns ``None`` when it cannot be determined (no windows / bad timestamps).
+    """
+    explicit = params.get("repeat_duration")
+    if explicit:
+        try:
+            return int(float(explicit))
+        except (TypeError, ValueError):
+            pass
+
+    spans = []
+    for w in params.get("windows") or []:
+        start, end = w.get("start"), w.get("end")
+        if not start or not end:
+            continue
+        try:
+            t0 = datetime.datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+            t1 = datetime.datetime.fromisoformat(str(end).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        spans.append((t1 - t0).total_seconds())
+    if not spans:
+        return None
+    return max(int(min(spans)) - _REPEAT_EXPOSE_SETUP_OVERHEAD_S, 60)
+
+
+def _config_type_block(params: dict, default_type: str) -> dict:
+    """``{"type": ...}`` plus ``repeat_duration`` only when REPEAT_EXPOSE.
+
+    Emitting ``repeat_duration`` on a non-REPEAT_EXPOSE config is invalid, so it
+    is included exclusively for REPEAT_EXPOSE (and only when derivable).
+    """
+    config_type = params.get("type") or default_type
+    block: dict = {"type": config_type}
+    if config_type == "REPEAT_EXPOSE":
+        duration = _repeat_duration(params)
+        if duration is not None:
+            block["repeat_duration"] = duration
+    return block
+
+
 def build_requestgroup(kind: str, params: dict) -> dict:
     """Construct the requestgroup payload for an observation."""
-    if not all(params.get(k) for k in ["name", "proposal", "target_name", "ra", "dec"]):
-        raise LcoError("Missing required scheduling parameters", status=400)
+    # Name the specific empty field(s) so the UI can point the user at what to
+    # fill (a generic "missing parameters" error hides, e.g., an unset proposal).
+    _REQUIRED_LABELS = {
+        "name": "request name",
+        "proposal": "proposal",
+        "target_name": "target",
+        "ra": "RA",
+        "dec": "Dec",
+    }
+    missing = [label for key, label in _REQUIRED_LABELS.items() if not params.get(key)]
+    if missing:
+        raise LcoError(
+            "Missing required scheduling parameters: " + ", ".join(missing),
+            status=400,
+        )
 
     target = {
         "name": params["target_name"],
@@ -746,36 +812,48 @@ def build_requestgroup(kind: str, params: dict) -> dict:
     if kind in ("muscat", "muscat3", "muscat4"):
         if not params.get("exposure_times"):
             raise LcoError("Exposure times are required for MuSCAT instruments", status=400)
-        
-        # For MuSCAT, one instrument_config is created per filter.
-        instrument_configs = [
-            {
-                "exposure_time": params["exposure_times"].get(b, 0),
-                "exposure_count": params.get("exposure_count", 1),
-                "mode": params.get("readout_mode", "MUSCAT_FAST"),
-                "optical_elements": {
-                    "filter": b,
-                    "narrowband_g_position": params.get("narrowband", {}).get("g", "out"),
-                    "narrowband_i_position": params.get("narrowband", {}).get("i", "out"),
-                    "narrowband_r_position": params.get("narrowband", {}).get("r", "out"),
-                    "narrowband_z_position": params.get("narrowband", {}).get("z", "out"),
-                },
-                "extra_params": {
-                    "exposure_mode": params.get("exposure_mode", "ASYNCHRONOUS"),
-                    "exposure_time_g": params["exposure_times"].get("g", 0),
-                    "exposure_time_i": params["exposure_times"].get("i", 0),
-                    "exposure_time_r": params["exposure_times"].get("r", 0),
-                    "exposure_time_z": params["exposure_times"].get("z", 0),
-                },
-            } for b in ["g", "r", "i", "z"] if params["exposure_times"].get(b, 0) > 0
-        ]
+
+        et = params["exposure_times"]
+        band_times = {b: et.get(b, 0) for b in ("g", "r", "i", "z")}
+        if not any(v > 0 for v in band_times.values()):
+            raise LcoError("At least one MuSCAT band needs a positive exposure time", status=400)
+
+        # MuSCAT is a simultaneous 4-band imager: LCO expects a SINGLE
+        # instrument_config whose per-band exposures live in extra_params
+        # (exposure_time_g/r/i/z). There is no per-band `filter` optical
+        # element, and the top-level exposure_time is the longest (driving)
+        # band. This mirrors LCO's accepted 2M0-SCICAM-MUSCAT request shape.
+        nb = params.get("narrowband", {})
+        instrument_configs = [{
+            "exposure_time": max(band_times.values()),
+            "exposure_count": params.get("exposure_count", 1),
+            "mode": params.get("readout_mode", "MUSCAT_FAST"),
+            "optical_elements": {
+                "narrowband_g_position": nb.get("g", "out"),
+                "narrowband_i_position": nb.get("i", "out"),
+                "narrowband_r_position": nb.get("r", "out"),
+                "narrowband_z_position": nb.get("z", "out"),
+            },
+            "extra_params": {
+                "bin_x": 1,
+                "bin_y": 1,
+                "offset_ra": 0,
+                "offset_dec": 0,
+                "exposure_mode": params.get("exposure_mode", "ASYNCHRONOUS"),
+                "exposure_time_g": band_times["g"],
+                "exposure_time_i": band_times["i"],
+                "exposure_time_r": band_times["r"],
+                "exposure_time_z": band_times["z"],
+            },
+        }]
         instrument_type = "2M0-SCICAM-MUSCAT"
         configurations.append({
-            "type": params.get("type", "REPEAT_EXPOSE"),
-            "repeat_duration": params.get("repeat_duration"),
+            **_config_type_block(params, "REPEAT_EXPOSE"),
             "instrument_type": instrument_type,
             "instrument_configs": instrument_configs,
-            "acquisition_config": {"mode": "WCS"},
+            # Per the LCO instruments API, 2M0-SCICAM-MUSCAT only offers the
+            # "OFF" acquisition mode; "WCS" is rejected at validation.
+            "acquisition_config": {"mode": "OFF"},
             "guiding_config": {"mode": params.get("guiding_config", "ON"), "optional": True},
             "constraints": {
                 "max_airmass": params.get("max_airmass", 2.5),
@@ -803,7 +881,7 @@ def build_requestgroup(kind: str, params: dict) -> dict:
         }]
         instrument_type = "1M0-SCICAM-SINISTRO"
         configurations.append({
-            "type": params.get("type", "EXPOSE"),
+            **_config_type_block(params, "EXPOSE"),
             "instrument_type": instrument_type,
             "instrument_configs": instrument_configs,
             "acquisition_config": {"mode": "OFF"},
@@ -814,9 +892,12 @@ def build_requestgroup(kind: str, params: dict) -> dict:
     else:
         raise LcoError(f"Unsupported instrument kind for scheduling: {kind}", status=400)
 
-    location = {}
+    # telescope_class is always required; site is an optional narrowing. Gating
+    # telescope_class behind site produced an invalid empty location and made
+    # "any site on this class" impossible to express (LCO's accepted requests
+    # carry telescope_class with no site when the network picks the site).
+    location = {"telescope_class": "1m0" if kind == "sinistro" else "2m0"}
     if params.get("site"):
-        location["telescope_class"] = "1m0" if kind == "sinistro" else "2m0"
         location["site"] = params["site"]
     
     obs_type = "NORMAL"

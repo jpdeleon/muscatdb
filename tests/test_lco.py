@@ -50,21 +50,33 @@ class LcoTest(unittest.TestCase):
         config = request["configurations"][0]
         self.assertEqual(config["type"], "REPEAT_EXPOSE") # Default type changed
         self.assertEqual(config["repeat_duration"], 18179)
+        # LCO instruments API: MUSCAT only supports the "OFF" acquisition mode.
+        self.assertEqual(config["acquisition_config"]["mode"], "OFF")
         self.assertIn("target", config) # Target also in config now
         self.assertIn("constraints", config) # Constraints also in config now
         self.assertEqual(config["constraints"]["max_airmass"], 2.5)
         self.assertEqual(config["constraints"]["min_lunar_distance"], 18)
 
-        self.assertEqual(len(config["instrument_configs"]), 4)
+        # MuSCAT is a simultaneous 4-band imager -> exactly one instrument_config
+        # matching LCO's accepted request shape (no per-band `filter`).
+        self.assertEqual(len(config["instrument_configs"]), 1)
         instrument_config = config["instrument_configs"][0]
-        self.assertEqual(instrument_config["exposure_time"], 30)
+        self.assertEqual(instrument_config["exposure_time"], 30)  # longest band
         self.assertEqual(instrument_config["exposure_count"], 2)
         self.assertEqual(instrument_config["mode"], "MUSCAT_FAST")
-        self.assertEqual(instrument_config["optical_elements"]["filter"], "g")
+        self.assertNotIn("filter", instrument_config["optical_elements"])
         self.assertEqual(instrument_config["optical_elements"]["narrowband_g_position"], "in")
         self.assertIn("extra_params", instrument_config)
-        self.assertEqual(instrument_config["extra_params"]["exposure_mode"], "ASYNCHRONOUS")
-        self.assertEqual(instrument_config["extra_params"]["exposure_time_g"], 30)
+        ep = instrument_config["extra_params"]
+        self.assertEqual(ep["exposure_mode"], "ASYNCHRONOUS")
+        # Every band's exposure is carried in extra_params, plus binning/offsets.
+        for b in ("g", "r", "i", "z"):
+            self.assertEqual(ep[f"exposure_time_{b}"], 30)
+        self.assertEqual((ep["bin_x"], ep["bin_y"]), (1, 1))
+        self.assertEqual((ep["offset_ra"], ep["offset_dec"]), (0, 0))
+        # telescope_class is present even though this request set no site.
+        self.assertEqual(request["location"]["telescope_class"], "2m0")
+        self.assertNotIn("site", request["location"])
 
     def test_build_requestgroup_sinistro(self):
         params = {
@@ -92,6 +104,7 @@ class LcoTest(unittest.TestCase):
         
         config = request["configurations"][0]
         self.assertEqual(config["type"], "EXPOSE")
+        self.assertNotIn("repeat_duration", config)  # only for REPEAT_EXPOSE
         self.assertIn("target", config)
         self.assertIn("constraints", config)
         self.assertEqual(config["acquisition_config"]["mode"], "OFF")
@@ -106,9 +119,64 @@ class LcoTest(unittest.TestCase):
         self.assertEqual(inst_config["extra_params"]["bin_x"], 2)
         self.assertEqual(inst_config["extra_params"]["bin_y"], 2)
 
+    def test_muscat_repeat_duration_computed_from_windows(self):
+        """A REPEAT_EXPOSE config with no explicit duration derives it from the window."""
+        params = {
+            "name": "n", "proposal": "p", "target_name": "t",
+            "ra": 10.0, "dec": -5.0, "kind": "muscat4",
+            "exposure_times": {"g": 30, "r": 30, "i": 30, "z": 30},
+            "windows": [{"start": "2026-07-04T07:00:00Z", "end": "2026-07-04T10:00:00Z"}],
+        }
+        config = lco.build_requestgroup("muscat4", params)["requests"][0]["configurations"][0]
+        self.assertEqual(config["type"], "REPEAT_EXPOSE")
+        # 3 h window (10800 s) minus the 180 s setup overhead.
+        self.assertEqual(config["repeat_duration"], 10620)
+
+    def test_muscat_repeat_duration_uses_shortest_window(self):
+        """One repeat_duration must fit every selected window, so use the shortest."""
+        params = {
+            "name": "n", "proposal": "p", "target_name": "t",
+            "ra": 10.0, "dec": -5.0, "kind": "muscat4",
+            "exposure_times": {"g": 30, "r": 30, "i": 30, "z": 30},
+            "windows": [
+                {"start": "2026-07-04T07:00:00Z", "end": "2026-07-04T10:00:00Z"},  # 3 h
+                {"start": "2026-07-05T07:00:00Z", "end": "2026-07-05T08:00:00Z"},  # 1 h
+            ],
+        }
+        config = lco.build_requestgroup("muscat4", params)["requests"][0]["configurations"][0]
+        self.assertEqual(config["repeat_duration"], 3600 - 180)
+
+    def test_muscat_expose_type_omits_repeat_duration(self):
+        params = {
+            "name": "n", "proposal": "p", "target_name": "t",
+            "ra": 10.0, "dec": -5.0, "kind": "muscat4", "type": "EXPOSE",
+            "exposure_times": {"g": 30, "r": 30, "i": 30, "z": 30},
+            "windows": [{"start": "2026-07-04T07:00:00Z", "end": "2026-07-04T10:00:00Z"}],
+        }
+        config = lco.build_requestgroup("muscat4", params)["requests"][0]["configurations"][0]
+        self.assertEqual(config["type"], "EXPOSE")
+        self.assertNotIn("repeat_duration", config)
+
     def test_build_requestgroup_invalid_payload(self):
-        with self.assertRaises(lco.LcoError):
+        with self.assertRaises(lco.LcoError) as cm:
             lco.build_requestgroup("muscat3", {})
+        # Every required field is named so the UI can point the user at them.
+        self.assertEqual(cm.exception.status, 400)
+        for label in ("request name", "proposal", "target", "RA", "Dec"):
+            self.assertIn(label, str(cm.exception))
+
+    def test_build_requestgroup_names_single_missing_field(self):
+        """A payload missing only the proposal must call out the proposal."""
+        params = {
+            "name": "Test", "proposal": "", "target_name": "WASP-12",
+            "ra": "06:30:33", "dec": "+29:40:20", "kind": "muscat3",
+        }
+        with self.assertRaises(lco.LcoError) as cm:
+            lco.build_requestgroup("muscat3", params)
+        msg = str(cm.exception)
+        self.assertIn("proposal", msg)
+        self.assertNotIn("target", msg)
+        self.assertNotIn("request name", msg)
 
     @patch.dict(os.environ, {"LCO_API_TOKEN": ""})
     def test_get_token_missing(self):
