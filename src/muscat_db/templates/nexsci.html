@@ -531,24 +531,71 @@
     });
   }
 
+  // ── URL slug encoding/decoding for bookmarkable filters ──────────────────
+  function encodeState(state) {
+    const parts = [];
+    if (state.q) parts.push('q=' + encodeURIComponent(state.q));
+    if (state.method && state.method.length) parts.push('method=' + state.method.join(','));
+    if (state.size && state.size.length) parts.push('size=' + state.size.join(','));
+    if (state.star && state.star.length) parts.push('star=' + state.star.join(','));
+    if (state.indb && state.indb.length) parts.push('indb=' + state.indb.join(','));
+    if (state.sort && state.sort.key) parts.push('sort=' + state.sort.key + ':' + state.sort.dir);
+    if (state.plot) {
+      if (state.plot.x) parts.push('x=' + state.plot.x);
+      if (state.plot.y) parts.push('y=' + state.plot.y);
+      if (state.plot.color) parts.push('color=' + state.plot.color);
+      if (state.plot.logx) parts.push('logx=1');
+      if (state.plot.logy) parts.push('logy=1');
+      if (state.plot.size && state.plot.size !== '6') parts.push('size=' + state.plot.size);
+    }
+    return parts.length ? '#' + parts.join('&') : '';
+  }
+  function decodeSlug() {
+    const hash = window.location.hash.slice(1);
+    if (!hash) return null;
+    const state = {};
+    const params = new URLSearchParams(hash);
+    if (params.has('q')) searchEl.value = decodeURIComponent(params.get('q'));
+    ['method', 'size', 'star', 'indb'].forEach(k => {
+      if (params.has(k)) state[k] = params.get(k).split(',');
+    });
+    if (params.has('sort')) {
+      const [k, d] = params.get('sort').split(':');
+      state.sort = { key: k, dir: parseInt(d) || 0 };
+    }
+    if (!state.plot) state.plot = {};
+    if (params.has('x')) state.plot.x = params.get('x');
+    if (params.has('y')) state.plot.y = params.get('y');
+    if (params.has('color')) state.plot.color = params.get('color');
+    if (params.has('logx')) state.plot.logx = true;
+    if (params.has('logy')) state.plot.logy = true;
+    if (params.has('size')) state.plot.size = params.get('size');
+    return Object.keys(state).length ? state : null;
+  }
+
   // ── persistence ────────────────────────────────────────────────────────────
   const LS = window.MuscatStorage;
   function saveState() {
-    if (!LS) return;
-    const cols = {};
-    colInputs.forEach(inp => { if (inp.value) cols[inp.dataset.col] = inp.value; });
-    LS.setJSON('nexsci:state', {
-      q: searchEl.value, cols,
+    const state = {
+      q: searchEl.value,
       method: Array.from(selectedMethod), size: Array.from(selectedSize),
       star: Array.from(selectedStar), indb: Array.from(selectedIndb),
       sort: sortState,
       plot: { x: selX.value, y: selY.value, color: selColor.value,
               logx: logXEl.checked, logy: logYEl.checked, size: sizeEl.value },
-    });
+    };
+    if (LS) {
+      const cols = {};
+      colInputs.forEach(inp => { if (inp.value) cols[inp.dataset.col] = inp.value; });
+      state.cols = cols;
+      LS.setJSON('nexsci:state', state);
+    }
+    // Update URL slug for bookmarking/sharing.
+    window.history.replaceState(null, '', window.location.pathname + encodeState(state));
   }
   function restoreState() {
-    if (!LS) return;
-    const s = LS.getJSON('nexsci:state', null);
+    // Priority: URL slug > localStorage > defaults.
+    let s = decodeSlug() || (LS ? LS.getJSON('nexsci:state', null) : null);
     if (!s) return;
     if (s.q) searchEl.value = s.q;
     if (s.cols) colInputs.forEach(inp => { if (s.cols[inp.dataset.col]) inp.value = s.cols[inp.dataset.col]; });
