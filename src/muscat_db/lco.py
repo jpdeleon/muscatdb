@@ -22,6 +22,8 @@ import threading
 import time
 import uuid
 
+from muscat_db.database import UserSettingsError, get_user_lco_token, user_lco_token_configured
+
 # A frame filename / path segment: letters, digits and the punctuation LCO uses
 # in archive names. Excludes "/" and "\" so a crafted payload can't traverse.
 _SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._+:\-]+$")
@@ -47,33 +49,58 @@ class LcoError(Exception):
         return {"ok": False, "error": self.message, "detail": self.detail, "status": self.status}
 
 
-def _get_lco_api_token() -> str:
-    """Return the LCO API token from the environment, raising an error if absent."""
+def _get_lco_api_token(user_name: str | None = None) -> str:
+    """Return the LCO API token for *user_name*, falling back to the legacy env var."""
+    if user_name:
+        try:
+            user_token = get_user_lco_token(user_name)
+        except UserSettingsError as exc:
+            raise LcoError(
+                "Stored LCO token cannot be used",
+                status=503,
+                detail=str(exc),
+            ) from exc
+        if user_token:
+            return user_token
     token = os.environ.get("LCO_API_TOKEN")
     if not token:
         raise LcoError(
-            "LCO_API_TOKEN is not configured",
+            "LCO API token is not configured",
             status=503,
-            detail="The server is missing the LCO_API_TOKEN secret needed to make this call.",
+            detail=(
+                "Save an LCO token in Settings for your logged-in user, "
+                "or set the legacy LCO_API_TOKEN server secret."
+            ),
         )
     return token
 
 
-def config_state() -> dict:
+def config_state(user_name: str | None = None) -> dict:
     """Return the configuration state for LCO variables. No secrets exposed."""
-    token_configured = bool(os.environ.get("LCO_API_TOKEN"))
+    user_token_configured = user_lco_token_configured(user_name)
+    global_token_configured = bool(os.environ.get("LCO_API_TOKEN"))
+    token_configured = user_token_configured or global_token_configured
     download_root_configured = bool(os.environ.get("MUSCAT_LCO_DIR"))
     submit_flag_enabled = os.environ.get("MUSCAT_LCO_ALLOW_SUBMIT") == "1"
     root = download_root()
     return {
         "token_configured": token_configured,
+        "user_token_configured": user_token_configured,
+        "global_token_configured": global_token_configured,
+        "token_source": "user" if user_token_configured else ("global" if global_token_configured else None),
         "download_root_configured": download_root_configured,
         "download_root": str(root) if root else None,
         "submit_allowed": token_configured and download_root_configured and submit_flag_enabled,
     }
 
 
-def _lco_api_request(url: str, method: str = "GET", data: dict | None = None) -> dict:
+def _lco_api_request(
+    url: str,
+    method: str = "GET",
+    data: dict | None = None,
+    user_name: str | None = None,
+    token: str | None = None,
+) -> dict:
     """Make an authenticated request to the LCO API.
 
     Both the observation portal (observe.lco.global) and the Science Archive
@@ -81,7 +108,7 @@ def _lco_api_request(url: str, method: str = "GET", data: dict | None = None) ->
     ``Token`` scheme. Using ``Bearer`` makes the archive return HTTP 401
     ``{"detail": "No Such User"}``.
     """
-    token = _get_lco_api_token()
+    token = token or _get_lco_api_token(user_name)
     headers = {"Authorization": "Token " + token, "Content-Type": "application/json"}
     body = json.dumps(data).encode("utf-8") if data is not None else None
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
@@ -105,25 +132,37 @@ def _lco_api_request(url: str, method: str = "GET", data: dict | None = None) ->
         raise LcoError("LCO API request failed", detail=str(e))
 
 
-def get_proposals() -> dict:
+def get_proposals(user_name: str | None = None, token: str | None = None) -> dict:
     """Fetch the current user's active proposals."""
-    return _lco_api_request("https://observe.lco.global/api/proposals/?state=ACTIVE")
+    return _lco_api_request(
+        "https://observe.lco.global/api/proposals/?state=ACTIVE",
+        user_name=user_name,
+        token=token,
+    )
 
 
-def get_requestgroups(proposal: str) -> dict:
+def get_requestgroups(
+    proposal: str,
+    user_name: str | None = None,
+    token: str | None = None,
+) -> dict:
     """Fetch request groups for a given proposal."""
     if not proposal:
         raise LcoError("Proposal ID is required", status=400)
     url = f"https://observe.lco.global/api/requestgroups/?proposal={urllib.parse.quote(proposal)}"
-    return _lco_api_request(url)
+    return _lco_api_request(url, user_name=user_name, token=token)
 
 
-def archive_search(filters: dict) -> dict:
+def archive_search(
+    filters: dict,
+    user_name: str | None = None,
+    token: str | None = None,
+) -> dict:
     """Search the LCO archive."""
     base_url = "https://archive-api.lco.global/frames/"
     params = urllib.parse.urlencode({k: v for k, v in filters.items() if v})
     url = f"{base_url}?{params}"
-    return _lco_api_request(url)
+    return _lco_api_request(url, user_name=user_name, token=token)
 
 
 # Safety cap so a single request-id fetch can't spin forever paginating a
@@ -131,7 +170,12 @@ def archive_search(filters: dict) -> dict:
 _ARCHIVE_MAX_FRAMES = 10_000
 
 
-def archive_search_all(filters: dict, max_frames: int = _ARCHIVE_MAX_FRAMES) -> dict:
+def archive_search_all(
+    filters: dict,
+    user_name: str | None = None,
+    max_frames: int = _ARCHIVE_MAX_FRAMES,
+    token: str | None = None,
+) -> dict:
     """Search the LCO archive, following pagination until exhausted or capped.
 
     The archive paginates ``frames/`` results (``next`` holds the fully-formed
@@ -146,7 +190,7 @@ def archive_search_all(filters: dict, max_frames: int = _ARCHIVE_MAX_FRAMES) -> 
     results: list[dict] = []
     total: int | None = None
     while url and len(results) < max_frames:
-        page = _lco_api_request(url)
+        page = _lco_api_request(url, user_name=user_name, token=token)
         if total is None:
             total = page.get("count")
         results.extend(page.get("results") or [])
@@ -988,12 +1032,20 @@ def build_requestgroup(kind: str, params: dict) -> dict:
         }]
     }
 
-def max_allowable_ipp(request_group: dict) -> dict:
+def max_allowable_ipp(
+    request_group: dict,
+    user_name: str | None = None,
+    token: str | None = None,
+) -> dict:
     """Run the max-allowable-IPP dry-run."""
     url = "https://observe.lco.global/api/requestgroups/max_allowable_ipp/"
-    return _lco_api_request(url, method="POST", data=request_group)
+    return _lco_api_request(url, method="POST", data=request_group, user_name=user_name, token=token)
 
-def submit_requestgroup(request_group: dict) -> dict:
+def submit_requestgroup(
+    request_group: dict,
+    user_name: str | None = None,
+    token: str | None = None,
+) -> dict:
     """Submit a live observation request."""
     if os.environ.get("MUSCAT_LCO_ALLOW_SUBMIT") != "1":
         raise LcoError(
@@ -1002,4 +1054,4 @@ def submit_requestgroup(request_group: dict) -> dict:
             detail="To enable, set MUSCAT_LCO_ALLOW_SUBMIT=1 in the server environment.",
         )
     url = "https://observe.lco.global/api/requestgroups/"
-    return _lco_api_request(url, method="POST", data=request_group)
+    return _lco_api_request(url, method="POST", data=request_group, user_name=user_name, token=token)

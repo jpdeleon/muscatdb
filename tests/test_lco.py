@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from muscat_db import lco
+from muscat_db.database import set_user_lco_token
 
 class LcoTest(unittest.TestCase):
 
@@ -238,6 +239,27 @@ class LcoTest(unittest.TestCase):
         with self.assertRaises(lco.LcoError) as cm:
             lco._get_lco_api_token()
         self.assertEqual(cm.exception.status, 503)
+
+    def test_get_token_prefers_user_token_and_falls_back_to_global(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "MUSCAT_DB_PATH": path,
+                    "MUSCAT_DB_SECRET": "test-secret",
+                    "LCO_API_TOKEN": "global-token",
+                },
+            ):
+                set_user_lco_token("alice", "alice-token")
+                self.assertEqual(lco._get_lco_api_token("alice"), "alice-token")
+                self.assertEqual(lco._get_lco_api_token("bob"), "global-token")
+                state = lco.config_state("alice")
+                self.assertTrue(state["user_token_configured"])
+                self.assertEqual(state["token_source"], "user")
+        finally:
+            os.unlink(path)
 
     @patch.dict(os.environ, {"LCO_API_TOKEN": "test-token"})
     @patch("urllib.request.urlopen")

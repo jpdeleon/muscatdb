@@ -541,10 +541,55 @@ def test_lco_config_reports_booleans_and_hides_token(monkeypatch):
     r = client.get("/api/lco/config")
     assert r.status_code == 200
     body = r.json()
-    assert body == {"ok": True, "token_configured": True,
-                    "download_root_configured": False, "download_root": None,
-                    "submit_allowed": False}
+    assert body["ok"] is True
+    assert body["token_configured"] is True
+    assert body["global_token_configured"] is True
+    assert body["user_token_configured"] is False
+    assert body["token_source"] == "global"
+    assert body["download_root_configured"] is False
+    assert body["download_root"] is None
+    assert body["submit_allowed"] is False
     assert "super-secret-token" not in r.text
+
+
+def test_lco_settings_save_and_status_are_per_nginx_user(mock_db, monkeypatch):
+    monkeypatch.setenv("MUSCAT_DB_SECRET", "settings-secret")
+    monkeypatch.delenv("LCO_API_TOKEN", raising=False)
+    client = TestClient(app)
+    headers = {"X-Forwarded-User": "alice"}
+
+    missing = client.get("/api/settings/lco-token-status")
+    assert missing.status_code == 401
+
+    saved = client.post("/api/settings/lco-token", headers=headers, json={"token": "alice-token"})
+    assert saved.status_code == 200
+    assert saved.json()["user_token_configured"] is True
+    assert "alice-token" not in saved.text
+
+    status = client.get("/api/settings/lco-token-status", headers=headers).json()
+    assert status["ok"] is True
+    assert status["user"] == "alice"
+    assert status["user_token_configured"] is True
+    assert status["global_token_configured"] is False
+
+    config = client.get("/api/lco/config", headers=headers).json()
+    assert config["token_configured"] is True
+    assert config["token_source"] == "user"
+    assert "alice-token" not in str(config)
+
+
+def test_lco_proposals_receive_nginx_user(mock_db, monkeypatch):
+    captured = {}
+
+    def fake_proposals(user_name=None, token=None):
+        captured["user_name"] = user_name
+        captured["token"] = token
+        return {"results": [{"id": "TEST2026A"}], "count": 1}
+
+    monkeypatch.setattr("muscat_db.lco.get_proposals", fake_proposals)
+    r = TestClient(app).get("/api/lco/proposals", headers={"X-Forwarded-User": "alice"})
+    assert r.status_code == 200
+    assert captured == {"user_name": "alice", "token": None}
 
 
 def test_lco_config_exposes_download_root_path(monkeypatch):
@@ -1421,5 +1466,3 @@ def test_api_ads_config_not_configured(monkeypatch):
     r = TestClient(app).get("/api/ads/config")
     assert r.status_code == 200
     assert r.json()["token_configured"] is False
-
-

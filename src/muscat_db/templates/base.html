@@ -27,6 +27,7 @@
   <a href="/toi">TOI</a>
   <a href="/nexsci">NExScI</a>
   <a href="/guide" style="margin-right: 0.5rem;">Guide</a>
+  <a href="/settings">Settings{% if current_user %} <span class="badge">{{ current_user }}</span>{% endif %}</a>
   <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">
     <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
       <circle cx="12" cy="12" r="4"/>
