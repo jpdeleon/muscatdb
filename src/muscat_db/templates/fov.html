@@ -526,7 +526,6 @@
           margin_arcsec: parseFloat(params.margin) || 30,
           comp_margin_arcsec: params.compMargin ? parseFloat(params.compMargin) : null,
           mag_limit: params.magMode === 'absolute' ? (parseFloat(params.magMax) || 18) : 18,
-          mag_mode: params.magMode,
           mag_min: params.magMode === 'absolute' ? (parseFloat(params.magMin) || 0) : null,
           mag_max: params.magMode === 'absolute' ? (parseFloat(params.magMax) || 18) : null,
           mag_delta: params.magMode === 'relative' ? (parseFloat(params.magDelta) || 3) : null,
