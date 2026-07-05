@@ -76,6 +76,10 @@
   <span class="badge instrument-badge toi-chip" data-group="rot" data-key="fast" title="Host-star rotation period P_rot < 10 days (Boyle+2026)">Fast rotator (P<sub>rot</sub> &lt; 10 d)</span>
 </div>
 <p class="toi-meta" id="toi-rot-note" style="margin-top:0.25rem;"></p>
+<div class="chip-bar">
+  <span class="chip-label">muscat-db:</span>
+  <span class="badge instrument-badge toi-chip" data-group="indb" data-key="1" title="Only TOIs whose host star has data in muscat-db">★ In muscat-db</span>
+</div>
 
 <details id="toi-table-section" class="toi-section" open style="margin-top:1rem;">
   <summary>Catalog table</summary>
@@ -334,6 +338,7 @@
   const selectedDisp = new Set();          // TFOPWG codes; '' matches the "Unset" chip
   const selectedMulti = new Set();
   const selectedRot = new Set();           // 'fast' = P_rot < 10 d (Boyle+2026)
+  const selectedIndb = new Set();          // '1' = only targets present in muscat-db
   let sortState = { key: null, dir: 0 };   // dir: 1 asc, -1 desc
 
   function buildColPredicates() {
@@ -358,6 +363,7 @@
     const useDisp = selectedDisp.size > 0;
     const useMulti = selectedMulti.size > 0;
     const useRot = selectedRot.size > 0;
+    const useIndb = selectedIndb.size > 0;
     const out = [];
     for (let i = 0; i < N; i++) {
       if (q) {
@@ -387,6 +393,7 @@
       if (useRot) {
         if (!selectedRot.has(rotClass[i])) continue;
       }
+      if (useIndb && !TOI.indb[i]) continue;
       out.push(i);
     }
     if (sortState.key) applySort(out);
@@ -639,6 +646,7 @@
       disp: Array.from(selectedDisp),
       multi: Array.from(selectedMulti),
       rot: Array.from(selectedRot),
+      indb: Array.from(selectedIndb),
       sort: sortState,
       plot: { x: selX.value, y: selY.value, color: selColor.value,
               logx: logXEl.checked, logy: logYEl.checked,
@@ -656,6 +664,7 @@
     (s.disp || []).forEach(k => selectedDisp.add(k));
     (s.multi || []).forEach(k => selectedMulti.add(k));
     (s.rot || []).forEach(k => selectedRot.add(k));
+    (s.indb || []).forEach(k => selectedIndb.add(k));
     chips.forEach(ch => {
       if (setForGroup(ch.dataset.group).has(keyForChip(ch))) ch.classList.add('active');
     });
@@ -698,7 +707,7 @@
     if (!clearEl) return;
     const hasSearch = !!searchEl.value.trim();
     const hasColFilters = colInputs.some(inp => !!inp.value.trim());
-    const hasChips = selectedPlanet.size > 0 || selectedStar.size > 0 || selectedDisp.size > 0 || selectedMulti.size > 0 || selectedRot.size > 0;
+    const hasChips = selectedPlanet.size > 0 || selectedStar.size > 0 || selectedDisp.size > 0 || selectedMulti.size > 0 || selectedRot.size > 0 || selectedIndb.size > 0;
     clearEl.style.display = (hasSearch || hasColFilters || hasChips) ? 'inline-flex' : 'none';
   }
 
@@ -711,6 +720,7 @@
       selectedDisp.clear();
       selectedMulti.clear();
       selectedRot.clear();
+      selectedIndb.clear();
       chips.forEach(ch => ch.classList.remove('active'));
       apply();
     });
@@ -744,7 +754,7 @@
   searchEl.addEventListener('input', applySoon);
   colInputs.forEach(inp => inp.addEventListener('input', applySoon));
   function setForGroup(group) {
-    return group === 'planet' ? selectedPlanet : group === 'star' ? selectedStar : group === 'multi' ? selectedMulti : group === 'rot' ? selectedRot : selectedDisp;
+    return group === 'planet' ? selectedPlanet : group === 'star' ? selectedStar : group === 'multi' ? selectedMulti : group === 'rot' ? selectedRot : group === 'indb' ? selectedIndb : selectedDisp;
   }
   function keyForChip(ch) {
     // The "Unset" disposition chip uses a sentinel so the attribute is non-empty.
