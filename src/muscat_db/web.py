@@ -17,6 +17,7 @@ _DB_LOCK = threading.Lock()
 
 import csv
 import io
+from urllib.parse import urlsplit
 
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.gzip import GZipMiddleware
@@ -100,12 +101,29 @@ app = FastAPI(title="MuSCAT Observation Log", lifespan=_lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Middleware: extract authenticated user from nginx reverse proxy.
-# nginx sets X-Forwarded-User after HTTP Basic Auth; the header is safe because
-# uvicorn only listens on 127.0.0.1 when --nginx is used, blocking external
-# spoofing. Fallback to None when accessed directly (no nginx / dev mode).
+# nginx sets X-Forwarded-User after HTTP Basic Auth. Trusting that header is
+# ONLY safe for connections that actually came from nginx's own loopback
+# socket, so we verify the immediate TCP peer is loopback before honoring it
+# -- rather than relying on the operator having remembered --nginx at start
+# time (uvicorn's default bind is 0.0.0.0, which would otherwise let any
+# network client set this header and impersonate a user). This does not
+# defend against another local account on the same host connecting straight
+# to uvicorn's loopback port; that requires a shared-secret header between
+# nginx and uvicorn, which is not implemented yet.
+_TRUSTED_PROXY_HOSTS = frozenset({"127.0.0.1", "::1"})
+
+
 @app.middleware("http")
 async def _nginx_auth_middleware(request: Request, call_next):
+    client_host = request.client.host if request.client else None
     user = request.headers.get("X-Forwarded-User") or None
+    if user and client_host not in _TRUSTED_PROXY_HOSTS:
+        logger.warning(
+            "ignoring X-Forwarded-User=%r from non-loopback peer %s "
+            "(request did not arrive via the nginx proxy)",
+            user, client_host,
+        )
+        user = None
     request.state.user = user
     token = _CURRENT_USER.set(user)
     try:
@@ -2123,6 +2141,27 @@ def _settings_auth_error() -> JSONResponse:
     )
 
 
+def _is_same_origin(request: Request) -> bool:
+    """True if the request's Origin (or Referer) header matches this host.
+
+    HTTP Basic Auth credentials are resent by the browser automatically on
+    every request to the realm, so state-changing endpoints need their own
+    CSRF defense. A CORS preflight is not sufficient here: FastAPI's
+    ``Body(...)`` parses the request body as JSON regardless of the
+    Content-Type the client declared, so a cross-origin "simple request"
+    (e.g. Content-Type: text/plain, which browsers don't preflight) would
+    still reach the handler with an attacker-controlled body.
+    """
+    origin = request.headers.get("origin") or request.headers.get("referer")
+    if not origin:
+        return False
+    return urlsplit(origin).netloc == request.headers.get("host", "")
+
+
+def _csrf_error() -> JSONResponse:
+    return JSONResponse({"ok": False, "error": "cross-origin request rejected"}, status_code=403)
+
+
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page():
     return _render("settings.html")
@@ -2153,6 +2192,8 @@ def api_settings_lco_token_status(request: Request):
 
 @app.post("/api/settings/lco-token", response_class=JSONResponse)
 def api_settings_lco_token(request: Request, payload: dict = Body(...)):
+    if not _is_same_origin(request):
+        return _csrf_error()
     user = _request_user(request)
     if not user:
         return _settings_auth_error()

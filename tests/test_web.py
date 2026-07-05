@@ -555,13 +555,17 @@ def test_lco_config_reports_booleans_and_hides_token(monkeypatch):
 def test_lco_settings_save_and_status_are_per_nginx_user(mock_db, monkeypatch):
     monkeypatch.setenv("MUSCAT_DB_SECRET", "settings-secret")
     monkeypatch.delenv("LCO_API_TOKEN", raising=False)
-    client = TestClient(app)
+    # TestClient's default peer is ("testclient", 50000); the auth middleware
+    # only honors X-Forwarded-User from a loopback peer, so simulate nginx.
+    client = TestClient(app, client=("127.0.0.1", 12345))
     headers = {"X-Forwarded-User": "alice"}
+    # POST requires a same-origin Origin/Referer header (CSRF defense); GETs don't.
+    post_headers = {**headers, "Origin": "http://testserver"}
 
     missing = client.get("/api/settings/lco-token-status")
     assert missing.status_code == 401
 
-    saved = client.post("/api/settings/lco-token", headers=headers, json={"token": "alice-token"})
+    saved = client.post("/api/settings/lco-token", headers=post_headers, json={"token": "alice-token"})
     assert saved.status_code == 200
     assert saved.json()["user_token_configured"] is True
     assert "alice-token" not in saved.text
@@ -578,6 +582,30 @@ def test_lco_settings_save_and_status_are_per_nginx_user(mock_db, monkeypatch):
     assert "alice-token" not in str(config)
 
 
+def test_lco_token_save_rejects_cross_origin_request(mock_db, monkeypatch):
+    """A POST with a foreign Origin (or none at all) must not save the token.
+
+    Regression test for the CSRF gap: relying on CORS preflight isn't enough
+    since FastAPI parses the body as JSON regardless of declared Content-Type.
+    """
+    monkeypatch.setenv("MUSCAT_DB_SECRET", "settings-secret")
+    client = TestClient(app, client=("127.0.0.1", 12345))
+    headers = {"X-Forwarded-User": "alice"}
+
+    no_origin = client.post("/api/settings/lco-token", headers=headers, json={"token": "x"})
+    assert no_origin.status_code == 403
+
+    foreign_origin = client.post(
+        "/api/settings/lco-token",
+        headers={**headers, "Origin": "http://evil.example"},
+        json={"token": "x"},
+    )
+    assert foreign_origin.status_code == 403
+
+    status = client.get("/api/settings/lco-token-status", headers=headers).json()
+    assert status["user_token_configured"] is False
+
+
 def test_lco_proposals_receive_nginx_user(mock_db, monkeypatch):
     captured = {}
 
@@ -587,9 +615,32 @@ def test_lco_proposals_receive_nginx_user(mock_db, monkeypatch):
         return {"results": [{"id": "TEST2026A"}], "count": 1}
 
     monkeypatch.setattr("muscat_db.lco.get_proposals", fake_proposals)
-    r = TestClient(app).get("/api/lco/proposals", headers={"X-Forwarded-User": "alice"})
+    r = TestClient(app, client=("127.0.0.1", 12345)).get(
+        "/api/lco/proposals", headers={"X-Forwarded-User": "alice"}
+    )
     assert r.status_code == 200
     assert captured == {"user_name": "alice", "token": None}
+
+
+def test_x_forwarded_user_ignored_from_non_loopback_peer(monkeypatch):
+    """A spoofed header from a non-loopback peer must not authenticate the user.
+
+    This is the regression test for the auth-bypass this middleware fixes:
+    previously any client reaching uvicorn directly (e.g. --nginx forgotten,
+    or default 0.0.0.0 bind) could set X-Forwarded-User and impersonate.
+    """
+    captured = {}
+
+    def fake_proposals(user_name=None, token=None):
+        captured["user_name"] = user_name
+        captured["token"] = token
+        return {"results": [], "count": 0}
+
+    monkeypatch.setattr("muscat_db.lco.get_proposals", fake_proposals)
+    # Default TestClient peer ("testclient", 50000) is not loopback.
+    r = TestClient(app).get("/api/lco/proposals", headers={"X-Forwarded-User": "mallory"})
+    assert r.status_code == 200
+    assert captured == {"user_name": None, "token": None}
 
 
 def test_lco_config_exposes_download_root_path(monkeypatch):

@@ -29,9 +29,12 @@ if [ ! -f /etc/nginx/sites-enabled/muscat-db ]; then
     ln -sf "$NGINX_CONF_DST" /etc/nginx/sites-enabled/
 fi
 
-# Create empty htpasswd file
+# Create empty htpasswd file, readable only by root and nginx's worker group
+# (www-data on Debian/Ubuntu). It holds password hashes for every user, so
+# it must not be world-readable on a shared server.
 touch "$HTPASSWD_PATH"
-chmod 644 "$HTPASSWD_PATH"
+chown root:www-data "$HTPASSWD_PATH"
+chmod 640 "$HTPASSWD_PATH"
 
 # Test config
 echo "==> Testing nginx configuration..."
