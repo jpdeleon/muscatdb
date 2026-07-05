@@ -457,13 +457,14 @@ def test_jobs_rerun_restores_persisted_run_identity(mock_db, monkeypatch):
     key = get_persisted_jobs()[0]["key"]
     captured = {}
 
-    def fake_start_run(inst, date, target, options, test_run):
+    def fake_start_run(inst, date, target, options, test_run, user_name=None):
         captured.update(
             inst=inst,
             date=date,
             target=target,
             options=options,
             test_run=test_run,
+            user_name=user_name,
         )
         return {"ok": True, "key": "rerun-key"}
 

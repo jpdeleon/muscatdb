@@ -1172,6 +1172,7 @@ def start_fit(
     options: dict,
     test_run: bool = False,
     selected_csvs: list[str] | None = None,
+    user_name: str | None = None,
 ) -> dict:
     """Prepare inputs and launch a transit fit using the timer-fit script.
 
@@ -1267,6 +1268,7 @@ def start_fit(
                     run_type=run_type,
                     params=params_json,
                     run_name=run_name,
+                    user_name=user_name,
                 )
             except Exception:
                 return {"ok": False, "error": "database not writable"}
@@ -1336,6 +1338,7 @@ def start_fit(
             run_type=run_type,
             params=params_json,
             run_name=run_name,
+            user_name=user_name,
         )
 
     return {"ok": True, "key": key, "run_id": run_id}

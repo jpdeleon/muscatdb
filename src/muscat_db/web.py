@@ -17,7 +17,7 @@ _DB_LOCK = threading.Lock()
 import csv
 import io
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -93,6 +93,17 @@ app = FastAPI(title="MuSCAT Observation Log", lifespan=_lifespan)
 # The targets page is ~2.8 MB of highly repetitive HTML; gzip shrinks it ~16x,
 # which is the dominant cost when serving over an SSH port-forward tunnel.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# Middleware: extract authenticated user from nginx reverse proxy.
+# nginx sets X-Forwarded-User after HTTP Basic Auth; the header is safe because
+# uvicorn only listens on 127.0.0.1 when --nginx is used, blocking external
+# spoofing. Fallback to None when accessed directly (no nginx / dev mode).
+@app.middleware("http")
+async def _nginx_auth_middleware(request: Request, call_next):
+    request.state.user = request.headers.get("X-Forwarded-User") or None
+    response = await call_next(request)
+    return response
+
 # Mount static assets (shared stylesheet, etc.) before the dynamic routes so a
 # request like /static/styles.css is not captured by the /{inst}/{date} route.
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -1514,14 +1525,15 @@ def transit_fit_status(inst: str, date: str, target: str, run: str = ""):
 
 
 @app.post("/transit-fit/run")
-def transit_fit_run(payload: dict = Body(...)):
+def transit_fit_run(request: Request, payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
     target = (payload.get("target") or "").strip()
     options = payload.get("options") or {}
     test_run = bool(payload.get("test_run", False))
     selected_csvs = payload.get("selected_csvs") if "selected_csvs" in payload else None
-    result = fit.start_fit(inst, date, target, options, test_run=test_run, selected_csvs=selected_csvs)
+    user_name = request.state.user
+    result = fit.start_fit(inst, date, target, options, test_run=test_run, selected_csvs=selected_csvs, user_name=user_name)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
     return JSONResponse(result)
@@ -3856,7 +3868,7 @@ def job_log(type_: str, inst: str, date: str, target: str, run: str = ""):
 
 
 @app.post("/jobs/rerun")
-def jobs_rerun(payload: dict = Body(...)):
+def jobs_rerun(request: Request, payload: dict = Body(...)):
     import json
     key = (payload.get("key") or "").strip()
     if not key:
@@ -3876,10 +3888,11 @@ def jobs_rerun(payload: dict = Body(...)):
         value = p.get(field) or job.get(field)
         if value and not options.get(field):
             options[field] = value
+    user_name = request.state.user
     if job["type"] == "photometry":
-        result = phot.start_run(inst, date, target, options=options, test_run=p.get("test_run", True))
+        result = phot.start_run(inst, date, target, options=options, test_run=p.get("test_run", True), user_name=user_name)
     elif job["type"] == "transit_fit":
-        result = fit.start_fit(inst, date, target, options=options, test_run=p.get("test_run", False), selected_csvs=p.get("selected_csvs"))
+        result = fit.start_fit(inst, date, target, options=options, test_run=p.get("test_run", False), selected_csvs=p.get("selected_csvs"), user_name=user_name)
     else:
         raise HTTPException(400, "unknown job type")
     if not result.get("ok"):
@@ -3988,17 +4001,18 @@ def photometry_download_all(inst: str, date: str, target: str):
 
 
 @app.post("/photometry/run")
-def photometry_run(payload: dict = Body(...)):
+def photometry_run(request: Request, payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
     target = (payload.get("target") or "").strip()
     options = payload.get("options") or {}
     test_run = bool(payload.get("test_run", True))
+    user_name = request.state.user
     # Hard block: never launch a sinistro run that would merge multiple sites.
     site_err = _site_required_error(_db_path(), inst, date, target, options)
     if site_err:
         return JSONResponse({"ok": False, "error": site_err}, status_code=400)
-    result = phot.start_run(inst, date, target, options=options, test_run=test_run)
+    result = phot.start_run(inst, date, target, options=options, test_run=test_run, user_name=user_name)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
     return JSONResponse(result)
