@@ -737,6 +737,9 @@ th.drag-over-right {
 #delete-confirm-overlay.visible {
   display: flex;
 }
+#message-modal[data-mode="message"] #message-modal-cancel {
+  display: none !important;
+}
 .modal-box {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -746,16 +749,30 @@ th.drag-over-right {
   width: 90%;
   box-shadow: 0 8px 32px rgba(0,0,0,0.3);
 }
+#message-modal[data-kind="success"] .modal-box {
+  border-color: var(--green);
+}
+#message-modal[data-kind="error"] .modal-box {
+  border-color: var(--red);
+}
+#message-modal[data-kind="notice"] .modal-box {
+  border-color: var(--blue);
+}
 .modal-title {
   margin-bottom: 0.75rem;
   font-size: 0.95rem;
   font-weight: 600;
 }
+#message-modal[data-kind="success"] .modal-title { color: var(--green); }
+#message-modal[data-kind="error"] .modal-title { color: var(--red); }
+#message-modal[data-kind="notice"] .modal-title { color: var(--blue); }
 .modal-text {
   color: var(--text-dim);
   font-size: 0.85rem;
   margin-bottom: 1.5rem;
   line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 .modal-actions {
   display: flex;
