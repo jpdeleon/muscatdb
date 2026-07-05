@@ -1,11 +1,24 @@
-"""
-Test suite for frontend input audit.
+"""Frontend input wiring contract.
 
-Verifies that all HTML form inputs are:
-1. Collected via JavaScript collectOptions()
-2. Restored via restoreOptions()
-3. Properly wired to backend endpoints
-4. Persisted in localStorage
+This suite enforces the CLAUDE.md rule that *every* form input added to a
+template is registered in the page's JavaScript persistence helpers
+(``collectOptions``, ``restoreOptions``, and the defaults/clear listener) **and**
+is actually consumed by the backend. Unlike a substring smoke-test, these checks
+parse the real field IDs out of each template and cross-reference them against
+the JS function bodies and the owning Python module, so they fail when someone
+adds an ``<input id="opt-...">`` and forgets to wire it end-to-end.
+
+Two levels of rigor:
+
+* **Structural** (all option pages): template field IDs must appear in
+  ``collectOptions`` / ``restoreOptions`` / the defaults listener.
+* **Backend consumption**:
+    - photometry keys must be referenced as literals in ``photometry.py``
+      (clean ``normalize_run_options`` → ``build_command`` mapping).
+    - transit-fit keys are verified *functionally* by building ``fit.yaml`` /
+      ``sys.yaml`` from a fully-populated options dict and asserting the values
+      land in the config timer actually reads (its consumption is f-string
+      driven, so literal matching would be misleading).
 
 Run with: pytest tests/test_frontend_input_audit.py -v
 """
@@ -14,330 +27,383 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
+
+from muscat_db import transit_fit as fit
 
 
 HERE = Path(__file__).parent
 PROJECT_ROOT = HERE.parent
-TEMPLATES_DIR = PROJECT_ROOT / "src" / "muscat_db" / "templates"
-WEB_PY = PROJECT_ROOT / "src" / "muscat_db" / "web.py"
+SRC = PROJECT_ROOT / "src" / "muscat_db"
+TEMPLATES_DIR = SRC / "templates"
+WEB_PY = SRC / "web.py"
 
 
-class TestPhotometryInputs:
-    """Test that photometry.html inputs are properly wired."""
+# --------------------------------------------------------------------------- #
+# Parsing helpers
+# --------------------------------------------------------------------------- #
 
-    def test_all_photometry_inputs_collected(self):
-        """Verify all photometry form inputs are in collectOptions()."""
-        html_content = (TEMPLATES_DIR / "photometry.html").read_text()
-
-        # Extract collectOptions fields - find val() and chk() calls
-        collected_fields = set()
-        for match in re.finditer(r"(?:val|chk)\(['\"]([^'\"]+)", html_content):
-            field_id = match.group(1)
-            # Strip opt- prefix to get field name
-            field_name = field_id.replace("opt-", "")
-            collected_fields.add(field_name)
-
-        # Required fields that should be in collectOptions
-        # These are the main form inputs needed for photometry runs
-        required_fields = {
-            "run_name",
-            "target_id",
-            "comparison_ids",
-            "avoid_nearby_star",
-            "aper_radii",
-            "annulus",
-            "nan_imputation_method",
-            "overwrite",
-        }
-
-        # Verify all required fields are present
-        missing = required_fields - collected_fields
-        assert (
-            not missing
-        ), f"Missing fields in collectOptions(): {missing}. Found: {sorted(collected_fields)}"
-
-    def test_photometry_restore_options_matches_collect(self):
-        """Verify restoreOptions() handles same fields as collectOptions()."""
-        html_content = (TEMPLATES_DIR / "photometry.html").read_text()
-
-        # Just verify that both functions exist and are handling options
-        assert "function collectOptions()" in html_content
-        assert "function restoreOptions()" in html_content
-        # Check that localStorage is being used
-        assert "localStorage" in html_content
-
-    def test_photometry_backend_endpoint_exists(self):
-        """Verify /photometry/run endpoint exists in web.py."""
-        web_content = WEB_PY.read_text()
-        assert '@app.post("/photometry/run")' in web_content
-        assert "def photometry_run(payload: dict = Body(...)):" in web_content
-
-    def test_photometry_backend_accepts_options(self):
-        """Verify photometry_run() accepts and processes options."""
-        web_content = WEB_PY.read_text()
-        assert 'payload.get("options")' in web_content
-        assert "phot.start_run" in web_content
+def _read_template(name: str) -> str:
+    return (TEMPLATES_DIR / name).read_text()
 
 
-class TestTransitFitInputs:
-    """Test that transit_fit.html inputs are properly wired."""
+def _field_ids(html: str) -> set[str]:
+    """Every ``opt-<field>`` id attached to a real form control in the template.
 
-    def test_transit_fit_has_collect_options(self):
-        """Verify transit_fit.html has collectOptions() function."""
-        html_content = (TEMPLATES_DIR / "transit_fit.html").read_text()
-        assert "function collectOptions()" in html_content
-
-    def test_transit_fit_backend_endpoint_exists(self):
-        """Verify /transit-fit/run endpoint exists in web.py."""
-        web_content = WEB_PY.read_text()
-        assert '@app.post("/transit-fit/run")' in web_content
-        assert "def transit_fit_run(payload: dict = Body(...)):" in web_content
-
-    def test_transit_fit_sends_options(self):
-        """Verify transit_fit page sends options to backend."""
-        html_content = (TEMPLATES_DIR / "transit_fit.html").read_text()
-        assert "options: collectOptions()" in html_content
-
-    def test_transit_fit_handles_csv_selection(self):
-        """Verify transit_fit page tracks CSV selection."""
-        html_content = (TEMPLATES_DIR / "transit_fit.html").read_text()
-        assert "getSelectedCsvs()" in html_content or "selected_csvs" in html_content
+    Only ``<input>``/``<select>``/``<textarea>`` are matched, so container
+    ``<details id="opt-panel">`` / ``<div id="opt-error">`` are excluded.
+    """
+    return set(
+        re.findall(
+            r'<(?:input|select|textarea)\b[^>]*\bid="opt-([A-Za-z0-9_]+)"', html
+        )
+    )
 
 
-class TestExposureInputs:
-    """Test that exposure.html inputs are properly wired."""
+def _brace_body(text: str, start: int) -> str:
+    """Return the ``{...}`` block (inclusive) starting at/after ``start``.
 
-    def test_exposure_backend_endpoints_exist(self):
-        """Verify exposure endpoints exist in web.py."""
-        web_content = WEB_PY.read_text()
-        # Check for handlers rather than exact string match
-        assert "exposure_calculate" in web_content or "exposure/calculate" in web_content
-        assert "exposure_calibrate" in web_content or "exposure/calibrate" in web_content
-
-    def test_exposure_sends_payload(self):
-        """Verify exposure page sends data to backend."""
-        html_content = (TEMPLATES_DIR / "exposure.html").read_text()
-        assert "fetch" in html_content
-        assert "/exposure/" in html_content
-
-
-class TestFOVInputs:
-    """Test that fov.html inputs are properly wired."""
-
-    def test_fov_backend_endpoints_exist(self):
-        """Verify FOV endpoints exist in web.py."""
-        web_content = WEB_PY.read_text()
-        # Check for handler function names rather than exact string match
-        assert "fov" in web_content or "fov_opt" in web_content
+    The JS bodies here never contain literal braces inside string literals, so a
+    plain depth counter is sufficient and keeps the test dependency-free.
+    """
+    open_idx = text.index("{", start)
+    depth = 0
+    for i in range(open_idx, len(text)):
+        c = text[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_idx : i + 1]
+    raise AssertionError("unbalanced braces while extracting JS body")
 
 
-class TestLCOScheduleInputs:
-    """Test that lco_schedule.html inputs are properly wired."""
-
-    def test_lco_has_collect_options(self):
-        """Verify lco_schedule.html has collectOptions() function."""
-        html_content = (TEMPLATES_DIR / "lco_schedule.html").read_text()
-        assert "function collectOptions()" in html_content
-
-    def test_lco_backend_endpoints_exist(self):
-        """Verify LCO scheduling endpoints exist in web.py."""
-        web_content = WEB_PY.read_text()
-        # Check for lco module integration
-        assert "lco" in web_content or "from muscat_db import lco" in web_content
+def _function_body(html: str, name: str) -> str:
+    marker = f"function {name}("
+    assert marker in html, f"{name}() not found in template"
+    return _brace_body(html, html.index(marker))
 
 
-class TestEphemerisInputs:
-    """Test that ephemeris.html inputs are properly wired."""
-
-    def test_ephemeris_backend_endpoints_exist(self):
-        """Verify ephemeris endpoints exist in web.py."""
-        web_content = WEB_PY.read_text()
-        # Check for transit_obs or ephemeris handling
-        assert "ephemeris" in web_content or "transit_obs" in web_content
+def _click_handler_body(html: str, button_id: str) -> str:
+    """Body of the ``click`` handler bound to ``getElementById('<button_id>')``."""
+    anchor = html.index(f"'{button_id}'")
+    listener = html.index("addEventListener", anchor)
+    return _brace_body(html, listener)
 
 
-class TestJobsInputs:
-    """Test that jobs.html inputs are properly wired."""
+def _py_function_src(text: str, def_name: str) -> str:
+    """Source of a module-level Python function, up to the next top-level def."""
+    start = text.index(f"def {def_name}(")
+    rest = text[start:]
+    # Stop at the next module-level ``def``/``@app.`` (column 0) after the first line.
+    m = re.search(r"\n(?:def |@app\.)", rest[1:])
+    return rest if m is None else rest[: m.start() + 1]
 
-    def test_jobs_cancel_endpoint_exists(self):
-        """Verify job cancellation endpoints exist in web.py."""
-        web_content = WEB_PY.read_text()
-        endpoints = [
-            '@app.post("/photometry/cancel")',
-            '@app.post("/transit-fit/cancel")',
-        ]
-        for endpoint in endpoints:
-            assert endpoint in web_content, f"Missing endpoint: {endpoint}"
 
-    def test_jobs_rerun_endpoint_exists(self):
-        """Verify /jobs/rerun endpoint exists in web.py."""
-        web_content = WEB_PY.read_text()
-        assert '@app.post("/jobs/rerun")' in web_content
+def _mentions(field: str, region: str) -> bool:
+    """True if ``field`` is referenced as a quoted token in ``region``.
 
-    def test_jobs_status_endpoint_exists(self):
-        """Verify /jobs/status endpoint exists in web.py."""
-        web_content = WEB_PY.read_text()
-        assert '@app.get("/jobs/status"' in web_content
+    Matches ``'field'``/``"field"`` or the ``'opt-field'``/``"opt-field"`` id
+    form. Quoting avoids false positives from prefix collisions such as
+    ``teff`` inside ``teff_unc``.
+    """
+    return bool(
+        re.search(rf"""['"](?:opt-)?{re.escape(field)}['"]""", region)
+    )
 
-    def test_jobs_log_endpoint_exists(self):
-        """Verify /jobs/log endpoint exists in web.py."""
-        web_content = WEB_PY.read_text()
-        assert '@app.get("/jobs/log/' in web_content
 
-    def test_jobs_page_has_action_buttons(self):
-        """Verify jobs page has action button functions."""
-        html_content = (TEMPLATES_DIR / "jobs.html").read_text()
-        functions = ["window.cancelJob", "window.reRunJob", "window.viewLog"]
-        for func in functions:
-            assert func in html_content, f"Missing function: {func}"
+# --------------------------------------------------------------------------- #
+# Structural contract: template fields must be collected / restored / defaulted
+# --------------------------------------------------------------------------- #
 
+# Fields intentionally omitted from the defaults/clear listener, with rationale.
+_DEFAULTS_EXCLUSIONS = {
+    # The run label is a per-run identifier, not a tunable default; "Clear"
+    # deliberately preserves it rather than blanking the user's run name.
+    "transit_fit.html": {"run_name"},
+    "photometry.html": set(),
+}
+_RESTORE_EXCLUSIONS = {
+    "transit_fit.html": set(),
+    "photometry.html": set(),
+}
+
+_OPTION_PAGES = [
+    ("photometry.html", "defaults-btn"),
+    ("transit_fit.html", "clear-btn"),
+]
+
+
+@pytest.mark.parametrize("page,_btn", _OPTION_PAGES)
+def test_every_input_is_collected(page, _btn):
+    html = _read_template(page)
+    collect = _function_body(html, "collectOptions")
+    missing = {f for f in _field_ids(html) if not _mentions(f, collect)}
+    assert not missing, f"{page}: inputs missing from collectOptions(): {sorted(missing)}"
+
+
+@pytest.mark.parametrize("page,_btn", _OPTION_PAGES)
+def test_every_input_is_restored(page, _btn):
+    html = _read_template(page)
+    restore = _function_body(html, "restoreOptions")
+    excluded = _RESTORE_EXCLUSIONS[page]
+    missing = {
+        f for f in _field_ids(html) if f not in excluded and not _mentions(f, restore)
+    }
+    assert not missing, f"{page}: inputs missing from restoreOptions(): {sorted(missing)}"
+
+
+@pytest.mark.parametrize("page,btn", _OPTION_PAGES)
+def test_every_input_has_a_default(page, btn):
+    html = _read_template(page)
+    handler = _click_handler_body(html, btn)
+    excluded = _DEFAULTS_EXCLUSIONS[page]
+    missing = {
+        f for f in _field_ids(html) if f not in excluded and not _mentions(f, handler)
+    }
+    assert not missing, (
+        f"{page}: inputs missing from the defaults listener: {sorted(missing)}. "
+        f"If intentional, add to _DEFAULTS_EXCLUSIONS with a rationale."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Photometry backend consumption: every collected key is used in photometry.py
+# --------------------------------------------------------------------------- #
+
+def _collect_object_keys(collect_body: str) -> set[str]:
+    """Keys of the object literal returned by a ``key: val(...)`` collectOptions."""
+    return set(re.findall(r"(\w+):\s*(?:val|chk)\(", collect_body))
+
+
+def test_photometry_collected_keys_consumed_by_backend():
+    html = _read_template("photometry.html")
+    keys = _collect_object_keys(_function_body(html, "collectOptions"))
+    assert keys, "failed to parse photometry collectOptions keys"
+
+    phot_src = (SRC / "photometry.py").read_text()
+    # Every key must be referenced as a string literal somewhere in the module
+    # (normalize_run_options / validate_run_options / build_command).
+    literals = set(re.findall(r"""['"]([a-z_][a-z0-9_]*)['"]""", phot_src))
+    unconsumed = keys - literals
+    assert not unconsumed, (
+        f"photometry keys collected by the UI but never referenced in "
+        f"photometry.py: {sorted(unconsumed)}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Transit-fit backend consumption: functional round-trip into fit.yaml/sys.yaml
+# --------------------------------------------------------------------------- #
+
+def _rich_fit_options() -> dict:
+    """A fully-populated options payload with distinctive non-default values."""
+    return {
+        "planets": "b",
+        "run_name": "audit",
+        "chromatic": "true",
+        "fit_basis": "ror",
+        "trend": "true",
+        "run_mode": "continue",  # -> clobber False
+        "plot_midtransit": "false",
+        "plot_ingress_egress": "false",
+        "tune": "1234",
+        "draws": "2345",
+        "chains": "3",
+        "cores": "4",
+        "include_mean": "false",
+        "use_custom_optimizer": "false",
+        "secondary_eclipse": "true",
+        "spline": "true",
+        "spline_knots": "9",
+        "add_bias": "true",
+        "quadratic": "true",
+        "clip": "true",
+        "clip_nsig": "4.5",
+        "chunk_offset": "true",
+        "chunk_thresh": "0.25",
+        "trim_beg": "7",
+        "trim_end": "8",
+        "use_gp": "true",
+        "gp_log_amp": "-2.5",
+        "gp_log_amp_unc": "1.5",
+        "gp_log_amp_prior": "gaussian",
+        "gp_log_scale": "-0.5",
+        "gp_log_scale_unc": "1.25",
+        "gp_log_scale_prior": "gaussian",
+        "gp_per_dataset_log_amp": "true",
+        "gp_per_dataset_log_scale": "false",
+        "include_bump": "true",
+        "chromatic_bump": "false",
+        "bump_tcenter": "0.03,0.02",
+        "bump_tcenter_prior": "gaussian",
+        "bump_width": "0.04,0.01",
+        "bump_width_prior": "gaussian",
+        "bump_ampl": "0.05,0.01",
+        "bump_ampl_prior": "gaussian",
+        "include_flare": "true",
+        "chromatic_flare": "false",
+        "flare_tpeak": "0.06,0.02",
+        "flare_tpeak_prior": "gaussian",
+        "flare_fwhm": "0.07,0.01",
+        "flare_fwhm_prior": "gaussian",
+        "flare_ampl": "0.08,0.01",
+        "flare_ampl_prior": "gaussian",
+        "teff": "6100",
+        "teff_unc": "150",
+        "logg": "4.2",
+        "logg_unc": "0.2",
+        "feh": "0.3",
+        "feh_unc": "0.05",
+        "fixed": ["u_star"],
+        # planet-scoped priors (first planet 'b')
+        "period_b": "3.5",
+        "period_unc_b": "0.001",
+        "t0_b": "2459000.5",
+        "t0_unc_b": "0.01",
+        "dur_b": "0.12",
+        "dur_unc_b": "0.01",
+        "ror_b": "0.09",
+        "ror_unc_b": "0.005",
+        "b_b": "0.3",
+        "b_unc_b": "0.1",
+    }
+
+
+@pytest.fixture()
+def fit_config(tmp_path):
+    fit._write_fit_inputs(tmp_path, "muscat4", "250512", "TOI-1234", [], _rich_fit_options())
+    return (
+        yaml.safe_load((tmp_path / "fit.yaml").read_text()),
+        yaml.safe_load((tmp_path / "sys.yaml").read_text()),
+    )
+
+
+def test_transit_fit_sampler_and_model_options_wired(fit_config):
+    fit_yaml, _ = fit_config
+    assert fit_yaml["tune"] == 1234
+    assert fit_yaml["draws"] == 2345
+    assert fit_yaml["chains"] == 3
+    assert fit_yaml["cores"] == 4
+    assert fit_yaml["include_mean"] is False
+    assert fit_yaml["use_custom_optimizer"] is False
+    assert fit_yaml["secondary_eclipse"] is True
+    assert fit_yaml["fit_basis"] == "ror"
+    assert fit_yaml["chromatic"] is True
+    assert fit_yaml["clobber"] is False  # run_mode="continue"
+    assert fit_yaml["plot_midtransit"] is False
+    assert fit_yaml["plot_ingress_egress"] is False
+    assert fit_yaml["fixed"] == ["u_star"]
+
+
+def test_transit_fit_gp_bump_flare_blocks_wired(fit_config):
+    fit_yaml, _ = fit_config
+    assert fit_yaml["use_gp"] is True
+    gp = fit_yaml["gp"]
+    assert gp["log_amp"] == -2.5 and gp["log_amp_unc"] == 1.5
+    assert gp["log_scale"] == -0.5 and gp["log_scale_unc"] == 1.25
+    assert gp.get("per_dataset") == ["log_amp"]  # only log_amp toggled on
+
+    assert fit_yaml["include_bump"] is True
+    assert fit_yaml["bump"]["tcenter"] == 0.03 and fit_yaml["bump"]["width"] == 0.04
+
+    assert fit_yaml["include_flare"] is True
+    assert fit_yaml["flare"]["tpeak"] == 0.06 and fit_yaml["flare"]["fwhm"] == 0.07
+
+
+def test_transit_fit_stellar_and_planet_priors_wired(fit_config):
+    _, sys_yaml = fit_config
+    assert sys_yaml["star"]["teff"] == [6100.0, 150.0]
+    assert sys_yaml["star"]["logg"] == [4.2, 0.2]
+    assert sys_yaml["star"]["feh"] == [0.3, 0.05]
+    planet = sys_yaml["planets"]["b"]
+    assert planet["period"] == [3.5, 0.001]
+    assert planet["t0"] == [2459000.5, 0.01]
+    assert planet["ror"] == [0.09, 0.005]
+    assert planet["b"] == [0.3, 0.1]
+
+
+def test_transit_fit_detrending_options_wired(tmp_path):
+    """Per-dataset detrending only appears when a light curve is present."""
+    opts = _rich_fit_options()
+    # Source CSV lives outside the run dir so _write_fit_inputs can copy it in
+    # (copying onto itself would raise SameFileError).
+    src_dir = tmp_path / "lc"
+    src_dir.mkdir()
+    csv = src_dir / "TOI-1234_muscat4_g_250512.csv"
+    csv.write_text("BJD,flux\n2459000.0,1.0\n")
+    rdir = tmp_path / "run"
+    rdir.mkdir()
+    fit._write_fit_inputs(rdir, "muscat4", "250512", "TOI-1234", [csv], opts)
+    fit_yaml = yaml.safe_load((rdir / "fit.yaml").read_text())
+    band = next(iter(fit_yaml["data"].values()))
+    assert band["spline"] is True and band["spline_knots"] == 9
+    assert band["add_bias"] is True and band["quadratic"] is True
+    assert band["clip"] is True and band["clip_nsig"] == 4.5
+    assert band["chunk_offset"] is True and band["chunk_thresh"] == 0.25
+    assert band["trim_beg"] == 7 and band["trim_end"] == 8
+    assert band["trend"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Endpoint coverage: frontend fetch targets have backend handlers
+# --------------------------------------------------------------------------- #
 
 class TestBackendEndpoints:
-    """Test that backend endpoints properly handle inputs."""
+    def test_photometry_endpoints(self):
+        web = WEB_PY.read_text()
+        for ep in (
+            '@app.post("/photometry/run")',
+            '@app.post("/photometry/command")',
+            '@app.post("/photometry/cancel")',
+            '@app.get("/photometry/status"',
+            '@app.post("/photometry/status-batch")',
+        ):
+            assert ep in web, f"missing endpoint: {ep}"
 
-    def test_all_post_endpoints_have_body_parameter(self):
-        """Verify all POST endpoints accept Body() parameter."""
-        web_content = WEB_PY.read_text()
-        # Just verify that key endpoints have payload handling
-        key_handlers = [
-            "photometry_run",
-            "transit_fit_run",
-            "jobs_rerun",
-        ]
-        for handler in key_handlers:
-            assert handler in web_content, f"Missing handler: {handler}"
-            # Find the handler and check it has payload or similar parameter
-            pattern = rf"def {handler}\(([^)]*)\):"
-            match = re.search(pattern, web_content)
-            if match:
-                params = match.group(1)
-                assert (
-                    "payload" in params or "Body" in params or "dict" in params
-                ), f"Handler {handler} missing payload/Body parameter"
+    def test_transit_fit_endpoints(self):
+        web = WEB_PY.read_text()
+        for ep in (
+            '@app.post("/transit-fit/run")',
+            '@app.post("/transit-fit/cancel")',
+        ):
+            assert ep in web, f"missing endpoint: {ep}"
 
-    def test_photometry_command_endpoint_for_preview(self):
-        """Verify /photometry/command endpoint exists for live preview."""
-        web_content = WEB_PY.read_text()
-        assert '@app.post("/photometry/command")' in web_content
-        assert "def photometry_command" in web_content
+    def test_jobs_endpoints(self):
+        web = WEB_PY.read_text()
+        for ep in (
+            '@app.post("/jobs/rerun")',
+            '@app.get("/jobs/status"',
+            '@app.get("/jobs/log/',
+        ):
+            assert ep in web, f"missing endpoint: {ep}"
 
-    def test_photometry_status_endpoints(self):
-        """Verify photometry status polling endpoints exist."""
-        web_content = WEB_PY.read_text()
-        assert '@app.get("/photometry/status"' in web_content
-        assert '@app.post("/photometry/status-batch")' in web_content
+    def test_exposure_and_fov_and_lco_endpoints(self):
+        web = WEB_PY.read_text()
+        for handler in (
+            "def exposure_calculate",
+            "def api_fov_optimize",
+            "def api_lco_ipp",
+            "def api_lco_submit",
+        ):
+            assert handler in web, f"missing handler: {handler}"
 
+    def test_exposure_payload_keys_consumed(self):
+        """Keys the exposure form posts are all read by the handler."""
+        web = WEB_PY.read_text()
+        body = _py_function_src(web, "exposure_calculate")
+        for key in ("instrument", "mags", "focus_mm", "airmass", "sat_frac",
+                    "mode", "exptime", "target_adu", "confmode"):
+            assert f'"{key}"' in body, f"exposure_calculate ignores '{key}'"
 
-class TestInputValidation:
-    """Test that inputs are validated at backend."""
-
-    def test_photometry_validate_run_options_exists(self):
-        """Verify photometry.py has option validation."""
-        phot_path = PROJECT_ROOT / "src" / "muscat_db" / "photometry.py"
-        if phot_path.exists():
-            content = phot_path.read_text()
-            assert "validate_run_options" in content
-            assert "normalize_run_options" in content
-
-    def test_transit_fit_options_processing(self):
-        """Verify transit_fit.py handles options."""
-        fit_path = PROJECT_ROOT / "src" / "muscat_db" / "transit_fit.py"
-        if fit_path.exists():
-            content = fit_path.read_text()
-            assert "def start_fit" in content or "def run_fit" in content
-
-
-class TestHTMLInputCompleteness:
-    """Test that HTML input elements are complete and accessible."""
-
-    @pytest.mark.parametrize(
-        "page",
-        [
-            "photometry.html",
-            "transit_fit.html",
-            "exposure.html",
-            "fov.html",
-            "lco_schedule.html",
-            "ephemeris.html",
-        ],
-    )
-    def test_html_forms_have_select_defaults(self, page):
-        """Verify form selects have default option."""
-        html_content = (TEMPLATES_DIR / page).read_text()
-
-        # Find all select elements
-        selects = re.findall(r"<select[^>]*>", html_content)
-        assert len(selects) > 0, f"No select elements found in {page}"
-
-        # Check for default options (many but not all selects need defaults)
-        has_option = "<option" in html_content
-        assert has_option, f"No option elements found in {page}"
-
-    def test_photometry_all_checkbox_types(self):
-        """Verify photometry page uses checkboxes correctly."""
-        html_content = (TEMPLATES_DIR / "photometry.html").read_text()
-
-        # Band checkboxes
-        assert 'name="band"' in html_content
-        # Boolean options
-        assert 'id="opt-make_gif"' in html_content
-        assert 'id="opt-overwrite"' in html_content
-
-    def test_form_inputs_have_proper_types(self):
-        """Verify form inputs have proper type attributes."""
-        html_content = (TEMPLATES_DIR / "photometry.html").read_text()
-
-        # Text inputs
-        assert 'type="text"' in html_content
-        # Number inputs
-        assert 'type="number"' in html_content
-        # Checkboxes
-        assert 'type="checkbox"' in html_content
-
-
-class TestIntegration:
-    """Integration tests for frontend-backend wiring."""
-
-    def test_photometry_full_flow_mock(self):
-        """Verify photometry full flow (mocked)."""
-        # This is a conceptual test showing what should work
-        test_payload = {
-            "inst": "muscat2",
-            "date": "260307",
-            "target": "TOI05646.01",
-            "test_run": True,
-            "options": {
-                "bands": ["g", "r", "i", "z"],
-                "aper_radii": "10,30,2",
-                "annulus": "25,40",
-                "overwrite": True,
-            },
-        }
-
-        # Verify payload structure matches what backend expects
-        assert "inst" in test_payload
-        assert "date" in test_payload
-        assert "target" in test_payload
-        assert "options" in test_payload
-        assert "bands" in test_payload["options"]
-
-    def test_all_endpoints_documented(self):
-        """Verify all frontend endpoints have backend handlers."""
-        web_content = WEB_PY.read_text()
-
-        # Check for handler function existence rather than exact endpoint syntax
-        required_handlers = [
-            "photometry_run",
-            "photometry_command",
-            "photometry_cancel",
-            "transit_fit_run",
-            "transit_fit_cancel",
-            "jobs_status",
-            "jobs_rerun",
-        ]
-
-        for handler in required_handlers:
-            assert handler in web_content, f"Missing handler: {handler}"
+    def test_fov_payload_keys_consumed(self):
+        web = WEB_PY.read_text()
+        body = _py_function_src(web, "api_fov_optimize")
+        for key in ("instrument", "target", "ra", "dec", "margin_arcsec",
+                    "comp_margin_arcsec", "mag_limit", "mag_min", "mag_max",
+                    "mag_delta", "allow_rotation", "sinistro_mode"):
+            assert f'"{key}"' in body, f"api_fov_optimize ignores '{key}'"
 
 
 if __name__ == "__main__":
