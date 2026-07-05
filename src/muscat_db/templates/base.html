@@ -54,10 +54,11 @@
 
 <div id="message-modal">
   <div class="modal-box">
-    <p id="message-modal-title" style="margin-bottom:0.75rem;font-size:0.95rem;font-weight:600;"></p>
-    <p id="message-modal-text" style="color:var(--text-dim);font-size:0.85rem;margin-bottom:1.5rem;line-height:1.5;"></p>
-    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
-      <button class="btn" onclick="closeMessageModal()">OK</button>
+    <p id="message-modal-title" class="modal-title"></p>
+    <p id="message-modal-text" class="modal-text"></p>
+    <div class="modal-actions">
+      <button class="btn" id="message-modal-cancel" type="button" hidden>Cancel</button>
+      <button class="btn" id="message-modal-ok" type="button">OK</button>
     </div>
   </div>
 </div>
@@ -658,14 +659,54 @@
     }, true);
   })();
 
-  window.showMessageModal = function(title, text) {
-    document.getElementById('message-modal-title').textContent = title;
-    document.getElementById('message-modal-text').textContent = text;
-    document.getElementById('message-modal').classList.add('visible');
-  };
-  window.closeMessageModal = function() {
-    document.getElementById('message-modal').classList.remove('visible');
-  };
+  (function () {
+    var modal = document.getElementById('message-modal');
+    var titleEl = document.getElementById('message-modal-title');
+    var textEl = document.getElementById('message-modal-text');
+    var okBtn = document.getElementById('message-modal-ok');
+    var cancelBtn = document.getElementById('message-modal-cancel');
+    var pendingResolve = null;
+
+    function showModal(title, text) {
+      titleEl.textContent = title || '';
+      textEl.textContent = text || '';
+      modal.classList.add('visible');
+      okBtn.focus();
+    }
+
+    window.showMessageModal = function(title, text) {
+      pendingResolve = null;
+      okBtn.textContent = 'OK';
+      okBtn.className = 'btn';
+      cancelBtn.hidden = true;
+      showModal(title, text);
+    };
+    window.closeMessageModal = function(result) {
+      modal.classList.remove('visible');
+      if (pendingResolve) {
+        var resolve = pendingResolve;
+        pendingResolve = null;
+        resolve(!!result);
+      }
+    };
+    window.showConfirmModal = function(title, text, opts) {
+      opts = opts || {};
+      return new Promise(function (resolve) {
+        pendingResolve = resolve;
+        okBtn.textContent = opts.confirmLabel || 'Confirm';
+        okBtn.className = opts.confirmClass || 'btn primary';
+        cancelBtn.textContent = opts.cancelLabel || 'Cancel';
+        cancelBtn.hidden = false;
+        showModal(title, text);
+      });
+    };
+    okBtn.addEventListener('click', function () {
+      window.closeMessageModal(pendingResolve ? true : false);
+    });
+    cancelBtn.addEventListener('click', function () {
+      window.closeMessageModal(false);
+    });
+  })();
 </script>
 {% block scripts %}{% endblock %}
 </body>

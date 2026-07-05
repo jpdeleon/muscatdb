@@ -62,7 +62,7 @@ class LcoTest(unittest.TestCase):
         self.assertEqual(len(config["instrument_configs"]), 1)
         instrument_config = config["instrument_configs"][0]
         self.assertEqual(instrument_config["exposure_time"], 30)  # longest band
-        self.assertEqual(instrument_config["exposure_count"], 2)
+        self.assertEqual(instrument_config["exposure_count"], 1)
         self.assertEqual(instrument_config["mode"], "MUSCAT_FAST")
         self.assertNotIn("filter", instrument_config["optical_elements"])
         self.assertEqual(instrument_config["optical_elements"]["narrowband_g_position"], "in")
@@ -146,16 +146,71 @@ class LcoTest(unittest.TestCase):
         config = lco.build_requestgroup("muscat4", params)["requests"][0]["configurations"][0]
         self.assertEqual(config["repeat_duration"], 3600 - 180)
 
+    def test_muscat_repeat_expose_forces_single_exposure_block(self):
+        """REPEAT_EXPOSE repeats one exposure block; packed counts make LCO reject it."""
+        params = {
+            "name": "n", "proposal": "p", "target_name": "t",
+            "ra": 10.0, "dec": -5.0, "kind": "muscat4",
+            "exposure_times": {"g": 30, "r": 30, "i": 30, "z": 30},
+            "exposure_count": 506,
+            "type": "REPEAT_EXPOSE",
+            "windows": [{"start": "2026-07-04T07:00:00Z", "end": "2026-07-04T11:56:11Z"}],
+        }
+        config = lco.build_requestgroup("muscat4", params)["requests"][0]["configurations"][0]
+        self.assertEqual(config["type"], "REPEAT_EXPOSE")
+        self.assertEqual(config["repeat_duration"], 17591)
+        self.assertEqual(config["instrument_configs"][0]["exposure_count"], 1)
+
+    @patch("muscat_db.transit_obs.classify_transits")
+    def test_muscat_repeat_expose_rejects_padded_partial_window(self, mock_classify):
+        mock_classify.return_value = [{"rating": "partial", "sites": ["ogg"], "best_site": "ogg"}]
+        params = {
+            "name": "n", "proposal": "p", "target_name": "t",
+            "ra": 261.82914, "dec": -25.92151, "kind": "muscat",
+            "site": "ogg", "max_airmass": 2.0, "min_lunar_distance": 30,
+            "twilight": "nautical",
+            "exposure_times": {"g": 30, "r": 30, "i": 30, "z": 30},
+            "type": "REPEAT_EXPOSE",
+            "windows": [{"start": "2026-07-18T05:30:12Z", "end": "2026-07-18T10:26:24Z"}],
+        }
+        with self.assertRaises(lco.LcoError) as cm:
+            lco.build_requestgroup("muscat", params)
+        self.assertEqual(cm.exception.status, 400)
+        self.assertIn("not fully observable", cm.exception.message)
+        self.assertIn("Include padding", cm.exception.detail)
+        mock_classify.assert_called_once()
+        _, kwargs = mock_classify.call_args
+        self.assertTrue(kwargs["include_padding"])
+        self.assertEqual(kwargs["sites"], ["ogg"])
+        self.assertEqual(kwargs["twilight"], "nautical")
+
+    @patch("muscat_db.transit_obs.classify_transits")
+    def test_muscat_repeat_expose_accepts_padded_full_window(self, mock_classify):
+        mock_classify.return_value = [{"rating": "full", "sites": ["ogg"], "best_site": "ogg"}]
+        params = {
+            "name": "n", "proposal": "p", "target_name": "t",
+            "ra": 261.82914, "dec": -25.92151, "kind": "muscat",
+            "site": "ogg", "max_airmass": 2.0, "min_lunar_distance": 30,
+            "exposure_times": {"g": 30, "r": 30, "i": 30, "z": 30},
+            "type": "REPEAT_EXPOSE",
+            "windows": [{"start": "2026-07-18T05:30:12Z", "end": "2026-07-18T10:26:24Z"}],
+        }
+        config = lco.build_requestgroup("muscat", params)["requests"][0]["configurations"][0]
+        self.assertEqual(config["type"], "REPEAT_EXPOSE")
+        self.assertEqual(config["instrument_configs"][0]["exposure_count"], 1)
+
     def test_muscat_expose_type_omits_repeat_duration(self):
         params = {
             "name": "n", "proposal": "p", "target_name": "t",
             "ra": 10.0, "dec": -5.0, "kind": "muscat4", "type": "EXPOSE",
+            "exposure_count": 7,
             "exposure_times": {"g": 30, "r": 30, "i": 30, "z": 30},
             "windows": [{"start": "2026-07-04T07:00:00Z", "end": "2026-07-04T10:00:00Z"}],
         }
         config = lco.build_requestgroup("muscat4", params)["requests"][0]["configurations"][0]
         self.assertEqual(config["type"], "EXPOSE")
         self.assertNotIn("repeat_duration", config)
+        self.assertEqual(config["instrument_configs"][0]["exposure_count"], 7)
 
     def test_build_requestgroup_invalid_payload(self):
         with self.assertRaises(lco.LcoError) as cm:

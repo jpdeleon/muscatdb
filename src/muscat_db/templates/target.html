@@ -15,204 +15,374 @@
     <a href="/">← Back to database search</a>
   </p>
 
-  <div class="search-bar">
-    <input id="dataset-search" type="text" placeholder="Search by date or instrument…" autocomplete="off">
-    <span id="search-status" class="hint"></span>
-  </div>
+  <details class="adv" open id="datasets-details">
+    <summary>Dataset Observations ({{ datasets|length if datasets else 0 }})</summary>
+    <div style="margin-top: 0.5rem;">
+      <div class="search-bar">
+        <input id="dataset-search" type="text" placeholder="Search by date or instrument…" autocomplete="off">
+        <span id="search-status" class="hint"></span>
+      </div>
 
-  {% if datasets %}
-  <div class="csv-wrap">
-  <table id="datasets-table">
-    <thead>
-      <tr>
-        <th data-sort-attr="date">Date</th>
-        <th data-sort-attr="object">Object</th>
-        <th data-sort-attr="inst">Instrument</th>
-        <th data-sort-attr="filters">Filters</th>
-        <th data-sort-attr="airmassMax" data-sort-type="number">Airmass</th>
-        <th data-sort-attr="frames" data-sort-type="number"># Frames</th>
-        <th data-sort-attr="phot">Phot</th>
-        <th data-sort-attr="fit">Fit</th>
-        <th data-sort-attr="note">Notes</th>
-      </tr>
-      <tr class="filter-row">
-        <th><input type="text" data-col="date" placeholder="YYMMDD"></th>
-        <th><input type="text" data-col="object" placeholder="V1298Tau-b…"></th>
-        <th><input type="text" data-col="inst" placeholder="muscat, muscat2, …"></th>
-        <th><input type="text" data-col="filter" placeholder="g, r, i, z"></th>
-        <th><input type="text" data-col="airmass" placeholder="<1.5  1.1-2"></th>
-        <th><input type="text" data-col="frames" placeholder="<100  >500"></th>
-        <th><input type="text" data-col="phot" placeholder="Y/N"></th>
-        <th><input type="text" data-col="fit" placeholder="Y/N"></th>
-        <th><input type="text" data-col="note" placeholder="contains…"></th>
-      </tr>
-    </thead>
-    <tbody>
-    {% for dataset in datasets %}
-      <tr data-date="{{ dataset.date }}"
-          data-object="{{ dataset.object }}"
-          data-inst="{{ dataset.instrument }}"
-          data-filters="{{ dataset.filters|join(',') }}"
-          data-airmass-max="{{ dataset.airmass_max if dataset.airmass_max is not none else '' }}"
-          data-frames="{{ dataset.n_frames }}"
-          data-phot="{{ 'Y' if dataset.phot == 'full' else 'N' }}"
-          data-fit="{{ 'Y' if dataset.fit == 'full' else 'N' }}"
-          data-note="{{ dataset.note|default('', true) }}">
-        <td class="mono"><a href="/{{ dataset.instrument }}/{{ dataset.date }}">{{ dataset.date }}</a></td>
-        <td class="mono">{{ dataset.object }}</td>
-        <td class="mono">{{ dataset.instrument }}</td>
-        <td>
-          {% for c in dataset.filter_chips %}
-            <span class="badge badge-filter-{{ c.color }}{% if c.narrow %} narrow{% endif %}">{{ c.label }}</span>
-          {% endfor %}
-        </td>
-        <td class="mono">
-          {% if dataset.airmass_min is not none and dataset.airmass_max is not none %}
-            {{ '%.2f'|format(dataset.airmass_min) }}–{{ '%.2f'|format(dataset.airmass_max) }}
-          {% else %}—{% endif %}
-        </td>
-        <td>{{ dataset.n_frames }}</td>
-        <td style="text-align:center;">
-          <a href="/photometry?inst={{ dataset.instrument }}&date={{ dataset.date }}&target={{ dataset.object | urlencode }}" title="photometry" style="text-decoration:none;">🔭</a>
-          {% if dataset.phot == 'full' %}
-            <span style="color: var(--green); font-weight: bold;" title="Full photometry exists">Y</span>
-          {% else %}
-            <span style="color: var(--red);" title="No photometry or test-run only">N</span>
-          {% endif %}
-        </td>
-        <td style="text-align:center;">
-          <a href="/transit-fit?inst={{ dataset.instrument }}&date={{ dataset.date }}&target={{ dataset.object | urlencode }}" title="transit fit" style="text-decoration:none;">📈</a>
-          {% if dataset.fit == 'full' %}
-            <span style="color: var(--green); font-weight: bold;" title="Transit fit exists">Y</span>
-          {% else %}
-            <span style="color: var(--red);" title="No transit fit">N</span>
-          {% endif %}
-        </td>
-        <td class="note-cell" data-object="{{ dataset.object }}" style="white-space:normal;">
-          <span class="note-text">{{ dataset.note }}</span>
-          <span class="note-placeholder" {% if dataset.note %}style="display:none;"{% endif %}>+ add note</span>
-        </td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  </div>
+      {% if datasets %}
+      <div class="csv-wrap">
+      <table id="datasets-table">
+        <thead>
+          <tr>
+            <th data-sort-attr="date">Date</th>
+            <th data-sort-attr="object">Object</th>
+            <th data-sort-attr="inst">Instrument</th>
+            <th data-sort-attr="filters">Filters</th>
+            <th data-sort-attr="airmassMax" data-sort-type="number">Airmass</th>
+            <th data-sort-attr="frames" data-sort-type="number"># Frames</th>
+            <th data-sort-attr="phot">Phot</th>
+            <th data-sort-attr="fit">Fit</th>
+            <th data-sort-attr="note">Notes</th>
+          </tr>
+          <tr class="filter-row">
+            <th><input type="text" data-col="date" placeholder="YYMMDD"></th>
+            <th><input type="text" data-col="object" placeholder="V1298Tau-b…"></th>
+            <th><input type="text" data-col="inst" placeholder="muscat, muscat2, …"></th>
+            <th><input type="text" data-col="filter" placeholder="g, r, i, z"></th>
+            <th><input type="text" data-col="airmass" placeholder="&lt;1.5  1.1-2"></th>
+            <th><input type="text" data-col="frames" placeholder="&lt;100  &gt;500"></th>
+            <th><input type="text" data-col="phot" placeholder="Y/N"></th>
+            <th><input type="text" data-col="fit" placeholder="Y/N"></th>
+            <th><input type="text" data-col="note" placeholder="contains…"></th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for dataset in datasets %}
+          <tr data-date="{{ dataset.date }}"
+              data-object="{{ dataset.object }}"
+              data-inst="{{ dataset.instrument }}"
+              data-filters="{{ dataset.filters|join(',') }}"
+              data-airmass-max="{{ dataset.airmass_max if dataset.airmass_max is not none else '' }}"
+              data-frames="{{ dataset.n_frames }}"
+              data-phot="{{ 'Y' if dataset.phot == 'full' else 'N' }}"
+              data-fit="{{ 'Y' if dataset.fit == 'full' else 'N' }}"
+              data-note="{{ dataset.note|default('', true) }}">
+            <td class="mono"><a href="/{{ dataset.instrument }}/{{ dataset.date }}">{{ dataset.date }}</a></td>
+            <td class="mono">{{ dataset.object }}</td>
+            <td class="mono">{{ dataset.instrument }}</td>
+            <td>
+              {% for c in dataset.filter_chips %}
+                <span class="badge badge-filter-{{ c.color }}{% if c.narrow %} narrow{% endif %}">{{ c.label }}</span>
+              {% endfor %}
+            </td>
+            <td class="mono">
+              {% if dataset.airmass_min is not none and dataset.airmass_max is not none %}
+                {{ '%.2f'|format(dataset.airmass_min) }}–{{ '%.2f'|format(dataset.airmass_max) }}
+              {% else %}—{% endif %}
+            </td>
+            <td>{{ dataset.n_frames }}</td>
+            <td style="text-align:center;">
+              <a href="/photometry?inst={{ dataset.instrument }}&date={{ dataset.date }}&target={{ dataset.object | urlencode }}" title="photometry" style="text-decoration:none;">🔭</a>
+              {% if dataset.phot == 'full' %}
+                <span style="color: var(--green); font-weight: bold;" title="Full photometry exists">Y</span>
+              {% else %}
+                <span style="color: var(--red);" title="No photometry or test-run only">N</span>
+              {% endif %}
+            </td>
+            <td style="text-align:center;">
+              <a href="/transit-fit?inst={{ dataset.instrument }}&date={{ dataset.date }}&target={{ dataset.object | urlencode }}" title="transit fit" style="text-decoration:none;">📈</a>
+              {% if dataset.fit == 'full' %}
+                <span style="color: var(--green); font-weight: bold;" title="Transit fit exists">Y</span>
+              {% else %}
+                <span style="color: var(--red);" title="No transit fit">N</span>
+              {% endif %}
+            </td>
+            <td class="note-cell" data-object="{{ dataset.object }}" style="white-space:normal;">
+              <span class="note-text">{{ dataset.note }}</span>
+              <span class="note-placeholder" {% if dataset.note %}style="display:none;"{% endif %}>+ add note</span>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+
+      <script>
+        (function () {
+          const input  = document.getElementById('dataset-search');
+          const status = document.getElementById('search-status');
+          const rows = Array.from(document.querySelectorAll('#datasets-table tbody tr'));
+          const colInputs = Array.from(document.querySelectorAll('tr.filter-row input'));
+          const total = rows.length;
+
+          function makeNumeric(raw) {
+            const s = raw.trim();
+            if (!s) return null;
+            let m;
+            if ((m = s.match(/^(<=|>=|<|>|=)?\s*(-?\d+(?:\.\d+)?)$/))) {
+              const op = m[1] || '=', v = parseFloat(m[2]);
+              return x => {
+                if (x == null || isNaN(x)) return false;
+                if (op === '<')  return x <  v;
+                if (op === '<=') return x <= v;
+                if (op === '>')  return x >  v;
+                if (op === '>=') return x >= v;
+                return Math.abs(x - v) < 1e-9;
+              };
+            }
+            if ((m = s.match(/^(-?\d+(?:\.\d+)?)\s*(?:-|\.\.|:|to)\s*(-?\d+(?:\.\d+)?)$/))) {
+              const a = parseFloat(m[1]), b = parseFloat(m[2]);
+              const lo = Math.min(a,b), hi = Math.max(a,b);
+              return x => x != null && !isNaN(x) && x >= lo && x <= hi;
+            }
+            return 'INVALID';
+          }
+
+          function makeText(raw) {
+            const s = raw.trim();
+            if (!s) return null;
+            const needles = s.toLowerCase().split(/\s*,\s*/).filter(Boolean);
+            return hay => {
+              const h = (hay || '').toLowerCase();
+              return needles.some(n => h.includes(n));
+            };
+          }
+
+          function makeToken(raw) {
+            const s = raw.trim();
+            if (!s) return null;
+            const needles = s.toLowerCase().split(/\s*,\s*/).filter(Boolean);
+            return hay => {
+              const tokens = (hay || '').toLowerCase().split(',')
+                .map(t => t.trim()).filter(Boolean);
+              return needles.some(n => tokens.includes(n));
+            };
+          }
+
+          const colSpec = {
+            date:       { val: r => r.dataset.date,       build: makeText    },
+            object:     { val: r => r.dataset.object,     build: makeText    },
+            inst:       { val: r => r.dataset.inst,       build: makeToken   },
+            filter:     { val: r => r.dataset.filters,    build: makeText    },
+            airmass:    { val: r => parseFloat(r.dataset.airmassMax), build: makeNumeric },
+            frames:     { val: r => parseInt(r.dataset.frames, 10),   build: makeNumeric },
+            phot:       { val: r => r.dataset.phot,       build: makeText    },
+            fit:        { val: r => r.dataset.fit,        build: makeText    },
+            note:       { val: r => r.dataset.note,       build: makeText    },
+          };
+
+          function buildColPredicates() {
+            const preds = [];
+            colInputs.forEach(inp => {
+              const spec = colSpec[inp.dataset.col];
+              if (!spec) return;
+              const p = spec.build(inp.value);
+              inp.classList.remove('invalid');
+              if (p === 'INVALID') {
+                inp.classList.add('invalid');
+                return;
+              }
+              if (p) preds.push(row => p(spec.val(row)));
+            });
+            return preds;
+          }
+
+          function filter() {
+            const q = input.value.toLowerCase();
+            status.textContent = '';
+            status.className = 'hint';
+
+            const colPreds = buildColPredicates();
+            let visible = 0;
+
+            rows.forEach(r => {
+              let ok = true;
+              if (q) {
+                const date = (r.dataset.date || '').toLowerCase();
+                const inst = (r.dataset.inst || '').toLowerCase();
+                ok = date.includes(q) || inst.includes(q);
+              }
+              for (let i = 0; ok && i < colPreds.length; i++) ok = colPreds[i](r);
+              r.style.display = ok ? '' : 'none';
+              if (ok) visible++;
+            });
+
+            if (q || colPreds.length) {
+              status.textContent = visible + ' / ' + total + ' matching';
+            } else {
+              status.textContent = total + ' dataset' + (total !== 1 ? 's' : '');
+            }
+          }
+
+          input.addEventListener('input', filter);
+          colInputs.forEach(inp => inp.addEventListener('input', filter));
+          filter();
+        })();
+      </script>
+      {% else %}
+        <p>No datasets found for this target.</p>
+      {% endif %}
+    </div>
+  </details>
+
+  <details class="adv" id="ads-details" style="margin-top: 1rem;">
+    <summary>NASA ADS Publications</summary>
+    <div style="margin-top: 0.5rem;">
+      <div class="lco-banner" id="ads-config-banner" style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 1.25rem; font-size: 0.85rem;">
+        <span class="pill" style="display: inline-flex; align-items: center; gap: 0.35rem;">
+          <span class="dot" id="ads-cfg-token" style="width: 9px; height: 9px; border-radius: 50%; background: var(--text-dim); display: inline-block;"></span> ADS API token
+        </span>
+        <span class="lco-note" style="margin: 0; font-size: 0.78rem; color: var(--text-dim);">Tokens stay server-side. Querying papers requires a valid ADS_API_TOKEN.</span>
+      </div>
+      <div class="search-bar" style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; width: 100%;">
+        <input id="ads-query-input" type="text" placeholder="Search papers on ADS…" value="{{ target_name }}" style="flex: 1;" autocomplete="off">
+        <button id="ads-search-btn" class="btn" style="padding: 0 1.25rem; height: 36px; display: inline-flex; align-items: center; justify-content: center; font-size: 0.9rem;" type="button">Search</button>
+      </div>
+      <div id="ads-status" class="hint" style="margin-bottom: 0.5rem;"></div>
+      <div id="ads-results-list" style="display: flex; flex-direction: column; gap: 0.75rem;">
+        <!-- papers will go here -->
+      </div>
+    </div>
+  </details>
 
   <script>
-    (function () {
-      const input  = document.getElementById('dataset-search');
-      const status = document.getElementById('search-status');
-      const rows = Array.from(document.querySelectorAll('#datasets-table tbody tr'));
-      const colInputs = Array.from(document.querySelectorAll('tr.filter-row input'));
-      const total = rows.length;
+    (function() {
+      const details = document.getElementById('ads-details');
+      const input = document.getElementById('ads-query-input');
+      const btn = document.getElementById('ads-search-btn');
+      const status = document.getElementById('ads-status');
+      const resultsList = document.getElementById('ads-results-list');
+      let loaded = false;
 
-      function makeNumeric(raw) {
-        const s = raw.trim();
-        if (!s) return null;
-        let m;
-        if ((m = s.match(/^(<=|>=|<|>|=)?\s*(-?\d+(?:\.\d+)?)$/))) {
-          const op = m[1] || '=', v = parseFloat(m[2]);
-          return x => {
-            if (x == null || isNaN(x)) return false;
-            if (op === '<')  return x <  v;
-            if (op === '<=') return x <= v;
-            if (op === '>')  return x >  v;
-            if (op === '>=') return x >= v;
-            return Math.abs(x - v) < 1e-9;
-          };
+      function updateConfigBanner() {
+        fetch('/api/ads/config')
+          .then(r => r.json())
+          .then(d => {
+            if (d.ok) {
+              const dot = document.getElementById('ads-cfg-token');
+              if (dot) {
+                dot.style.background = d.token_configured ? '#2ecc71' : '#e07b53';
+              }
+            }
+          })
+          .catch(() => {});
+      }
+      updateConfigBanner();
+
+      function searchADS() {
+        const query = input.value.trim();
+        if (!query) {
+          status.textContent = 'Please enter a search query.';
+          status.style.color = 'var(--red)';
+          return;
         }
-        if ((m = s.match(/^(-?\d+(?:\.\d+)?)\s*(?:-|\.\.|:|to)\s*(-?\d+(?:\.\d+)?)$/))) {
-          const a = parseFloat(m[1]), b = parseFloat(m[2]);
-          const lo = Math.min(a,b), hi = Math.max(a,b);
-          return x => x != null && !isNaN(x) && x >= lo && x <= hi;
+
+        status.textContent = 'Querying NASA ADS...';
+        status.style.color = 'var(--text-dim)';
+        resultsList.innerHTML = '';
+
+        fetch('/api/target/publications?q=' + encodeURIComponent(query))
+          .then(res => {
+            if (!res.ok) {
+              return res.json().then(err => {
+                let msg = err.error || 'Request failed';
+                if (err.token_missing) {
+                  msg = 'ADS API token is not configured. Please set <code>ADS_API_TOKEN</code> or <code>ADS_DEV_KEY</code> in your <code>.env</code> file.';
+                }
+                throw new Error(msg);
+              });
+            }
+            return res.json();
+          })
+          .then(data => {
+            const papers = data.papers || [];
+            if (papers.length === 0) {
+              status.textContent = 'No published papers found on NASA ADS for "' + query + '".';
+              return;
+            }
+            status.textContent = 'Found ' + papers.length + ' paper(s) on NASA ADS.';
+            
+            papers.forEach(paper => {
+              const card = document.createElement('div');
+              card.className = 'ads-paper-card';
+              card.style.padding = '0.75rem';
+              card.style.border = '1px solid var(--border)';
+              card.style.borderRadius = '8px';
+              card.style.background = 'var(--surface2)';
+              card.style.display = 'flex';
+              card.style.flexDirection = 'column';
+              card.style.gap = '0.35rem';
+
+              const titleLink = document.createElement('a');
+              titleLink.href = 'https://ui.adsabs.harvard.edu/abs/' + encodeURIComponent(paper.bibcode) + '/abstract';
+              titleLink.target = '_blank';
+              titleLink.rel = 'noopener noreferrer';
+              titleLink.style.fontWeight = '600';
+              titleLink.style.fontSize = '0.95rem';
+              titleLink.style.color = 'var(--accent)';
+              titleLink.textContent = (paper.title && paper.title.length > 0) ? paper.title[0] : 'Untitled';
+              card.appendChild(titleLink);
+
+              const authorsDiv = document.createElement('div');
+              authorsDiv.style.fontSize = '0.85rem';
+              authorsDiv.style.color = 'var(--text)';
+              const authorsList = paper.author || [];
+              if (authorsList.length > 5) {
+                authorsDiv.textContent = authorsList.slice(0, 5).join(', ') + ' et al.';
+              } else if (authorsList.length > 0) {
+                authorsDiv.textContent = authorsList.join(', ');
+              } else {
+                authorsDiv.textContent = 'No authors listed';
+              }
+              card.appendChild(authorsDiv);
+
+              const metaDiv = document.createElement('div');
+              metaDiv.style.fontSize = '0.8rem';
+              metaDiv.style.color = 'var(--text-dim)';
+              metaDiv.style.display = 'flex';
+              metaDiv.style.gap = '1rem';
+              metaDiv.style.flexWrap = 'wrap';
+
+              const journalSpan = document.createElement('span');
+              journalSpan.innerHTML = '<strong>Journal:</strong> ' + (paper.pub || 'Unknown');
+              metaDiv.appendChild(journalSpan);
+
+              const dateSpan = document.createElement('span');
+              dateSpan.innerHTML = '<strong>Date:</strong> ' + (paper.pubdate || 'Unknown');
+              metaDiv.appendChild(dateSpan);
+
+              const citationSpan = document.createElement('span');
+              citationSpan.innerHTML = '<strong>Citations:</strong> ' + (paper.citation_count !== undefined ? paper.citation_count : 0);
+              metaDiv.appendChild(citationSpan);
+
+              const bibcodeSpan = document.createElement('span');
+              bibcodeSpan.className = 'mono';
+              bibcodeSpan.style.fontSize = '0.75rem';
+              bibcodeSpan.style.color = 'var(--text-dim)';
+              bibcodeSpan.textContent = 'Bibcode: ' + paper.bibcode;
+              metaDiv.appendChild(bibcodeSpan);
+
+              card.appendChild(metaDiv);
+              resultsList.appendChild(card);
+            });
+            loaded = true;
+          })
+          .catch(err => {
+            status.innerHTML = 'Error: ' + err.message;
+            status.style.color = 'var(--red)';
+            console.error(err);
+          });
+      }
+
+
+
+      btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        searchADS();
+      });
+
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          searchADS();
         }
-        return 'INVALID';
-      }
-
-      function makeText(raw) {
-        const s = raw.trim();
-        if (!s) return null;
-        const needles = s.toLowerCase().split(/\s*,\s*/).filter(Boolean);
-        return hay => {
-          const h = (hay || '').toLowerCase();
-          return needles.some(n => h.includes(n));
-        };
-      }
-
-      function makeToken(raw) {
-        const s = raw.trim();
-        if (!s) return null;
-        const needles = s.toLowerCase().split(/\s*,\s*/).filter(Boolean);
-        return hay => {
-          const tokens = (hay || '').toLowerCase().split(',')
-            .map(t => t.trim()).filter(Boolean);
-          return needles.some(n => tokens.includes(n));
-        };
-      }
-
-      const colSpec = {
-        date:       { val: r => r.dataset.date,       build: makeText    },
-        object:     { val: r => r.dataset.object,     build: makeText    },
-        inst:       { val: r => r.dataset.inst,       build: makeToken   },
-        filter:     { val: r => r.dataset.filters,    build: makeText    },
-        airmass:    { val: r => parseFloat(r.dataset.airmassMax), build: makeNumeric },
-        frames:     { val: r => parseInt(r.dataset.frames, 10),   build: makeNumeric },
-        phot:       { val: r => r.dataset.phot,       build: makeText    },
-        fit:        { val: r => r.dataset.fit,        build: makeText    },
-        note:       { val: r => r.dataset.note,       build: makeText    },
-      };
-
-      function buildColPredicates() {
-        const preds = [];
-        colInputs.forEach(inp => {
-          const spec = colSpec[inp.dataset.col];
-          if (!spec) return;
-          const p = spec.build(inp.value);
-          inp.classList.remove('invalid');
-          if (p === 'INVALID') {
-            inp.classList.add('invalid');
-            return;
-          }
-          if (p) preds.push(row => p(spec.val(row)));
-        });
-        return preds;
-      }
-
-      function filter() {
-        const q = input.value.toLowerCase();
-        status.textContent = '';
-        status.className = 'hint';
-
-        const colPreds = buildColPredicates();
-        let visible = 0;
-
-        rows.forEach(r => {
-          let ok = true;
-          if (q) {
-            const date = (r.dataset.date || '').toLowerCase();
-            const inst = (r.dataset.inst || '').toLowerCase();
-            ok = date.includes(q) || inst.includes(q);
-          }
-          for (let i = 0; ok && i < colPreds.length; i++) ok = colPreds[i](r);
-          r.style.display = ok ? '' : 'none';
-          if (ok) visible++;
-        });
-
-        if (q || colPreds.length) {
-          status.textContent = visible + ' / ' + total + ' matching';
-        } else {
-          status.textContent = total + ' dataset' + (total !== 1 ? 's' : '');
-        }
-      }
-
-      input.addEventListener('input', filter);
-      colInputs.forEach(inp => inp.addEventListener('input', filter));
-      filter();
+      });
     })();
   </script>
-  {% else %}
-    <p>No datasets found for this target.</p>
-  {% endif %}
 
 {% else %}
   {# List of all normalized targets #}

@@ -74,6 +74,12 @@ ENV_VARS: tuple[EnvVar, ...] = (
         "(default), /api/lco/submit refuses even with a valid dry-run + confirm; "
         "set to '1' only when intentionally going live.",
     ),
+    EnvVar(
+        "ADS_API_TOKEN",
+        None,
+        "NASA ADS API Token (used to query published papers about the target)",
+        secret=True,
+    ),
 )
 
 

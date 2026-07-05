@@ -660,7 +660,11 @@
         applyFilters();
       }
     })
-    .catch(function(err) { alert('Error: ' + err.message); btn.disabled = false; btn.innerText = 'Cancel'; });
+    .catch(function(err) {
+      showMessageModal('Error', err.message);
+      btn.disabled = false;
+      btn.innerText = 'Cancel';
+    });
   };
 
   // ── Re-run job (in-place) ───────────────────────────────────────────────
@@ -689,7 +693,11 @@
         applyFilters();
       }
     })
-    .catch(function(err) { alert('Error: ' + err.message); btn.disabled = false; btn.innerText = '⟳ Re-run'; });
+    .catch(function(err) {
+      showMessageModal('Error', err.message);
+      btn.disabled = false;
+      btn.innerText = '⟳ Re-run';
+    });
   };
 
   // ── View log (inline expand) ────────────────────────────────────────────
@@ -732,10 +740,10 @@
     })
     .then(function(d) {
       btn.textContent = 'Done';
-      window.alert((d.command || action) + ' completed');
+      showMessageModal('Completed', (d.command || action) + ' completed');
     })
     .catch(function(err) {
-      window.alert('Error: ' + err.message);
+      showMessageModal('Error', err.message);
       btn.disabled = false;
       btn.textContent = label;
     });

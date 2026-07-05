@@ -766,6 +766,70 @@ def _config_type_block(params: dict, default_type: str) -> dict:
     return block
 
 
+def _value_or_default(value, default):
+    return default if value in (None, "") else value
+
+
+def _validate_repeat_window_observability(kind: str, params: dict, max_airmass, min_lunar_distance) -> None:
+    """Reject REPEAT_EXPOSE windows that cannot fit within local observability.
+
+    LCO validates the full configuration duration against the target visibility
+    inside each request window. The scheduler UI may show bare-transit
+    observability separately from padded-baseline observability, so repeat-mode
+    requests need a backend guard before spending an API call or reaching live
+    submission.
+    """
+    if (params.get("type") or "REPEAT_EXPOSE") != "REPEAT_EXPOSE":
+        return
+    site = (params.get("site") or "").strip().lower()
+    windows = params.get("windows") or []
+    if not site or not windows or params.get("ra") in (None, "") or params.get("dec") in (None, ""):
+        return
+
+    try:
+        from muscat_db import transit_obs
+
+        obs = transit_obs.classify_transits(
+            float(params["ra"]),
+            float(params["dec"]),
+            windows,
+            kind,
+            duration_hours=1.0,
+            max_airmass=float(max_airmass),
+            twilight=params.get("twilight") or transit_obs.DEFAULT_TWILIGHT,
+            moon_sep_min=float(min_lunar_distance),
+            include_padding=True,
+            sites=[site],
+        )
+    except Exception:
+        return
+
+    for idx, result in enumerate(obs):
+        if result.get("rating") == "full":
+            continue
+        window = windows[idx]
+        span_h = None
+        try:
+            t0 = datetime.datetime.fromisoformat(str(window["start"]).replace("Z", "+00:00"))
+            t1 = datetime.datetime.fromisoformat(str(window["end"]).replace("Z", "+00:00"))
+            span_h = (t1 - t0).total_seconds() / 3600.0
+        except Exception:
+            pass
+        rating = result.get("rating")
+        rating_text = "partially observable" if rating == "partial" else "not observable"
+        detail = (
+            f"Window {idx + 1} is {rating_text} at {site.upper()} when the padded "
+            "start-to-end request window is checked."
+        )
+        if span_h is not None:
+            detail += f" Request window length is {span_h:.2f} h."
+        detail += (
+            " Regenerate windows with 'Include padding in obs check' enabled, reduce pre/post "
+            "padding, choose a fully observable window/site, or loosen airmass/moon constraints."
+        )
+        raise LcoError("Selected LCO window is not fully observable", status=400, detail=detail)
+
+
 def build_requestgroup(kind: str, params: dict) -> dict:
     """Construct the requestgroup payload for an observation."""
     # Name the specific empty field(s) so the UI can point the user at what to
@@ -802,9 +866,13 @@ def build_requestgroup(kind: str, params: dict) -> dict:
         default_max_airmass = 1.6
         default_min_lunar_distance = 30
 
+    max_airmass = _value_or_default(params.get("max_airmass"), default_max_airmass)
+    min_lunar_distance = _value_or_default(params.get("min_lunar_distance"), default_min_lunar_distance)
+    _validate_repeat_window_observability(kind, params, max_airmass, min_lunar_distance)
+
     constraints = {
-        "max_airmass": params.get("max_airmass", default_max_airmass),
-        "min_lunar_distance": params.get("min_lunar_distance", default_min_lunar_distance),
+        "max_airmass": max_airmass,
+        "min_lunar_distance": min_lunar_distance,
     }
 
     configurations = []
@@ -824,9 +892,11 @@ def build_requestgroup(kind: str, params: dict) -> dict:
         # element, and the top-level exposure_time is the longest (driving)
         # band. This mirrors LCO's accepted 2M0-SCICAM-MUSCAT request shape.
         nb = params.get("narrowband", {})
+        config_type = params.get("type") or "REPEAT_EXPOSE"
+        exposure_count = 1 if config_type == "REPEAT_EXPOSE" else params.get("exposure_count", 1)
         instrument_configs = [{
             "exposure_time": max(band_times.values()),
-            "exposure_count": params.get("exposure_count", 1),
+            "exposure_count": exposure_count,
             "mode": params.get("readout_mode", "MUSCAT_FAST"),
             "optical_elements": {
                 "narrowband_g_position": nb.get("g", "out"),
@@ -856,8 +926,8 @@ def build_requestgroup(kind: str, params: dict) -> dict:
             "acquisition_config": {"mode": "OFF"},
             "guiding_config": {"mode": params.get("guiding_config", "ON"), "optional": True},
             "constraints": {
-                "max_airmass": params.get("max_airmass", 2.5),
-                "min_lunar_distance": params.get("min_lunar_distance", 18),
+                "max_airmass": max_airmass,
+                "min_lunar_distance": min_lunar_distance,
                 "max_seeing": params.get("max_seeing"),
                 "min_transparency": params.get("min_transparency"),
                 "extra_params": {}

@@ -1821,7 +1821,8 @@ class TestRoutes:
         r = client.get("/api/ephemeris/target-info")
         assert r.status_code == 422
         
-        # Test fallback for a dummy target
+        # Test no-match behavior for a dummy target. Missing ephemerides should
+        # stay empty; the scheduler must not silently use placeholder values.
         r2 = client.get("/api/ephemeris/target-info?target=test_star")
         assert r2.status_code == 200
         res = r2.json()
@@ -1832,9 +1833,10 @@ class TestRoutes:
         assert "toi_ephemeris" in res
         assert "datasets" in res
         assert res["coordinates"] is None
-        assert res["reference_ephemeris"] == {"b": {"t0": 2450000.0, "period": 1.0}}
-        assert res["nasa_ephemeris"] == {"b": {"t0": 2450000.0, "period": 1.0}}
-        assert res["toi_ephemeris"] == {"b": {"t0": 2450000.0, "period": 1.0}}
+        assert res["planets"] == []
+        assert res["reference_ephemeris"] == {}
+        assert res["nasa_ephemeris"] == {}
+        assert res["toi_ephemeris"] == {}
 
         # Test local confirmed planet query (TOI-1136)
         r3 = client.get("/api/ephemeris/target-info?target=TOI-1136")

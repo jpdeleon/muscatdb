@@ -224,6 +224,25 @@ def test_lco_required_fields_are_supplied_by_build_params():
     assert "parseCoords()" in build_params, "buildParams must derive ra/dec from parseCoords()"
 
 
+def test_lco_submit_confirmation_uses_message_modal():
+    """Live LCO submission must use the styled app modal, not a browser popup."""
+    base = _read_template("base.html")
+    html = _read_template("lco_schedule.html")
+    assert "showConfirmModal" in base
+    assert "showConfirmModal(" in html
+    assert "window.confirm(" not in html
+
+
+def test_no_native_browser_popups_in_templates_or_static_js():
+    """Use the styled message modal instead of browser alert/confirm/prompt."""
+    offenders = []
+    for path in list((SRC / "templates").glob("*.html")) + list((SRC / "static").rglob("*.js")):
+        text = path.read_text()
+        for match in re.finditer(r"\b(?:window\.)?(?:alert|confirm|prompt)\s*\(", text):
+            offenders.append(f"{path.relative_to(SRC)}:{text[:match.start()].count(chr(10)) + 1}")
+    assert not offenders, "native browser popup calls found: " + ", ".join(offenders)
+
+
 # --------------------------------------------------------------------------- #
 # Photometry backend consumption: every collected key is used in photometry.py
 # --------------------------------------------------------------------------- #
@@ -458,7 +477,7 @@ class TestBackendEndpoints:
         body = _py_function_src(web, "api_fov_optimize")
         for key in ("instrument", "target", "ra", "dec", "margin_arcsec",
                     "comp_margin_arcsec", "mag_limit", "mag_min", "mag_max",
-                    "mag_delta", "allow_rotation", "sinistro_mode"):
+                    "mag_delta", "avoid_mag", "allow_rotation", "sinistro_mode"):
             assert f'"{key}"' in body, f"api_fov_optimize ignores '{key}'"
 
 

@@ -115,6 +115,10 @@
           <label for="fov-mag-delta" title="Keep comps within this delta magnitude of the target (target G ± delta).">Delta Gmag</label>
           <input id="fov-mag-delta" type="number" step="any" value="3">
         </div>
+        <div class="fov-field">
+          <label for="fov-avoid-mag" title="Reject any pointing whose footprint contains a star brighter than this Gmag (saturation, bleeding, scattered light). The science target is exempt. Leave empty to disable.">Avoid brighter than (Gmag)</label>
+          <input id="fov-avoid-mag" type="number" step="any" placeholder="(off)">
+        </div>
       </div>
       <div style="margin-top: 0.7rem; display: flex; align-items: center; gap: 0.6rem;">
         <input id="fov-allow-rotation" type="checkbox" checked style="width: 1.1rem; height: 1.1rem; cursor: pointer;">
@@ -162,6 +166,7 @@
       <div class="fov-legend">
         <span><span class="swatch" style="background:#ff5470;"></span> Target</span>
         <span><span class="swatch" style="background:#45d6b5;"></span> Comparison stars (size ∝ usefulness)</span>
+        <span><span class="swatch" style="background:#f5a623;"></span> Avoided stars (too bright)</span>
         <span><span class="swatch" style="background:#6c8cff; border-radius:2px;"></span> Optimized footprint</span>
       </div>
       <div class="fov-note">
@@ -184,6 +189,7 @@
   let aladin = null;
   let footprintOverlay = null;
   let compCatalog = null;
+  let avoidCatalog = null;
   let targetCatalog = null;
   let lastResult = null;
   let observableRanges = {};
@@ -205,8 +211,10 @@
     aladin.addOverlay(highlightOverlay);
     targetCatalog = A.catalog({ name: 'Target', shape: 'cross', sourceSize: 18, color: '#ff5470' });
     compCatalog = A.catalog({ name: 'Comparisons', shape: 'circle', sourceSize: 12, color: '#45d6b5' });
+    avoidCatalog = A.catalog({ name: 'Avoided (too bright)', shape: 'triangle', sourceSize: 16, color: '#f5a623' });
     aladin.addCatalog(targetCatalog);
     aladin.addCatalog(compCatalog);
+    aladin.addCatalog(avoidCatalog);
   });
 
   function setMsg(text, kind) {
@@ -230,9 +238,13 @@
     $('r-n').textContent = result.n_comps;
     $('r-tg').textContent = (result.target_gmag === null || result.target_gmag === undefined)
       ? '—' : result.target_gmag.toFixed(2);
-    $('r-note').textContent =
+    let note =
       `Field ${result.fov_arcsec ? (result.fov_arcsec/60).toFixed(1) : '?'}′ on a side · `
       + `weighted comp signal ${result.total_weight} · catalog ${result.catalog}.`;
+    if (result.avoid_mag !== null && result.avoid_mag !== undefined) {
+      note += ` Steered around ${result.n_avoided} star(s) brighter than Gmag ${Number(result.avoid_mag).toFixed(1)}.`;
+    }
+    $('r-note').textContent = note;
     $('fov-results').style.display = '';
 
     // --- comparison table ---
@@ -269,6 +281,7 @@
     footprintOverlay.removeAll();
     targetCatalog.removeAll();
     compCatalog.removeAll();
+    if (avoidCatalog) avoidCatalog.removeAll();
 
     // FOV polygon (closed) at optimized pointing + PA.
     if (Array.isArray(result.footprint) && result.footprint.length) {
@@ -294,6 +307,14 @@
       })
     );
     if (compSources.length) compCatalog.addSources(compSources);
+
+    // Too-bright stars the field was steered around.
+    if (avoidCatalog) {
+      const avoidSources = (result.avoided || []).map((s) =>
+        A.source(s.ra, s.dec, { G: s.gmag.toFixed(2), 'sep ″': s.sep_arcsec })
+      );
+      if (avoidSources.length) avoidCatalog.addSources(avoidSources);
+    }
 
     recenter(result);
   }
@@ -353,6 +374,7 @@
       magMin: magMin,
       magMax: magMax,
       magDelta: $('fov-mag-delta').value,
+      avoidMag: $('fov-avoid-mag').value.trim(),
       allowRotation: $('fov-allow-rotation').checked,
     };
   }
@@ -378,6 +400,7 @@
       $('fov-mag-range').value = p.magMin + ', ' + p.magMax;
     }
     if (p.magDelta !== undefined) $('fov-mag-delta').value = p.magDelta;
+    if (p.avoidMag !== undefined) $('fov-avoid-mag').value = p.avoidMag;
 
     if (p.allowRotation !== undefined) $('fov-allow-rotation').checked = p.allowRotation;
     updateReadoutModeOptions($('fov-inst').value, p.readoutMode);
@@ -455,6 +478,7 @@
     if (p.magMode) sp.set('magmode', p.magMode);
     if (p.magRange && p.magRange !== '10, 18' && p.magRange !== '10,18') sp.set('magrange', p.magRange);
     if (p.magDelta && p.magDelta !== '3') sp.set('magdelta', p.magDelta);
+    if (p.avoidMag) sp.set('avoidmag', p.avoidMag);
     if (!p.allowRotation) sp.set('fixpa', '1');
     const qs = sp.toString();
     const url = qs ? '/fov?' + qs : '/fov';
@@ -496,6 +520,7 @@
       magMode: sp.get('magmode') || (stored?.magMode || 'absolute'),
       magRange: magRange,
       magDelta: sp.get('magdelta') || (stored?.magDelta || '3'),
+      avoidMag: sp.get('avoidmag') || (stored?.avoidMag || ''),
       allowRotation: !sp.has('fixpa') && (stored?.allowRotation !== false),
     };
     setParams(p);
@@ -529,6 +554,7 @@
           mag_min: params.magMode === 'absolute' ? (parseFloat(params.magMin) || 0) : null,
           mag_max: params.magMode === 'absolute' ? (parseFloat(params.magMax) || 18) : null,
           mag_delta: params.magMode === 'relative' ? (parseFloat(params.magDelta) || 3) : null,
+          avoid_mag: params.avoidMag !== '' ? parseFloat(params.avoidMag) : null,
           allow_rotation: params.allowRotation,
         }),
       });
@@ -595,6 +621,7 @@
     if (params.magMode) sp.set('magmode', params.magMode);
     if (params.magRange && params.magRange !== '10, 18' && params.magRange !== '10,18') sp.set('magrange', params.magRange);
     if (params.magDelta && params.magDelta !== '3') sp.set('magdelta', params.magDelta);
+    if (params.avoidMag) sp.set('avoidmag', params.avoidMag);
     if (!params.allowRotation) sp.set('fixpa', '1');
     const url = window.location.origin + '/fov' + (sp.toString() ? '?' + sp.toString() : '');
     navigator.clipboard.writeText(url).then(() => {

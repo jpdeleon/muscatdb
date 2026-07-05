@@ -49,6 +49,23 @@ h2 { font-size: 1.15rem; font-weight: 500; margin-bottom: 1rem; color: var(--tex
 .mono { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.8rem; }
 .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
 
+/* ---------- Messages ---------- */
+.lco-msg {
+  font-size: 0.82rem;
+  margin-top: 0.5rem;
+  min-height: 1em;
+  color: var(--text-dim);
+}
+.lco-msg.err { color: var(--red); }
+.lco-msg.ok { color: var(--green); }
+.lco-msg a {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.lco-msg a:hover { color: var(--accent); }
+
 /* ---------- Navigation ---------- */
 nav {
   position: sticky;
@@ -728,6 +745,23 @@ th.drag-over-right {
   max-width: 400px;
   width: 90%;
   box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+}
+.modal-title {
+  margin-bottom: 0.75rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.modal-text {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  margin-bottom: 1.5rem;
+  line-height: 1.5;
+}
+.modal-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 /* ---------- LCO Schedule page ---------- */
