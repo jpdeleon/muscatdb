@@ -634,14 +634,59 @@
     });
   }
 
+  // ── URL slug encoding/decoding for bookmarkable filters ──────────────────
+  function encodeState(state) {
+    const parts = [];
+    if (state.q) parts.push('q=' + encodeURIComponent(state.q));
+    if (state.planet && state.planet.length) parts.push('planet=' + state.planet.join(','));
+    if (state.star && state.star.length) parts.push('star=' + state.star.join(','));
+    if (state.disp && state.disp.length) parts.push('disp=' + state.disp.join(','));
+    if (state.multi && state.multi.length) parts.push('multi=' + state.multi.join(','));
+    if (state.rot && state.rot.length) parts.push('rot=' + state.rot.join(','));
+    if (state.indb && state.indb.length) parts.push('indb=' + state.indb.join(','));
+    if (state.sort && state.sort.key) parts.push('sort=' + state.sort.key + ':' + state.sort.dir);
+    if (state.plot) {
+      if (state.plot.x) parts.push('x=' + state.plot.x);
+      if (state.plot.y) parts.push('y=' + state.plot.y);
+      if (state.plot.color) parts.push('color=' + state.plot.color);
+      if (state.plot.logx) parts.push('logx=1');
+      if (state.plot.logy) parts.push('logy=1');
+      if (state.plot.errx) parts.push('errx=1');
+      if (state.plot.erry) parts.push('erry=1');
+      if (state.plot.size && state.plot.size !== '6') parts.push('size=' + state.plot.size);
+    }
+    return parts.length ? '#' + parts.join('&') : '';
+  }
+  function decodeSlug() {
+    const hash = window.location.hash.slice(1);
+    if (!hash) return null;
+    const state = {};
+    const params = new URLSearchParams(hash);
+    if (params.has('q')) searchEl.value = decodeURIComponent(params.get('q'));
+    ['planet', 'star', 'disp', 'multi', 'rot', 'indb'].forEach(k => {
+      if (params.has(k)) state[k] = params.get(k).split(',');
+    });
+    if (params.has('sort')) {
+      const [k, d] = params.get('sort').split(':');
+      state.sort = { key: k, dir: parseInt(d) || 0 };
+    }
+    if (!state.plot) state.plot = {};
+    if (params.has('x')) state.plot.x = params.get('x');
+    if (params.has('y')) state.plot.y = params.get('y');
+    if (params.has('color')) state.plot.color = params.get('color');
+    if (params.has('logx')) state.plot.logx = true;
+    if (params.has('logy')) state.plot.logy = true;
+    if (params.has('errx')) state.plot.errx = true;
+    if (params.has('erry')) state.plot.erry = true;
+    if (params.has('size')) state.plot.size = params.get('size');
+    return Object.keys(state).length ? state : null;
+  }
+
   // ── persistence ────────────────────────────────────────────────────────────
   const LS = window.MuscatStorage;
   function saveState() {
-    if (!LS) return;
-    const cols = {};
-    colInputs.forEach(inp => { if (inp.value) cols[inp.dataset.col] = inp.value; });
-    LS.setJSON('toi:state', {
-      q: searchEl.value, cols,
+    const state = {
+      q: searchEl.value,
       planet: Array.from(selectedPlanet), star: Array.from(selectedStar),
       disp: Array.from(selectedDisp),
       multi: Array.from(selectedMulti),
@@ -651,11 +696,19 @@
       plot: { x: selX.value, y: selY.value, color: selColor.value,
               logx: logXEl.checked, logy: logYEl.checked,
               errx: errXEl.checked, erry: errYEl.checked, size: sizeEl.value },
-    });
+    };
+    if (LS) {
+      const cols = {};
+      colInputs.forEach(inp => { if (inp.value) cols[inp.dataset.col] = inp.value; });
+      state.cols = cols;
+      LS.setJSON('toi:state', state);
+    }
+    // Update URL slug for bookmarking/sharing.
+    window.history.replaceState(null, '', window.location.pathname + encodeState(state));
   }
   function restoreState() {
-    if (!LS) return;
-    const s = LS.getJSON('toi:state', null);
+    // Priority: URL slug > localStorage > defaults.
+    let s = decodeSlug() || (LS ? LS.getJSON('toi:state', null) : null);
     if (!s) return;
     if (s.q) searchEl.value = s.q;
     if (s.cols) colInputs.forEach(inp => { if (s.cols[inp.dataset.col]) inp.value = s.cols[inp.dataset.col]; });
