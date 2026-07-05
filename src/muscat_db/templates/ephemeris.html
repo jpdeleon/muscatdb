@@ -357,7 +357,8 @@
     window.history.replaceState(null, '', url);
     const lcoLink = document.getElementById('lco-schedule-link');
     if (lcoLink) {
-      lcoLink.href = `/lco/schedule?view=${encodeURIComponent(slug)}`;
+      const firstTarget = loadedTargets.slice().sort()[0];
+      lcoLink.href = `/lco/schedule?target=${encodeURIComponent(firstTarget)}&view=${encodeURIComponent(slug)}`;
       lcoLink.style.display = 'inline-flex';
     }
   }
@@ -569,7 +570,7 @@
       .then(r => r.json())
       .then(res => {
         if (!res.ok) {
-          alert('Error: ' + (res.error || 'Failed to retrieve target info'));
+          showMessageModal('Error', res.error || 'Failed to retrieve target info');
           return;
         }
         
@@ -588,7 +589,7 @@
       })
       .catch(e => {
         console.error(e);
-        alert('Network error loading target data.');
+        showMessageModal('Network Error', 'Error loading target data.');
       })
       .finally(() => {
         // Trigger base.html loader completion
@@ -626,7 +627,7 @@
       })
       .catch(e => {
         console.error(e);
-        alert('Error loading target data.');
+        showMessageModal('Error', 'Error loading target data.');
       })
       .finally(() => {
         if (window.done) window.done();
@@ -1155,7 +1156,7 @@
       const t0 = parseFloat(card.querySelector('.planet-t0').value);
       const period = parseFloat(card.querySelector('.planet-period').value);
       if (isNaN(t0) || isNaN(period) || period <= 0) {
-        alert(`Please enter valid orbital parameters for planet ${pl.toLowerCase()}`);
+        showMessageModal('Invalid orbital parameters', `Please enter valid orbital parameters for planet ${pl.toLowerCase()}`);
         valid = false;
         return;
       }
@@ -1203,7 +1204,7 @@
     .then(res => {
       if (requestSeq !== computeFitRequestSeq) return;
       if (!res.ok) {
-        alert('Fit calculation failed: ' + (res.error || 'Unknown error'));
+        showMessageModal('Fit calculation failed', res.error || 'Unknown error');
         return;
       }
       fitResults = res.results;
@@ -1216,7 +1217,7 @@
     .catch(e => {
       if (requestSeq !== computeFitRequestSeq) return;
       console.error(e);
-      alert('Error calculating ephemeris fit.');
+      showMessageModal('Error', 'Error calculating ephemeris fit.');
     })
     .finally(() => {
       if (requestSeq === computeFitRequestSeq) {
@@ -1673,7 +1674,7 @@
   function prepareOCSummaryTXTLink(event) {
     if (!fitResults) {
       event.preventDefault();
-      alert('No O-C plot results are available yet.');
+      showMessageModal('No results', 'No O-C plot results are available yet.');
       return;
     }
 

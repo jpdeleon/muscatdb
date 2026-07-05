@@ -335,18 +335,28 @@ def optimize_pointing(
     offset_steps: int = DEFAULT_OFFSET_STEPS,
     pa_step_deg: float = DEFAULT_PA_STEP_DEG,
     comp_margin: float | None = None,
+    avoid_east: np.ndarray | None = None,
+    avoid_north: np.ndarray | None = None,
 ) -> FovSolution:
     """Grid-search the field center offset and PA maximizing in-field weight.
 
     The target is at the tangent-plane origin and must stay inside the field by
     at least ``margin``. Comparisons are counted if they fall inside the field
     by at least ``comp_margin`` (defaults to ``margin`` if not specified).
+
+    If ``avoid_east``/``avoid_north`` are given (tangent-plane positions of stars
+    too bright to tolerate in the field), any pointing whose footprint contains
+    one of them is rejected. When every candidate pointing is rejected the
+    returned solution keeps its sentinel ``score`` of ``-1.0`` so the caller can
+    report infeasibility.
     """
     if half <= margin:
         msg = f"margin ({margin}) must be smaller than the field half-width ({half})"
         raise ValueError(msg)
 
     comp_margin = comp_margin if comp_margin is not None else margin
+
+    has_avoid = avoid_east is not None and len(avoid_east) > 0
 
     reach = half - margin
     offs = np.linspace(-reach, reach, offset_steps)
@@ -360,6 +370,12 @@ def optimize_pointing(
                 if not inside_square(
                     np.array([0.0]), np.array([0.0]), cx, cy, half - margin, pa
                 )[0]:
+                    continue
+                # Reject pointings that admit a too-bright star anywhere in the
+                # (full) footprint.
+                if has_avoid and inside_square(
+                    avoid_east, avoid_north, cx, cy, half, pa
+                ).any():
                     continue
                 # Comparisons inside by at least comp_margin.
                 mask = inside_square(east, north, cx, cy, half - comp_margin, pa)
@@ -470,6 +486,9 @@ class FovResult:
     n_comps: int = 0
     total_weight: float = 0.0
     catalog: str = "Gaia DR3"
+    avoid_mag: float | None = None
+    n_avoided: int = 0
+    avoided: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = self.__dict__.copy()
@@ -507,6 +526,7 @@ def optimize(
     min_mag: float = 0.0,
     max_mag: float = 18.0,
     mag_delta: float | None = None,
+    avoid_mag: float | None = None,
 ) -> FovResult:
     """Resolve a target, pull Gaia neighbours, and optimize pointing + PA.
 
@@ -521,11 +541,17 @@ def optimize(
 
     For Sinistro, ``sinistro_mode`` selects "full_frame" (26'x26') or
     "central_2k_2x2" (13'x13', default).
+
+    If ``avoid_mag`` is given, any pointing whose footprint contains a star
+    brighter than ``avoid_mag`` (Gmag) is rejected; the science target itself is
+    exempt. If no pointing can avoid every such star, the result carries an
+    error explaining the infeasibility.
     """
     if mag_limit != 18.0 and max_mag == 18.0:
         max_mag = mag_limit
 
     res = FovResult(ok=False, instrument=instrument, target=target)
+    res.avoid_mag = avoid_mag
 
     # --- field size ---
     try:
@@ -562,6 +588,11 @@ def optimize(
     if mag_delta is not None:
         query_min_mag = 0.0
         query_max_mag = max(max_mag, 18.0)
+    if avoid_mag is not None:
+        # Pull the bright stars we must steer around, even when they sit above
+        # the comparison magnitude range.
+        query_min_mag = 0.0
+        query_max_mag = max(query_max_mag, avoid_mag)
 
     stars = query_gaia_field(ra, dec, radius, min_mag=query_min_mag, max_mag=query_max_mag)
     if stars.error:
@@ -603,6 +634,17 @@ def optimize(
     weights = np.where(weights >= WEIGHT_FLOOR, weights, 0.0)
     weights = _blend_penalty(east, north, stars.gmag, weights)
 
+    # --- too-bright stars to steer the field away from (target exempt) ---
+    avoid_east = avoid_north = None
+    avoid_idx = np.array([], dtype=int)
+    if avoid_mag is not None:
+        avoid_mask = np.isfinite(stars.gmag) & (stars.gmag < avoid_mag)
+        if t_idx is not None:
+            avoid_mask[t_idx] = False
+        avoid_idx = np.where(avoid_mask)[0]
+        avoid_east = east[avoid_mask]
+        avoid_north = north[avoid_mask]
+
     # --- search ---
     try:
         sol = optimize_pointing(
@@ -610,9 +652,23 @@ def optimize(
             margin=margin_arcsec,
             pa_step_deg=pa_step_deg or DEFAULT_PA_STEP_DEG,
             comp_margin=comp_margin_arcsec,
+            avoid_east=avoid_east,
+            avoid_north=avoid_north,
         )
     except ValueError as exc:
         res.error = str(exc)
+        return res
+
+    # A negative score means no candidate pointing satisfied the constraints.
+    if sol.score < 0:
+        if avoid_mag is not None and len(avoid_idx):
+            res.error = (
+                f"No pointing keeps the target in the field while avoiding all "
+                f"{len(avoid_idx)} star(s) brighter than Gmag {avoid_mag:g}. "
+                f"Try a fainter 'avoid brighter than' limit."
+            )
+        else:
+            res.error = "No valid pointing found for the given constraints."
         return res
 
     res.pa_deg = sol.pa_deg
@@ -645,5 +701,21 @@ def optimize(
     res.comps = comps
     res.n_comps = len(comps)
     res.total_weight = round(float(weights[in_field].sum()), 2)
+
+    # --- too-bright stars the field was steered around (for display) ---
+    avoided = []
+    for i in avoid_idx:
+        avoided.append(
+            {
+                "ra": float(stars.ra[i]),
+                "dec": float(stars.dec[i]),
+                "gmag": float(stars.gmag[i]),
+                "sep_arcsec": round(float(math.hypot(east[i], north[i])), 1),
+            }
+        )
+    avoided.sort(key=lambda s: s["gmag"])
+    res.avoided = avoided
+    res.n_avoided = len(avoided)
+
     res.ok = True
     return res

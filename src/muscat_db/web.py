@@ -2981,35 +2981,21 @@ def _query_target_planets_catalog(target: str) -> dict:
                     for row in reader:
                         name_val = (row.get("name") or "").strip()
                         if name_val and _normalize_target_name(name_val) == target_norm:
-                            # Parse planet period
-                            period_val = 1.0
-                            if row.get("period"):
-                                try: period_val = float(row["period"])
-                                except ValueError: pass
-                            elif row.get("period_sg1"):
-                                try: period_val = float(row["period_sg1"])
-                                except ValueError: pass
-                            
-                            t0_val = 2450000.0
-                            if row.get("t0"):
-                                try: t0_val = float(row["t0"])
-                                except ValueError: pass
-                            elif row.get("t0_sg1"):
-                                try: t0_val = float(row["t0_sg1"])
-                                except ValueError: pass
-                            
-                            results["b"] = {
-                                "t0": t0_val,
-                                "period": period_val
-                            }
+                            period_raw = row.get("period") or row.get("period_sg1")
+                            t0_raw = row.get("t0") or row.get("t0_sg1")
+                            if not period_raw or not t0_raw:
+                                break
+                            try:
+                                results["b"] = {
+                                    "t0": float(t0_raw),
+                                    "period": float(period_raw),
+                                }
+                            except ValueError:
+                                pass
                             break
         except Exception:
             logger.debug("failed legacy catalog fallback for %s", target, exc_info=True)
 
-    # Final fallback if absolutely nothing was found
-    if not results:
-        results["b"] = {"t0": 2450000.0, "period": 1.0}
-        
     _CATALOG_CACHE[target_clean] = results
     return results
 
@@ -3099,6 +3085,66 @@ def _get_run_fitted_params(inst: str, date: str, target: str, run_id: str | None
     except Exception:
         logger.debug("failed to read fitted transit params for %s/%s/%s/%s", inst, date, target, run_id, exc_info=True)
     return fitted
+
+
+@app.get("/api/ads/config", response_class=JSONResponse)
+def api_ads_config():
+    """Report whether the ADS API token is configured. No secrets."""
+    import os
+    token = os.environ.get("ADS_API_TOKEN") or os.environ.get("ADS_DEV_KEY") or os.environ.get("ADS_TOKEN")
+    return JSONResponse({
+        "ok": True,
+        "token_configured": token is not None and token.strip() != ""
+    })
+
+
+@app.get("/api/target/publications", response_class=JSONResponse)
+def api_target_publications(q: str):
+    import os
+    import urllib.request
+    import urllib.parse
+    import json
+    
+    q = (q or "").strip()
+    if not q:
+        return JSONResponse({"ok": False, "error": "Query parameter q is required"}, status_code=400)
+        
+    token = os.environ.get("ADS_API_TOKEN") or os.environ.get("ADS_DEV_KEY") or os.environ.get("ADS_TOKEN")
+    if not token:
+        return JSONResponse({
+            "ok": False,
+            "error": "ADS_API_TOKEN is not configured. Please add it to your .env file.",
+            "token_missing": True
+        }, status_code=400)
+        
+    params = {
+        "q": q,
+        "fq": "collection:astronomy",
+        "fl": "bibcode,title,author,pubdate,pub,citation_count",
+        "sort": "date desc",
+        "rows": 20
+    }
+    url = "https://api.adsabs.harvard.edu/v1/search/query?" + urllib.parse.urlencode(params)
+    
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "MuSCAT-db/0.1.0"
+    })
+    
+    try:
+        with urllib.request.urlopen(req, timeout=10.0) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            docs = data.get("response", {}).get("docs", [])
+            return JSONResponse({"ok": True, "papers": docs})
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = e.read().decode("utf-8")
+            err_msg = json.loads(err_body).get("error", {}).get("message", str(e))
+        except Exception:
+            err_msg = str(e)
+        return JSONResponse({"ok": False, "error": f"ADS API returned error: {err_msg}"}, status_code=e.code)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"Failed to query ADS: {str(e)}"}, status_code=500)
 
 
 @app.get("/api/ephemeris/targets", response_class=JSONResponse)
@@ -3206,7 +3252,7 @@ def api_ephemeris_target_info(target: str):
         for pl in planets_fitted:
             seen_planets.add(pl)
             if pl not in planets_ephem:
-                planets_ephem[pl] = {"t0": 2450000.0, "period": 1.0}
+                planets_ephem[pl] = {}
             
         # Override t0 and duration with the run's Fitted Parameters Summary.
         fitted = _get_run_fitted_params(inst, date, j["target"], run_id)
@@ -3237,12 +3283,9 @@ def api_ephemeris_target_info(target: str):
         
     # Ensure all seen planets are initialized in all ephemerides
     for pl in seen_planets:
-        if pl not in ref_ephem:
-            ref_ephem[pl] = {"t0": 2450000.0, "period": 1.0}
-        if pl not in nasa_ephem:
-            nasa_ephem[pl] = {"t0": 2450000.0, "period": 1.0}
-        if pl not in toi_ephem:
-            toi_ephem[pl] = {"t0": 2450000.0, "period": 1.0}
+        ref_ephem.setdefault(pl, {})
+        nasa_ephem.setdefault(pl, {})
+        toi_ephem.setdefault(pl, {})
             
     planets_sorted = sorted(list(seen_planets))
     

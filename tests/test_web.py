@@ -1362,3 +1362,63 @@ def test_transit_fit_download_all_endpoints(mock_db, monkeypatch, tmp_path):
     with zipfile.ZipFile(io.BytesIO(r.content)) as z:
         namelist = z.namelist()
         assert "fit.yaml" in namelist
+
+
+def test_api_target_publications_token_missing(monkeypatch):
+    monkeypatch.delenv("ADS_API_TOKEN", raising=False)
+    monkeypatch.delenv("ADS_DEV_KEY", raising=False)
+    monkeypatch.delenv("ADS_TOKEN", raising=False)
+    
+    r = TestClient(app).get("/api/target/publications", params={"q": "WASP-12"})
+    assert r.status_code == 400
+    assert r.json()["token_missing"] is True
+    assert "not configured" in r.json()["error"]
+
+
+def test_api_target_publications_success(monkeypatch, mocker):
+    monkeypatch.setenv("ADS_API_TOKEN", "fake_token")
+    
+    mock_response = mocker.MagicMock()
+    mock_response.__enter__.return_value = mock_response
+    mock_response.read.return_value = b'{"response": {"docs": [{"bibcode": "2020ApJ...123..456A", "title": ["A Great Paper"], "author": ["Astronomer, A."], "pubdate": "2020-01-00", "pub": "ApJ", "citation_count": 10}]}}'
+    mock_urlopen = mocker.patch("urllib.request.urlopen", return_value=mock_response)
+    
+    r = TestClient(app).get("/api/target/publications", params={"q": "WASP-12"})
+    assert r.status_code == 200
+    
+    called_req = mock_urlopen.call_args[0][0]
+    called_url = called_req.get_full_url() if hasattr(called_req, "get_full_url") else str(called_req)
+    assert "fq=collection%3Aastronomy" in called_url
+    assert "q=WASP-12" in called_url
+
+    data = r.json()
+    assert data["ok"] is True
+    assert len(data["papers"]) == 1
+    assert data["papers"][0]["bibcode"] == "2020ApJ...123..456A"
+    assert data["papers"][0]["title"] == ["A Great Paper"]
+    assert data["papers"][0]["author"] == ["Astronomer, A."]
+
+
+
+def test_api_target_publications_empty_query():
+    r = TestClient(app).get("/api/target/publications", params={"q": ""})
+    assert r.status_code == 400
+    assert r.json()["ok"] is False
+
+
+def test_api_ads_config_configured(monkeypatch):
+    monkeypatch.setenv("ADS_API_TOKEN", "fake_token")
+    r = TestClient(app).get("/api/ads/config")
+    assert r.status_code == 200
+    assert r.json()["token_configured"] is True
+
+
+def test_api_ads_config_not_configured(monkeypatch):
+    monkeypatch.delenv("ADS_API_TOKEN", raising=False)
+    monkeypatch.delenv("ADS_DEV_KEY", raising=False)
+    monkeypatch.delenv("ADS_TOKEN", raising=False)
+    r = TestClient(app).get("/api/ads/config")
+    assert r.status_code == 200
+    assert r.json()["token_configured"] is False
+
+

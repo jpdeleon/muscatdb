@@ -149,6 +149,85 @@ def test_optimize_pointing_rejects_oversized_margin():
         )
 
 
+def test_optimize_pointing_avoids_bright_star_by_shifting():
+    # A useful comp cluster to the east; a forbidden bright star to the west
+    # that is far enough that the field can exclude it by pointing east.
+    east = np.array([120.0, 130.0])
+    north = np.array([0.0, 10.0])
+    weights = np.array([1.0, 1.0])
+    avoid_east = np.array([-150.0])
+    avoid_north = np.array([0.0])
+    sol = fov.optimize_pointing(
+        east, north, weights, half=100.0, margin=20.0,
+        avoid_east=avoid_east, avoid_north=avoid_north,
+    )
+    assert sol.score >= 0  # a feasible pointing exists
+    # The forbidden star must lie outside the chosen footprint.
+    assert not fov.inside_square(
+        avoid_east, avoid_north, sol.center_east, sol.center_north,
+        sol.half_arcsec, sol.pa_deg,
+    ).any()
+
+
+def test_optimize_pointing_infeasible_when_bright_star_unavoidable():
+    # A bright star sitting on the target (origin) can never be excluded while
+    # keeping the target in the field: no feasible pointing → sentinel score.
+    east = np.array([50.0])
+    north = np.array([0.0])
+    weights = np.array([1.0])
+    sol = fov.optimize_pointing(
+        east, north, weights, half=180.0, margin=30.0,
+        avoid_east=np.array([0.0]), avoid_north=np.array([0.0]),
+    )
+    assert sol.score < 0
+
+
+def test_optimize_avoid_mag_excludes_bright_star(monkeypatch):
+    # Target at index 0 (Gmag 12). A very bright star (Gmag 7) sits far to one
+    # side; with avoid_mag=9 the optimizer must keep it out of the footprint.
+    mock_stars = fov.StarField(
+        ra=np.array([10.0, 10.03, 9.94]),
+        dec=np.array([-20.0, -20.0, -20.0]),
+        gmag=np.array([12.0, 12.5, 7.0]),  # index 2 is the bright star to avoid
+        bp_rp=np.array([0.8, 0.8, 0.8]),
+        source="mock",
+    )
+    monkeypatch.setattr(fov, "query_gaia_field", lambda *a, **k: mock_stars)
+
+    res = fov.optimize("muscat3", ra=10.0, dec=-20.0, avoid_mag=9.0)
+    assert res.ok
+    assert res.avoid_mag == 9.0
+    assert res.n_avoided == 1
+    # The bright star is reported as avoided and stays out of the comp list.
+    assert res.avoided and res.avoided[0]["gmag"] == 7.0
+    assert 7.0 not in [c["gmag"] for c in res.comps]
+    # And it is geometrically outside the optimized footprint.
+    half = res.fov_half_arcsec
+    ae, an = fov.radec_to_tangent(
+        np.array([res.avoided[0]["ra"]]), np.array([res.avoided[0]["dec"]]),
+        res.ra, res.dec,
+    )
+    assert not fov.inside_square(
+        ae, an, res.offset_east_arcsec, res.offset_north_arcsec, half, res.pa_deg,
+    ).any()
+
+
+def test_optimize_avoid_mag_infeasible_returns_error(monkeypatch):
+    # A bright star right on the target cannot be avoided → error, not crash.
+    mock_stars = fov.StarField(
+        ra=np.array([10.0, 10.0006]),  # ~2" apart, both effectively on target
+        dec=np.array([-20.0, -20.0]),
+        gmag=np.array([12.0, 6.0]),
+        bp_rp=np.array([0.8, 0.8]),
+        source="mock",
+    )
+    monkeypatch.setattr(fov, "query_gaia_field", lambda *a, **k: mock_stars)
+
+    res = fov.optimize("muscat3", ra=10.0, dec=-20.0, avoid_mag=9.0)
+    assert not res.ok
+    assert res.error and "brighter than" in res.error
+
+
 def test_optimize_magnitude_filtering(monkeypatch):
     # Mock query_gaia_field to return a specific set of stars
     mock_stars = fov.StarField(
