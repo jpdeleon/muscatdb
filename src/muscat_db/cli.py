@@ -5,6 +5,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -390,11 +391,29 @@ def _htpasswd_path() -> Path:
     return Path("data/.htpasswd-muscatdb")
 
 
+def _nginx_group() -> str:
+    """Group allowed to read the htpasswd file (nginx's worker-process group).
+
+    Debian/Ubuntu's nginx package (installed by deploy/setup-nginx.sh) runs
+    workers as www-data by default; override via MUSCAT_NGINX_GROUP on
+    distros where nginx uses a different group (e.g. "nginx" on RHEL-based
+    systems).
+    """
+    return os.environ.get("MUSCAT_NGINX_GROUP", "www-data")
+
+
 def _openssl_apr1(password: str) -> str:
-    """Hash *password* with Apache MD5 (``$apr1$``) via ``openssl passwd``."""
+    """Hash *password* with Apache MD5 (``$apr1$``) via ``openssl passwd``.
+
+    The password is piped over stdin rather than passed as an argv element:
+    argv is visible to every local account via ``ps``/``/proc/<pid>/cmdline``
+    for the life of the subprocess, which would leak the plaintext password
+    on a shared server regardless of whether it came from an interactive
+    prompt or ``--password``.
+    """
     result = subprocess.run(
-        ["openssl", "passwd", "-apr1", password],
-        capture_output=True, text=True, check=True,
+        ["openssl", "passwd", "-apr1", "-stdin"],
+        input=password, capture_output=True, text=True, check=True,
     )
     return result.stdout.strip()
 
@@ -417,7 +436,13 @@ def _read_htpasswd() -> dict[str, str]:
 
 
 def _write_htpasswd(entries: dict[str, str]) -> None:
-    """Atomically write the htpasswd file."""
+    """Atomically write the htpasswd file, readable only by root and nginx.
+
+    The file holds password hashes for every user, so it must not be
+    world-readable on a shared server: 0640 + group ownership of nginx's
+    worker-process group (root:www-data by default) lets nginx authenticate
+    requests while blocking every other local account from reading it.
+    """
     ht_path = _htpasswd_path()
     ht_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = ht_path.with_suffix(".tmp")
@@ -427,9 +452,15 @@ def _write_htpasswd(entries: dict[str, str]) -> None:
         + "\n"
     )
     try:
-        tmp.chmod(0o644)
+        tmp.chmod(0o640)
     except OSError:
         pass  # best-effort on non-Linux or permission-limited
+    try:
+        import grp
+        gid = grp.getgrnam(_nginx_group()).gr_gid
+        os.chown(tmp, -1, gid)
+    except (KeyError, OSError, ImportError):
+        pass  # group missing (dev mode) or caller lacks chown privilege
     tmp.rename(ht_path)  # atomic on same filesystem
 
 
@@ -447,11 +478,27 @@ def htpasswd_add(
     admin: bool = typer.Option(False, "--admin", help="Mark user as admin"),
     password: str | None = typer.Option(
         None, "--password",
-        help="Password (omit for interactive prompt). Use with care in scripts.",
+        help=(
+            "Password (omit for interactive prompt). AVOID in scripts: visible "
+            "to other local users via `ps`/`/proc` while running, and lands in "
+            "shell history. Use --password-stdin for scripting instead."
+        ),
+    ),
+    password_stdin: bool = typer.Option(
+        False, "--password-stdin",
+        help="Read the password as a single line from stdin (safe for scripting).",
     ),
 ):
     """Add or update a user in the nginx htpasswd file."""
-    if password is None:
+    if password_stdin:
+        if password is not None:
+            console.print("[red]Error: --password and --password-stdin are mutually exclusive[/]")
+            raise typer.Exit(1)
+        password = sys.stdin.readline().rstrip("\n")
+        if not password:
+            console.print("[red]Error: password cannot be empty[/]")
+            raise typer.Exit(1)
+    elif password is None:
         password = getpass.getpass(f"Password for {username}: ")
         confirm = getpass.getpass("Confirm password: ")
         if password != confirm:
