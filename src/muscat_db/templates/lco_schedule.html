@@ -147,7 +147,7 @@
     <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.5rem 1rem;">
       <div class="lco-field"><label for="sch-exp-mode">Exp mode</label>
         <select id="sch-exp-mode"><option value="SYNCHRONOUS">Sync</option><option value="ASYNCHRONOUS">Async</option></select></div>
-      <div class="lco-field"><label for="sch-readout">Readout mode</label><input id="sch-readout" type="text" value="MUSCAT_FAST" style="font-size: 0.8rem;"></div>
+      <div class="lco-field"><label for="sch-readout">Readout mode</label><select id="sch-readout" style="font-size: 0.8rem;"><option value="MUSCAT_FAST">MUSCAT_FAST</option><option value="MUSCAT_SLOW">MUSCAT_SLOW</option></select></div>
     </div>
     <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dim); margin-top: 0.6rem; margin-bottom: 0.4rem;">Narrowband filters:</div>
     <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap: 0.5rem 1rem;">
@@ -162,6 +162,7 @@
     <div class="lco-field"><label for="sch-ipp">IPP value</label><input id="sch-ipp" type="number" step="any" value="1.0"></div>
     <div class="lco-field"><label for="sch-type">Type</label>
       <select id="sch-type">
+        <option value="REPEAT_EXPOSE">REPEAT_EXPOSE</option>
         <option value="EXPOSE">EXPOSE</option>
       </select>
     </div>
@@ -1207,6 +1208,16 @@
 
   el('btn-dry-run').addEventListener('click', function () {
     if (!selectedWindows().length) { msg('msg-ipp', 'Generate and select at least one window first', 'err'); return; }
+    // Pre-check the request-level required fields so the user gets a specific
+    // message instead of the backend's generic "missing required parameters".
+    if (!val('sch-target')) { msg('msg-ipp', 'Enter a target', 'err'); return; }
+    var reqCoords = parseCoords();
+    if (reqCoords.ra === null || reqCoords.dec === null) {
+      msg('msg-ipp', 'Enter valid "RA, Dec (deg)" — resolve the target or type coordinates', 'err');
+      return;
+    }
+    if (!val('sch-proposal')) { msg('msg-ipp', 'Select a proposal', 'err'); return; }
+    if (!val('sch-name')) { msg('msg-ipp', 'Request name is empty — reselect a window to auto-fill it', 'err'); return; }
     var kind = val('sch-kind');
     if (kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4') {
       var hasExp = false;

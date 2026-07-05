@@ -101,6 +101,23 @@ def _py_function_src(text: str, def_name: str) -> str:
     return rest if m is None else rest[: m.start() + 1]
 
 
+def _control_ids(html: str, prefix: str) -> set[str]:
+    """Every form-control id starting with ``prefix`` (e.g. ``sch-``)."""
+    return set(
+        re.findall(
+            rf'<(?:input|select|textarea)\b[^>]*\bid="({re.escape(prefix)}[A-Za-z0-9_-]+)"',
+            html,
+        )
+    )
+
+
+def _js_string_array(html: str, name: str) -> set[str]:
+    """Quoted string entries of a ``var NAME = [ ... ];`` JS array literal."""
+    start = html.index(f"var {name} = ")
+    body = html[start : html.index("]", start) + 1]
+    return set(re.findall(r"'([^']+)'", body))
+
+
 def _mentions(field: str, region: str) -> bool:
     """True if ``field`` is referenced as a quoted token in ``region``.
 
@@ -166,6 +183,45 @@ def test_every_input_has_a_default(page, btn):
         f"{page}: inputs missing from the defaults listener: {sorted(missing)}. "
         f"If intentional, add to _DEFAULTS_EXCLUSIONS with a rationale."
     )
+
+
+# --------------------------------------------------------------------------- #
+# LCO schedule: inputs must be registered for persistence, and buildParams must
+# supply every field build_requestgroup requires.
+# --------------------------------------------------------------------------- #
+
+def test_lco_schedule_inputs_registered_for_persistence():
+    """Every sch-*/win-* control must be in TEXT_IDS/CHECK_IDS.
+
+    collectOptions/restoreOptions iterate those arrays, so an unregistered
+    input silently fails to persist or restore across navigation — the exact
+    failure that leaves required scheduling fields blank on a saved-view load.
+    """
+    html = _read_template("lco_schedule.html")
+    registered = _js_string_array(html, "TEXT_IDS") | _js_string_array(html, "CHECK_IDS")
+    controls = _control_ids(html, "sch-") | _control_ids(html, "win-")
+    # 'win-all' is a derived "select all windows" toggle, recomputed on every
+    # render from the row checkboxes; persisting it would be meaningless.
+    excluded = {"win-all"}
+    missing = controls - registered - excluded
+    assert not missing, (
+        f"lco_schedule.html inputs not registered in TEXT_IDS/CHECK_IDS "
+        f"(won't persist/restore): {sorted(missing)}"
+    )
+
+
+def test_lco_required_fields_are_supplied_by_build_params():
+    """build_requestgroup's required keys must all be produced by buildParams."""
+    html = _read_template("lco_schedule.html")
+    build_params = _function_body(html, "buildParams")
+    lco_src = (SRC / "lco.py").read_text()
+    # The required-field guard lists them as _REQUIRED_LABELS keys.
+    required = set(re.findall(r'"(name|proposal|target_name|ra|dec)":', lco_src))
+    assert {"name", "proposal", "target_name", "ra", "dec"} <= required
+    # ra/dec are assembled from parseCoords(); the rest are direct keys.
+    for key in ("name", "proposal", "target_name"):
+        assert f"{key}:" in build_params, f"buildParams never sets '{key}'"
+    assert "parseCoords()" in build_params, "buildParams must derive ra/dec from parseCoords()"
 
 
 # --------------------------------------------------------------------------- #
