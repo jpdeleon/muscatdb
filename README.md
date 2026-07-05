@@ -83,8 +83,16 @@ The feature is split into three workflows:
   instrument, reduction level, and date range, then download selected files 
   server-side.
 
-To enable LCO features, set `LCO_API_TOKEN` (your Observation Portal API 
-token—[generate one here](https://observe.lco.global/profile/)):
+For nginx deployments, each authenticated user should save their own LCO API
+token from [their LCO profile](https://observe.lco.global/accounts/profile) on
+the muscat-db `/settings` page. Per-user tokens are encrypted in SQLite, so the
+server must have a stable `MUSCAT_DB_SECRET`:
+
+```bash
+export MUSCAT_DB_SECRET="replace-with-a-long-random-secret"
+```
+
+The legacy server-wide fallback still works when no per-user token is saved:
 
 ```bash
 export LCO_API_TOKEN="your-token-here"

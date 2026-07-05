@@ -31,6 +31,13 @@ class EnvVar:
 # the code has no fallback (the feature is unavailable / errors when it is needed).
 ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("MUSCAT_DB_PATH", "muscat.db", "SQLite database path"),
+    EnvVar(
+        "MUSCAT_DB_SECRET",
+        None,
+        "Server secret used to encrypt per-user settings such as LCO API tokens. "
+        "Keep stable across restarts; changing it makes stored tokens unreadable.",
+        secret=True,
+    ),
     EnvVar("MUSCAT_DATA_DIR", None, "Raw FITS data base directory"),
     EnvVar("MUSCAT_OBSLOG_DIR", "/ut3/muscat/obslog", "Shared obslog CSV base (muscat-db + prose2)"),
     EnvVar("MUSCAT_PROSE_DIR", "/ut2/jerome/ql/prose", "Pipeline output base directory"),

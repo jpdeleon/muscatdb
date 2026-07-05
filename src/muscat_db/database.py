@@ -13,6 +13,8 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from cryptography.fernet import Fernet, InvalidToken
+
 from muscat_db.instruments import INSTRUMENTS, OBSLOG_BASE
 from muscat_db.cache import clear_all_caches
 from muscat_db.coord import CoordRepr, unpack as _unpack_coord
@@ -128,6 +130,16 @@ CREATE TABLE IF NOT EXISTS jobs (
     run_id       TEXT NOT NULL DEFAULT '',
     run_name     TEXT NOT NULL DEFAULT '',
     user_name    TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    username      TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL DEFAULT '',
+    display_name  TEXT NOT NULL DEFAULT '',
+    is_admin      INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_login    TEXT,
+    settings      TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS db_meta (
@@ -439,6 +451,7 @@ def _set_temp_store_dir(conn: sqlite3.Connection, db_file: str) -> None:
 # job history, and saved ephemeris views on every successful build.
 _APP_OWNED_TABLES = (
     "jobs",
+    "users",
     "ephemeris_views",
     "target_notes",
     "target_overrides",
@@ -993,6 +1006,111 @@ def get_conn(
         yield conn
     finally:
         conn.close()
+
+
+class UserSettingsError(RuntimeError):
+    """Raised when per-user settings cannot be read or written safely."""
+
+
+def _settings_fernet() -> Fernet:
+    secret = os.environ.get("MUSCAT_DB_SECRET", "").strip()
+    if not secret:
+        raise UserSettingsError("MUSCAT_DB_SECRET is required to encrypt per-user tokens")
+    key = base64.urlsafe_b64encode(
+        hashlib.sha256(("muscat-db-user-settings:" + secret).encode("utf-8")).digest()
+    )
+    return Fernet(key)
+
+
+def _encrypt_token(token: str) -> str:
+    return _settings_fernet().encrypt(token.encode("utf-8")).decode("ascii")
+
+
+def _decrypt_token(ciphertext: str) -> str:
+    try:
+        return _settings_fernet().decrypt(ciphertext.encode("ascii")).decode("utf-8")
+    except (InvalidToken, UnicodeError) as exc:
+        raise UserSettingsError("stored token cannot be decrypted with MUSCAT_DB_SECRET") from exc
+
+
+def _ensure_users_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA)
+
+
+def _clean_username(username: str | None) -> str:
+    username = (username or "").strip()
+    if not username:
+        raise UserSettingsError("username is required")
+    return username
+
+
+def ensure_user(username: str | None, *, display_name: str | None = None) -> None:
+    username = _clean_username(username)
+    display_name = (display_name or username).strip() or username
+    with get_conn() as conn:
+        _ensure_users_schema(conn)
+        conn.execute(
+            "INSERT OR IGNORE INTO users (username, display_name) VALUES (?, ?)",
+            (username, display_name),
+        )
+        conn.commit()
+
+
+def get_user_settings(username: str | None) -> dict:
+    username = _clean_username(username)
+    with get_conn(row_factory=sqlite3.Row) as conn:
+        _ensure_users_schema(conn)
+        row = conn.execute("SELECT settings FROM users WHERE username = ?", (username,)).fetchone()
+    if row is None:
+        return {}
+    try:
+        settings = json.loads(row["settings"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        settings = {}
+    return settings if isinstance(settings, dict) else {}
+
+
+def update_user_settings(username: str | None, updates: dict, *, remove: list[str] | None = None) -> dict:
+    username = _clean_username(username)
+    ensure_user(username)
+    settings = get_user_settings(username)
+    for key in remove or []:
+        settings.pop(key, None)
+    settings.update(updates)
+    payload = json.dumps(settings, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    with get_conn() as conn:
+        _ensure_users_schema(conn)
+        conn.execute(
+            "UPDATE users SET settings = ? WHERE username = ?",
+            (payload, username),
+        )
+        conn.commit()
+    return settings
+
+
+def set_user_lco_token(username: str | None, token: str | None) -> None:
+    token = (token or "").strip()
+    if not token:
+        update_user_settings(username, {}, remove=["lco_token_enc"])
+        return
+    update_user_settings(username, {"lco_token_enc": _encrypt_token(token)})
+
+
+def get_user_lco_token(username: str | None) -> str | None:
+    if not (username or "").strip():
+        return None
+    settings = get_user_settings(username)
+    ciphertext = settings.get("lco_token_enc")
+    if not ciphertext:
+        return None
+    return _decrypt_token(str(ciphertext))
+
+
+def user_lco_token_configured(username: str | None) -> bool:
+    try:
+        return get_user_lco_token(username) is not None
+    except UserSettingsError:
+        return False
 
 
 def _ensure_jobs_schema(conn: sqlite3.Connection) -> None:

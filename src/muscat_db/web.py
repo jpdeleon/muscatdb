@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import contextvars
 import json
 import logging
 import math
@@ -32,6 +33,8 @@ from muscat_db import transit_obs
 from muscat_db import fov as fov_opt
 from muscat_db.database import (
     SCHEMA,
+    UserSettingsError,
+    ensure_user,
     get_conn,
     delete_note as _delete_note,
     format_elapsed,
@@ -48,6 +51,8 @@ from muscat_db.database import (
     save_ephemeris_view,
     get_ephemeris_view,
     get_last_build_date,
+    get_user_lco_token,
+    set_user_lco_token,
     _normalize_filters,
 )
 from muscat_db.job_store import get_job_store
@@ -100,9 +105,19 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # spoofing. Fallback to None when accessed directly (no nginx / dev mode).
 @app.middleware("http")
 async def _nginx_auth_middleware(request: Request, call_next):
-    request.state.user = request.headers.get("X-Forwarded-User") or None
-    response = await call_next(request)
-    return response
+    user = request.headers.get("X-Forwarded-User") or None
+    request.state.user = user
+    token = _CURRENT_USER.set(user)
+    try:
+        if user:
+            try:
+                ensure_user(user)
+            except (UserSettingsError, sqlite3.Error) as exc:
+                logger.warning("could not ensure user row for %s: %s", user, exc)
+        response = await call_next(request)
+        return response
+    finally:
+        _CURRENT_USER.reset(token)
 
 # Mount static assets (shared stylesheet, etc.) before the dynamic routes so a
 # request like /static/styles.css is not captured by the /{inst}/{date} route.
@@ -155,10 +170,15 @@ _LCO_SITE_TZ = {
     "tlv": "Asia/Jerusalem",
 }
 _LCO_DATASET_MATCH_ARCSEC = 60.0
+_CURRENT_USER: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "current_user",
+    default=None,
+)
 
 
 def _render(name: str, **kwargs) -> str:
     tpl = jinja.get_template(name)
+    kwargs.setdefault("current_user", _CURRENT_USER.get())
     return HTMLResponse(tpl.render(**kwargs))
 
 
@@ -2088,6 +2108,65 @@ def _lco_error_response(e: "lco.LcoError") -> JSONResponse:
     return JSONResponse(e.to_dict(), status_code=e.status)
 
 
+def _request_user(request: Request) -> str | None:
+    return getattr(request.state, "user", None) or None
+
+
+def _settings_auth_error() -> JSONResponse:
+    return JSONResponse(
+        {
+            "ok": False,
+            "error": "login required",
+            "detail": "Per-user LCO tokens require nginx authentication.",
+        },
+        status_code=401,
+    )
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page():
+    return _render("settings.html")
+
+
+@app.get("/api/settings/lco-token-status", response_class=JSONResponse)
+def api_settings_lco_token_status(request: Request):
+    user = _request_user(request)
+    if not user:
+        return _settings_auth_error()
+    try:
+        user_token_configured = get_user_lco_token(user) is not None
+    except UserSettingsError as exc:
+        return JSONResponse(
+            {"ok": False, "error": "stored LCO token cannot be read", "detail": str(exc)},
+            status_code=503,
+        )
+    return JSONResponse(
+        {
+            "ok": True,
+            "user": user,
+            "user_token_configured": user_token_configured,
+            "global_token_configured": bool(os.environ.get("LCO_API_TOKEN")),
+            "secret_configured": bool(os.environ.get("MUSCAT_DB_SECRET")),
+        }
+    )
+
+
+@app.post("/api/settings/lco-token", response_class=JSONResponse)
+def api_settings_lco_token(request: Request, payload: dict = Body(...)):
+    user = _request_user(request)
+    if not user:
+        return _settings_auth_error()
+    token = str(payload.get("token") or "").strip()
+    try:
+        set_user_lco_token(user, token)
+    except UserSettingsError as exc:
+        return JSONResponse(
+            {"ok": False, "error": "could not save LCO token", "detail": str(exc)},
+            status_code=503,
+        )
+    return JSONResponse({"ok": True, "user_token_configured": bool(token)})
+
+
 @app.get("/lco")
 def lco_page():
     return RedirectResponse(url="/lco/schedule", status_code=307)
@@ -2104,23 +2183,23 @@ def lco_archive_page():
 
 
 @app.get("/api/lco/config", response_class=JSONResponse)
-def api_lco_config():
+def api_lco_config(request: Request):
     """Report whether the token/download-root/submit gate are configured. No secrets."""
-    return JSONResponse({"ok": True, **lco.config_state()})
+    return JSONResponse({"ok": True, **lco.config_state(_request_user(request))})
 
 
 @app.get("/api/lco/proposals", response_class=JSONResponse)
-def api_lco_proposals():
+def api_lco_proposals(request: Request):
     try:
-        return JSONResponse({"ok": True, **lco.get_proposals()})
+        return JSONResponse({"ok": True, **lco.get_proposals(_request_user(request))})
     except lco.LcoError as e:
         return _lco_error_response(e)
 
 
 @app.get("/api/lco/requestgroups", response_class=JSONResponse)
-def api_lco_requestgroups(proposal: str = ""):
+def api_lco_requestgroups(request: Request, proposal: str = ""):
     try:
-        return JSONResponse({"ok": True, **lco.get_requestgroups(proposal)})
+        return JSONResponse({"ok": True, **lco.get_requestgroups(proposal, _request_user(request))})
     except lco.LcoError as e:
         return _lco_error_response(e)
 
@@ -2254,11 +2333,11 @@ def api_lco_visibility(
 
 
 @app.post("/api/lco/ipp", response_class=JSONResponse)
-def api_lco_ipp(payload: dict = Body(...)):
+def api_lco_ipp(request: Request, payload: dict = Body(...)):
     """Build the requestgroup and run the max-allowable-IPP dry-run."""
     try:
         rg = lco.build_requestgroup(payload.get("kind"), payload)
-        ipp = lco.max_allowable_ipp(rg)
+        ipp = lco.max_allowable_ipp(rg, _request_user(request))
         return JSONResponse(
             {"ok": True, "payload": rg, "payload_hash": lco.payload_hash(rg), "ipp": ipp}
         )
@@ -2267,7 +2346,7 @@ def api_lco_ipp(payload: dict = Body(...)):
 
 
 @app.post("/api/lco/submit", response_class=JSONResponse)
-def api_lco_submit(payload: dict = Body(...)):
+def api_lco_submit(request: Request, payload: dict = Body(...)):
     """Live submission. Guarded: requires explicit confirm AND a payload hash that
     matches a prior successful dry-run, plus the server-side submit switch."""
     try:
@@ -2285,7 +2364,7 @@ def api_lco_submit(payload: dict = Body(...)):
                 },
                 status_code=409,
             )
-        result = lco.submit_requestgroup(rg)
+        result = lco.submit_requestgroup(rg, _request_user(request))
         return JSONResponse({"ok": True, "result": result})
     except lco.LcoError as e:
         return _lco_error_response(e)
@@ -2293,6 +2372,7 @@ def api_lco_submit(payload: dict = Body(...)):
 
 @app.get("/api/lco/archive/frames", response_class=JSONResponse)
 def api_lco_archive_frames(
+    request: Request,
     instrument: str = "",
     proposal_id: str = "",
     OBJECT: str = "",
@@ -2322,7 +2402,7 @@ def api_lco_archive_frames(
         # frame request paginates in a few calls rather than dozens.
         req_filters = {"request_id": req, "reduction_level": reduction_level, "limit": "1000"}
         try:
-            result = lco.archive_search_all(req_filters)
+            result = lco.archive_search_all(req_filters, _request_user(request))
             rows = result.get("results") or []
             if isinstance(rows, list):
                 annotated, dataset_count = _annotate_lco_archive_results(instrument, rows)
@@ -2369,7 +2449,7 @@ def api_lco_archive_frames(
         ra_deg, dec_deg, _source = resolved
         filters["covers"] = f"POINT({ra_deg} {dec_deg})"
     try:
-        result = lco.archive_search(filters)
+        result = lco.archive_search(filters, _request_user(request))
         rows = result.get("results") or []
         if tel_class and isinstance(rows, list):
             rows = [r for r in rows if str(r.get("TELID") or "").lower().startswith(tel_class)]

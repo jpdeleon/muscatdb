@@ -226,7 +226,7 @@
         <span class="pill" style="display: inline-flex; align-items: center; gap: 0.35rem;">
           <span class="dot" id="ads-cfg-token" style="width: 9px; height: 9px; border-radius: 50%; background: var(--text-dim); display: inline-block;"></span> ADS API token
         </span>
-        <span class="lco-note" style="margin: 0; font-size: 0.78rem; color: var(--text-dim);">Tokens stay server-side. Querying papers requires a valid ADS_API_TOKEN.</span>
+        <span class="lco-note" style="margin: 0; font-size: 0.78rem; color: var(--text-dim);">Set up ADS API access from <a href="https://ui.adsabs.harvard.edu/user/settings/token" target="_blank" rel="noopener">your ADS token settings</a>, then set the token as <code>ADS_API_TOKEN</code> on the server.</span>
       </div>
       <div class="search-bar" style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; width: 100%;">
         <input id="ads-query-input" type="text" placeholder="Search papers on ADS…" value="{{ target_name }}" style="flex: 1;" autocomplete="off">
