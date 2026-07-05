@@ -615,6 +615,115 @@ def toi_page():
     )
 
 
+# ── NASA Exoplanet Archive (NExScI) composite catalog ──────────────────────
+# Column map for the /nexsci page: (csv header, json key, kind). "s" keeps the
+# raw string, "f" parses a finite float (or null) via _toi_float. Header names
+# verified against data/nexsci_pscomppars.csv — note the ra_x/dec_x suffixes.
+_NEXSCI_COLUMNS: list[tuple[str, str, str]] = [
+    ("pl_name", "name", "s"),
+    ("hostname", "host", "s"),
+    ("tic_id", "tic", "s"),
+    ("discoverymethod", "method", "s"),
+    ("disc_facility", "facility", "s"),
+    ("st_spectype", "spectype", "s"),
+    ("disc_year", "year", "f"),
+    ("ra_x", "ra", "f"),
+    ("dec_x", "dec", "f"),
+    ("pl_orbper", "period", "f"),
+    ("pl_orbsmax", "sma", "f"),
+    ("pl_rade", "radius", "f"),
+    ("pl_bmasse", "mass", "f"),
+    ("pl_eqt", "teq", "f"),
+    ("pl_insol", "insol", "f"),
+    ("st_teff", "steff", "f"),
+    ("st_rad", "srad", "f"),
+    ("st_mass", "smass", "f"),
+    ("sy_dist", "dist", "f"),
+    ("sy_vmag", "vmag", "f"),
+    ("sy_tmag", "tmag", "f"),
+    ("sy_gaiamag", "gmag", "f"),
+    ("sy_kmag", "kmag", "f"),
+]
+
+_nexsci_cache: dict = {}
+
+
+def _load_nexsci_catalog() -> dict:
+    """Read ``data/nexsci_pscomppars.csv`` (NASA Exoplanet Archive Composite
+    Planetary Systems — one row per confirmed planet) into column-oriented
+    arrays for the /nexsci page. Cached by file mtime so the ~4.6k-row CSV is
+    parsed at most once per update; degrades to empty when the (git-ignored)
+    file is absent."""
+    path = HERE.parent.parent / "data" / "nexsci_pscomppars.csv"
+    empty = {"data": {k: [] for _, k, _ in _NEXSCI_COLUMNS}, "n": 0, "updated": ""}
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        return empty
+
+    cached = _nexsci_cache.get("catalog")
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+
+    data: dict[str, list] = {key: [] for _, key, _ in _NEXSCI_COLUMNS}
+    with open(path, encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            for header, key, kind in _NEXSCI_COLUMNS:
+                raw = row.get(header)
+                data[key].append(_toi_float(raw) if kind == "f" else (raw or "").strip())
+
+    # The composite table has no per-row date column, so surface the file's own
+    # modification date as the catalog "last updated" stamp.
+    updated = datetime.date.fromtimestamp(mtime / 1e9).isoformat()
+    result = {"data": data, "n": len(data["name"]), "updated": updated}
+    _nexsci_cache["catalog"] = (mtime, result)
+    return result
+
+
+def _nexsci_db_membership(cat_data: dict, db: str) -> tuple[list[int], list[str]]:
+    """Return ``(indb, tname)`` per NExScI row: ``indb`` is 1 when the planet's
+    host is in muscat-db (matched by TIC id, else by normalized host name), and
+    ``tname`` is the matched DB target's normalized name (the /target link).
+    Rows with no muscat-db match get ``indb=0`` and an empty ``tname`` — the
+    page then falls back to the NASA Exoplanet Archive overview link, built
+    client-side from the archive's canonically-hyphenated ``host`` name."""
+    ids = _db_target_identifiers(db)
+    tic_map, names = ids["tic"], ids["names"]
+    tics, hosts = cat_data["tic"], cat_data["host"]
+    n = len(hosts)
+    indb = [0] * n
+    tname = [""] * n
+    for i in range(n):
+        link = None
+        digits = re.sub(r"\D", "", tics[i]) if tics[i] else ""
+        if digits:
+            link = tic_map.get(int(digits))
+        if link is None and hosts[i]:
+            nn = _normalize_target_name(hosts[i])
+            if nn in names:
+                link = nn
+        if link is not None:
+            indb[i] = 1
+            tname[i] = link
+    return indb, tname
+
+
+@app.get("/nexsci", response_class=HTMLResponse)
+def nexsci_page():
+    cat = _load_nexsci_catalog()
+    indb, tname = _nexsci_db_membership(cat["data"], _db_path())
+    payload = dict(cat["data"])
+    payload["indb"] = indb
+    payload["tname"] = tname
+    return _render(
+        "nexsci.html",
+        nexsci_json=json.dumps(payload, separators=(",", ":"), allow_nan=False),
+        n_rows=cat["n"],
+        n_indb=sum(indb),
+        nexsci_updated=cat["updated"],
+    )
+
+
 @app.get("/api/targets/export.csv")
 def export_targets_csv():
     db = _db_path()
@@ -1806,6 +1915,8 @@ def api_fov_optimize(payload: dict = Body(...)):
         max_mag = float(max_mag) if max_mag not in (None, "") else 18.0
         mag_delta = payload.get("mag_delta")
         mag_delta = float(mag_delta) if mag_delta not in (None, "") else None
+        avoid_mag = payload.get("avoid_mag")
+        avoid_mag = float(avoid_mag) if avoid_mag not in (None, "") else None
     except (TypeError, ValueError):
         return JSONResponse({"ok": False, "error": "Invalid numeric parameter"}, status_code=400)
 
@@ -1831,6 +1942,7 @@ def api_fov_optimize(payload: dict = Body(...)):
         min_mag=min_mag,
         max_mag=max_mag,
         mag_delta=mag_delta,
+        avoid_mag=avoid_mag,
     )
     status = 200 if result.ok else 422
     return JSONResponse(result.to_dict(), status_code=status)

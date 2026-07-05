@@ -144,13 +144,15 @@ muscat-db serve --port 8080  # custom port
 ## Web Frontend
 
 The navigation bar links the observation log, photometry, transit fitting, job
-history, exposure calculator, LCO scheduling/download, field-of-view optimizer, and pipeline guide. 
+history, exposure calculator, LCO scheduling/download, field-of-view optimizer,
+the TOI and NExScI catalog browsers, and pipeline guide. 
 Observation-log navigation is **Logs** → **Dates** → **CCD summaries** → 
 **Per-frame table**.
 
 - **Transit Fitting Run Modes**: When launching transit fits, choose between a **New Fit** (start fresh, clobbering existing traces) or **Continue Sampling** (load the previous trace and append more MCMC draws, available if previous results exist).
 - **Field-of-View (FOV) Optimizer**: Accessible from the navbar or observation scheduler to plan pointing offsets and instrument position angle (PA) based on Gaia DR3 comparison star heuristics.
 - **Ephemeris O-C Export Headers**: Exported O-C ephemeris text starts with descriptive `#` comments specifying the BJD_TDB time standard and column formats (planet, epoch, tc, tc_unc) for easy external parsing.
+- **Catalog browsers (`/toi`, `/nexsci`)**: Interactive Plotly scatter plots of the TESS Objects of Interest (`data/TOIs.csv`) and the NASA Exoplanet Archive composite planet table (`data/nexsci_pscomppars.csv`), with configurable axes, filter chips, a searchable table, and CSV export. Targets already in muscat-db are drawn as ★ stars. On the **NExScI** page, clicking a point opens that planet's muscat-db target page when the host is in the database, otherwise its [NASA Exoplanet Archive overview](https://exoplanetarchive.ipac.caltech.edu/overview/) page (using the archive's canonical host name, e.g. `TOI-2000`).
 
 The home page shows:
 
