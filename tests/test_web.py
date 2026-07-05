@@ -1182,6 +1182,76 @@ def test_toi_page_includes_boyle_payload(monkeypatch):
     assert "arxiv.org/abs/2603.05586" in r.text
 
 
+# ── /nexsci (NASA Exoplanet Archive) page ──────────────────────────────────
+def _nexsci_cat_data(names, hosts, tics):
+    """Build a full nexsci column dict (all keys the loader produces) with the
+    given string columns and null numerics, for monkeypatching the loader."""
+    n = len(names)
+    str_keys = ["name", "host", "tic", "method", "facility", "spectype"]
+    num_keys = ["year", "ra", "dec", "period", "sma", "radius", "mass", "teq",
+                "insol", "steff", "srad", "smass", "dist", "vmag", "tmag", "gmag", "kmag"]
+    data = {k: [""] * n for k in str_keys}
+    data.update({k: [None] * n for k in num_keys})
+    data["name"] = list(names)
+    data["host"] = list(hosts)
+    data["tic"] = list(tics)
+    return data
+
+
+def test_nexsci_page_renders_with_payload_and_archive_link(mock_db, monkeypatch):
+    from muscat_db import web
+    web._toi_db_cache.clear()
+    data = _nexsci_cat_data(
+        ["TOI-2000 b", "Kepler-999 b"],
+        ["TOI-2000", "Kepler-999"],
+        ["TIC 273875149", "TIC 999999999"],
+    )
+    data["method"] = ["Transit", "Radial Velocity"]
+    data["radius"] = [2.5, 11.0]
+    data["period"] = [3.1, 400.0]
+    monkeypatch.setattr(
+        web, "_load_nexsci_catalog", lambda: {"data": data, "n": 2, "updated": "2026-07-05"}
+    )
+    r = TestClient(app).get("/nexsci")
+    assert r.status_code == 200
+    # Column-oriented JSON payload is embedded verbatim.
+    assert '"name":["TOI-2000 b","Kepler-999 b"]' in r.text
+    # Empty targets table -> nothing is in muscat-db.
+    assert '"indb":[0,0]' in r.text
+    # Archive-overview fallback URL prefix is present in the page JS.
+    assert "exoplanetarchive.ipac.caltech.edu/overview/" in r.text
+    # Nav link renders beside TOI.
+    assert 'href="/nexsci"' in r.text
+
+
+def test_nexsci_nav_link_present_on_other_pages(mock_db):
+    body = TestClient(app).get("/logs").text
+    assert 'href="/nexsci"' in body
+    assert "NExScI" in body
+
+
+def test_nexsci_db_membership_matches_tic_and_host(mock_db):
+    from muscat_db import web
+    web._toi_db_cache.clear()
+    conn = sqlite3.connect(mock_db)
+    conn.executemany(
+        "INSERT INTO targets (object, n_dates, n_frames, is_identified, phot_status, fit_status)"
+        " VALUES (?, 0, 0, 1, 'none', 'none')",
+        [("TIC 12345",), ("TOI-2000",)],
+    )
+    conn.commit()
+    conn.close()
+    data = _nexsci_cat_data(
+        ["Foo b", "TOI-2000 b", "Bar c"],
+        ["Foo", "TOI-2000", "Bar"],
+        ["TIC 12345", "", "TIC 777"],
+    )
+    indb, tname = web._nexsci_db_membership(data, mock_db)
+    # row0 matched by TIC, row1 by normalized host name, row2 not in DB.
+    assert indb == [1, 1, 0]
+    assert tname == ["TIC12345", "TOI2000", ""]
+
+
 def test_photometry_download_all_endpoints(mock_db, monkeypatch, tmp_path):
     # Mock MUSCAT_PROSE_DIR environment variable
     monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
