@@ -384,6 +384,11 @@
     })();
   </script>
 
+  <div style="text-align:center; margin:2em 0; display: flex; justify-content: center; gap: 1rem; align-items: center;">
+    <a href="/lco/schedule?target={{ target_name | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">🔭 Schedule LCO</a>
+    <a href="/lco/archive?target={{ target_name | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">🔍 Search LCO archive</a>
+  </div>
+
 {% else %}
   {# List of all normalized targets #}
   <h1>Targets (Last updated on {{ last_updated }})</h1>
