@@ -193,6 +193,10 @@ tr.filter-row th input::placeholder { color: var(--text-dim); font-style: italic
 .badge-filter-i.narrow { background: #d6bf86; color: #3b2a0a; }
 .badge-filter-z.narrow { background: #d6a8a8; color: #4a1818; }
 .badge-filter-other { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+/* Narrow-band filter chips stack one per line so a target with many narrow
+   bands (g_narrow, i_narrow, z_narrow, Na_D, ...) doesn't force the Filters
+   column wide; broad-band chips above stay inline. */
+.filter-narrow-line { display: block; margin-top: 2px; }
 [data-theme="dark"] .badge-filter-g        { background: #2a3f6b; color: #c9d4ee; }
 [data-theme="dark"] .badge-filter-r        { background: #2b4a3a; color: #c4e0cf; }
 [data-theme="dark"] .badge-filter-i        { background: #5a4520; color: #ecd9a8; }

@@ -363,6 +363,7 @@ def test_index_exposes_normalized_target_direct_link(mock_db, monkeypatch):
                 {"label": "rp", "color": "r", "narrow": False},
             ],
             "n_frames": 42,
+            "n_dates": 1,
             "airmass_min": 1.1,
             "airmass_max": 1.4,
             "instruments": ["muscat4"],
