@@ -55,8 +55,24 @@
   table.fov-table th, table.fov-table td { padding: 0.35rem 0.55rem; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
   table.fov-table th:first-child, table.fov-table td:first-child { text-align: left; }
   table.fov-table th { color: var(--text-dim); font-weight: 600; font-size: 0.7rem; text-transform: uppercase; position: sticky; top: 0; background: var(--surface); }
-  #fov-comps-section { margin-left: calc(-1.25rem); margin-right: calc(-1.25rem); width: calc(100% + 2.5rem); }
   .fov-note { font-size: 0.78rem; color: var(--text-dim); margin-top: 0.5rem; line-height: 1.5; }
+
+  .fov-explain { margin-top: 1.1rem; }
+  .fov-explain > summary {
+    cursor: pointer; font-size: 0.7rem; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
+    display: flex; align-items: center; gap: 0.45rem; user-select: none;
+  }
+  .fov-explain > summary::before { content: ''; width: 3px; height: 0.85rem; background: var(--accent2); border-radius: 2px; }
+  .fov-explain-body { margin-top: 0.9rem; max-width: 78ch; }
+  .fov-explain-body h4 {
+    font-size: 0.82rem; margin: 1.1rem 0 0.4rem; color: var(--text);
+  }
+  .fov-explain-body h4:first-child { margin-top: 0; }
+  .fov-explain-body p, .fov-explain-body li { font-size: 0.82rem; color: var(--text-dim); line-height: 1.55; }
+  .fov-explain-body ul, .fov-explain-body ol { margin: 0.3rem 0 0.6rem 1.2rem; padding: 0; }
+  .fov-explain-body li { margin-bottom: 0.3rem; }
+  .fov-explain-body code { font-size: 0.8em; }
 </style>
 
 <h2 style="margin-bottom: 0.4rem;">Field-of-View Optimizer</h2>
@@ -124,6 +140,10 @@
         <input id="fov-allow-rotation" type="checkbox" checked style="width: 1.1rem; height: 1.1rem; cursor: pointer;">
         <label for="fov-allow-rotation" style="cursor: pointer; font-size: 0.85rem; margin: 0;">Allow field rotation (optimize position angle)</label>
       </div>
+      <div style="margin-top: 0.5rem; display: flex; align-items: center; gap: 0.6rem;">
+        <input id="fov-show-pm" type="checkbox" style="width: 1.1rem; height: 1.1rem; cursor: pointer;">
+        <label for="fov-show-pm" style="cursor: pointer; font-size: 0.85rem; margin: 0;" title="Draws each star's proper-motion direction as an arrow (length exaggerated for visibility). Arrows parallel to the target's, of similar length, suggest a common proper-motion (co-moving) companion.">Show proper motion arrows</label>
+      </div>
       <div class="fov-actions">
         <button id="fov-run" class="fov-btn" type="button">Optimize FOV</button>
         <button id="fov-reset-view" class="fov-btn ghost" type="button">Recenter view</button>
@@ -147,15 +167,6 @@
       <div class="fov-note" id="r-note"></div>
     </div>
 
-    <div class="fov-section" id="fov-comps-section" style="display: none;">
-      <h3>Comparison Stars</h3>
-      <div class="fov-table-wrap">
-        <table class="fov-table">
-          <thead><tr><th>#</th><th>RA</th><th>Dec</th><th>G</th><th>ΔG</th><th>BP-RP</th><th>sep ″</th><th>weight</th></tr></thead>
-          <tbody id="fov-comps-body"></tbody>
-        </table>
-      </div>
-    </div>
   </div>
 
   <!-- ---- Aladin viewer ---- -->
@@ -174,9 +185,108 @@
         reflects the optimized pointing and position angle. Pan/zoom freely &mdash;
         “Recenter view” returns to the optimized field.
       </div>
+      <div class="fov-note">
+        <strong>Proper motion arrows</strong> (when enabled) point in each
+        star's direction of motion, colored by category (target vs.
+        comparison). Arrow length is exaggerated and scaled relative to the
+        fastest-moving star shown &mdash; only useful for comparing direction
+        and relative speed between stars, not the true angular scale. A
+        comparison star with an arrow parallel to, and about as long as, the
+        target's suggests a common proper-motion (co-moving) companion.
+      </div>
     </div>
   </div>
 </div>
+
+<div class="fov-section" id="fov-comps-section" style="display: none;">
+  <h3>Comparison Stars</h3>
+  <div class="fov-table-wrap">
+    <table class="fov-table">
+      <thead><tr><th>#</th><th>RA</th><th>Dec</th><th>G</th><th>ΔG</th><th>BP-RP</th><th>sep ″</th><th>weight</th></tr></thead>
+      <tbody id="fov-comps-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<details class="fov-section fov-explain">
+  <summary>How does "Optimize FOV" work?</summary>
+  <div class="fov-explain-body">
+    <h4>1. Resolve the target and check it's observable</h4>
+    <p>
+      A target name is resolved to RA/Dec (or you can type coordinates directly).
+      Before anything else, the target's declination is checked against the
+      chosen instrument's site latitude: if the target can never climb above
+      20&deg; altitude there, the run stops immediately with an error instead
+      of spending time on a catalog query for a field that can never be
+      observed.
+    </p>
+
+    <h4>2. Query Gaia DR3 around the target</h4>
+    <p>
+      All catalog stars within a circle around the target are pulled from
+      Gaia DR3 &mdash; wide enough to cover the instrument's footprint even
+      when the optimizer ends up pointing off-target. The official ESA
+      archive is tried first; if it's unavailable, a VizieR mirror
+      (<code>I/355/gaiadr3</code>) is used instead. Because Gaia photometry
+      at a given sky position doesn't change, successful lookups are cached,
+      so re-running the same target (after tweaking the margin or magnitude
+      filter, say) skips the network round trip.
+    </p>
+
+    <h4>3. Score every star as a comparison candidate</h4>
+    <p>Each catalog star (other than the target) gets a usefulness weight:</p>
+    <ul>
+      <li><strong>Magnitude:</strong> peaks for stars a touch fainter than the
+        target (&Delta;G &asymp; +0.3 mag is ideal) and falls off smoothly on
+        either side. Stars brighter than the target by more than 1 mag are
+        penalized hard, since a bright comparison caps the exposure time
+        needed to avoid saturating it &mdash; which shortens the target's own
+        exposure and hurts its SNR.</li>
+      <li><strong>Color:</strong> stars with a similar Gaia BP&minus;RP color
+        to the target get a bonus, since similar colors track atmospheric
+        extinction more alike and make for cleaner differential photometry.</li>
+      <li><strong>Crowding:</strong> a star with a comparably bright neighbor
+        within 12&Prime; is downweighted, since a close neighbor blends into
+        the same aperture.</li>
+      <li>Your <strong>Gmag range</strong> (or <strong>delta-Gmag</strong>) and
+        <strong>margin</strong> settings are then applied, and anything below a
+        minimum usefulness floor is dropped entirely.</li>
+    </ul>
+    <p>
+      If an <strong>"avoid brighter than"</strong> limit is set, any star
+      brighter than it (other than the target) becomes a hard constraint in
+      the next step: no pointing may place it inside the footprint.
+    </p>
+
+    <h4>4. Search for the best pointing and orientation</h4>
+    <p>
+      The field center doesn't have to sit exactly on the target. The
+      optimizer grid-searches candidate field-center offsets together with a
+      position angle (skipped if "allow field rotation" is unchecked, which
+      fixes the field at PA=0&deg;) &mdash; a square footprint repeats every
+      90&deg;, so only that range needs to be searched. For every candidate
+      pointing that still keeps the target inside the footprint (respecting
+      your target margin) and avoids any "too bright" star, the comparison
+      stars that land inside the footprint (respecting the comp margin) are
+      summed by weight. The pointing and position angle with the highest
+      total score wins.
+    </p>
+    <p>
+      If no candidate pointing can satisfy every constraint &mdash; usually
+      because a bright star can't be dodged anywhere in reach &mdash; the
+      optimizer reports that explicitly rather than silently returning a
+      compromised field.
+    </p>
+
+    <h4>5. Result</h4>
+    <p>
+      The winning field center, position angle, and offset from the target
+      are reported alongside the selected comparison stars (magnitude, color,
+      separation, and weight) and the footprint polygon, which is overlaid on
+      the Aladin sky view for a visual check before you commit to a pointing.
+    </p>
+  </div>
+</details>
 
 <script type="text/javascript" src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js" charset="utf-8"></script>
 <script>
@@ -195,6 +305,7 @@
   let observableRanges = {};
   let compSources = [];  // Track comparison star sources for hover highlighting
   let highlightOverlay = null;  // Graphics overlay for highlighting selected star
+  let pmOverlay = null;  // Graphics overlay for proper-motion arrows
 
   A.init.then(() => {
     aladin = A.aladin('#aladin-lite-div', {
@@ -209,6 +320,8 @@
     aladin.addOverlay(footprintOverlay);
     highlightOverlay = A.graphicOverlay({ color: '#ffff00', lineWidth: 3 });
     aladin.addOverlay(highlightOverlay);
+    pmOverlay = A.graphicOverlay({ color: '#45d6b5', lineWidth: 2 });
+    aladin.addOverlay(pmOverlay);
     targetCatalog = A.catalog({ name: 'Target', shape: 'cross', sourceSize: 18, color: '#ff5470' });
     compCatalog = A.catalog({ name: 'Comparisons', shape: 'circle', sourceSize: 12, color: '#45d6b5' });
     avoidCatalog = A.catalog({ name: 'Avoided (too bright)', shape: 'triangle', sourceSize: 16, color: '#f5a623' });
@@ -274,6 +387,7 @@
     $('fov-comps-section').style.display = (result.comps && result.comps.length) ? '' : 'none';
 
     overplot(result);
+    renderPmArrows(result);
   }
 
   function overplot(result) {
@@ -317,6 +431,61 @@
     }
 
     recenter(result);
+  }
+
+  // ---- Proper motion arrows (co-moving companion check) ----
+  // Real Gaia proper motions (mas/yr) are far too small to see at FOV scales,
+  // so every arrow is scaled by the same factor: the star with the largest
+  // total proper motion in the current result gets a fixed-length arrow, and
+  // every other arrow shrinks proportionally. That keeps direction AND
+  // relative magnitude meaningful for spotting a common-proper-motion
+  // companion (same direction, similar length as the target's arrow) without
+  // needing the true angular scale.
+  function offsetRaDec(ra, dec, eastArcsec, northArcsec) {
+    const cosDec = Math.cos(dec * Math.PI / 180) || 1e-6;
+    return [ra + (eastArcsec / 3600) / cosDec, dec + northArcsec / 3600];
+  }
+
+  function pmArrowShape(ra, dec, eastArcsec, northArcsec) {
+    const shaftLen = Math.hypot(eastArcsec, northArcsec);
+    if (!(shaftLen > 0)) return null;
+    const tip = offsetRaDec(ra, dec, eastArcsec, northArcsec);
+    const angle = Math.atan2(northArcsec, eastArcsec);
+    const headLen = Math.min(shaftLen * 0.35, 3.0);
+    const back = angle + Math.PI;
+    const head1 = offsetRaDec(tip[0], tip[1], headLen * Math.cos(back - 0.45), headLen * Math.sin(back - 0.45));
+    const head2 = offsetRaDec(tip[0], tip[1], headLen * Math.cos(back + 0.45), headLen * Math.sin(back + 0.45));
+    return { base: [ra, dec], tip, head1, head2 };
+  }
+
+  function renderPmArrows(result) {
+    if (!pmOverlay) return;
+    pmOverlay.removeAll();
+    if (!result || !$('fov-show-pm').checked) return;
+
+    const points = [];
+    if (result.ra != null && result.dec != null && result.target_pmra != null && result.target_pmdec != null) {
+      points.push({ ra: result.ra, dec: result.dec, pmra: result.target_pmra, pmdec: result.target_pmdec, color: '#ff5470' });
+    }
+    (result.comps || []).forEach((c) => {
+      if (c.pmra != null && c.pmdec != null) {
+        points.push({ ra: c.ra, dec: c.dec, pmra: c.pmra, pmdec: c.pmdec, color: '#45d6b5' });
+      }
+    });
+    if (!points.length) return;
+
+    const maxPm = Math.max(...points.map((p) => Math.hypot(p.pmra, p.pmdec)));
+    if (!(maxPm > 0)) return;
+
+    const maxArrowArcsec = Math.max((result.fov_half_arcsec || 200) * 0.18, 3);
+    const scale = maxArrowArcsec / maxPm;
+
+    points.forEach((p) => {
+      const shape = pmArrowShape(p.ra, p.dec, p.pmra * scale, p.pmdec * scale);
+      if (!shape) return;
+      pmOverlay.add(A.polyline([shape.base, shape.tip], { color: p.color, lineWidth: 2 }));
+      pmOverlay.add(A.polyline([shape.head1, shape.tip, shape.head2], { color: p.color, lineWidth: 2 }));
+    });
   }
 
   function recenter(result) {
@@ -524,7 +693,6 @@
       allowRotation: !sp.has('fixpa') && (stored?.allowRotation !== false),
     };
     setParams(p);
-    return sp.has('target') || (sp.has('ra') && sp.has('dec'));
   }
 
   async function run() {
@@ -652,7 +820,7 @@
     });
   }
 
-  const autoRun = loadUrlParams();
+  loadUrlParams();
   $('fov-run').addEventListener('click', run);
   $('fov-resolve').addEventListener('click', resolveTarget);
   $('fov-reset-view').addEventListener('click', () => recenter(lastResult));
@@ -673,9 +841,15 @@
 
   loadObservableRanges().then(() => updateInstrumentAvailability());
 
-  if (autoRun) {
-    A.init.then(() => { run(); });
-  }
+  // Proper-motion arrows are a pure display toggle (they replot from the last
+  // result, no new query), so they're persisted independently of the rest of
+  // the form/URL state.
+  const PM_STORE_KEY = 'fov-show-pm';
+  try { $('fov-show-pm').checked = localStorage.getItem(PM_STORE_KEY) === '1'; } catch { /* ignore */ }
+  $('fov-show-pm').addEventListener('change', () => {
+    try { localStorage.setItem(PM_STORE_KEY, $('fov-show-pm').checked ? '1' : '0'); } catch { /* ignore */ }
+    renderPmArrows(lastResult);
+  });
 })();
 </script>
 {% endblock %}
