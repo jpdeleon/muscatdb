@@ -827,28 +827,13 @@
   // Round a numeric value (or numeric string) to `sf` significant figures for
   // display, returning a clean string. Blanks and non-numeric values pass
   // through unchanged so partially-typed input is never clobbered.
-  function fmtSig(x, sf) {
-    if (x === undefined || x === null) return '';
-    var s = String(x).trim();
-    if (s === '') return '';
-    var n = Number(s);
-    if (isNaN(n) || !isFinite(n)) return s;
-    if (n === 0) return '0';
-    return String(Number(n.toPrecision(sf)));
-  }
+  var fmtSig = MuscatFormat.sigFigs;
   // Display precision (significant figures) per fitting parameter.
   var SIG_FIGS = { period: 6, dur: 4, ror: 2, b: 2 };
 
   // Round to a fixed number of decimal places (clean string). Used for t0,
   // where significant figures would destroy the integer-heavy BJD epoch.
-  function fmtDp(x, dp) {
-    if (x === undefined || x === null) return '';
-    var s = String(x).trim();
-    if (s === '') return '';
-    var n = Number(s);
-    if (isNaN(n) || !isFinite(n)) return s;
-    return String(Number(n.toFixed(dp)));
-  }
+  var fmtDp = MuscatFormat.fixed;
   var T0_DECIMALS = 6;
 
   // Join two values into "a,b", each rounded to `dp` decimal places (used for

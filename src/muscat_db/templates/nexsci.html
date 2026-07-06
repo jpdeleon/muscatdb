@@ -63,28 +63,22 @@
   <span class="badge instrument-badge nx-chip" data-group="star" data-key="A+">A / hotter</span>
 </div>
 <div class="chip-bar">
-  <span class="chip-label">muscat-db:</span>
-  <span class="badge instrument-badge nx-chip" data-group="indb" data-key="1" title="Only planets whose host star has data in muscat-db">★ In muscat-db</span>
-</div>
-<div class="chip-bar">
-  <span class="chip-label">System:</span>
+  <span class="chip-label">Multiplicity:</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="binary" title="Host system has exactly 2 stars (sy_snum = 2)">Binary</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="tertiary" title="Host system has 3+ stars (sy_snum ≥ 3)">Tertiary+</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="cb" title="Circumbinary planet — orbits both stars of a binary (cb_flag = 1)">Circumbinary</span>
 </div>
 <div class="chip-bar">
-  <span class="chip-label">Star / system:</span>
+  <span class="chip-label">System:</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="young" title="Stellar age < 1 Gyr (st_age)">Young (&lt;1 Gyr)</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="nearby" title="System distance < 100 pc (sy_dist)">Nearby (&lt;100 pc)</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="bright" title="Gaia magnitude < 12 (sy_gaiamag)">Bright (G&lt;12)</span>
-</div>
-<div class="chip-bar">
-  <span class="chip-label">Follow-up data:</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="ttv" title="Transit timing variations measured (ttv_flag)">Has TTV</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="obliq" title="Spin-orbit obliquity measured (pl_projobliq)">Has obliquity</span>
-  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="rv" title="More than 1 radial-velocity epoch (st_nrvc &gt; 1)">RV data</span>
-  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="spec" title="More than 1 spectrum (st_nspec &gt; 1)">Spectra</span>
-  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="phot" title="More than 1 photometric time series (st_nphot &gt; 1)">Photometry</span>
+</div>
+<div class="chip-bar">
+  <span class="chip-label">muscat-db:</span>
+  <span class="badge instrument-badge nx-chip" data-group="indb" data-key="1" title="Only planets whose host star has data in muscat-db">★ In muscat-db</span>
 </div>
 
 <details id="nx-table-section" class="nx-section" open style="margin-top:1rem;">
@@ -373,19 +367,7 @@
   }
 
   // ── number formatting (≤6 decimals, precision-aware) ───────────────────────
-  function fmtNum(v) {
-    if (v == null || v === '') return '—';
-    const x = +v;
-    if (!isFinite(x)) return '—';
-    if (Number.isInteger(x)) return String(x);
-    const a = Math.abs(x);
-    let s;
-    if (a >= 1000)     s = x.toFixed(0);
-    else if (a >= 100) s = x.toFixed(1);
-    else if (a >= 1)   s = x.toFixed(3);
-    else               s = x.toPrecision(3);
-    return String(parseFloat(s));
-  }
+  const fmtNum = MuscatFormat.auto;
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"]/g, ch =>
       ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
