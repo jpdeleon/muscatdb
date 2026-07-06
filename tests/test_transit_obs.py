@@ -72,7 +72,7 @@ def test_classify_returns_one_aligned_entry_per_window():
     res = T.classify_transits(97.64, 29.67, wins, "muscat", 2.5)
     assert len(res) == len(wins)
     for r in res:
-        assert r["rating"] in ("full", "partial", "none")
+        assert r["rating"] in ("full", "split_gap", "split_overlap", "partial", "none")
         assert set(r["sites"]).issubset({"ogg", "coj"})
         if r["rating"] == "none":
             assert r["best_site"] is None
@@ -146,6 +146,161 @@ def test_classify_checks_padding_observability():
         97.64, 29.67, wins_with_bad_pad, "muscat", 2.0, include_padding=True
     )
     assert res_with_bad_pad[0]["rating"] != "full"
+
+
+# --------------------------------------------------------------------------- #
+# split rating (two-site relay)
+#
+# These use ``monkeypatch`` on ``_earth_location``/``_observable_mask`` so the
+# per-site coverage pattern is deterministic and independent of real
+# astronomical geometry -- what's under test is the pair-search/rating logic
+# in ``classify_transits``, not the astropy math (already covered above).
+# --------------------------------------------------------------------------- #
+
+
+def _patch_site_masks(monkeypatch, site_true_ranges):
+    """Route ``_observable_mask`` to a per-site boolean pattern keyed by site
+    name. ``site_true_ranges`` maps site -> (start_idx, end_idx) marked True
+    (end exclusive); sites not present are all-False (no coverage)."""
+
+    import numpy as np
+
+    monkeypatch.setattr(T, "_earth_location", lambda site: site)
+
+    def fake_observable_mask(target, location, times, alt_min, sun_alt_max, moon_sep_min):
+        n = len(times)
+        mask = np.zeros(n, dtype=bool)
+        rng = site_true_ranges.get(location)
+        if rng:
+            mask[rng[0]:rng[1]] = True
+        zeros = np.zeros(n)
+        return mask, zeros, zeros, zeros, zeros
+
+    monkeypatch.setattr(T, "_observable_mask", fake_observable_mask)
+
+
+def _n_samp_for(duration_hours):
+    return max(5, int(round(duration_hours * 60.0 / T._CLASSIFY_STEP_MIN)) + 1)
+
+
+def test_classify_split_overlap_when_two_sites_meet_cleanly(monkeypatch):
+    duration = 2.0
+    n = _n_samp_for(duration)  # 41 samples for a 2h transit at 3-min cadence
+    mid = n // 2
+    # lsc covers the early ~55%, cpt the late ~55% -- overlapping in the middle,
+    # together spanning the whole transit with no gap.
+    _patch_site_masks(monkeypatch, {"lsc": (0, mid + 2), "cpt": (mid - 2, n)})
+
+    wins = [{"epoch": 0, "mid": "2026-03-15T07:30:00"}]
+    res = T.classify_transits(97.64, 29.67, wins, None, duration, sites=["lsc", "cpt", "tfn"])
+
+    assert res[0]["rating"] == "split_overlap"
+    assert res[0]["split_sites"] == ["lsc", "cpt"]  # chronological: lsc starts first
+    assert res[0]["split_gap_min"] == 0.0
+    assert res[0]["split_overlap_min"] > 0.0
+    sites_by_name = {w["site"]: w for w in res[0]["split_windows"]}
+    assert set(sites_by_name) == {"lsc", "cpt"}
+    assert not sites_by_name["lsc"]["fragmented"]
+    assert not sites_by_name["cpt"]["fragmented"]
+
+
+def test_classify_split_gap_when_relay_leaves_a_gap(monkeypatch):
+    duration = 2.0
+    n = _n_samp_for(duration)
+    # lsc covers only the first third, cpt only the last third: a real gap
+    # remains in the middle even combined -- this is a relay (2+ sites with
+    # coverage), so it must resolve to "split_gap", not a vague "partial".
+    _patch_site_masks(monkeypatch, {"lsc": (0, n // 3), "cpt": (2 * n // 3, n)})
+
+    wins = [{"epoch": 0, "mid": "2026-03-15T07:30:00"}]
+    res = T.classify_transits(97.64, 29.67, wins, None, duration, sites=["lsc", "cpt"])
+
+    assert res[0]["rating"] == "split_gap"
+    assert res[0]["split_sites"] == ["lsc", "cpt"]
+    assert res[0]["split_gap_min"] > 0.0
+    assert res[0]["split_overlap_min"] == 0.0
+
+
+def test_classify_partial_reserved_for_single_site(monkeypatch):
+    duration = 2.0
+    n = _n_samp_for(duration)
+    # Only lsc has any coverage at all (and it's incomplete): no second site
+    # exists to relay with, so this is genuinely "partial".
+    _patch_site_masks(monkeypatch, {"lsc": (0, n // 2)})
+
+    wins = [{"epoch": 0, "mid": "2026-03-15T07:30:00"}]
+    res = T.classify_transits(97.64, 29.67, wins, None, duration, sites=["lsc", "cpt", "tfn"])
+
+    assert res[0]["rating"] == "partial"
+    assert res[0]["sites"] == ["lsc"]
+    assert res[0]["best_site"] == "lsc"
+    assert "split_sites" not in res[0]
+
+
+def test_classify_full_site_skips_pair_search(monkeypatch):
+    duration = 2.0
+    n = _n_samp_for(duration)
+    # ogg covers the whole transit alone; coj covers only part of it. A valid
+    # split pair may exist, but a full single site is always preferred.
+    _patch_site_masks(monkeypatch, {"ogg": (0, n), "coj": (0, n // 2)})
+
+    wins = [{"epoch": 0, "mid": "2026-03-15T07:30:00"}]
+    res = T.classify_transits(97.64, 29.67, wins, None, duration, sites=["ogg", "coj"])
+
+    assert res[0]["rating"] == "full"
+    assert res[0]["best_site"] == "ogg"
+    assert "split_sites" not in res[0]
+
+
+def test_classify_ingress_bracket_flags(monkeypatch):
+    # duration=2h, pad 30 min each side -> the padded grid spans 3h
+    # (06:00-09:00). At 3-min cadence that's n=61 samples; ingress (06:30)
+    # sits at index 10, egress (08:30) at index 50.
+    duration = 2.0
+    pad_min = 30.0
+    n = _n_samp_for(duration + 2 * pad_min / 60.0)
+    assert n == 61
+    ingress_idx = 10
+
+    wins = [{
+        "epoch": 0, "mid": "2026-03-15T07:30:00",
+        "start": "2026-03-15T06:00:00", "end": "2026-03-15T09:00:00",
+    }]
+
+    # OK case: lsc covers from the grid start through well past ingress+30min
+    # (index 25); cpt covers from before ingress through the end. No gap
+    # (split_overlap), and lsc's own coverage brackets the ingress contact
+    # cleanly on both sides.
+    _patch_site_masks(monkeypatch, {"lsc": (0, ingress_idx + 15), "cpt": (ingress_idx + 8, n)})
+    res = T.classify_transits(97.64, 29.67, wins, None, duration, sites=["lsc", "cpt"],
+                               include_padding=True, pad_before_min=pad_min, pad_after_min=pad_min)
+    assert res[0]["rating"] == "split_overlap"
+    assert res[0]["ingress_bracket_ok"] is True
+
+    # Failing case: lsc's coverage stops right at ingress itself, leaving no
+    # post-ingress baseline from lsc alone -- the union still has no gap
+    # (cpt already picks up just before ingress), but the bracket fails.
+    _patch_site_masks(monkeypatch, {"lsc": (0, ingress_idx + 1), "cpt": (ingress_idx - 1, n)})
+    res2 = T.classify_transits(97.64, 29.67, wins, None, duration, sites=["lsc", "cpt"],
+                                include_padding=True, pad_before_min=pad_min, pad_after_min=pad_min)
+    assert res2[0]["rating"] == "split_overlap"
+    assert res2[0]["ingress_bracket_ok"] is False
+
+
+def test_site_coverage_span_detects_fragmentation():
+    import numpy as np
+
+    contiguous = np.array([False, True, True, True, False])
+    fragmented = np.array([True, False, False, True, False])
+    offsets = np.linspace(0.0, 1.0, len(contiguous))
+
+    start, end, frag = T._site_coverage_span(contiguous, offsets, 0.0, 1.0)
+    assert frag is False
+    assert start == pytest.approx(0.25)
+    assert end == pytest.approx(0.75)
+
+    _, _, frag2 = T._site_coverage_span(fragmented, offsets, 0.0, 1.0)
+    assert frag2 is True
 
 
 # --------------------------------------------------------------------------- #

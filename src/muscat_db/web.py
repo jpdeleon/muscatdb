@@ -2340,6 +2340,8 @@ def api_lco_windows(payload: dict = Body(...)):
                     moon_sep_min=float(payload.get("moon_sep_min") or 0.0),
                     include_padding=bool(payload.get("include_padding")),
                     sites=sites,
+                    pad_before_min=float(payload.get("pad_before_min") or 0.0),
+                    pad_after_min=float(payload.get("pad_after_min") or 0.0),
                 )
                 for w, o in zip(windows, obs):
                     w["observability"] = o
@@ -2417,6 +2419,102 @@ def api_lco_submit(request: Request, payload: dict = Body(...)):
         return JSONResponse({"ok": True, "result": result})
     except lco.LcoError as e:
         return _lco_error_response(e)
+
+
+def _lco_split_error_response(e: "lco.LcoError", leg: str) -> JSONResponse:
+    body = e.to_dict()
+    body["leg"] = leg
+    return JSONResponse(body, status_code=e.status)
+
+
+@app.post("/api/lco/split-ipp", response_class=JSONResponse)
+def api_lco_split_ipp(request: Request, payload: dict = Body(...)):
+    """Build+dry-run BOTH legs of a two-site split-transit request (one site
+    covering ingress through a handoff, the other the handoff through egress).
+    Both legs must pass validation before either can be submitted; this never
+    reports a partial pass, naming which leg failed when one does."""
+    user = _request_user(request)
+    try:
+        rg_a = lco.build_requestgroup((payload.get("leg_a") or {}).get("kind"), payload.get("leg_a") or {})
+        ipp_a = lco.max_allowable_ipp(rg_a, user)
+    except lco.LcoError as e:
+        return _lco_split_error_response(e, "leg_a")
+    try:
+        rg_b = lco.build_requestgroup((payload.get("leg_b") or {}).get("kind"), payload.get("leg_b") or {})
+        ipp_b = lco.max_allowable_ipp(rg_b, user)
+    except lco.LcoError as e:
+        return _lco_split_error_response(e, "leg_b")
+    return JSONResponse({
+        "ok": True,
+        "leg_a": {"payload": rg_a, "payload_hash": lco.payload_hash(rg_a), "ipp": ipp_a},
+        "leg_b": {"payload": rg_b, "payload_hash": lco.payload_hash(rg_b), "ipp": ipp_b},
+    })
+
+
+@app.post("/api/lco/split-submit", response_class=JSONResponse)
+def api_lco_split_submit(request: Request, payload: dict = Body(...)):
+    """Live two-site submission. Both legs' dry-run hashes must match before
+    either submits. Leg A submits first; leg B only submits if leg A
+    succeeds.
+
+    The two submits are NOT atomic -- LCO has no cross-site transactional API
+    here, so if leg B's submit fails after leg A's already succeeded, leg A is
+    a real, already-committed telescope-time booking. That case is reported as
+    ``"partial": true`` (with leg A's booked result included) rather than a
+    generic error, so the caller can surface it prominently instead of losing
+    track of the committed leg.
+    """
+    if not payload.get("confirm"):
+        return JSONResponse(
+            {"ok": False, "error": "submission requires explicit confirm"}, status_code=400
+        )
+    user = _request_user(request)
+    leg_a_params = payload.get("leg_a") or {}
+    leg_b_params = payload.get("leg_b") or {}
+
+    try:
+        rg_a = lco.build_requestgroup(leg_a_params.get("kind"), leg_a_params)
+    except lco.LcoError as e:
+        return _lco_split_error_response(e, "leg_a")
+    try:
+        rg_b = lco.build_requestgroup(leg_b_params.get("kind"), leg_b_params)
+    except lco.LcoError as e:
+        return _lco_split_error_response(e, "leg_b")
+
+    expected_a = payload.get("dry_run_hash_a")
+    if not expected_a or expected_a != lco.payload_hash(rg_a):
+        return JSONResponse(
+            {"ok": False, "leg": "leg_a", "error": "no matching IPP dry-run for leg A; run the dry-run again"},
+            status_code=409,
+        )
+    expected_b = payload.get("dry_run_hash_b")
+    if not expected_b or expected_b != lco.payload_hash(rg_b):
+        return JSONResponse(
+            {"ok": False, "leg": "leg_b", "error": "no matching IPP dry-run for leg B; run the dry-run again"},
+            status_code=409,
+        )
+
+    try:
+        result_a = lco.submit_requestgroup(rg_a, user)
+    except lco.LcoError as e:
+        # Neither leg is booked yet.
+        return _lco_split_error_response(e, "leg_a")
+
+    try:
+        result_b = lco.submit_requestgroup(rg_b, user)
+    except lco.LcoError as e:
+        return JSONResponse(
+            {
+                "ok": False,
+                "partial": True,
+                "error": "leg A booked, leg B failed to submit",
+                "leg_a": {"result": result_a},
+                "leg_b": e.to_dict(),
+            },
+            status_code=e.status,
+        )
+
+    return JSONResponse({"ok": True, "leg_a": {"result": result_a}, "leg_b": {"result": result_b}})
 
 
 @app.get("/api/lco/archive/frames", response_class=JSONResponse)
