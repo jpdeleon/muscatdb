@@ -830,11 +830,17 @@ def _write_fit_inputs(
     fit_data["plot_midtransit"] = options.get("plot_midtransit") == "true"
     fit_data["plot_ingress_egress"] = options.get("plot_ingress_egress") == "true"
 
-    # Sampler options (timer defaults: tune/draws 2000, chains/cores 2).
+    # Sampler options (timer defaults: tune/draws 2000, chains/cores 2). Full
+    # runs default to 4 chains on 4 cores so all chains sample in parallel
+    # (a lone core-24 server has ample headroom, and only one full fit runs
+    # at a time — see _MAX_FULL_JOBS) for a more reliable r_hat convergence
+    # check; test runs ignore both values entirely since timer's --test_run
+    # path forces chains=1/cores=2 (a quick sanity check gains nothing from
+    # multiple chains) regardless of what's written to fit.yaml.
     fit_data["tune"] = _int_opt("tune", 2000)
     fit_data["draws"] = _int_opt("draws", 2000)
-    fit_data["chains"] = _int_opt("chains", 2)
-    fit_data["cores"] = _int_opt("cores", 2)
+    fit_data["chains"] = _int_opt("chains", 4)
+    fit_data["cores"] = _int_opt("cores", 4)
 
     # Model options (timer defaults: include_mean and use_custom_optimizer on).
     fit_data["include_mean"] = _bool_opt("include_mean", default=True)
