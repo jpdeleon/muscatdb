@@ -981,8 +981,16 @@ def build_requestgroup(kind: str, params: dict) -> dict:
     elif kind == "sinistro":
         mode = params.get("readout_mode", "central_2k_2x2")
         binning = 2 if "2x2" in mode else 1
+        # Same REPEAT_EXPOSE constraint as MuSCAT above (line ~940): repeat_duration
+        # is derived from the window span, so packing exposure_count to fill the
+        # window leaves no room to repeat that block even once, and LCO rejects
+        # it ("repeat_duration ... is less than the minimum required to repeat
+        # at least once"). Force to 1 server-side too, not just in the frontend's
+        # exposure-count field, so any caller is protected.
+        sin_config_type = params.get("type") or "EXPOSE"
+        sin_exposure_count = 1 if sin_config_type == "REPEAT_EXPOSE" else params.get("exposure_count", 1)
         instrument_configs = [{
-            "exposure_count": params.get("exposure_count", 1),
+            "exposure_count": sin_exposure_count,
             "exposure_time": params.get("exposure_time", 60),
             "mode": mode,
             "optical_elements": {"filter": params.get("filter", "rp")},
