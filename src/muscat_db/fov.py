@@ -30,12 +30,15 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+
+from muscat_db.cache import LRUCache
 
 logger = logging.getLogger(__name__)
 
@@ -425,6 +428,12 @@ class StarField:
     bp_rp: np.ndarray
     source: str = ""
     error: str | None = None
+    # Proper motion (mas/yr). ``pmra`` is Gaia's convention: mu_alpha* = mu_alpha
+    # * cos(dec), i.e. already a true angular rate in the eastward direction.
+    # Appended after ``error`` (rather than grouped with gmag/bp_rp) so every
+    # existing positional ``StarField(...)`` call site stays valid.
+    pmra: np.ndarray = field(default_factory=lambda: np.array([]))
+    pmdec: np.ndarray = field(default_factory=lambda: np.array([]))
 
     def __len__(self) -> int:
         return len(self.ra)
@@ -455,7 +464,7 @@ def _query_gaia_esa(
         else f"phot_g_mean_mag < {max_mag}"
     )
     query = (
-        "SELECT TOP 10000 ra, dec, phot_g_mean_mag, bp_rp "
+        "SELECT TOP 10000 ra, dec, phot_g_mean_mag, bp_rp, pmra, pmdec "
         "FROM gaiadr3.gaia_source WHERE "
         f"1=CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', {ra}, {dec}, {radius_deg})) "
         f"AND {mag_clause} "
@@ -473,6 +482,8 @@ def _query_gaia_esa(
         dec=np.asarray(tab["dec"], dtype=float),
         gmag=np.asarray(tab["phot_g_mean_mag"], dtype=float),
         bp_rp=np.asarray(tab["bp_rp"], dtype=float),
+        pmra=np.asarray(tab["pmra"], dtype=float),
+        pmdec=np.asarray(tab["pmdec"], dtype=float),
         source="Gaia DR3 (ESA)",
     )
 
@@ -496,7 +507,7 @@ def _query_gaia_vizier(
         coord = SkyCoord(ra=ra, dec=dec, unit=(u.deg, u.deg), frame="icrs")
         gmag_filter = f"{min_mag}..{max_mag}" if min_mag > 0 else f"<{max_mag}"
         viz = Vizier(
-            columns=["RA_ICRS", "DE_ICRS", "Gmag", "BP-RP", "_r"],
+            columns=["RA_ICRS", "DE_ICRS", "Gmag", "BP-RP", "pmRA", "pmDE", "_r"],
             column_filters={"Gmag": gmag_filter},
             row_limit=-1,
         )
@@ -533,6 +544,8 @@ def _query_gaia_vizier(
         dec=np.asarray(tab["DE_ICRS"], dtype=float),
         gmag=np.asarray(tab["Gmag"], dtype=float),
         bp_rp=np.asarray(tab["BP-RP"], dtype=float),
+        pmra=np.asarray(tab["pmRA"], dtype=float),
+        pmdec=np.asarray(tab["pmDE"], dtype=float),
         source="Gaia DR3 (VizieR)",
     )
 
@@ -575,6 +588,55 @@ def query_gaia_field(
     return vizier_stars
 
 
+# Gaia DR3 astrometry/photometry at a fixed sky position is effectively static
+# (proper motion is negligible at cone-search radii over the timescales this
+# cache lives for), so successful cone-searches are cached with no expiry,
+# just an LRU size cap. Repeated re-optimizations of the same target/instrument
+# (different margin, PA, or magnitude filter) issue the identical cone-search,
+# since none of those knobs affect the query radius or mag range.
+_GAIA_CACHE_MAX = int(os.environ.get("MUSCAT_GAIA_CACHE_MAX", "512"))
+_gaia_cache = LRUCache(maxsize=_GAIA_CACHE_MAX)
+
+
+def _gaia_cache_key(
+    ra: float, dec: float, radius_arcsec: float, min_mag: float, max_mag: float
+) -> tuple:
+    # Round to bucket near-duplicate requests together: 1e-4 deg (~0.36") is
+    # far finer than any FOV footprint, so this never conflates distinct
+    # pointings while still absorbing float noise between repeated calls.
+    return (
+        round(ra, 4), round(dec, 4), round(radius_arcsec, 1),
+        round(min_mag, 2), round(max_mag, 2),
+    )
+
+
+def cached_query_gaia_field(
+    ra: float,
+    dec: float,
+    radius_arcsec: float,
+    min_mag: float = 0.0,
+    max_mag: float = 18.0,
+    mag_limit: float | None = None,
+) -> StarField:
+    """Memoizing wrapper around :func:`query_gaia_field`.
+
+    Only successful lookups are cached; a failed query (ESA and VizieR both
+    down, or a transient network error) is never stored, so it doesn't stay
+    "stuck" for other requests hitting the same field until the process
+    restarts.
+    """
+    if mag_limit is not None:
+        max_mag = mag_limit
+    key = _gaia_cache_key(ra, dec, radius_arcsec, min_mag, max_mag)
+    cached = _gaia_cache.get(key)
+    if cached is not None:
+        return cached
+    result = query_gaia_field(ra, dec, radius_arcsec, min_mag=min_mag, max_mag=max_mag)
+    if result.error is None:
+        _gaia_cache[key] = result
+    return result
+
+
 # ===========================================================================
 # Top-level orchestration
 # ===========================================================================
@@ -588,6 +650,8 @@ class FovResult:
     dec: float = math.nan
     target_gmag: float = math.nan
     target_bp_rp: float | None = None
+    target_pmra: float | None = None
+    target_pmdec: float | None = None
     fov_arcsec: float = math.nan
     fov_half_arcsec: float = math.nan
     margin_arcsec: float = DEFAULT_MARGIN_ARCSEC
@@ -612,6 +676,20 @@ class FovResult:
             if isinstance(v, float) and math.isnan(v):
                 d[k] = None
         return d
+
+
+def _pm_at(arr: np.ndarray, i: int, n: int) -> float | None:
+    """Proper motion component at index ``i``, or ``None`` if unavailable.
+
+    Guards against :class:`StarField` instances built without ``pmra``/
+    ``pmdec`` (e.g. older callers or test doubles), where the array is empty
+    rather than length-``n``, and against Gaia sources lacking a 5-parameter
+    astrometric solution (stored as NaN).
+    """
+    if len(arr) != n:
+        return None
+    v = float(arr[i])
+    return v if math.isfinite(v) else None
 
 
 def _identify_target_star(
@@ -648,6 +726,11 @@ def optimize(
     Either ``target`` (resolvable name) or explicit ``ra``/``dec`` (deg) must be
     given. Returns a :class:`FovResult` suitable for JSON serialization and for
     overplotting in Aladin Lite.
+
+    The Gaia cone-search itself goes through :func:`cached_query_gaia_field`,
+    so re-optimizing the same target/instrument (e.g. after tweaking the
+    margin or magnitude filter, which don't change the query) skips the
+    network round trip.
 
     If ``pa_step_deg`` is None, uses :const:`DEFAULT_PA_STEP_DEG`. Set to a
     large value (e.g. 180) to fix PA at 0° (no rotation).
@@ -723,7 +806,7 @@ def optimize(
         query_min_mag = 0.0
         query_max_mag = max(query_max_mag, avoid_mag)
 
-    stars = query_gaia_field(ra, dec, radius, min_mag=query_min_mag, max_mag=query_max_mag)
+    stars = cached_query_gaia_field(ra, dec, radius, min_mag=query_min_mag, max_mag=query_max_mag)
     if stars.error:
         res.error = stars.error
         return res
@@ -742,6 +825,10 @@ def optimize(
         res.target_gmag = float(np.nanmedian(stars.gmag))
     if t_idx is not None and np.isfinite(stars.bp_rp[t_idx]):
         res.target_bp_rp = float(stars.bp_rp[t_idx])
+    if t_idx is not None:
+        n_stars = len(stars)
+        res.target_pmra = _pm_at(stars.pmra, t_idx, n_stars)
+        res.target_pmdec = _pm_at(stars.pmdec, t_idx, n_stars)
 
     # --- tangent plane + scoring (exclude the target itself) ---
     east, north = radec_to_tangent(stars.ra, stars.dec, ra, dec)
@@ -815,6 +902,7 @@ def optimize(
     in_field = sol.in_field & (weights > 0)
     idx = np.where(in_field)[0]
     idx = idx[np.argsort(-weights[idx])][:max_comps]
+    n_stars = len(stars)
     comps = []
     for i in idx:
         comps.append(
@@ -826,6 +914,8 @@ def optimize(
                 "weight": round(float(weights[i]), 3),
                 "dmag": round(float(stars.gmag[i] - res.target_gmag), 2),
                 "sep_arcsec": round(float(math.hypot(east[i], north[i])), 1),
+                "pmra": _pm_at(stars.pmra, i, n_stars),
+                "pmdec": _pm_at(stars.pmdec, i, n_stars),
             }
         )
     res.comps = comps

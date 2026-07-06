@@ -11,6 +11,17 @@ import pytest
 from muscat_db import fov
 
 
+@pytest.fixture(autouse=True)
+def _clear_gaia_cache():
+    # cached_query_gaia_field's LRU cache is module-level state; several tests
+    # below reuse the same (ra, dec, radius) as a plain "some coordinates"
+    # convention, which would otherwise let one test's mocked result leak into
+    # another's via a cache hit.
+    fov._gaia_cache.clear()
+    yield
+    fov._gaia_cache.clear()
+
+
 # ── footprint sizes from the VOTable XML ─────────────────────────────────────
 
 @pytest.mark.parametrize(
@@ -242,6 +253,61 @@ def test_optimize_rejects_target_not_observable_for_instrument(monkeypatch):
     assert "muscat3" in res.error
 
 
+def test_pm_at_returns_none_for_mismatched_length():
+    # StarField built without pmra/pmdec defaults to an empty array.
+    assert fov._pm_at(np.array([]), 0, 3) is None
+
+
+def test_pm_at_returns_none_for_nan():
+    assert fov._pm_at(np.array([1.0, float("nan")]), 1, 2) is None
+
+
+def test_pm_at_returns_value():
+    assert fov._pm_at(np.array([1.0, 2.5]), 1, 2) == pytest.approx(2.5)
+
+
+def test_optimize_includes_target_and_comp_proper_motion(monkeypatch):
+    mock_stars = fov.StarField(
+        ra=np.array([10.0, 10.03]),
+        dec=np.array([-20.0, -20.0]),
+        gmag=np.array([12.0, 12.5]),
+        bp_rp=np.array([0.8, 0.8]),
+        pmra=np.array([15.2, -3.4]),
+        pmdec=np.array([-8.1, 22.0]),
+        source="mock",
+    )
+    monkeypatch.setattr(fov, "query_gaia_field", lambda *a, **k: mock_stars)
+
+    res = fov.optimize("muscat3", ra=10.0, dec=-20.0)
+    assert res.ok
+    assert res.target_pmra == pytest.approx(15.2)
+    assert res.target_pmdec == pytest.approx(-8.1)
+    assert res.n_comps == 1
+    assert res.comps[0]["pmra"] == pytest.approx(-3.4)
+    assert res.comps[0]["pmdec"] == pytest.approx(22.0)
+
+
+def test_optimize_comp_pm_is_none_when_star_field_lacks_pm_data(monkeypatch):
+    # A StarField built without pmra/pmdec (older caller, or a catalog response
+    # that omitted them) must not crash optimize(); PM is just unavailable.
+    mock_stars = fov.StarField(
+        ra=np.array([10.0, 10.03]),
+        dec=np.array([-20.0, -20.0]),
+        gmag=np.array([12.0, 12.5]),
+        bp_rp=np.array([0.8, 0.8]),
+        source="mock",
+    )
+    monkeypatch.setattr(fov, "query_gaia_field", lambda *a, **k: mock_stars)
+
+    res = fov.optimize("muscat3", ra=10.0, dec=-20.0)
+    assert res.ok
+    assert res.target_pmra is None
+    assert res.target_pmdec is None
+    assert res.n_comps == 1
+    assert res.comps[0]["pmra"] is None
+    assert res.comps[0]["pmdec"] is None
+
+
 def test_optimize_magnitude_filtering(monkeypatch):
     # Mock query_gaia_field to return a specific set of stars
     mock_stars = fov.StarField(
@@ -384,3 +450,66 @@ def test_query_gaia_field_reports_combined_error_when_both_sources_fail(monkeypa
     assert len(result) == 0
     assert "ESA Gaia query failed: timed out" in result.error
     assert "The database is not currently reachable." in result.error
+
+
+# ── Gaia cone-search caching ──────────────────────────────────────────────────
+
+def test_cached_query_gaia_field_hits_cache_on_repeat_call(monkeypatch):
+    calls = []
+    stars = fov.StarField(
+        ra=np.array([10.0]), dec=np.array([-20.0]),
+        gmag=np.array([12.0]), bp_rp=np.array([0.8]), source="mock",
+    )
+
+    def _fake_query(*args, **kwargs):
+        calls.append((args, kwargs))
+        return stars
+
+    monkeypatch.setattr(fov, "query_gaia_field", _fake_query)
+
+    first = fov.cached_query_gaia_field(10.0, -20.0, 60.0, min_mag=0.0, max_mag=18.0)
+    second = fov.cached_query_gaia_field(10.0, -20.0, 60.0, min_mag=0.0, max_mag=18.0)
+
+    assert first is stars
+    assert second is stars
+    assert len(calls) == 1  # second call served from cache, no re-query
+
+
+def test_cached_query_gaia_field_does_not_cache_errors(monkeypatch):
+    calls = {"n": 0}
+
+    def _fake_query(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return fov.StarField(
+                np.array([]), np.array([]), np.array([]), np.array([]),
+                source="mock", error="transient outage",
+            )
+        return fov.StarField(
+            ra=np.array([10.0]), dec=np.array([-20.0]),
+            gmag=np.array([12.0]), bp_rp=np.array([0.8]), source="mock",
+        )
+
+    monkeypatch.setattr(fov, "query_gaia_field", _fake_query)
+
+    first = fov.cached_query_gaia_field(10.0, -20.0, 60.0)
+    second = fov.cached_query_gaia_field(10.0, -20.0, 60.0)
+
+    assert first.error == "transient outage"
+    assert second.error is None  # not served from cache; the retry actually ran
+    assert calls["n"] == 2
+
+
+def test_cached_query_gaia_field_distinguishes_different_fields(monkeypatch):
+    def _fake_query(ra, dec, radius_arcsec, min_mag=0.0, max_mag=18.0):
+        return fov.StarField(
+            ra=np.array([ra]), dec=np.array([dec]),
+            gmag=np.array([12.0]), bp_rp=np.array([0.8]), source="mock",
+        )
+
+    monkeypatch.setattr(fov, "query_gaia_field", _fake_query)
+
+    a = fov.cached_query_gaia_field(10.0, -20.0, 60.0)
+    b = fov.cached_query_gaia_field(50.0, 10.0, 60.0)
+    assert a.ra[0] == 10.0
+    assert b.ra[0] == 50.0
