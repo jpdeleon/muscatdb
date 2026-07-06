@@ -70,7 +70,10 @@ RUN_DEFAULTS: dict = {
     "run_name": "default",
     "bands": DEFAULT_BANDS,
     "ref_band": "",            # "" -> per-band self-reference (pipeline default)
-    "refid": "",               # "" -> pipeline default (0 / middle frame)
+    "refid": "",               # "" -> pipeline default (0 / middle frame, or the
+                               # quality pre-check's pick when ref_select=quality)
+    "ref_select": "position",  # position (default, unchanged legacy behavior) | quality
+    "ref_select_top_k": 5,     # candidates pixel-validated in Tier 2 when ref_select=quality
     "aper_radii": "",          # "MIN,MAX,DR"; "" -> Gaia heuristic
     "annulus": "",             # "RIN,ROUT"; required with aper_radii
     "aper_unit": "pix",        # pix | fwhm (only applies with aper_radii)
@@ -374,7 +377,8 @@ def list_outputs(
     (band->{ref,apertures,alignment,gif,csv}), ``npz``, ``log`` (newest),
     ``has_any``, ``sites``/``modes`` (distinct sinistro sites/readout modes
     present, for the filter chips), ``site``/``mode`` (the ones actually shown),
-    and ``ref_header`` (the reference-frame header sidecar, site/mode-scoped).
+    ``ref_header`` (the reference-frame header sidecar, site/mode-scoped), and
+    ``ref_selection`` (the ``--ref_select quality`` audit report, if present).
     Only filenames are returned; serve them via the file route.
 
     A single sinistro date+target can hold products from more than one LCO site
@@ -404,6 +408,7 @@ def list_outputs(
         "modes": [],
         "mode": None,
         "ref_header": None,
+        "ref_selection": None,
     }
     try:
         rdir = run_output_dir(inst, date, target, run_id)
@@ -542,6 +547,12 @@ def list_outputs(
                     out["_ref_header_mtime"] = mtime
                 out["has_any"] = True
                 continue
+            if rest == "_ref_selection.txt":
+                if out["ref_selection"] is None or mtime > out.get("_ref_selection_mtime", 0):
+                    out["ref_selection"] = name
+                    out["_ref_selection_mtime"] = mtime
+                out["has_any"] = True
+                continue
             key = _SUMMARY_SUFFIX.get(rest)
             if key is not None:
                 item = {
@@ -621,6 +632,7 @@ def list_outputs(
             d.pop("_mtime", None)
     out.pop("_npz_mtime", None)
     out.pop("_ref_header_mtime", None)
+    out.pop("_ref_selection_mtime", None)
     ordered = {b: out["bands"][b] for b in DEFAULT_BANDS if b in out["bands"]}
     for b, v in out["bands"].items():
         ordered.setdefault(b, v)
@@ -975,7 +987,7 @@ def normalize_run_options(raw: dict | None) -> dict:
     if "bands" in raw:  # present-but-empty must surface as an error, not default
         o["bands"] = [str(b).strip() for b in (bands or []) if str(b).strip()]
 
-    for key in ("run_name", "ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "avoid_nearby_star_mode", "avoid_nearby_star", "target_coord", "wcs_method", "calib_dir", "site", "mode", "cmap", "nan_imputation_method"):
+    for key in ("run_name", "ref_band", "ref_select", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "avoid_nearby_star_mode", "avoid_nearby_star", "target_coord", "wcs_method", "calib_dir", "site", "mode", "cmap", "nan_imputation_method"):
         if raw.get(key) is not None:
             o[key] = str(raw[key]).strip()
 
@@ -984,7 +996,7 @@ def normalize_run_options(raw: dict | None) -> dict:
             val = str(raw.get(key, "")).strip()
             o[key] = "" if val == "" else (_to_int(val) if _to_int(val) is not None else "")
 
-    for key in ("test_run_frames", "max_num_stars", "cutout_size", "gif_stride", "min_star_area", "edge_margin"):
+    for key in ("test_run_frames", "max_num_stars", "cutout_size", "gif_stride", "min_star_area", "edge_margin", "ref_select_top_k"):
         if str(raw.get(key, "")).strip() != "":
             iv = _to_int(raw[key])
             if iv is not None:
@@ -1032,6 +1044,11 @@ def validate_run_options(o: dict, inst: str | None = None) -> str | None:
         return "reference band must be one of the selected bands"
     if (o.get("avoid_comparison_ids") or "").strip() and not (o.get("ref_band") or "").strip():
         return "avoid comparison IDs requires a reference band"
+    if o.get("ref_select", "position") not in ("position", "quality"):
+        return "reference selection must be 'position' or 'quality'"
+    top_k = o.get("ref_select_top_k")
+    if top_k not in (None, "") and int(top_k) < 1:
+        return "quality candidates (top-K) must be >= 1"
     if o.get("avoid_nearby_star_mode") not in ("off", "auto", "custom"):
         return "avoid nearby stars mode must be one of off, auto, or custom"
     if o.get("avoid_nearby_star_mode") == "custom":
@@ -1104,6 +1121,11 @@ def build_command(
         args += ["--ref_band", o["ref_band"]]
     if o.get("refid") not in (None, ""):
         args += ["--refid", str(o["refid"])]
+    if o.get("ref_select") == "quality":
+        args += ["--ref_select", "quality"]
+        top_k = o.get("ref_select_top_k")
+        if top_k not in (None, "") and int(top_k) != RUN_DEFAULTS["ref_select_top_k"]:
+            args += ["--ref_select_top_k", str(top_k)]
 
     ar = (o.get("aper_radii") or "").replace(" ", "")
     an = (o.get("annulus") or "").replace(" ", "")

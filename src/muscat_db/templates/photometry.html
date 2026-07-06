@@ -356,6 +356,7 @@
         {% if outputs.npz %}<a href="{{ file_base }}/{{ outputs.npz }}" download>⬇ data archive (.npz)</a>{% endif %}
         {% if outputs.log %}<a href="{{ file_base }}/{{ outputs.log }}" target="_blank">📄 pipeline log</a>{% endif %}
         {% if outputs.ref_header %}<a href="{{ file_base }}/{{ outputs.ref_header }}" target="_blank">🧾 view ref header</a>{% endif %}
+        {% if outputs.ref_selection %}<a href="{{ file_base }}/{{ outputs.ref_selection }}" target="_blank">🔍 view ref selection</a>{% endif %}
       </div>
     </div>
   {% else %}
@@ -462,8 +463,19 @@
               {% if sel_inst == 'sinistro' %}<span class="hint">Sinistro: enabled for one selected band, disabled for multi-band</span>{% endif %}
             </div>
             <div class="opt">
-              <label for="opt-refid">Reference frame ID <span class="help-tooltip" title="FITS file frame number (4-digit suffix, e.g. 1480 for MCT20_1911191480). Empty means auto (middle/best frame).">?</span></label>
+              <label for="opt-refid">Reference frame ID <span class="help-tooltip" title="FITS file frame number (4-digit suffix, e.g. 1480 for MCT20_1911191480). Empty means auto (first frame for self-reference, middle frame if a reference band is set, or the quality pre-check's pick if Reference selection = quality below). An explicit value here always overrides.">?</span></label>
               <input type="number" id="opt-refid" placeholder="auto" min="0" style="width: 100%;">
+            </div>
+            <div class="opt">
+              <label for="opt-ref_select">Reference selection <span class="help-tooltip" title="How the per-band reference frame is chosen (corresponds to --ref_select). 'position' (default) reproduces today's behavior (first/middle frame). 'quality' runs a fast header + pixel quality pre-check and picks the sharpest, cleanest available frame. Ignored when Reference frame ID above is set.">?</span></label>
+              <select id="opt-ref_select" style="width: 100%;">
+                <option value="position">position (default)</option>
+                <option value="quality">quality (auto-pick best frame)</option>
+              </select>
+            </div>
+            <div class="opt">
+              <label for="opt-ref_select_top_k">Quality candidates (top-K) <span class="help-tooltip" title="Number of top candidate frames pixel-validated in Tier 2 when Reference selection = quality (corresponds to --ref_select_top_k). Ignored in position mode.">?</span></label>
+              <input type="number" id="opt-ref_select_top_k" value="{{ run_defaults.ref_select_top_k }}" min="1" step="1" style="width: 100%;">
             </div>
             <div class="opt">
               <label for="opt-max_num_stars">Max # stars for detection <span class="help-tooltip" title="Max number of stars to detect for PSF modeling or alignment (corresponds to --max_num_stars).">?</span></label>
@@ -846,6 +858,8 @@
       bands: bands,
       ref_band: val('opt-ref_band'),
       refid: val('opt-refid'),
+      ref_select: val('opt-ref_select'),
+      ref_select_top_k: val('opt-ref_select_top_k'),
       aper_unit: val('opt-aper_unit'),
       aper_radii: val('opt-aper_radii'),
       annulus: val('opt-annulus'),
@@ -895,7 +909,7 @@
     document.querySelectorAll('input[name="band"]').forEach(function (c) {
       c.checked = saved.bands && saved.bands.indexOf(c.value) !== -1;
     });
-    ['run_name','ref_band','refid','aper_unit','aper_radii','annulus',
+    ['run_name','ref_band','refid','ref_select','ref_select_top_k','aper_unit','aper_radii','annulus',
      'target_id','comparison_ids','avoid_comparison_ids','avoid_nearby_star_mode','avoid_nearby_star','target_coord','test_run_frames','min_star_separation','max_num_stars',
        'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','cmap','site','mode'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
@@ -972,7 +986,7 @@
       document.querySelectorAll('input[name="band"]').forEach(function (c) {
         c.checked = DEFAULTS.bands && DEFAULTS.bands.indexOf(c.value) !== -1;
       });
-      ['run_name','ref_band','refid','aper_unit','aper_radii','annulus',
+      ['run_name','ref_band','refid','ref_select','ref_select_top_k','aper_unit','aper_radii','annulus',
        'target_id','comparison_ids','avoid_comparison_ids','avoid_nearby_star_mode','avoid_nearby_star','target_coord','test_run_frames','min_star_separation','max_num_stars',
      'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','cmap','site','mode'].forEach(function (id) {
         var el = document.getElementById('opt-'+id);
