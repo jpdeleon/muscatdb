@@ -704,6 +704,8 @@ _NEXSCI_COLUMNS: list[tuple[str, str, str]] = [
     ("sy_snum", "snum", "f"),
     ("cb_flag", "cbflag", "f"),
     ("st_age", "age", "f"),
+    ("st_ageerr1", "ageerr1", "f"),  # positive (upper) 1-sigma age uncertainty
+    ("st_agelim", "agelim", "f"),    # archive limit flag: -1 lower, 0 value+error, 1 upper
     ("ttv_flag", "ttv", "f"),
     ("pl_projobliq", "projobliq", "f"),
     ("st_nrvc", "nrvc", "f"),
