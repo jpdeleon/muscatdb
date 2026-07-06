@@ -36,8 +36,11 @@ Variables the app and the jobs it spawns inherit include `MUSCAT_DB_PATH`,
 `MUSCAT_DATA_DIR`, `MUSCAT_PROSE_DIR`, `MUSCAT_PROSE_PROJECT`,
 `MUSCAT_PROSE_CONDA_ENV`, `MUSCAT_TIMER_DIR`, the `MUSCAT_PHOT_*` job-lifecycle
 timeouts, `MUSCAT_TMPDIR`, `ASTROMETRY_NET_API_KEY`, `LCO_API_TOKEN`,
-`MUSCAT_LCO_DIR`, and `MUSCAT_LCO_ALLOW_SUBMIT` (see below). At startup the 
-server prints each variable's status (`set` / `default` / `unset`).
+`MUSCAT_LCO_DIR`, `MUSCAT_LCO_ALLOW_SUBMIT`, `MUSCAT_DB_SECRET` (per-user LCO
+token encryption), `MUSCAT_NGINX_GROUP` (htpasswd file group ownership), and
+`ADS_API_TOKEN`/`ADS_DEV_KEY` (target-page NASA ADS publication search) (see
+below). At startup the server prints each variable's status
+(`set` / `default` / `unset`).
 
 `MUSCAT_TMPDIR` (default `/raid_ut2/home/jerome/tmp`) routes the temp files of
 spawned pipeline jobs (`TMPDIR`/`TMP`/`TEMP`) onto a roomy raid-backed directory,
@@ -78,7 +81,10 @@ The feature is split into three workflows:
 - **Field-of-View (FOV) Optimization (`/fov`)**: Optimize the telescope pointing
   center offset and Position Angle (PA) to capture the maximum number of useful,
   non-saturated comparison stars from Gaia DR3 while keeping the science target
-  inside the instrument footprint (safely away from edges).
+  inside the instrument footprint (safely away from edges). An optional "avoid
+  brighter than" Gmag threshold steers the pointing away from any star that
+  would risk saturation or bleed if it fell inside the footprint; if no
+  pointing can satisfy the constraint the page reports why.
 - **Download LCO Data**: Filter archive frames by proposal, target, site, 
   instrument, reduction level, and date range, then download selected files 
   server-side.
@@ -91,6 +97,11 @@ server must have a stable `MUSCAT_DB_SECRET`:
 ```bash
 export MUSCAT_DB_SECRET="replace-with-a-long-random-secret"
 ```
+
+You can also export `MUSCAT_DB_SECRET` from `~/.bashrc` if you start
+`muscat-db` from that shell. For `systemd`, cron, or any other non-interactive
+launcher, define it in the service environment or in the repo `.env` file
+instead.
 
 The legacy server-wide fallback still works when no per-user token is saved:
 
@@ -108,6 +119,50 @@ export MUSCAT_LCO_ALLOW_SUBMIT=1  # Only set when intentionally going live
 
 The page is linked from the navigation bar and also reachable via 
 `/lco?view=<slug>` after saving an ephemeris view on the **Ephemeris** page.
+Repeating (`REPEAT_EXPOSE`) requests are validated against target
+observability over the full padded request window (not just the bare transit)
+before a dry-run or live submission is attempted, so an unobservable window
+is rejected with a specific reason instead of failing at LCO. The scheduler
+form and the `/toi`/`/nexsci` catalog filters are all bookmarkable: current
+selections are encoded into the URL hash (e.g.
+`/lco/schedule#proposal=TOM00001234&target=TOI-2000&kind=muscat3`) and take
+priority over `localStorage` on load, so a saved or shared link reproduces
+the exact view.
+
+### Multi-User Deployment (nginx)
+
+For a shared server with multiple observers, `muscat-db` can run behind an
+nginx reverse proxy that performs HTTP Basic Auth and forwards the
+authenticated username so jobs and settings are attributed per user:
+
+```bash
+muscat-db serve --nginx   # binds uvicorn to 127.0.0.1:8001; nginx listens on :8000
+```
+
+`deploy/setup-nginx.sh` installs the site config (`deploy/nginx.conf`) for a
+first-time setup. Manage the HTTP Basic Auth users with the built-in CLI
+(never edit the htpasswd file by hand):
+
+```bash
+muscat-db htpasswd add <username>                    # prompts for a password
+muscat-db htpasswd add <username> --password-stdin   # for scripting
+muscat-db htpasswd delete <username>
+muscat-db htpasswd list
+```
+
+The auth middleware only honors the `X-Forwarded-User` header nginx sets
+after a successful login when the request's immediate TCP peer is the
+loopback socket, so binding without `--nginx` (e.g. `--host 0.0.0.0`) cannot
+be tricked into accepting a spoofed header from the network. The htpasswd
+file is written `0640 root:www-data` (override the group with
+`MUSCAT_NGINX_GROUP`) so other local accounts on the shared server cannot
+read and offline-crack the password hashes, and `htpasswd add` pipes the
+password over stdin to `openssl passwd` rather than as an argument, so it
+never appears in `ps`/`/proc`.
+
+Each authenticated user is attributed on the **Jobs** page (`User` column)
+for the photometry and transit-fit runs they launch, and gets an isolated,
+encrypted LCO token via the `/settings` page (see above).
 
 ## CLI Usage
 
@@ -157,10 +212,12 @@ the TOI and NExScI catalog browsers, and pipeline guide.
 Observation-log navigation is **Logs** → **Dates** → **CCD summaries** → 
 **Per-frame table**.
 
-- **Transit Fitting Run Modes**: When launching transit fits, choose between a **New Fit** (start fresh, clobbering existing traces) or **Continue Sampling** (load the previous trace and append more MCMC draws, available if previous results exist).
-- **Field-of-View (FOV) Optimizer**: Accessible from the navbar or observation scheduler to plan pointing offsets and instrument position angle (PA) based on Gaia DR3 comparison star heuristics.
-- **Ephemeris O-C Export Headers**: Exported O-C ephemeris text starts with descriptive `#` comments specifying the BJD_TDB time standard and column formats (planet, epoch, tc, tc_unc) for easy external parsing.
-- **Catalog browsers (`/toi`, `/nexsci`)**: Interactive Plotly scatter plots of the TESS Objects of Interest (`data/TOIs.csv`) and the NASA Exoplanet Archive composite planet table (`data/nexsci_pscomppars.csv`), with configurable axes, filter chips, a searchable table, and CSV export. Targets already in muscat-db are drawn as ★ stars. On the **NExScI** page, clicking a point opens that planet's muscat-db target page when the host is in the database, otherwise its [NASA Exoplanet Archive overview](https://exoplanetarchive.ipac.caltech.edu/overview/) page (using the archive's canonical host name, e.g. `TOI-2000`).
+- **Transit Fitting Run Modes**: When launching transit fits, choose between a **New Fit** (start fresh, clobbering existing traces) or **Continue Sampling** (load the previous trace and append more MCMC draws, available if previous results exist). A **Secondary eclipse** checkbox fits an eclipse at orbital phase 0.5 instead of a primary transit.
+- **Download all output**: Photometry and transit-fit result pages offer a single button that zips every product file for that run (recursively, for run-scoped reductions) server-side and streams it back for download.
+- **Field-of-View (FOV) Optimizer**: Accessible from the navbar or observation scheduler to plan pointing offsets and instrument position angle (PA) based on Gaia DR3 comparison star heuristics, with an optional bright-star avoidance constraint.
+- **Ephemeris O-C Export Headers**: Exported O-C ephemeris text starts with descriptive `#` comments specifying the BJD_TDB time standard and column formats (planet, epoch, tc, tc_unc) for easy external parsing. Each ephemeris field (RA/Dec, T0, period, duration) carries a provenance badge (NASA/TOI/AUTO/LINEAR/FIT/manual) and hand-entered values are preserved across a same-target re-fetch instead of being overwritten by a catalog miss.
+- **Catalog browsers (`/toi`, `/nexsci`)**: Interactive Plotly scatter plots of the TESS Objects of Interest (`data/TOIs.csv`) and the NASA Exoplanet Archive composite planet table (`data/nexsci_pscomppars.csv`), with configurable axes, filter chips (including a fast-rotator chip driven by the Boyle+2026 stellar-rotation catalog on `/toi`), a searchable table, CSV export, and bookmarkable filter state via the URL hash. Targets already in muscat-db are drawn as ★ stars. On the **NExScI** page, clicking a point opens that planet's muscat-db target page when the host is in the database, otherwise its [NASA Exoplanet Archive overview](https://exoplanetarchive.ipac.caltech.edu/overview/) page (using the archive's canonical host name, e.g. `TOI-2000`).
+- **NASA ADS publications panel**: The target page can search NASA ADS for papers matching the target name (requires `ADS_API_TOKEN`/`ADS_DEV_KEY` in `.env`) and lists matching bibcodes with links to the abstract.
 
 The home page shows:
 
