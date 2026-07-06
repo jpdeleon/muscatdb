@@ -24,7 +24,7 @@
 <div class="lco-section">
   <h3>Search LCO Archive</h3>
   <div class="lco-grid">
-    <div class="lco-field"><label for="dl-proposal">Proposal ID</label><input id="dl-proposal" type="text" placeholder="LCO2026A-001"></div>
+    <div class="lco-field"><label for="dl-proposal">Proposal ID</label><input id="dl-proposal" type="text" placeholder="KEY2023-04"></div>
     <div class="lco-field">
       <label for="dl-object">Object</label>
       <input id="dl-object" type="text" placeholder="WASP-12">
@@ -429,6 +429,23 @@
     }).catch(function (e) { msg('msg-request', String(e), 'err'); });
   });
 
+  // The LCO archive API returns verbose frame objects (version_set, area
+  // footprint polygon, related_frames, ...), and _annotate_lco_archive_results
+  // layers dataset_* fields on top of that — the backend download path only
+  // ever reads the handful of fields below (see lco.py's _download_frame /
+  // infer_archive_instrument / _archive_download_snapshot). A "select all" on
+  // a large request otherwise reposts every one of those bytes verbatim,
+  // which can exceed nginx's request body size limit and come back as an
+  // HTML error page instead of JSON.
+  function minimalFramePayload(f) {
+    return {
+      filename: f.filename, basename: f.basename,
+      SITEID: f.SITEID, TELID: f.TELID, INSTRUME: f.INSTRUME,
+      DATE_OBS: f.DATE_OBS, DAY_OBS: f.DAY_OBS,
+      OBJECT: f.OBJECT, url: f.url,
+    };
+  }
+
   el('btn-download').addEventListener('click', function () {
     var picked = [];
     document.querySelectorAll('#frames-groups tbody input[type=checkbox]:checked').forEach(function (c) {
@@ -448,7 +465,7 @@
     });
     renderFrameGroups(selectedFrameKeys());
     
-    var body = { overwrite: chk('dl-overwrite'), frames: picked, background: true };
+    var body = { overwrite: chk('dl-overwrite'), frames: picked.map(minimalFramePayload), background: true };
     fetch('/api/lco/archive/download', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       .then(function (r) { return r.json(); }).then(function (d) {
         if (!d.ok) { msg('msg-download', d.error || 'failed', 'err'); return; }
