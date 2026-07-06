@@ -1642,9 +1642,7 @@
   }
 
   function formatSummaryNumber(value, digits) {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return '';
-    return n.toFixed(digits).replace(/0+$/, '').replace(/\.$/, '');
+    return MuscatFormat.fixedOrBlank(value, digits);
   }
 
   function buildOCSummaryText() {
