@@ -70,7 +70,7 @@
 </div>
 <div class="chip-bar">
   <span class="chip-label">System:</span>
-  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="young" title="Stellar age < 1 Gyr (st_age)">Young (&lt;1 Gyr)</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="young" title="Upper bound of stellar age < 1 Gyr (st_age + st_ageerr1, respecting st_agelim)">Young (&lt;1 Gyr)</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="nearby" title="System distance < 100 pc (sy_dist)">Nearby (&lt;100 pc)</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="bright" title="Gaia magnitude < 12 (sy_gaiamag)">Bright (G&lt;12)</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="ttv" title="Transit timing variations measured (ttv_flag)">Has TTV</span>
@@ -229,9 +229,12 @@
     selX.add(new Option(c.plot, c.key));
     selY.add(new Option(c.plot, c.key));
   });
-  [['none', 'None'], ['method', 'Disc. method'], ['size', 'Planet size'], ['star', 'Star type'],
-   ['year', 'Disc. year'], ['teq', 'Equil Temp'], ['dist', 'Distance'], ['tmag', 'TESS mag']]
+  // Color: the 3 pre-classified categories first, then every numeric column
+  // (same set as X/Y) so any measured quantity can drive a continuous
+  // Viridis color scale, not just the 4 that used to be hardcoded here.
+  [['none', 'None'], ['method', 'Disc. method'], ['size', 'Planet size'], ['star', 'Star type']]
     .forEach(([v, t]) => selColor.add(new Option(t, v)));
+  NUM_COLS.forEach(c => selColor.add(new Option(c.plot, c.key)));
   selX.value = 'period'; selY.value = 'radius'; selColor.value = 'method';
   logXEl.checked = true; logYEl.checked = true;
 
@@ -268,13 +271,29 @@
     };
   }
 
+  // Upper bound of a star's age credible interval: st_agelim=1 means the
+  // archive already reports st_age itself as an upper limit; st_agelim=-1
+  // means st_age is a lower limit only, so no upper bound is known at all;
+  // otherwise (a normal value+error measurement) add the positive 1-sigma
+  // uncertainty (st_ageerr1), falling back to the bare value if no
+  // uncertainty was reported.
+  function ageUpperBound(i) {
+    const age = NEXSCI.age[i];
+    if (age == null) return null;
+    const lim = NEXSCI.agelim[i];
+    if (lim === -1) return null;
+    if (lim === 1) return age;
+    const err1 = NEXSCI.ageerr1[i];
+    return (err1 != null && err1 > 0) ? age + err1 : age;
+  }
+
   // ── independent boolean filter chips (all share one group; chips AND together
   // rather than OR, unlike the method/size/star category chips above) ────────
   const FLAG_TESTS = {
     binary:   i => NEXSCI.snum[i] === 2,
     tertiary: i => NEXSCI.snum[i] != null && NEXSCI.snum[i] >= 3,
     cb:       i => NEXSCI.cbflag[i] === 1,
-    young:    i => NEXSCI.age[i] != null && NEXSCI.age[i] < 1,
+    young:    i => { const u = ageUpperBound(i); return u != null && u < 1; },
     nearby:   i => NEXSCI.dist[i] != null && NEXSCI.dist[i] < 100,
     bright:   i => NEXSCI.gmag[i] != null && NEXSCI.gmag[i] < 12,
     ttv:      i => NEXSCI.ttv[i] === 1,
@@ -470,7 +489,7 @@
       return trace;
     }
 
-    const numericColor = ['year', 'teq', 'dist', 'tmag'].includes(mode);
+    const numericColor = !!colByKey[mode] && colByKey[mode].type === 'num';
     let plotted = 0;
     let traces;
 
