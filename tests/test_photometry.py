@@ -352,6 +352,14 @@ class TestListOutputs:
         out = phot.list_outputs(INST, DATE, TARGET)
         assert out["ref_header"] == f"{TARGET}_{INST}_{DATE}_ref_header.txt"
 
+    def test_classifies_ref_selection(self, prose_dir):
+        # --ref_select quality writes a <stem>_ref_selection.txt audit sidecar;
+        # it is discovered for the "view ref selection" link.
+        rdir = prose_dir / INST / DATE
+        (rdir / f"{TARGET}_{INST}_{DATE}_ref_selection.txt").write_text("method: quality\n")
+        out = phot.list_outputs(INST, DATE, TARGET)
+        assert out["ref_selection"] == f"{TARGET}_{INST}_{DATE}_ref_selection.txt"
+
     def test_ref_header_follows_selected_site(self, monkeypatch, tmp_path):
         # The ref header is per-reduction, so it must track the selected site.
         base = tmp_path / "prose"
@@ -521,6 +529,7 @@ class TestRunOptions:
         # default numerics are NOT echoed
         for flag in ("--gif_stride", "--max_num_stars", "--cutout_size",
                      "--ccd_trim", "--edge_margin", "--bin_size_minutes", "--ref_band",
+                     "--ref_select", "--ref_select_top_k",
                      "--aper_radii", "--no_gif", "--use_barycorrpy"):
             assert flag not in cmd
         assert "--avoid_nearby_star" in cmd
@@ -532,6 +541,8 @@ class TestRunOptions:
             "bands": ["gp", "rp"],
             "ref_band": "gp",
             "refid": "3",
+            "ref_select": "quality",
+            "ref_select_top_k": "3",
             "aper_radii": "10,20,2",
             "annulus": "25,40",
             "aper_unit": "fwhm",
@@ -549,6 +560,8 @@ class TestRunOptions:
         assert cmd[cmd.index("--bands") + 1:cmd.index("--bands") + 3] == ["gp", "rp"]
         assert "--ref_band gp" in s
         assert "--refid 3" in s
+        assert "--ref_select quality" in s
+        assert "--ref_select_top_k 3" in s
         assert "--aper_radii 10,20,2" in s
         assert "--annulus 25,40" in s
         assert "--aper_unit fwhm" in s
@@ -559,6 +572,30 @@ class TestRunOptions:
         assert "--use_barycorrpy" in cmd
         assert "--gif_stride 50" in s
         assert "--nan-imputation-method median" in s
+
+    def test_ref_select_quality_default_top_k_not_echoed(self, monkeypatch, tmp_path):
+        # ref_select_top_k left at the RUN_DEFAULTS value should not be echoed
+        # even when ref_select=quality is (mirrors the numeric-override-only-
+        # when-changed convention used elsewhere in build_command).
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        cmd = phot.build_command(
+            INST, DATE, TARGET,
+            {"ref_select": "quality", "ref_select_top_k": phot.RUN_DEFAULTS["ref_select_top_k"]},
+            test_run=False,
+        )
+        assert "--ref_select quality" in " ".join(cmd)
+        assert "--ref_select_top_k" not in cmd
+
+    def test_ref_select_position_never_echoed_even_with_custom_top_k(self, monkeypatch, tmp_path):
+        # ref_select=position (default strategy) should never emit either flag,
+        # even if ref_select_top_k was changed -- top_k is meaningless without
+        # quality mode.
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        cmd = phot.build_command(
+            INST, DATE, TARGET, {"ref_select": "position", "ref_select_top_k": "9"}, test_run=False
+        )
+        assert "--ref_select" not in cmd
+        assert "--ref_select_top_k" not in cmd
 
     def test_edge_margin_zero_is_emitted_to_disable(self, monkeypatch, tmp_path):
         # 0 is a meaningful value (disable edge exclusion), distinct from the
@@ -661,6 +698,18 @@ class TestRunOptions:
             inst="sinistro",
         )
         assert err and "one of the selected bands" in err.lower()
+
+    def test_validate_rejects_bad_ref_select(self):
+        err = phot.validate_run_options(
+            phot.normalize_run_options({"bands": ["gp"], "ref_select": "best"})
+        )
+        assert err and "position" in err.lower() and "quality" in err.lower()
+
+    def test_validate_rejects_non_positive_ref_select_top_k(self):
+        err = phot.validate_run_options(
+            phot.normalize_run_options({"bands": ["gp"], "ref_select_top_k": "0"})
+        )
+        assert err and "top-k" in err.lower()
 
     def test_validate_avoid_ids_require_reference_band(self):
         err = phot.validate_run_options(
@@ -1366,6 +1415,17 @@ class TestRoutes:
         assert "--use_barycorrpy" in body["command"]
         assert "--max_num_stars 7" in body["command"]
 
+    def test_command_route_echoes_ref_select_quality(self, client):
+        r = client.post("/photometry/command", json={
+            "inst": INST, "date": DATE, "target": TARGET, "test_run": False,
+            "options": {"bands": ["gp"], "ref_select": "quality", "ref_select_top_k": 3},
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["error"] is None
+        assert "--ref_select quality" in body["command"]
+        assert "--ref_select_top_k 3" in body["command"]
+
     def test_command_route_reports_validation_error(self, client):
         r = client.post("/photometry/command", json={
             "inst": INST, "date": DATE, "target": TARGET,
@@ -1377,7 +1437,8 @@ class TestRoutes:
     def test_page_has_options_form(self, client):
         r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
         assert r.status_code == 200
-        for token in ("opt-ref_band", "opt-aper_radii", "opt-max_num_stars",
+        for token in ("opt-ref_band", "opt-ref_select", "opt-ref_select_top_k",
+                      "opt-aper_radii", "opt-max_num_stars",
                       "opt-use_barycorrpy", "Pipeline options"):
             assert token in r.text
 

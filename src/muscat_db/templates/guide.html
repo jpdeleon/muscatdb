@@ -309,7 +309,7 @@ graph TD
     A["Raw Science FITS Files\n(Calibrated e91.fits)"]:::default --> B["Band Grouping\n(Grouped by gp, rp, ip, zs filters)"]:::default
     
     %% Setup & Reference Frame
-    B --> C["Reference Frame Creation\n(Median stack of middle frame index)"]:::default
+    B --> C["Reference Frame Selection\n(single frame: first for self-reference, middle for --ref_band,\nor quality pre-check pick if --ref_select quality)"]:::default
     C --> D["Point Source Detection\n(Brightest stars on reference frame)"]:::default
     D --> E["Celestial Target Identification\n(WCS matching / MAST coordinate resolution)"]:::default
     E --> F["Gaia Contamination Sizing\n(Sizes sky annulus RIN & ROUT to exclude contaminants)"]:::default
@@ -977,7 +977,7 @@ erDiagram
             <p>The prose pipeline processes calibrated FITS frames through a sequence of steps:</p>
             <ol>
               <li><strong>Band grouping</strong> — science frames are sorted into photometric bands using the FILTER header keyword</li>
-              <li><strong>Reference frame creation</strong> — one frame (typically the middle frame or the first if <code>--ref_band</code> is used) serves as the reference for alignment</li>
+              <li><strong>Reference frame selection</strong> — one frame serves as the reference for alignment: by default the first frame (self-reference) or the middle frame of the reference band (<code>--ref_band</code>); when <code>--ref_select quality</code> is enabled, a fast header + pixel quality check instead picks the sharpest available frame (see FAQ below)</li>
               <li><strong>Source detection</strong> — point sources are identified on the reference frame</li>
               <li><strong>Target identification</strong> — the target is located via WCS matching against the resolved sky coordinates (from MAST/SIMBAD name resolution)</li>
               <li><strong>Gaia-based aperture sizing</strong> — annulus and aperture radii are set to avoid contaminating sources</li>
@@ -986,6 +986,21 @@ erDiagram
               <li><strong>Time correction</strong> — JD-UTC is converted to BJD-TDB</li>
               <li><strong>Export</strong> — per-band CSV lightcurves, PNG diagnostics, optional GIF animation</li>
             </ol>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What does Reference selection = quality (--ref_select) do?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>By default (<code>position</code>) the reference frame is chosen positionally — the first frame for self-reference, or the middle frame of the reference band when <code>--ref_band</code> is set — with no check on whether that frame is actually any good (clouds, poor focus, and high airmass can all silently become the reference). <code>--ref_select quality</code> replaces this with a two-tier pre-check that runs before the full reduction:</p>
+            <ol>
+              <li><strong>Header triage (Tier 1, MuSCAT3/MuSCAT4/Sinistro only)</strong> — every frame's header is scanned (no pixel data read, sub-second even for hundreds of frames) for BANZAI's own per-frame FWHM estimate (<code>L1FWHM</code>), airmass, focus position, humidity, and background level. Frames with physically broken values (e.g. airmass &gt; 3.5, humidity &gt; 95%) are excluded; the rest are ranked by a composite score dominated by FWHM, and the top-K candidates (<code>--ref_select_top_k</code>, default 5) move on to Tier 2.</li>
+              <li><strong>Pixel validation (Tier 2, all instruments)</strong> — the shortlisted candidates (or, for MuSCAT/MuSCAT2, which have no header FWHM proxy, K frames sampled evenly across the whole night) are run through the same source-detection pipeline used to build the reference today, in parallel. The candidate with the best combination of confirmed target match, non-outlier star count, low measured FWHM, and an unsaturated target wins.</li>
+            </ol>
+            <p>An explicit <strong>Reference frame ID</strong> always overrides quality selection. The chosen frame and the full Tier 1/Tier 2 comparison are written to a <code>*_ref_selection.txt</code> sidecar (linked from the results page as "view ref selection") so the automatic choice can be audited without re-running anything. Quality mode adds cost (roughly proportional to top_k candidates, not the full reduction) on top of the otherwise-instant positional lookup, so it is opt-in rather than the default.</p>
           </div>
         </div>
 
