@@ -228,6 +228,20 @@ def test_optimize_avoid_mag_infeasible_returns_error(monkeypatch):
     assert res.error and "brighter than" in res.error
 
 
+def test_optimize_rejects_target_not_observable_for_instrument(monkeypatch):
+    # All current sites sit at southern latitudes (~-30 to -32 deg), so a
+    # target at dec=+60 never clears MIN_ALTITUDE_DEG above the horizon.
+    def _fail_if_called(*_a, **_k):
+        raise AssertionError("query_gaia_field must not be called for an unobservable target")
+
+    monkeypatch.setattr(fov, "query_gaia_field", _fail_if_called)
+
+    res = fov.optimize("muscat3", ra=10.0, dec=60.0)
+    assert not res.ok
+    assert res.error and "not observable" in res.error
+    assert "muscat3" in res.error
+
+
 def test_optimize_magnitude_filtering(monkeypatch):
     # Mock query_gaia_field to return a specific set of stars
     mock_stars = fov.StarField(
@@ -258,3 +272,115 @@ def test_optimize_magnitude_filtering(monkeypatch):
     assert 11.5 in comp_gmags
     assert 10.0 not in comp_gmags
     assert 14.5 not in comp_gmags
+
+
+# ── VizieR server-error detection ────────────────────────────────────────────
+# A VizieR outage (e.g. its own database backend unreachable) comes back as an
+# HTTP 200 VOTable with QUERY_STATUS=ERROR, which astroquery otherwise parses
+# into an indistinguishable-from-empty TableList. These guard against that
+# regressing into the misleading "No Gaia sources returned" message.
+
+_VIZIER_DB_DOWN_VOTABLE = """<?xml version="1.0" encoding="UTF-8"?>
+<VOTABLE version="1.4">
+<INFO ID="Error" name="Error" value="The database is not currently reachable."/>
+<INFO name="Error" value=" "/>
+<INFO name="Error" value=" -- no connection"/>
+<INFO name="Error" value="Postgres connect error"/>
+<INFO name="QUERY_STATUS" value="ERROR">
+ -- no connection
+</INFO>
+</VOTABLE>
+"""
+
+_VIZIER_EMPTY_RESULT_VOTABLE = """<?xml version="1.0" encoding="UTF-8"?>
+<VOTABLE version="1.4">
+<INFO name="QUERY_STATUS" value="OK"/>
+</VOTABLE>
+"""
+
+
+def test_vizier_server_error_detects_database_outage():
+    msg = fov._vizier_server_error(_VIZIER_DB_DOWN_VOTABLE)
+    assert msg == "The database is not currently reachable."
+
+
+def test_vizier_server_error_none_for_normal_response():
+    assert fov._vizier_server_error(_VIZIER_EMPTY_RESULT_VOTABLE) is None
+
+
+def test_vizier_server_error_falls_back_when_no_useful_detail():
+    text = (
+        '<INFO name="Error" value=" "/>'
+        '<INFO name="QUERY_STATUS" value="ERROR">boom</INFO>'
+    )
+    assert fov._vizier_server_error(text) == "VizieR reported an unspecified server error"
+
+
+def test_query_gaia_vizier_surfaces_server_error(monkeypatch):
+    class _FakeResponse:
+        text = _VIZIER_DB_DOWN_VOTABLE
+
+    monkeypatch.setattr(
+        "astroquery.vizier.Vizier.query_region_async",
+        lambda self, *a, **k: _FakeResponse(),
+    )
+
+    result = fov._query_gaia_vizier(10.0, -20.0, radius_arcsec=60.0, min_mag=0.0, max_mag=18.0)
+    assert len(result) == 0
+    assert result.error == "VizieR server error: The database is not currently reachable."
+
+
+# ── ESA-first, VizieR-fallback orchestration ─────────────────────────────────
+
+def test_query_gaia_field_uses_esa_when_it_succeeds(monkeypatch):
+    esa_stars = fov.StarField(
+        ra=np.array([10.0]), dec=np.array([-20.0]),
+        gmag=np.array([12.0]), bp_rp=np.array([0.8]),
+        source="Gaia DR3 (ESA)",
+    )
+    monkeypatch.setattr(fov, "_query_gaia_esa", lambda *a, **k: esa_stars)
+    monkeypatch.setattr(
+        fov, "_query_gaia_vizier",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("VizieR should not be called")),
+    )
+
+    result = fov.query_gaia_field(10.0, -20.0, radius_arcsec=60.0)
+    assert result is esa_stars
+    assert result.error is None
+
+
+def test_query_gaia_field_falls_back_to_vizier_when_esa_fails(monkeypatch):
+    failed_esa = fov.StarField(
+        np.array([]), np.array([]), np.array([]), np.array([]),
+        source="Gaia DR3 (ESA)", error="ESA Gaia query failed: timed out",
+    )
+    vizier_stars = fov.StarField(
+        ra=np.array([10.0]), dec=np.array([-20.0]),
+        gmag=np.array([12.0]), bp_rp=np.array([0.8]),
+        source="Gaia DR3 (VizieR)",
+    )
+    monkeypatch.setattr(fov, "_query_gaia_esa", lambda *a, **k: failed_esa)
+    monkeypatch.setattr(fov, "_query_gaia_vizier", lambda *a, **k: vizier_stars)
+
+    result = fov.query_gaia_field(10.0, -20.0, radius_arcsec=60.0)
+    assert result is vizier_stars
+    assert result.error is None
+
+
+def test_query_gaia_field_reports_combined_error_when_both_sources_fail(monkeypatch):
+    failed_esa = fov.StarField(
+        np.array([]), np.array([]), np.array([]), np.array([]),
+        source="Gaia DR3 (ESA)", error="ESA Gaia query failed: timed out",
+    )
+    failed_vizier = fov.StarField(
+        np.array([]), np.array([]), np.array([]), np.array([]),
+        source="Gaia DR3 (VizieR)",
+        error="VizieR server error: The database is not currently reachable.",
+    )
+    monkeypatch.setattr(fov, "_query_gaia_esa", lambda *a, **k: failed_esa)
+    monkeypatch.setattr(fov, "_query_gaia_vizier", lambda *a, **k: failed_vizier)
+
+    result = fov.query_gaia_field(10.0, -20.0, radius_arcsec=60.0)
+    assert len(result) == 0
+    assert "ESA Gaia query failed: timed out" in result.error
+    assert "The database is not currently reachable." in result.error
