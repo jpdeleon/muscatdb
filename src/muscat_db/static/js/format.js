@@ -61,11 +61,55 @@ window.MuscatFormat = (function () {
     return String(parseFloat(s));
   }
 
+  // Base-10 exponent of `x`, read off its exponential-notation string
+  // instead of Math.log10() to avoid float rounding (log10(0.1) can come
+  // out as -0.9999999999999998, which would silently pick the wrong
+  // decimal-place bucket below).
+  function orderOfMagnitude(x) {
+    var exp = Math.abs(x).toExponential().split("e")[1];
+    return parseInt(exp, 10);
+  }
+
+  // Format a value alongside its uncertainty using the standard scientific
+  // convention: round the uncertainty to `sf` significant figures (1 by
+  // default), then display the value to that same decimal place so the two
+  // numbers stay consistent (e.g. period 3.14159 ± 0.002 -> "3.142 ± 0.002").
+  // Decimals are floored at 0 for the rare case where the uncertainty's
+  // magnitude alone would call for negative decimal places (rounding to
+  // tens/hundreds) — toFixed can't express that, so the value and
+  // uncertainty are shown as whole numbers instead.
+  //
+  // `maxDecimals` defaults to MAX_DECIMALS but can be raised by callers whose
+  // quantity legitimately needs more (e.g. a period fit with many transits
+  // can have a sub-1e-6-day uncertainty; capping at 6 decimals would round
+  // that to "0.000000" and falsely claim an exact period).
+  //
+  // Falls back to auto(value) when no finite, non-zero uncertainty is given.
+  function pair(value, uncertainty, sf, maxDecimals) {
+    sf = sf || 1;
+    maxDecimals = maxDecimals === undefined ? MAX_DECIMALS : maxDecimals;
+    var u = Number(uncertainty);
+    if (!isFinite(u) || u === 0) {
+      var fallback = auto(value);
+      return { value: fallback, uncertainty: "", decimals: null, text: fallback };
+    }
+    var uRounded = Number(Math.abs(u).toPrecision(sf));
+    var decimals = sf - 1 - orderOfMagnitude(uRounded);
+    decimals = Math.min(Math.max(decimals, 0), maxDecimals);
+    var uncStr = uRounded.toFixed(decimals);
+    var valueMissing = value === null || value === undefined || value === "";
+    var v = Number(value);
+    var valueStr = !valueMissing && isFinite(v) ? v.toFixed(decimals) : "";
+    var text = valueStr === "" ? uncStr : valueStr + " ± " + uncStr;
+    return { value: valueStr, uncertainty: uncStr, decimals: decimals, text: text };
+  }
+
   return {
     MAX_DECIMALS: MAX_DECIMALS,
     sigFigs: sigFigs,
     fixed: fixed,
     fixedOrBlank: fixedOrBlank,
     auto: auto,
+    pair: pair,
   };
 })();
