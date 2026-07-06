@@ -471,6 +471,12 @@
   applyDateBounds();
   applyDownloadSiteOptions();
   restoreArchiveState();
+
+  // ?target=<name> prefills the Object field (e.g. linked from the target
+  // page's "Search LCO archive" button), overriding the persisted value.
+  var urlParams = new URLSearchParams(window.location.search);
+  var targetParam = urlParams.get('target');
+  if (targetParam) setVal('dl-object', targetParam);
 })();
 </script>
 {% endblock %}

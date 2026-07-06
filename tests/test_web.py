@@ -399,6 +399,22 @@ def test_target_detail_stores_last_viewed_target(mock_db, monkeypatch):
     assert "MuscatRouteState.rememberTarget(\"V1298TAU\")" in html
 
 
+def test_target_detail_has_lco_schedule_and_archive_buttons(mock_db, monkeypatch):
+    monkeypatch.setattr(
+        "muscat_db.web._get_datasets_for_normalized_target",
+        lambda _db, norm_name: ([], "2026-07-01"),
+    )
+
+    response = TestClient(app).get("/target?name=V1298Tau_b")
+
+    assert response.status_code == 200
+    html = response.text
+    assert "Schedule LCO" in html
+    assert "Search LCO archive" in html
+    assert 'href="/lco/schedule?target=V1298TAU"' in html
+    assert 'href="/lco/archive?target=V1298TAU"' in html
+
+
 def test_ephemeris_targets_are_normalized_unique_names(mock_db):
     save_job(
         type_="transit_fit",
