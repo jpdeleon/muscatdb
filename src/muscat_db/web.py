@@ -256,6 +256,15 @@ def index():
             t["is_identified"] = overrides[t["object"]]
         t["norm_name"] = _normalize_target_name(t["object"])
 
+    # Sum each raw OBJECT's dataset-date count across every other raw name
+    # that normalizes to the same target, so the Ndataset column can show
+    # "this row's count (total across the normalized target)".
+    norm_date_totals: dict[str, int] = {}
+    for t in targets:
+        norm_date_totals[t["norm_name"]] = norm_date_totals.get(t["norm_name"], 0) + t["n_dates"]
+    for t in targets:
+        t["norm_n_dates"] = norm_date_totals[t["norm_name"]]
+
     last_updated = get_last_build_date(db)
 
     html = jinja.get_template("index.html").render(

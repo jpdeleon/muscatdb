@@ -878,19 +878,23 @@ def _normalize_filters(filters: list[str]) -> list[dict]:
 
     g/gp -> 'g' (blue), r/rp/R -> 'r' (green), i/ip/I -> 'i' (yellow),
     z/zs/z_s/zp -> 'z' (red). Any *_narrow suffix renders as a darker chip
-    of the same color and keeps the suffix in the label. Anything else falls
-    through to the neutral 'other' colour with the original label.
-    Deduplicates so a target with both 'g' and 'gp' shows a single 'g' chip.
+    of the same color and keeps the suffix in the label. 'Na_D' (sodium
+    doublet) is also flagged narrow, matching the narrowband detection used
+    elsewhere (see is_narrowband in web.py), even though it has no _narrow
+    suffix. Anything else falls through to the neutral 'other' colour with
+    the original label. Deduplicates so a target with both 'g' and 'gp'
+    shows a single 'g' chip.
     """
     chips: list[dict] = []
     seen: set[tuple[str, str, bool]] = set()
     for f in filters or []:
         if not f:
             continue
-        narrow = f.endswith("_narrow")
-        base = f[:-7] if narrow else f
+        has_narrow_suffix = f.endswith("_narrow")
+        base = f[:-7] if has_narrow_suffix else f
+        narrow = has_narrow_suffix or base.lower() == "na_d"
         color = _FILTER_COLOR_ALIAS.get(base) or _FILTER_COLOR_ALIAS.get(base.lower(), "other")
-        label = (color if color != "other" else base) + ("_narrow" if narrow else "")
+        label = (color if color != "other" else base) + ("_narrow" if has_narrow_suffix else "")
         key = (label, color, narrow)
         if key in seen:
             continue
