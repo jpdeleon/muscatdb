@@ -481,9 +481,12 @@ def _load_toi_catalog() -> dict:
     data: dict[str, list] = {key: [] for _, key, _ in _TOI_COLUMNS}
     updated = ""
     with open(path, encoding="utf-8") as f:
-        for row in csv.DictReader(f):
+        reader = csv.DictReader(f)
+        # Build case-insensitive header lookup (TAP API folds identifiers to lowercase)
+        col_map = {h.strip().lower(): h for h in (reader.fieldnames or [])}
+        for row in reader:
             for header, key, kind in _TOI_COLUMNS:
-                raw = row.get(header)
+                raw = row.get(col_map.get(header.strip().lower()))
                 data[key].append(_toi_float(raw) if kind == "f" else (raw or "").strip())
             u = (row.get("Date TOI Updated (UTC)") or "").strip()
             if u > updated:
@@ -693,6 +696,7 @@ _NEXSCI_COLUMNS: list[tuple[str, str, str]] = [
     ("pl_radj", "radj", "f"),
     ("pl_bmasse", "mass", "f"),
     ("pl_bmassj", "massj", "f"),
+    ("pl_bmassprov", "bmassprov", "s"),
     ("pl_eqt", "teq", "f"),
     ("pl_insol", "insol", "f"),
     ("pl_ratror", "ratror", "f"),
