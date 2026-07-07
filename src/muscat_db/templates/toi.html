@@ -83,7 +83,10 @@
 
 <details id="toi-table-section" class="toi-section" open style="margin-top:1rem;">
   <summary>Catalog table</summary>
-  <div class="csv-wrap">
+  <div class="top-scrollbar-wrapper" id="toi-top-scrollbar" style="overflow-x: auto; overflow-y: hidden; display: none; margin-top: 0.5rem;">
+    <div style="height: 1px;"></div>
+  </div>
+  <div class="csv-wrap" id="toi-csv-wrap">
     <table id="toi-table">
       <thead>
         <tr id="toi-head-labels"></tr>
@@ -105,6 +108,9 @@
     <label><input type="checkbox" id="plot-logy"> log Y</label>
     <label title="Show 1σ error bars on the X axis (where the catalog provides them)"><input type="checkbox" id="plot-errx"> ± X unc</label>
     <label title="Show 1σ error bars on the Y axis (where the catalog provides them)"><input type="checkbox" id="plot-erry"> ± Y unc</label>
+    <label id="lbl-desert-mazeh" style="display: none;"><input type="checkbox" id="plot-desert-mazeh"> Neptune Desert (Mazeh+2016)</label>
+    <label id="lbl-desert-castro" style="display: none;"><input type="checkbox" id="plot-desert-castro"> Neptune Desert (Castro-Gonzalez+2024)</label>
+    <label id="lbl-radgap" style="display: none;"><input type="checkbox" id="plot-radgap"> Radius Gap</label>
     <label>Size <input type="range" id="plot-size" min="3" max="14" step="1" value="6"></label>
     <span id="plot-count" class="hint"></span>
   </div>
@@ -456,6 +462,22 @@
       ? ('Showing first ' + CAP.toLocaleString() + ' of ' + idx.length.toLocaleString() +
          ' matching rows — refine filters to narrow the table. The plot below uses all matching rows.')
       : '';
+
+    // Initialize resizable columns with actual rows populated to avoid locking in empty-table widths
+    const table = document.getElementById('toi-table');
+    if (table && window.initTable && !table.dataset.initializedWithRows && shown > 0) {
+      delete table.dataset.resizableInit;
+      table.classList.remove('resizable-init');
+      if (table.tHead && table.tHead.rows[0]) {
+        Array.from(table.tHead.rows[0].cells).forEach(th => {
+          th.querySelectorAll('.col-resizer').forEach(h => h.remove());
+          th.style.width = '';
+          th.style.maxWidth = '';
+        });
+      }
+      table.dataset.initializedWithRows = '1';
+      window.initTable(table);
+    }
   }
 
   function updateSortIndicators() {
@@ -589,9 +611,93 @@
     return { traces, plotted, xlabel, ylabel, logx, logy };
   }
 
+  function linspace(start, end, num) {
+    const arr = [];
+    const step = (end - start) / (num - 1);
+    for (let i = 0; i < num; i++) {
+      arr.push(start + step * i);
+    }
+    return arr;
+  }
+
   function drawPlot(idx) {
     if (!window.Plotly) return;
     const { traces, plotted, xlabel, ylabel, logx, logy } = buildTraces(idx);
+
+    // Add custom boundaries if checkboxed and plot has period vs radius
+    const xk = selX.value, yk = selY.value;
+    const isPeriodRadius = (xk === 'period' && yk === 'radius') || (xk === 'radius' && yk === 'period');
+
+    const lblDesertMazeh = document.getElementById('lbl-desert-mazeh');
+    const lblDesertCastro = document.getElementById('lbl-desert-castro');
+    const lblRadGap = document.getElementById('lbl-radgap');
+    if (lblDesertMazeh && lblDesertCastro && lblRadGap) {
+      const show = isPeriodRadius ? 'inline-flex' : 'none';
+      lblDesertMazeh.style.display = show;
+      lblDesertCastro.style.display = show;
+      lblRadGap.style.display = show;
+    }
+
+    if (isPeriodRadius) {
+      const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+      const castroColor = isDark ? '#ffffff' : '#000000';
+      const mazehColor = isDark ? '#8b949e' : '#7f7f7f';
+
+      const makeLineTrace = (p_arr, r_arr, name, color, dash) => {
+        const x_data = (xk === 'period') ? p_arr : r_arr;
+        const y_data = (xk === 'period') ? r_arr : p_arr;
+        return {
+          x: x_data,
+          y: y_data,
+          mode: 'lines',
+          name: name,
+          line: { color: color, width: 2, dash: dash },
+          hoverinfo: 'skip',
+          showlegend: true
+        };
+      };
+
+      if (document.getElementById('plot-desert-mazeh').checked) {
+        // Theoretical boundaries
+        const p_theo = linspace(Math.log10(0.1), Math.log10(20), 100).map(x => Math.pow(10, x));
+        const r_lower = p_theo.map(p => Math.pow(p, 0.68));
+        const r_upper = p_theo.map(p => 14.8 * Math.pow(p, -0.33));
+
+        traces.push(makeLineTrace(p_theo, r_lower, 'Neptune Desert (Mazeh+2016 Lower)', mazehColor, 'dash'));
+        traces.push(makeLineTrace(p_theo, r_upper, 'Neptune Desert (Mazeh+2016 Upper)', mazehColor, 'dash'));
+      }
+
+      if (document.getElementById('plot-desert-castro').checked) {
+        // Empirical boundary (Castro-González et al. 2024)
+        const n_emp = 50;
+        const x1_log = Array(n_emp).fill(-0.30);
+        const y1_log = linspace(-0.07, 0.195, n_emp);
+        const x_low_log = linspace(-0.30, 0.47, n_emp);
+        const y_low_log = x_low_log.map(x => 0.55 * x + 0.36);
+        const x_right_log = Array(n_emp).fill(0.47);
+        const y_right_log = linspace(0.6185, 0.9379, n_emp);
+        const x_up_log = linspace(0.47, 0.12, n_emp);
+        const y_up_log = x_up_log.map(x => -0.43 * x + 1.14);
+        const x2_log = Array(n_emp).fill(0.12);
+        const y2_log = linspace(1.0884, 1.20, n_emp);
+
+        const p_emp_log = [...x1_log, ...x_low_log, ...x_right_log, ...x_up_log, ...x2_log];
+        const r_emp_log = [...y1_log, ...y_low_log, ...y_right_log, ...y_up_log, ...y2_log];
+
+        const p_emp = p_emp_log.map(x => Math.pow(10, x));
+        const r_emp = r_emp_log.map(y => Math.pow(10, y));
+
+        traces.push(makeLineTrace(p_emp, r_emp, 'Neptune Desert (Castro-Gonzalez+2024)', castroColor, 'solid'));
+      }
+
+      if (document.getElementById('plot-radgap').checked) {
+        const p_gap = linspace(Math.log10(0.5), Math.log10(100), 100).map(x => Math.pow(10, x));
+        const r_gap = p_gap.map(p => Math.pow(p, -0.09) * Math.pow(10, 0.37));
+
+        traces.push(makeLineTrace(p_gap, r_gap, 'Radius Gap (Van Eylen+2018)', castroColor, 'dash'));
+      }
+    }
+
     const dark = document.documentElement.getAttribute('data-theme') === 'dark';
     const grid = dark ? '#30363d' : '#e1e4e8';
     const minorGrid = dark ? '#21262d' : '#f0f1f2';
@@ -661,6 +767,9 @@
       if (state.plot.logy) parts.push('logy=1');
       if (state.plot.errx) parts.push('errx=1');
       if (state.plot.erry) parts.push('erry=1');
+      if (state.plot.mazeh) parts.push('mazeh=1');
+      if (state.plot.castro) parts.push('castro=1');
+      if (state.plot.radgap) parts.push('radgap=1');
       if (state.plot.size && state.plot.size !== '6') parts.push('size=' + state.plot.size);
     }
     return parts.length ? '#' + parts.join('&') : '';
@@ -686,6 +795,9 @@
     if (params.has('logy')) state.plot.logy = true;
     if (params.has('errx')) state.plot.errx = true;
     if (params.has('erry')) state.plot.erry = true;
+    if (params.has('mazeh')) state.plot.mazeh = true;
+    if (params.has('castro')) state.plot.castro = true;
+    if (params.has('radgap')) state.plot.radgap = true;
     if (params.has('size')) state.plot.size = params.get('size');
     return Object.keys(state).length ? state : null;
   }
@@ -703,7 +815,10 @@
       sort: sortState,
       plot: { x: selX.value, y: selY.value, color: selColor.value,
               logx: logXEl.checked, logy: logYEl.checked,
-              errx: errXEl.checked, erry: errYEl.checked, size: sizeEl.value },
+              errx: errXEl.checked, erry: errYEl.checked, size: sizeEl.value,
+              mazeh: document.getElementById('plot-desert-mazeh').checked,
+              castro: document.getElementById('plot-desert-castro').checked,
+              radgap: document.getElementById('plot-radgap').checked },
     };
     if (LS) {
       const cols = {};
@@ -736,6 +851,9 @@
       if (s.plot.color) selColor.value = s.plot.color;
       logXEl.checked = !!s.plot.logx; logYEl.checked = !!s.plot.logy;
       errXEl.checked = !!s.plot.errx; errYEl.checked = !!s.plot.erry;
+      if (s.plot.mazeh) document.getElementById('plot-desert-mazeh').checked = !!s.plot.mazeh;
+      if (s.plot.castro) document.getElementById('plot-desert-castro').checked = !!s.plot.castro;
+      if (s.plot.radgap) document.getElementById('plot-radgap').checked = !!s.plot.radgap;
       if (s.plot.size) sizeEl.value = s.plot.size;
     }
   }
@@ -837,6 +955,7 @@
   }));
   [selX, selY, selColor].forEach(el => el.addEventListener('change', () => { drawPlot(lastIdx); saveState(); }));
   [logXEl, logYEl, errXEl, errYEl].forEach(el => el.addEventListener('change', () => { drawPlot(lastIdx); saveState(); }));
+  [document.getElementById('plot-desert-mazeh'), document.getElementById('plot-desert-castro'), document.getElementById('plot-radgap')].forEach(el => el.addEventListener('change', () => { drawPlot(lastIdx); saveState(); }));
   sizeEl.addEventListener('input', () => { drawPlot(lastIdx); saveState(); });
 
   // Re-theme the plot when the global light/dark toggle flips.
@@ -851,6 +970,72 @@
     if (v === 'closed') el.open = false;
     el.addEventListener('toggle', () => LS.set('toi:open:' + id, el.open ? 'open' : 'closed'));
   });
+
+  // ── double horizontal scrollbar ────────────────────────────────────────────
+  function getScrollbarHeight() {
+    const el = document.createElement('div');
+    el.style.width = '100px';
+    el.style.height = '100px';
+    el.style.overflow = 'scroll';
+    el.style.position = 'absolute';
+    el.style.top = '-9999px';
+    document.body.appendChild(el);
+    const h = el.offsetHeight - el.clientHeight;
+    document.body.removeChild(el);
+    return h;
+  }
+
+  function setupDoubleScrollbar(topWrapperId, tableWrapperId) {
+    const topWrapper = document.getElementById(topWrapperId);
+    const tableWrapper = document.getElementById(tableWrapperId);
+    if (!topWrapper || !tableWrapper) return;
+
+    const scrollDiv = topWrapper.querySelector('div');
+    if (!scrollDiv) return;
+
+    const updateScrollbar = () => {
+      const sbHeight = getScrollbarHeight();
+      const needsScroll = sbHeight > 0 && tableWrapper.scrollWidth > tableWrapper.clientWidth;
+      if (needsScroll) {
+        topWrapper.style.display = 'block';
+        topWrapper.style.height = sbHeight + 'px';
+        scrollDiv.style.width = tableWrapper.scrollWidth + 'px';
+        topWrapper.scrollLeft = tableWrapper.scrollLeft;
+      } else {
+        topWrapper.style.display = 'none';
+      }
+    };
+
+    const resizeObserver = new ResizeObserver(updateScrollbar);
+    resizeObserver.observe(tableWrapper);
+    
+    const mutationObserver = new MutationObserver(updateScrollbar);
+    mutationObserver.observe(tableWrapper, { childList: true, subtree: true });
+
+    let activeEl = null;
+    topWrapper.addEventListener('scroll', () => {
+      if (activeEl === null) activeEl = topWrapper;
+      if (activeEl === topWrapper) {
+        tableWrapper.scrollLeft = topWrapper.scrollLeft;
+      }
+    });
+
+    tableWrapper.addEventListener('scroll', () => {
+      if (activeEl === null) activeEl = tableWrapper;
+      if (activeEl === tableWrapper) {
+        topWrapper.scrollLeft = tableWrapper.scrollLeft;
+      }
+    });
+
+    const clearActive = () => { activeEl = null; };
+    topWrapper.addEventListener('mouseup', clearActive);
+    topWrapper.addEventListener('touchend', clearActive);
+    tableWrapper.addEventListener('mouseup', clearActive);
+    tableWrapper.addEventListener('touchend', clearActive);
+
+    updateScrollbar();
+  }
+  setupDoubleScrollbar('toi-top-scrollbar', 'toi-csv-wrap');
 
   restoreState();
   apply();

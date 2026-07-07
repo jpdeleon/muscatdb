@@ -1298,16 +1298,17 @@ def test_toi_page_includes_boyle_payload(monkeypatch):
     assert 'data-group="indb"' in r.text
 
 
-# ── /nexsci (NASA Exoplanet Archive) page ──────────────────────────────────
 def _nexsci_cat_data(names, hosts, tics):
     """Build a full nexsci column dict (all keys the loader produces) with the
     given string columns and null numerics, for monkeypatching the loader."""
+    from muscat_db.web import _NEXSCI_COLUMNS
     n = len(names)
-    str_keys = ["name", "host", "tic", "method", "facility", "spectype"]
-    num_keys = ["year", "ra", "dec", "period", "sma", "radius", "mass", "teq",
-                "insol", "steff", "srad", "smass", "dist", "vmag", "tmag", "gmag", "kmag"]
-    data = {k: [""] * n for k in str_keys}
-    data.update({k: [None] * n for k in num_keys})
+    data = {}
+    for _, key, kind in _NEXSCI_COLUMNS:
+        if kind == "f":
+            data[key] = [None] * n
+        else:
+            data[key] = [""] * n
     data["name"] = list(names)
     data["host"] = list(hosts)
     data["tic"] = list(tics)

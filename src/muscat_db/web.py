@@ -690,12 +690,24 @@ _NEXSCI_COLUMNS: list[tuple[str, str, str]] = [
     ("pl_orbper", "period", "f"),
     ("pl_orbsmax", "sma", "f"),
     ("pl_rade", "radius", "f"),
+    ("pl_radj", "radj", "f"),
     ("pl_bmasse", "mass", "f"),
+    ("pl_bmassj", "massj", "f"),
     ("pl_eqt", "teq", "f"),
     ("pl_insol", "insol", "f"),
+    ("pl_ratror", "ratror", "f"),
+    ("pl_trandep", "trandep", "f"),
+    ("pl_trandur", "trandur", "f"),
+    ("pl_imppar", "imppar", "f"),
+    ("pl_orbincl", "incl", "f"),
+    ("pl_orbeccen", "ecc", "f"),
+    ("pl_dens", "pdens", "f"),
     ("st_teff", "steff", "f"),
     ("st_rad", "srad", "f"),
     ("st_mass", "smass", "f"),
+    ("st_logg", "slogg", "f"),
+    ("st_met", "smet", "f"),
+    ("st_dens", "sdens", "f"),
     ("sy_dist", "dist", "f"),
     ("sy_vmag", "vmag", "f"),
     ("sy_tmag", "tmag", "f"),
@@ -739,6 +751,22 @@ def _load_nexsci_catalog() -> dict:
             for header, key, kind in _NEXSCI_COLUMNS:
                 raw = row.get(header)
                 data[key].append(_toi_float(raw) if kind == "f" else (raw or "").strip())
+            # Fallback for transit radius ratio if empty
+            if data["ratror"][-1] is None:
+                rade = data["radius"][-1]
+                srad = data["srad"][-1]
+                if rade is not None and srad is not None and srad > 0:
+                    data["ratror"][-1] = (rade / srad) * (6378.1 / 695700.0)
+            # Fallback for planet radius in Jupiter radii if empty
+            if data["radj"][-1] is None:
+                rade = data["radius"][-1]
+                if rade is not None:
+                    data["radj"][-1] = rade / 11.2089
+            # Fallback for planet mass in Jupiter masses if empty
+            if data["massj"][-1] is None:
+                masse = data["mass"][-1]
+                if masse is not None:
+                    data["massj"][-1] = masse / 317.828
 
     # The composite table has no per-row date column, so surface the file's own
     # modification date as the catalog "last updated" stamp.
@@ -2074,10 +2102,8 @@ def api_fov_optimize(payload: dict = Body(...)):
         min_mag=min_mag,
         max_mag=max_mag,
         mag_delta=mag_delta,
-        avoid_mag=avoid_mag,
     )
-    status = 200 if result.ok else 422
-    return JSONResponse(result.to_dict(), status_code=status)
+    return JSONResponse(result.to_dict(), status_code=200)
 
 
 @app.post("/api/fov/resolve-target", response_class=JSONResponse)
@@ -2090,7 +2116,7 @@ def api_fov_resolve_target(payload: dict = Body(...)):
     if coords is None:
         return JSONResponse(
             {"ok": False, "error": f"Could not resolve '{target}'. Try a different name or enter RA/Dec manually."},
-            status_code=422,
+            status_code=200,
         )
     return JSONResponse({"ok": True, "ra": round(coords[0], 5), "dec": round(coords[1], 5)})
 
