@@ -471,7 +471,7 @@ def _query_gaia_esa(
         "ORDER BY phot_g_mean_mag"
     )
     try:
-        tab = Gaia.launch_job(query).get_results()
+        tab = Gaia.launch_job_async(query).get_results()
     except Exception as exc:
         empty.error = f"ESA Gaia query failed: {exc}"
         logger.warning("ESA Gaia query failed for (%.4f, %.4f): %s", ra, dec, exc)
