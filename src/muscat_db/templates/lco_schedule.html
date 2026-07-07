@@ -990,6 +990,16 @@
     return '± ' + uncMin.toFixed(3) + ' min';
   }
 
+  // Format an ISO UTC timestamp (e.g. "2026-07-08T12:34:56Z") for display in
+  // the windows table, truncated to minute precision: "2026-07-08 12:34".
+  // Only affects display; the underlying w.start/mid/end keep full precision
+  // for plotting and request submission.
+  function fmtWindowTime(iso) {
+    if (!iso) return '-';
+    var m = String(iso).match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
+    return m ? m[1] + ' ' + m[2] : String(iso);
+  }
+
   function updateRequestName() {
     var target = val('sch-target');
     if (!target) return;
@@ -1041,7 +1051,7 @@
       }
 
       tr.innerHTML = '<td><input type="checkbox" data-i="' + i + '"' + (checked ? ' checked' : '') + '></td>' +
-        '<td>' + w.epoch + '</td><td>' + w.start + '</td><td>' + w.mid + '</td><td>' + uncText + '</td><td>' + w.end + '</td>' +
+        '<td>' + w.epoch + '</td><td>' + fmtWindowTime(w.start) + '</td><td>' + fmtWindowTime(w.mid) + '</td><td>' + uncText + '</td><td>' + fmtWindowTime(w.end) + '</td>' +
         '<td>' + obsCellHtml(o) + '</td>' +
         '<td><a href="#" class="vis-link" data-i="' + i + '" title="Show the astropy visibility plot for this transit below the table">show plot</a></td>';
       tb.appendChild(tr);
@@ -1306,6 +1316,13 @@
   el('btn-fetch-ephem').addEventListener('click', function () {
     var target = val('sch-target');
     if (!target) { msg('msg-windows', 'Enter a target first', 'err'); return; }
+    // Force a genuine re-pull from the catalogs/fits. The auto-triggers (typing,
+    // blur, source/planet change) reuse fetchTargetInfo's cache, so an explicit
+    // click here would otherwise just re-apply stale data. Invalidating the
+    // cache makes the button the one path that refreshes NASA/TOI ephemerides
+    // and picks up newly completed transit fits for the linear-fit source.
+    lastTargetInfo = null;
+    lastInfoTarget = '';
     refreshTargetFields();
   });
 
