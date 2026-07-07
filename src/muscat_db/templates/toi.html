@@ -111,6 +111,12 @@
     <label id="lbl-desert-mazeh" style="display: none;"><input type="checkbox" id="plot-desert-mazeh"> Neptune Desert (Mazeh+2016)</label>
     <label id="lbl-desert-castro" style="display: none;"><input type="checkbox" id="plot-desert-castro"> Neptune Desert (Castro-Gonzalez+2024)</label>
     <label id="lbl-radgap" style="display: none;"><input type="checkbox" id="plot-radgap"> Radius Gap</label>
+    <label id="lbl-comp-iron" style="display: none;"><input type="checkbox" id="plot-comp-iron"> 100% Iron (Seager+07)</label>
+    <label id="lbl-comp-iron-rich" style="display: none;"><input type="checkbox" id="plot-comp-iron-rich"> 67.5% Fe (Seager+07)</label>
+    <label id="lbl-comp-earth" style="display: none;"><input type="checkbox" id="plot-comp-earth"> Earth-like (30% Fe, Seager+07)</label>
+    <label id="lbl-comp-rock" style="display: none;"><input type="checkbox" id="plot-comp-rock"> 100% Silicate (Seager+07)</label>
+    <label id="lbl-comp-water-rich" style="display: none;"><input type="checkbox" id="plot-comp-water-rich"> 25% H2O (Seager+07)</label>
+    <label id="lbl-comp-water" style="display: none;"><input type="checkbox" id="plot-comp-water"> 100% Water (Seager+07)</label>
     <label>Size <input type="range" id="plot-size" min="3" max="14" step="1" value="6"></label>
     <span id="plot-count" class="hint"></span>
   </div>
@@ -627,6 +633,9 @@
     // Add custom boundaries if checkboxed and plot has period vs radius
     const xk = selX.value, yk = selY.value;
     const isPeriodRadius = (xk === 'period' && yk === 'radius') || (xk === 'radius' && yk === 'period');
+    const isMass = k => k === 'mass' || k === 'massj';
+    const isRadius = k => k === 'radius' || k === 'radj';
+    const isMassRadius = (isMass(xk) && isRadius(yk)) || (isRadius(xk) && isMass(yk));
 
     const lblDesertMazeh = document.getElementById('lbl-desert-mazeh');
     const lblDesertCastro = document.getElementById('lbl-desert-castro');
@@ -636,6 +645,22 @@
       lblDesertMazeh.style.display = show;
       lblDesertCastro.style.display = show;
       lblRadGap.style.display = show;
+    }
+
+    const lblCompIron = document.getElementById('lbl-comp-iron');
+    const lblCompIronRich = document.getElementById('lbl-comp-iron-rich');
+    const lblCompEarth = document.getElementById('lbl-comp-earth');
+    const lblCompRock = document.getElementById('lbl-comp-rock');
+    const lblCompWaterRich = document.getElementById('lbl-comp-water-rich');
+    const lblCompWater = document.getElementById('lbl-comp-water');
+    if (lblCompIron && lblCompIronRich && lblCompEarth && lblCompRock && lblCompWaterRich && lblCompWater) {
+      const showComp = isMassRadius ? 'inline-flex' : 'none';
+      lblCompIron.style.display = showComp;
+      lblCompIronRich.style.display = showComp;
+      lblCompEarth.style.display = showComp;
+      lblCompRock.style.display = showComp;
+      lblCompWaterRich.style.display = showComp;
+      lblCompWater.style.display = showComp;
     }
 
     if (isPeriodRadius) {
@@ -658,13 +683,17 @@
       };
 
       if (document.getElementById('plot-desert-mazeh').checked) {
-        // Theoretical boundaries
+        // Theoretical boundaries — truncate at intersection for a triangular wedge
         const p_theo = linspace(Math.log10(0.1), Math.log10(20), 100).map(x => Math.pow(10, x));
         const r_lower = p_theo.map(p => Math.pow(p, 0.68));
         const r_upper = p_theo.map(p => 14.8 * Math.pow(p, -0.33));
 
-        traces.push(makeLineTrace(p_theo, r_lower, 'Neptune Desert (Mazeh+2016 Lower)', mazehColor, 'dash'));
-        traces.push(makeLineTrace(p_theo, r_upper, 'Neptune Desert (Mazeh+2016 Upper)', mazehColor, 'dash'));
+        let idx = r_lower.findIndex((r, i) => r >= r_upper[i]);
+        if (idx === -1) idx = r_lower.length;
+        else idx += 1;
+
+        traces.push(makeLineTrace(p_theo.slice(0, idx), r_lower.slice(0, idx), 'Neptune Desert (Mazeh+2016 Lower)', mazehColor, 'dash'));
+        traces.push(makeLineTrace(p_theo.slice(0, idx), r_upper.slice(0, idx), 'Neptune Desert (Mazeh+2016 Upper)', mazehColor, 'dash'));
       }
 
       if (document.getElementById('plot-desert-castro').checked) {
@@ -696,6 +725,74 @@
 
         traces.push(makeLineTrace(p_gap, r_gap, 'Radius Gap (Van Eylen+2018)', castroColor, 'dash'));
       }
+    }
+
+    if (isMassRadius) {
+      const getPlotCoords = (Mp, Rp) => {
+        let valX, valY;
+        if (xk === 'mass') valX = Mp;
+        else if (xk === 'massj') valX = Mp / 317.8;
+        else if (xk === 'radius') valX = Rp;
+        else if (xk === 'radj') valX = Rp / 11.209;
+        
+        if (yk === 'mass') valY = Mp;
+        else if (yk === 'massj') valY = Mp / 317.8;
+        else if (yk === 'radius') valY = Rp;
+        else if (yk === 'radj') valY = Rp / 11.209;
+        return [valX, valY];
+      };
+
+      const seagerRadius = (Mp, m1, r1) => {
+        const k1 = -0.20945;
+        const k2 = 0.0804;
+        const k3 = 0.394;
+        const ms = Mp / m1;
+        const log_rs = k1 + (1.0 / 3.0) * Math.log10(ms) - k2 * Math.pow(ms, k3);
+        return Math.pow(10, log_rs) * r1;
+      };
+
+      const makeCompLineTrace = (m_arr, name, color, m1, r1) => {
+        const xs = [];
+        const ys = [];
+        for (let i = 0; i < m_arr.length; i++) {
+          const rp = seagerRadius(m_arr[i], m1, r1);
+          const [vx, vy] = getPlotCoords(m_arr[i], rp);
+          xs.push(vx);
+          ys.push(vy);
+        }
+        return {
+          x: xs,
+          y: ys,
+          mode: 'lines',
+          name: name,
+          line: { color: color, width: 2 },
+          hoverinfo: 'skip',
+          showlegend: true
+        };
+      };
+
+      const min_m_log = Math.log10(0.05);
+      const max_m_log = Math.log10(50.0);
+      const n_pts = 100;
+      const m_pts = [];
+      for (let i = 0; i < n_pts; i++) {
+        m_pts.push(Math.pow(10, min_m_log + (max_m_log - min_m_log) * i / (n_pts - 1)));
+      }
+
+      const comps = [
+        { id: 'plot-comp-iron', name: '100% Iron (Seager+07)', m1: 5.80, r1: 2.52, color: '#e056fd' },
+        { id: 'plot-comp-iron-rich', name: '67.5% Fe (Seager+07)', m1: 6.41, r1: 2.84, color: '#ff7979' },
+        { id: 'plot-comp-earth', name: 'Earth-like (30% Fe, Seager+07)', m1: 6.41, r1: 3.19, color: '#2ed573' },
+        { id: 'plot-comp-rock', name: '100% Silicate (Seager+07)', m1: 10.55, r1: 3.90, color: '#ffa502' },
+        { id: 'plot-comp-water-rich', name: '25% H2O (Seager+07)', m1: 6.41, r1: 3.63, color: '#1e90ff' },
+        { id: 'plot-comp-water', name: '100% Water (Seager+07)', m1: 5.52, r1: 4.43, color: '#70a1ff' }
+      ];
+
+      comps.forEach(c => {
+        if (document.getElementById(c.id).checked) {
+          traces.push(makeCompLineTrace(m_pts, c.name, c.color, c.m1, c.r1));
+        }
+      });
     }
 
     const dark = document.documentElement.getAttribute('data-theme') === 'dark';
@@ -770,6 +867,12 @@
       if (state.plot.mazeh) parts.push('mazeh=1');
       if (state.plot.castro) parts.push('castro=1');
       if (state.plot.radgap) parts.push('radgap=1');
+      if (state.plot.compIron) parts.push('compIron=1');
+      if (state.plot.compIronRich) parts.push('compIronRich=1');
+      if (state.plot.compEarth) parts.push('compEarth=1');
+      if (state.plot.compRock) parts.push('compRock=1');
+      if (state.plot.compWaterRich) parts.push('compWaterRich=1');
+      if (state.plot.compWater) parts.push('compWater=1');
       if (state.plot.size && state.plot.size !== '6') parts.push('size=' + state.plot.size);
     }
     return parts.length ? '#' + parts.join('&') : '';
@@ -798,6 +901,12 @@
     if (params.has('mazeh')) state.plot.mazeh = true;
     if (params.has('castro')) state.plot.castro = true;
     if (params.has('radgap')) state.plot.radgap = true;
+    if (params.has('compIron')) state.plot.compIron = true;
+    if (params.has('compIronRich')) state.plot.compIronRich = true;
+    if (params.has('compEarth')) state.plot.compEarth = true;
+    if (params.has('compRock')) state.plot.compRock = true;
+    if (params.has('compWaterRich')) state.plot.compWaterRich = true;
+    if (params.has('compWater')) state.plot.compWater = true;
     if (params.has('size')) state.plot.size = params.get('size');
     return Object.keys(state).length ? state : null;
   }
@@ -818,7 +927,13 @@
               errx: errXEl.checked, erry: errYEl.checked, size: sizeEl.value,
               mazeh: document.getElementById('plot-desert-mazeh').checked,
               castro: document.getElementById('plot-desert-castro').checked,
-              radgap: document.getElementById('plot-radgap').checked },
+              radgap: document.getElementById('plot-radgap').checked,
+              compIron: document.getElementById('plot-comp-iron').checked,
+              compIronRich: document.getElementById('plot-comp-iron-rich').checked,
+              compEarth: document.getElementById('plot-comp-earth').checked,
+              compRock: document.getElementById('plot-comp-rock').checked,
+              compWaterRich: document.getElementById('plot-comp-water-rich').checked,
+              compWater: document.getElementById('plot-comp-water').checked },
     };
     if (LS) {
       const cols = {};
@@ -854,6 +969,12 @@
       if (s.plot.mazeh) document.getElementById('plot-desert-mazeh').checked = !!s.plot.mazeh;
       if (s.plot.castro) document.getElementById('plot-desert-castro').checked = !!s.plot.castro;
       if (s.plot.radgap) document.getElementById('plot-radgap').checked = !!s.plot.radgap;
+      if (s.plot.compIron) document.getElementById('plot-comp-iron').checked = !!s.plot.compIron;
+      if (s.plot.compIronRich) document.getElementById('plot-comp-iron-rich').checked = !!s.plot.compIronRich;
+      if (s.plot.compEarth) document.getElementById('plot-comp-earth').checked = !!s.plot.compEarth;
+      if (s.plot.compRock) document.getElementById('plot-comp-rock').checked = !!s.plot.compRock;
+      if (s.plot.compWaterRich) document.getElementById('plot-comp-water-rich').checked = !!s.plot.compWaterRich;
+      if (s.plot.compWater) document.getElementById('plot-comp-water').checked = !!s.plot.compWater;
       if (s.plot.size) sizeEl.value = s.plot.size;
     }
   }
@@ -955,7 +1076,19 @@
   }));
   [selX, selY, selColor].forEach(el => el.addEventListener('change', () => { drawPlot(lastIdx); saveState(); }));
   [logXEl, logYEl, errXEl, errYEl].forEach(el => el.addEventListener('change', () => { drawPlot(lastIdx); saveState(); }));
-  [document.getElementById('plot-desert-mazeh'), document.getElementById('plot-desert-castro'), document.getElementById('plot-radgap')].forEach(el => el.addEventListener('change', () => { drawPlot(lastIdx); saveState(); }));
+  [
+    document.getElementById('plot-desert-mazeh'),
+    document.getElementById('plot-desert-castro'),
+    document.getElementById('plot-radgap'),
+    document.getElementById('plot-comp-iron'),
+    document.getElementById('plot-comp-iron-rich'),
+    document.getElementById('plot-comp-earth'),
+    document.getElementById('plot-comp-rock'),
+    document.getElementById('plot-comp-water-rich'),
+    document.getElementById('plot-comp-water')
+  ].forEach(el => {
+    if (el) el.addEventListener('change', () => { drawPlot(lastIdx); saveState(); });
+  });
   sizeEl.addEventListener('input', () => { drawPlot(lastIdx); saveState(); });
 
   // Re-theme the plot when the global light/dark toggle flips.
