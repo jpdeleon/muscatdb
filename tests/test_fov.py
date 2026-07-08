@@ -386,10 +386,19 @@ def test_query_gaia_vizier_surfaces_server_error(monkeypatch):
     class _FakeResponse:
         text = _VIZIER_DB_DOWN_VOTABLE
 
-    monkeypatch.setattr(
-        "astroquery.vizier.Vizier.query_region_async",
-        lambda self, *a, **k: _FakeResponse(),
-    )
+    # Replace the whole Vizier class (which _query_gaia_vizier imports fresh) so
+    # the fake response is returned regardless of how a given astroquery version
+    # binds query_region_async. Patching only the class *method* is fragile:
+    # some versions bind it per-instance, so the mock is bypassed and the real
+    # (network) path runs — which is why this failed only on CI.
+    class _FakeVizier:
+        def __init__(self, *a, **k):
+            pass
+
+        def query_region_async(self, *a, **k):
+            return _FakeResponse()
+
+    monkeypatch.setattr("astroquery.vizier.Vizier", _FakeVizier)
 
     result = fov._query_gaia_vizier(10.0, -20.0, radius_arcsec=60.0, min_mag=0.0, max_mag=18.0)
     assert len(result) == 0
