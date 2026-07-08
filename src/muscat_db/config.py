@@ -31,6 +31,13 @@ class EnvVar:
 # the code has no fallback (the feature is unavailable / errors when it is needed).
 ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("MUSCAT_DB_PATH", "muscat.db", "SQLite database path"),
+    EnvVar(
+        "MUSCAT_DB_SECRET",
+        None,
+        "Server secret used to encrypt per-user settings such as LCO API tokens. "
+        "Keep stable across restarts; changing it makes stored tokens unreadable.",
+        secret=True,
+    ),
     EnvVar("MUSCAT_DATA_DIR", None, "Raw FITS data base directory"),
     EnvVar("MUSCAT_OBSLOG_DIR", "/ut3/muscat/obslog", "Shared obslog CSV base (muscat-db + prose2)"),
     EnvVar("MUSCAT_PROSE_DIR", "/ut2/jerome/ql/prose", "Pipeline output base directory"),
@@ -73,6 +80,12 @@ ENV_VARS: tuple[EnvVar, ...] = (
         "Server-side safety gate for live LCO observation submission. While '0' "
         "(default), /api/lco/submit refuses even with a valid dry-run + confirm; "
         "set to '1' only when intentionally going live.",
+    ),
+    EnvVar(
+        "ADS_API_TOKEN",
+        None,
+        "NASA ADS API Token (used to query published papers about the target)",
+        secret=True,
     ),
 )
 

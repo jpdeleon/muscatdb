@@ -264,7 +264,7 @@
       {% for csv in csvs %}
         <div class="lightcurve-card csv-card" data-csv-path="{{ csv.path }}" data-csv-name="{{ csv.name }}" role="button" tabindex="0">
           <input type="checkbox" class="csv-checkbox" checked style="margin-right: 0.5rem;">
-          <span class="lc-name">📄 {{ csv.name }}</span>
+          <span class="lc-name">📄 {{ csv.name }}{% if csv.run_id %} <span style="font-size: 0.8rem; color: var(--text-dim);">({{ csv.run_id }})</span>{% endif %}</span>
           <span class="lc-date">Created: {{ csv.created_at }}</span>
         </div>
       {% endfor %}
@@ -348,6 +348,8 @@
     {% endif %}
 
     <div class="dl-row">
+      {% set dl_all_url = '/transit-fit/download-all/' ~ sel_inst ~ '/' ~ sel_date ~ '/' ~ sel_target ~ ('/run/' ~ sel_run if sel_run else '') %}
+      <a href="{{ dl_all_url }}" download style="font-weight: 600; color: var(--accent2);">📦 Download all output (.zip)</a>
       {% if outputs.has_log %}<a href="{{ file_base }}/timer-fit.log" target="_blank">📄 fit run log</a>{% endif %}
       {% if outputs.has_fit_yaml %}<a href="{{ file_base }}/fit.yaml" target="_blank">⚙ fit.yaml</a>{% endif %}
       {% if outputs.has_sys_yaml %}<a href="{{ file_base }}/sys.yaml" target="_blank">🪐 sys.yaml</a>{% endif %}
@@ -436,12 +438,12 @@
             <input type="number" id="opt-draws" value="2000" min="1" step="100" style="width: 100%;">
           </div>
           <div class="opt">
-            <label for="opt-chains">chains <span class="help-tooltip" title="Independent MCMC chains, used for the r_hat convergence diagnostic. Default 2.">?</span></label>
-            <input type="number" id="opt-chains" value="2" min="1" step="1" style="width: 100%;">
+            <label for="opt-chains">chains <span class="help-tooltip" title="Independent MCMC chains, used for the r_hat convergence diagnostic. Default 4 (Full runs only — Test runs always use 1 chain regardless of this value).">?</span></label>
+            <input type="number" id="opt-chains" value="4" min="1" step="1" style="width: 100%;">
           </div>
           <div class="opt">
-            <label for="opt-cores">cores <span class="help-tooltip" title="CPU cores for parallel sampling (ideally >= chains). Default 2.">?</span></label>
-            <input type="number" id="opt-cores" value="2" min="1" step="1" style="width: 100%;">
+            <label for="opt-cores">cores <span class="help-tooltip" title="CPU cores for parallel sampling (ideally >= chains). Default 4 (Full runs only — Test runs always use 2 cores regardless of this value).">?</span></label>
+            <input type="number" id="opt-cores" value="4" min="1" step="1" style="width: 100%;">
           </div>
         </div>
         </details>
@@ -658,26 +660,9 @@
             <input type="checkbox" id="opt-use_custom_optimizer" checked>
             <label for="opt-use_custom_optimizer">Custom optimizer <span class="help-tooltip" title="Use timer's custom MAP optimizer instead of PyMC's default for the initial solution. Default on.">?</span></label>
           </div>
-          <details class="opt-collapse" open style="grid-column: 1 / -1;">
-            <summary>⚙️ Run Mode <span class="help-tooltip" title="Choose whether to start a new fit or continue sampling from previous results.">?</span></summary>
-            <div style="display: flex; gap: 1.5rem; align-items: center;">
-              <label class="opt-check-item" style="margin: 0;">
-                <input type="radio" name="run-mode" value="new" checked>
-                <span>New Fit (start fresh)</span>
-              </label>
-              <label class="opt-check-item" id="continue-label" style="margin: 0; display: none;">
-                <input type="radio" name="run-mode" value="continue">
-                <span>Continue Sampling <span class="help-tooltip" title="Resume from previous trace, adding more samples.">?</span></span>
-              </label>
-            </div>
-          </details>
           <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-plot_midtransit" checked>
-            <label for="opt-plot_midtransit">Plot midtransit <span class="help-tooltip" title="Plot a solid vertical line at the nearest midtransit time on data.png.">?</span></label>
-          </div>
-          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
-            <input type="checkbox" id="opt-plot_ingress_egress" checked>
-            <label for="opt-plot_ingress_egress">Plot ing/egr <span class="help-tooltip" title="Plot dashed vertical lines at ingress and egress times on data.png.">?</span></label>
+            <input type="checkbox" id="opt-secondary_eclipse">
+            <label for="opt-secondary_eclipse">Secondary eclipse <span class="help-tooltip" title="Fit a secondary eclipse (at phase 0.5) instead of a primary transit. Default off.">?</span></label>
           </div>
           <div style="margin-top: 0; display: inline-flex; align-items: center; gap: 0.45rem; white-space: nowrap;">
             <label for="opt-fit_basis" style="margin: 0; font-size: 0.85rem; color: var(--text); display: inline-flex; align-items: center; gap: 0.25rem;">
@@ -688,6 +673,27 @@
               <option value="duration" selected>duration</option>
               <option value="standard">standard</option>
             </select>
+          </div>
+          <div style="margin-top: 0; display: inline-flex; align-items: center; gap: 0.45rem; white-space: nowrap;">
+            <label for="run-mode-select" style="margin: 0; font-size: 0.85rem; color: var(--text); display: inline-flex; align-items: center; gap: 0.25rem;">
+              Run Mode
+            </label>
+            <select id="run-mode-select" name="run-mode" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.15rem 0.4rem; font-size: 0.8rem; margin: 0; height: 24px; box-sizing: border-box; line-height: 1; cursor: pointer;">
+              <option value="new">New Fit (start fresh)</option>
+              <option value="continue" id="continue-option" style="display: none;">Continue Sampling</option>
+            </select>
+            <span class="help-tooltip" title="Choose whether to start a new fit or continue sampling from previous results.">?</span>
+          </div>
+        </div>
+
+        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: nowrap; align-items: flex-end; padding-bottom: 0.45rem;">
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-plot_midtransit" checked>
+            <label for="opt-plot_midtransit">Plot midtransit <span class="help-tooltip" title="Plot a solid vertical line at the nearest midtransit time on data.png.">?</span></label>
+          </div>
+          <div class="opt check" style="margin-top: 0; white-space: nowrap;">
+            <input type="checkbox" id="opt-plot_ingress_egress" checked>
+            <label for="opt-plot_ingress_egress">Plot ing/egr <span class="help-tooltip" title="Plot dashed vertical lines at ingress and egress times on data.png.">?</span></label>
           </div>
         </div>
       </div>
@@ -740,16 +746,6 @@
     </div>
   </div>
 </div>
-
-<div id="message-modal">
-  <div class="modal-box">
-    <p id="message-modal-title" style="margin-bottom:0.75rem;font-size:0.95rem;font-weight:600;"></p>
-    <p id="message-modal-text" style="color:var(--text-dim);font-size:0.85rem;margin-bottom:1.5rem;line-height:1.5;"></p>
-    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
-      <button class="btn" onclick="closeMessageModal()">OK</button>
-    </div>
-  </div>
-</div>
 {% endblock %}
 
 {% block scripts %}
@@ -766,9 +762,9 @@
 
   // Show/hide "Continue Sampling" option based on whether results exist
   (function() {
-    var continueLabel = document.getElementById('continue-label');
-    if (continueLabel) {
-      continueLabel.style.display = fitResultsExist ? 'block' : 'none';
+    var continueOption = document.getElementById('continue-option');
+    if (continueOption) {
+      continueOption.style.display = fitResultsExist ? 'block' : 'none';
     }
   })();
 
@@ -781,8 +777,7 @@
   // ----- restore the last selection on a bare /transit-fit visit -----
   (function () {
     if (inst || date || target || window.location.search) return;
-    var saved;
-    try { saved = JSON.parse(localStorage.getItem(SEL_KEY) || 'null'); } catch (e) { saved = null; }
+    var saved = MuscatStorage.getJSON(SEL_KEY, null);
     if (saved && saved.inst) {
       var qs = ['inst', 'date', 'target'].filter(function (k) { return saved[k]; })
         .map(function (k) { return k + '=' + encodeURIComponent(saved[k]); }).join('&');
@@ -791,7 +786,11 @@
   })();
   // ...and remember the current selection for next time.
   if (inst) {
-    try { localStorage.setItem(SEL_KEY, JSON.stringify({ inst: inst, date: date, target: target })); } catch (e) {}
+    MuscatStorage.setJSON(SEL_KEY, { inst: inst, date: date, target: target });
+  }
+  if (inst && date && target && window.MuscatRouteState) {
+    window.MuscatRouteState.rememberTransitFit({ inst: inst, date: date, target: target, run: runId || '' });
+    window.MuscatRouteState.applyNavbar();
   }
 
   // ----- cascading selectors -----
@@ -820,7 +819,7 @@
   var cancelBtn = document.getElementById('cancel-btn');
   var logEl     = document.getElementById('run-log');
   var errEl     = document.getElementById('opt-error');
-  var pollTimer = null;
+  var poller = window.MuscatJobPolling.createTimeoutPoller(poll);
 
   function val(id) { var e = document.getElementById(id); return e ? e.value : ''; }
   function chk(id) { var e = document.getElementById(id); return e ? e.checked : false; }
@@ -828,28 +827,13 @@
   // Round a numeric value (or numeric string) to `sf` significant figures for
   // display, returning a clean string. Blanks and non-numeric values pass
   // through unchanged so partially-typed input is never clobbered.
-  function fmtSig(x, sf) {
-    if (x === undefined || x === null) return '';
-    var s = String(x).trim();
-    if (s === '') return '';
-    var n = Number(s);
-    if (isNaN(n) || !isFinite(n)) return s;
-    if (n === 0) return '0';
-    return String(Number(n.toPrecision(sf)));
-  }
+  var fmtSig = MuscatFormat.sigFigs;
   // Display precision (significant figures) per fitting parameter.
   var SIG_FIGS = { period: 6, dur: 4, ror: 2, b: 2 };
 
   // Round to a fixed number of decimal places (clean string). Used for t0,
   // where significant figures would destroy the integer-heavy BJD epoch.
-  function fmtDp(x, dp) {
-    if (x === undefined || x === null) return '';
-    var s = String(x).trim();
-    if (s === '') return '';
-    var n = Number(s);
-    if (isNaN(n) || !isFinite(n)) return s;
-    return String(Number(n.toFixed(dp)));
-  }
+  var fmtDp = MuscatFormat.fixed;
   var T0_DECIMALS = 6;
 
   // Join two values into "a,b", each rounded to `dp` decimal places (used for
@@ -955,7 +939,7 @@
       chromatic: chk('opt-chromatic') ? 'true' : 'false',
       fit_basis: val('opt-fit_basis'),
       trend: chk('opt-trend') ? 'true' : 'false',
-      run_mode: document.querySelector('input[name="run-mode"]:checked')?.value || 'new',
+      run_mode: document.getElementById('run-mode-select')?.value || 'new',
       plot_midtransit: chk('opt-plot_midtransit') ? 'true' : 'false',
       plot_ingress_egress: chk('opt-plot_ingress_egress') ? 'true' : 'false',
       tune: val('opt-tune'),
@@ -964,6 +948,7 @@
       cores: val('opt-cores'),
       include_mean: chk('opt-include_mean') ? 'true' : 'false',
       use_custom_optimizer: chk('opt-use_custom_optimizer') ? 'true' : 'false',
+      secondary_eclipse: chk('opt-secondary_eclipse') ? 'true' : 'false',
       spline: chk('opt-spline') ? 'true' : 'false',
       spline_knots: val('opt-spline_knots'),
       add_bias: chk('opt-add_bias') ? 'true' : 'false',
@@ -1049,7 +1034,7 @@
   }
 
   function saveOptions() {
-    try { localStorage.setItem(OPT_KEY, JSON.stringify(collectOptions())); } catch (e) {}
+    MuscatOptions.save(OPT_KEY, collectOptions);
   }
 
   function syncPlanetsInput() {
@@ -1455,7 +1440,7 @@
     queryBtn.addEventListener('click', function() {
       var targetVal = queryTargetInput.value.trim();
       if (!targetVal) {
-        window.showMessageModal('Notice', 'Please enter a target name.');
+        window.showMessageModal('Notice', 'Please enter a target name.', 'notice');
         return;
       }
       queryBtn.disabled = true;
@@ -1510,10 +1495,10 @@
 
           validatePlanetCard(card);
           saveOptions();
-          window.showMessageModal('Success', 'Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '!');
+          window.showMessageModal('Success', 'Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '.', 'success');
         })
         .catch(function(err) {
-          window.showMessageModal('Error', err.message);
+          window.showMessageModal('Error', err.message, 'error');
         })
         .finally(function() {
           queryBtn.disabled = false;
@@ -1583,8 +1568,7 @@
   }
 
   function restoreOptions() {
-    var saved;
-    try { saved = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); } catch (e) { saved = null; }
+    var saved = MuscatOptions.restore(OPT_KEY);
 
     var container = document.getElementById('planet-cards-container');
     if (container) container.innerHTML = '';
@@ -1614,7 +1598,7 @@
       }
     });
 
-    ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset',
+    ['include_mean','use_custom_optimizer','secondary_eclipse','spline','add_bias','quadratic','clip','chunk_offset',
      'use_gp','gp_per_dataset_log_amp','gp_per_dataset_log_scale',
      'include_bump','chromatic_bump',
      'include_flare','chromatic_flare',
@@ -1635,12 +1619,13 @@
     var trEl = document.getElementById('opt-trend');
     if (trEl && saved.trend !== undefined) trEl.checked = saved.trend === 'true';
 
-    if (saved.run_mode !== undefined) {
-      var rmEl = document.querySelector('input[name="run-mode"][value="' + saved.run_mode + '"]');
-      if (rmEl) rmEl.checked = true;
-    } else if (saved.overwrite !== undefined) {
-      var rmEl = document.querySelector('input[name="run-mode"][value="' + (saved.overwrite === 'true' ? 'new' : 'continue') + '"]');
-      if (rmEl) rmEl.checked = true;
+    var selectEl = document.getElementById('run-mode-select');
+    if (selectEl) {
+      if (saved.run_mode !== undefined) {
+        selectEl.value = saved.run_mode;
+      } else if (saved.overwrite !== undefined) {
+        selectEl.value = saved.overwrite === 'true' ? 'new' : 'continue';
+      }
     }
 
     document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
@@ -1668,7 +1653,7 @@
   if (clearBtn) {
     clearBtn.addEventListener('click', function () {
       try {
-        localStorage.setItem(BACKUP_KEY, JSON.stringify(collectOptions()));
+        MuscatStorage.setJSON(BACKUP_KEY, collectOptions());
       } catch (e) {}
 
       ['teff','teff_unc','logg','logg_unc','feh','feh_unc'].forEach(function (id) {
@@ -1685,10 +1670,10 @@
       var trEl = document.getElementById('opt-trend');
       if (trEl) trEl.checked = false;
 
-      var rmEl = document.querySelector('input[name="run-mode"][value="new"]');
-      if (rmEl) rmEl.checked = true;
+      var selectEl = document.getElementById('run-mode-select');
+      if (selectEl) selectEl.value = 'new';
 
-      var numDefaults = {'opt-tune':'2000','opt-draws':'2000','opt-chains':'2','opt-cores':'2',
+      var numDefaults = {'opt-tune':'2000','opt-draws':'2000','opt-chains':'4','opt-cores':'4',
                          'opt-spline_knots':'5','opt-clip_nsig':'7','opt-chunk_thresh':'0','opt-trim_beg':'','opt-trim_end':'',
                          'opt-gp_log_amp':'-3,2','opt-gp_log_amp_prior':'gaussian',
                          'opt-gp_log_scale':'-1,2','opt-gp_log_scale_prior':'gaussian',
@@ -1701,7 +1686,7 @@
                          'opt-fit_basis':'duration'};
       Object.keys(numDefaults).forEach(function (id) { var el = document.getElementById(id); if (el) el.value = numDefaults[id]; });
 
-      var checkDefaults = {'opt-include_mean':true,'opt-use_custom_optimizer':true,'opt-spline':false,
+      var checkDefaults = {'opt-include_mean':true,'opt-use_custom_optimizer':true,'opt-secondary_eclipse':false,'opt-spline':false,
                            'opt-add_bias':false,'opt-quadratic':false,'opt-clip':false,'opt-chunk_offset':false,
                            'opt-use_gp':false,'opt-gp_per_dataset_log_amp':false,'opt-gp_per_dataset_log_scale':false,
                            'opt-include_bump':false,'opt-chromatic_bump':false,
@@ -1732,10 +1717,10 @@
     saveBtn.addEventListener('click', function () {
       var currentOpts = collectOptions();
       try {
-        localStorage.setItem(BACKUP_KEY, JSON.stringify(currentOpts));
-        alert('Current values saved.');
+        MuscatStorage.setJSON(BACKUP_KEY, currentOpts);
+        window.showMessageModal('Success', 'Current values saved.');
       } catch (e) {
-        alert('Failed to save values.');
+        window.showMessageModal('Error', 'Failed to save values.');
       }
     });
   }
@@ -1744,7 +1729,7 @@
   if (restoreBtn) {
     restoreBtn.addEventListener('click', function () {
       var backup;
-      try { backup = JSON.parse(localStorage.getItem(BACKUP_KEY) || 'null'); } catch (e) { backup = null; }
+      backup = MuscatStorage.getJSON(BACKUP_KEY, null);
       if (backup) {
         ['teff','teff_unc','logg','logg_unc','feh','feh_unc',
          'tune','draws','chains','cores','spline_knots','clip_nsig','chunk_thresh','trim_beg','trim_end',
@@ -1759,7 +1744,7 @@
           }
         });
 
-        ['include_mean','use_custom_optimizer','spline','add_bias','quadratic','clip','chunk_offset',
+        ['include_mean','use_custom_optimizer','secondary_eclipse','spline','add_bias','quadratic','clip','chunk_offset',
          'use_gp','gp_per_dataset_log_amp','gp_per_dataset_log_scale',
          'plot_midtransit','plot_ingress_egress'].forEach(function (id) {
           var el = document.getElementById('opt-'+id);
@@ -1777,12 +1762,13 @@
         var trEl = document.getElementById('opt-trend');
         if (trEl && backup.trend !== undefined) trEl.checked = backup.trend === 'true';
 
-        if (backup.run_mode !== undefined) {
-          var rmEl = document.querySelector('input[name="run-mode"][value="' + backup.run_mode + '"]');
-          if (rmEl) rmEl.checked = true;
-        } else if (backup.overwrite !== undefined) {
-          var rmEl = document.querySelector('input[name="run-mode"][value="' + (backup.overwrite === 'true' ? 'new' : 'continue') + '"]');
-          if (rmEl) rmEl.checked = true;
+        var selectEl = document.getElementById('run-mode-select');
+        if (selectEl) {
+          if (backup.run_mode !== undefined) {
+            selectEl.value = backup.run_mode;
+          } else if (backup.overwrite !== undefined) {
+            selectEl.value = backup.overwrite === 'true' ? 'new' : 'continue';
+          }
         }
 
         document.querySelectorAll('input[name="fixed-params"]').forEach(function (c) {
@@ -1806,9 +1792,9 @@
 
         saveOptions();
         updateChromaticForBands();
-        alert('Values restored.');
+        window.showMessageModal('Success', 'Values restored.');
       } else {
-        alert('No saved backup found to restore.');
+        window.showMessageModal('Notice', 'No saved backup found to restore.');
       }
     });
   }
@@ -2170,13 +2156,7 @@
   (function () {
     var panel = document.getElementById('opt-panel');
     if (!panel) return;
-    var savedOpen;
-    try { savedOpen = JSON.parse(localStorage.getItem(PANEL_KEY) || 'null'); } catch (e) { savedOpen = null; }
-    if (savedOpen === true) panel.open = true;
-    else if (savedOpen === false) panel.open = false;
-    panel.addEventListener('toggle', function () {
-      try { localStorage.setItem(PANEL_KEY, JSON.stringify(panel.open)); } catch (e) {}
-    });
+    MuscatOptions.bindPanel(PANEL_KEY, panel);
   })();
 
   // Listen to inputs
@@ -2196,8 +2176,7 @@
   // ----- restore the log if it was previously saved -----
   (function restoreLog() {
     if (!logEl) return;
-    var savedLog;
-    try { savedLog = localStorage.getItem(logKey()); } catch (e) { savedLog = null; }
+    var savedLog = MuscatStorage.get(logKey(), null);
     if (savedLog) {
       logEl.style.display = 'block';
       logEl.textContent = savedLog;
@@ -2208,7 +2187,7 @@
   // ---- CSV selection ----
   var csvCards = document.querySelectorAll('.csv-card');
   function saveCsvSelection() {
-    try { localStorage.setItem(CSV_KEY, JSON.stringify(getSelectedCsvs())); } catch (e) {}
+    MuscatStorage.setJSON(CSV_KEY, getSelectedCsvs());
   }
   function updateCsvCount() {
     var el = document.getElementById('csv-count');
@@ -2227,8 +2206,7 @@
     return paths;
   }
   function restoreCsvSelection() {
-    var saved;
-    try { saved = JSON.parse(localStorage.getItem(CSV_KEY) || 'null'); } catch (e) { saved = null; }
+    var saved = MuscatStorage.getJSON(CSV_KEY, null);
     if (!saved || !Array.isArray(saved)) return;
     var selected = new Set(saved);
     csvCards.forEach(function (card) {
@@ -2327,13 +2305,10 @@
     if (runTestBtn) runTestBtn.disabled = on;
     if (cancelBtn) cancelBtn.style.display = on ? '' : 'none';
   }
-  function stopPolling() { if (pollTimer !== null) { clearTimeout(pollTimer); pollTimer = null; } }
-  function schedulePoll(delayMs) {
-    if (pollTimer !== null) return;
-    pollTimer = setTimeout(function () { pollTimer = null; poll(); }, delayMs);
-  }
-  function saveJob() { try { localStorage.setItem(JOB_KEY, JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })); } catch (e) {} }
-  function clearJob() { try { localStorage.removeItem(JOB_KEY); } catch (e) {} }
+  function stopPolling() { poller.stop(); }
+  function schedulePoll(delayMs) { poller.schedule(delayMs); }
+  function saveJob() { MuscatStorage.setJSON(JOB_KEY, { inst: inst, date: date, target: target, run_id: runId }); }
+  function clearJob() { MuscatStorage.remove(JOB_KEY); }
 
   function poll() {
     var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
@@ -2342,7 +2317,7 @@
       if (s.log) {
         logEl.textContent = s.log;
         logEl.scrollTop = logEl.scrollHeight;
-        try { localStorage.setItem(logKey(), s.log); } catch (e) {}
+        MuscatStorage.set(logKey(), s.log);
       }
       if (s.state === 'running' || s.state === 'cancelling') {
         setRunning(true);
@@ -2351,7 +2326,7 @@
       if (s.state === 'done') {
         stopPolling(); clearJob();
         logEl.textContent += '\n\n✓ done — reloading…';
-        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+        MuscatStorage.set(logKey(), logEl.textContent);
         if (typeof window.showLoading === 'function') {
           window.showLoading('Reloading…');
         }
@@ -2360,11 +2335,11 @@
       } else if (s.state === 'error') {
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent += '\n\n✗ fit run exited with code ' + s.returncode;
-        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+        MuscatStorage.set(logKey(), logEl.textContent);
       } else if (s.state === 'cancelled') {
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent += '\n\n■ cancelled';
-        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+        MuscatStorage.set(logKey(), logEl.textContent);
       } else if (s.state === 'pending') {
         // Queued behind the running full job; keep the Cancel button and poll
         // until the slot frees and the run is promoted to 'running'.
@@ -2387,7 +2362,7 @@
     }
     // For full fits with existing results, validate that a run mode is selected
     if (!testRun && fitResultsExist) {
-      var runModeSelected = document.querySelector('input[name="run-mode"]:checked')?.value;
+      var runModeSelected = document.getElementById('run-mode-select')?.value;
       if (!runModeSelected) {
         if (errEl) errEl.textContent = 'Fit results exist. Choose \'New Fit\' or \'Continue Sampling\' to proceed.';
         return;
@@ -2395,18 +2370,20 @@
     }
     saveJob();
     // Unhide this job on the Jobs page
-    try {
-      var h = JSON.parse(localStorage.getItem('jobs:hidden') || '[]');
-      var key = inst + '/' + date + '/' + target.replace(/ /g, '');
-      var jk = 'transit_fit:' + key;
-      var hi = h.indexOf(jk); if (hi !== -1) { h.splice(hi, 1); localStorage.setItem('jobs:hidden', JSON.stringify(h)); }
-    } catch (_) {}
+    var h = MuscatStorage.getJSON('jobs:hidden', []);
+    var key = inst + '/' + date + '/' + target.replace(/ /g, '');
+    var jk = 'transit_fit:' + key;
+    var hi = h.indexOf(jk);
+    if (hi !== -1) {
+      h.splice(hi, 1);
+      MuscatStorage.setJSON('jobs:hidden', h);
+    }
 
     setRunning(true);
     if (errEl) errEl.textContent = '';
     logEl.style.display = 'block';
     logEl.textContent = 'Launching transit fitting run…';
-    try { localStorage.removeItem(logKey()); } catch (e) {}
+    MuscatStorage.remove(logKey());
 
     fetch('/transit-fit/run', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2417,25 +2394,27 @@
         setRunning(false);
         logEl.style.display = 'block';
         logEl.textContent = 'Error: ' + (res.error || 'failed to start');
-        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+        MuscatStorage.set(logKey(), logEl.textContent);
         return;
       }
       // Track the launched run so polling/log/cancel target it.
       runId = res.run_id || '';
       saveJob();
-      try { localStorage.removeItem(logKey()); } catch (e) {}
+      MuscatStorage.remove(logKey());
       if (res.queued) {
         logEl.textContent = '⏳ Queued — waiting for the running full fit to finish…';
-        try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+        MuscatStorage.set(logKey(), logEl.textContent);
       }
       stopPolling();
       poll();
+      // Light up the site-wide loading indicator immediately for this run.
+      if (window.MuscatJobIndicator) window.MuscatJobIndicator.refresh();
     }).catch(function (err) {
       clearJob();
       setRunning(false);
       logEl.style.display = 'block';
       logEl.textContent = 'Error: ' + err.message;
-      try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+      MuscatStorage.set(logKey(), logEl.textContent);
     });
   }
 
@@ -2481,7 +2460,7 @@
   if (cancelBtn) cancelBtn.addEventListener('click', function () {
     cancelBtn.disabled = true;
     logEl.textContent += '\n\n■ cancelling…';
-    try { localStorage.setItem(logKey(), logEl.textContent); } catch (e) {}
+    MuscatStorage.set(logKey(), logEl.textContent);
     fetch('/transit-fit/cancel', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })
@@ -2506,12 +2485,12 @@
         if (typeof window.showLoading === 'function') window.showLoading('Reloading…');
         setTimeout(function () { window.location.reload(); }, 800);
       } else {
-        alert('Delete failed: ' + (res.error || 'unknown error'));
+        window.showMessageModal('Error', 'Delete failed: ' + (res.error || 'unknown error'));
         deleteBtn.disabled = false;
         deleteBtn.textContent = '🗑 Delete Fit Results';
       }
     }).catch(function (err) {
-      alert('Delete failed: ' + err.message);
+      window.showMessageModal('Error', 'Delete failed: ' + err.message);
       deleteBtn.disabled = false;
       deleteBtn.textContent = '🗑 Delete Fit Results';
     });
@@ -2527,8 +2506,7 @@
   // Check saved job on page load — validate server state first so we don't
   // flash a Cancel button for a run that already completed.
   (function checkSavedJob() {
-    var saved;
-    try { saved = JSON.parse(localStorage.getItem(JOB_KEY) || 'null'); } catch (e) { saved = null; }
+    var saved = MuscatStorage.getJSON(JOB_KEY, null);
     if (!saved || !saved.inst) return;
     if (saved.inst === inst && saved.date === date && saved.target === target) {
       var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
@@ -2546,15 +2524,6 @@
     }
   })();
 
-  // ── Message Modal ────────────────────────────────────────────────────────
-  window.showMessageModal = function(title, text) {
-    document.getElementById('message-modal-title').textContent = title;
-    document.getElementById('message-modal-text').textContent = text;
-    document.getElementById('message-modal').classList.add('visible');
-  };
-  window.closeMessageModal = function() {
-    document.getElementById('message-modal').classList.remove('visible');
-  };
 
   // NASA Exoplanet Archive Query Handler
   var queryBtn = document.getElementById('archive-query-btn');
@@ -2564,7 +2533,7 @@
       if (!targetInput) return;
       var targetVal = targetInput.value.trim();
       if (!targetVal) {
-        window.showMessageModal('Notice', 'Please enter a target name.');
+        window.showMessageModal('Notice', 'Please enter a target name.', 'notice');
         return;
       }
 
@@ -2662,10 +2631,10 @@
           syncPlanetsInput();
           validateAllPlanetCards();
           saveOptions();
-          window.showMessageModal('Success', 'Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '!');
+          window.showMessageModal('Success', 'Successfully loaded parameters for ' + data.pl_name + ' from ' + sourceLabel + '.', 'success');
         })
         .catch(function (err) {
-          window.showMessageModal('Error', err.message);
+          window.showMessageModal('Error', err.message, 'error');
         })
         .finally(function () {
           queryBtn.disabled = false;
@@ -2676,16 +2645,16 @@
 })();
 </script>
 <div style="text-align:center; margin:2em 0; display: flex; justify-content: center; gap: 1rem; align-items: center;">
-  <a href="#" style="display:inline-block; padding:0.5em 2em; background:#0056b3; color:#fff; text-decoration:none; border-radius:4px;">Back to Top</a>
+  <a href="#" style="display:inline-block; padding:0.5em 2em; background:#0056b3; color:#fff; border:1px solid #0056b3; text-decoration:none; border-radius:4px;">Back to Top</a>
   {% if sel_target %}
-    <a href="/target?name={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; line-height: 1.2;">To Target</a>
+    <a href="/target?name={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To Target</a>
   {% endif %}
-  <a href="/jobs" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Jobs</a>
+  <a href="/jobs" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To Jobs</a>
   {% if sel_inst and sel_date and sel_target %}
-    <a href="/photometry?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Photometry</a>
+    <a href="/photometry?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To Photometry</a>
   {% else %}
-    <a href="/photometry" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To Photometry</a>
+    <a href="/photometry" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To Photometry</a>
   {% endif %}
-  <a href="/lco/schedule" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2;">To LCO</a>
+  <a href="/lco/schedule" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To LCO</a>
 </div>
 {% endblock %}

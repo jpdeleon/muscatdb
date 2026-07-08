@@ -29,6 +29,7 @@ htmlcov/
 
 # Data CSVs
 data/*.csv
+data/HARPS_RVBank_ver02.csv.zip
 
 # Local DB and data artifacts
 *.db

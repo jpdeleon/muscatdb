@@ -210,6 +210,7 @@
         <li><a href="#fov-card" class="toc-link">FOV Optimizer</a></li>
         <li><a href="#lco-schedule-card" class="toc-link">LCO Schedule</a></li>
         <li><a href="#lco-archive-card" class="toc-link">LCO Archive</a></li>
+        <li><a href="#auth-card" class="toc-link">Multi-User Auth</a></li>
         <li><a href="#schema-card" class="toc-link">Database Schema</a></li>
         <li><a href="#execution-details" class="toc-link">Pipeline Features</a></li>
         <li><a href="#faq-card" class="toc-link">FAQs</a></li>
@@ -243,6 +244,15 @@ graph TD
     C -->|Reads DB| D["Web GUI Dashboard"]:::default
     D -->|Explore Targets, Logs, Exposures| D
 
+    %% Multi-user auth
+    AUTH["nginx Reverse Proxy\n(HTTP Basic Auth)"]:::pipeline -->|X-Forwarded-User| D
+    D -->|Per-user config| SET["Settings Page\n(/settings, encrypted LCO token)"]:::default
+
+    %% Target page integrations
+    D -->|Search papers| ADSN["NASA ADS Publications\n(target page)"]:::pipeline
+    D -->|Browse catalogs| CAT["TOI / NExScI Catalog Pages\n(/toi, /nexsci)"]:::pipeline
+    CAT -->|Link to target| D
+
     %% Photometry Stage
     D -->|Configure & Launch| E["Photometry Job Queue"]:::pipeline
     E -->|Runs calibrated prose| F["Photometry Reduction"]:::default
@@ -270,13 +280,14 @@ graph TD
 
     %% LCO Integration
     D -->|LCO Token & Config| O["LCO Observation Portal"]:::default
+    SET -->|Per-user token overrides global| O
     O -->|Schedule observations| P["Submit Requestgroups"]:::pipeline
     O -->|Download archive data| Q["Reduce & Ingest FITS"]:::pipeline
     O -->|Optimize pointing| N2
     O -->|Estimate exposures| N
 
     %% Jobs monitoring & Results loop
-    E -->|Track execution| K["Jobs Page"]:::default
+    E -->|Track execution| K["Jobs Page\n(per-user attribution)"]:::default
     H -->|Track execution| K
     G -->|Display preview & plots| D
     J -->|Display parameters & plots| D
@@ -309,7 +320,7 @@ graph TD
     A["Raw Science FITS Files\n(Calibrated e91.fits)"]:::default --> B["Band Grouping\n(Grouped by gp, rp, ip, zs filters)"]:::default
     
     %% Setup & Reference Frame
-    B --> C["Reference Frame Creation\n(Median stack of middle frame index)"]:::default
+    B --> C["Reference Frame Selection\n(single frame: first for self-reference, middle for --ref_band,\nor quality pre-check pick if --ref_select quality)"]:::default
     C --> D["Point Source Detection\n(Brightest stars on reference frame)"]:::default
     D --> E["Celestial Target Identification\n(WCS matching / MAST coordinate resolution)"]:::default
     E --> F["Gaia Contamination Sizing\n(Sizes sky annulus RIN & ROUT to exclude contaminants)"]:::default
@@ -602,6 +613,57 @@ graph TD
     %% Final status
     P --> R["Download Complete\nFiles ready in muscat-db data tree"]:::default
           </pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="auth-card">
+      <div class="card-header-toggle" onclick="toggleCard('auth-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Multi-User Auth &amp; Deployment
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            HTTP Basic Auth via nginx, per-user job attribution, and encrypted per-user LCO tokens for shared-server deployments.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% Login
+    A["Browser Request"]:::default --> B["nginx :8000\n(HTTP Basic Auth, deploy/nginx.conf)"]:::pipeline
+    B -->|"Checks credential"| C["htpasswd file\n(0640 root:www-data)"]:::db
+    C -->|Valid| D["nginx sets X-Forwarded-User"]:::pipeline
+    C -->|Invalid| E["401 Challenge"]:::default
+
+    %% Proxy trust boundary
+    D --> F["uvicorn 127.0.0.1:8001\n(muscat-db serve --nginx)"]:::default
+    F --> G["Auth Middleware"]:::pipeline
+    G -->|"Peer is loopback?"| H{Trust header?}:::default
+    H -->|Yes| I["request.state.user = X-Forwarded-User"]:::default
+    H -->|No, non-loopback peer| J["Ignore header, user = None"]:::default
+
+    %% Per-user features
+    I --> K["Photometry / Transit-Fit Launch"]:::default
+    K -->|Tag job with user_name| L["Jobs Page\nUser column"]:::db
+    I --> M["Settings Page (/settings)"]:::default
+    M -->|"POST /api/settings/lco-token\n(Origin/Referer same-host check)"| N["Fernet-encrypt token\n(key derived from MUSCAT_DB_SECRET)"]:::pipeline
+    N --> O["users table\n(settings JSON column)"]:::db
+    O -->|Overrides global LCO_API_TOKEN| P["LCO API calls (lco.py)"]:::default
+          </pre>
+        </div>
+
+        <div style="margin-top: 1.5rem;">
+          <ul>
+            <li><strong>Trust boundary:</strong> nginx authenticates the user and forwards <code>X-Forwarded-User</code>, but the FastAPI middleware only honors that header when the immediate TCP peer is the loopback socket. Running <code>muscat-db serve</code> without <code>--nginx</code> (e.g. bound to <code>0.0.0.0</code>) means the header is always ignored, so a client cannot spoof another user's identity by setting the header itself.</li>
+            <li><strong>htpasswd management:</strong> <code>muscat-db htpasswd add/delete/list</code> is the only supported way to edit the auth file. Passwords are piped over stdin to <code>openssl passwd -apr1</code> (never as a CLI argument, which would leak via <code>ps</code>/<code>/proc</code>), and the file is written <code>0640 root:&lt;nginx group&gt;</code> so other local accounts on the shared server cannot read and offline-crack the hashes.</li>
+            <li><strong>Per-user job attribution:</strong> the authenticated username is threaded through <code>phot.start_run()</code>, <code>fit.start_fit()</code>, and the job store, so the Jobs page's <code>User</code> column shows who launched each photometry or transit-fit run.</li>
+            <li><strong>Per-user LCO tokens:</strong> each user can save their own LCO API token on <code>/settings</code>. Tokens are encrypted at rest with Fernet symmetric encryption keyed from <code>MUSCAT_DB_SECRET</code>, stored in a <code>users</code> table, and override the server-wide <code>LCO_API_TOKEN</code> fallback when present. The settings POST endpoint checks the request's Origin/Referer against the server's own host as a CSRF defense, since FastAPI parses the body as JSON regardless of declared Content-Type (so a plain CORS-preflight assumption is not sufficient).</li>
+          </ul>
         </div>
       </div>
     </div>
@@ -977,7 +1039,7 @@ erDiagram
             <p>The prose pipeline processes calibrated FITS frames through a sequence of steps:</p>
             <ol>
               <li><strong>Band grouping</strong> — science frames are sorted into photometric bands using the FILTER header keyword</li>
-              <li><strong>Reference frame creation</strong> — one frame (typically the middle frame or the first if <code>--ref_band</code> is used) serves as the reference for alignment</li>
+              <li><strong>Reference frame selection</strong> — one frame serves as the reference for alignment: by default the first frame (self-reference) or the middle frame of the reference band (<code>--ref_band</code>); when <code>--ref_select quality</code> is enabled, a fast header + pixel quality check instead picks the sharpest available frame (see FAQ below)</li>
               <li><strong>Source detection</strong> — point sources are identified on the reference frame</li>
               <li><strong>Target identification</strong> — the target is located via WCS matching against the resolved sky coordinates (from MAST/SIMBAD name resolution)</li>
               <li><strong>Gaia-based aperture sizing</strong> — annulus and aperture radii are set to avoid contaminating sources</li>
@@ -986,6 +1048,21 @@ erDiagram
               <li><strong>Time correction</strong> — JD-UTC is converted to BJD-TDB</li>
               <li><strong>Export</strong> — per-band CSV lightcurves, PNG diagnostics, optional GIF animation</li>
             </ol>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What does Reference selection = quality (--ref_select) do?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>By default (<code>position</code>) the reference frame is chosen positionally — the first frame for self-reference, or the middle frame of the reference band when <code>--ref_band</code> is set — with no check on whether that frame is actually any good (clouds, poor focus, and high airmass can all silently become the reference). <code>--ref_select quality</code> replaces this with a two-tier pre-check that runs before the full reduction:</p>
+            <ol>
+              <li><strong>Header triage (Tier 1, MuSCAT3/MuSCAT4/Sinistro only)</strong> — every frame's header is scanned (no pixel data read, sub-second even for hundreds of frames) for BANZAI's own per-frame FWHM estimate (<code>L1FWHM</code>), airmass, focus position, humidity, and background level. Frames with physically broken values (e.g. airmass &gt; 3.5, humidity &gt; 95%) are excluded; the rest are ranked by a composite score dominated by FWHM, and the top-K candidates (<code>--ref_select_top_k</code>, default 5) move on to Tier 2.</li>
+              <li><strong>Pixel validation (Tier 2, all instruments)</strong> — the shortlisted candidates (or, for MuSCAT/MuSCAT2, which have no header FWHM proxy, K frames sampled evenly across the whole night) are run through the same source-detection pipeline used to build the reference today, in parallel. The candidate with the best combination of confirmed target match, non-outlier star count, low measured FWHM, and an unsaturated target wins.</li>
+            </ol>
+            <p>An explicit <strong>Reference frame ID</strong> always overrides quality selection. The chosen frame and the full Tier 1/Tier 2 comparison are written to a <code>*_ref_selection.txt</code> sidecar (linked from the results page as "view ref selection") so the automatic choice can be audited without re-running anything. Quality mode adds cost (roughly proportional to top_k candidates, not the full reduction) on top of the otherwise-instant positional lookup, so it is opt-in rather than the default.</p>
           </div>
         </div>
 
@@ -1182,6 +1259,16 @@ erDiagram
 
         <div class="faq-item">
           <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How do I download all output files for a reduction at once?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>Both the photometry and transit-fit result pages have a <strong>Download all output</strong> button. It calls a server-side endpoint (<code>/photometry/download-all/...</code> or <code>/transit-fit/download-all/...</code>) that zips every product file for that run into a single archive and streams it back — no need to download plots and CSVs one at a time. For run-scoped reductions the zip walks the run directory recursively; legacy (non run-scoped) reductions zip the top-level files plus the <code>out/</code> subdirectory. The temporary zip is written under the pipeline's tmpdir and deleted immediately after the response finishes streaming.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
             <span>What are the default photometry parameters and where are they configured?</span>
             <span class="faq-icon">+</span>
           </div>
@@ -1287,6 +1374,16 @@ erDiagram
         </div>
       </div>
 
+      <div class="faq-item">
+        <div class="faq-question" onclick="toggleFaq(this)">
+          <span>How do I fit a secondary eclipse instead of a primary transit?</span>
+          <span class="faq-icon">+</span>
+        </div>
+        <div class="faq-answer">
+          <p>Check the <strong>Secondary eclipse</strong> box in the Fitting Pipeline Options section before launching a fit. This sets <code>secondary_eclipse: true</code> in the <code>fit.yaml</code> configuration, which places the modeled event at orbital phase 0.5 rather than phase 0 (the primary transit). It is off by default and is independent of the New Fit / Continue Sampling run mode — combine it with a fresh set of lightcurves centered on the expected eclipse time.</p>
+        </div>
+      </div>
+
         <div class="faq-item">
           <div class="faq-question" onclick="toggleFaq(this)">
             <span>How does the parameter query from the TOI / NASA Exoplanet Archive work?</span>
@@ -1368,6 +1465,39 @@ erDiagram
             <p>Both pipelines produce scientifically rigorous results; the choice depends on your data source and workflow integration needs.</p>
           </div>
         </div>
+        <!-- ==================== Deployment & Multi-User ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Deployment &amp; Multi-User</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How do I add a new user for the nginx-authenticated deployment?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>Run <code>muscat-db htpasswd add &lt;username&gt;</code> (it prompts for a password) or <code>muscat-db htpasswd add &lt;username&gt; --password-stdin</code> for scripting — never edit the htpasswd file by hand. <code>muscat-db htpasswd list</code> shows current users and <code>muscat-db htpasswd delete &lt;username&gt;</code> removes one. The file lives at <code>/etc/nginx/.htpasswd-muscatdb</code> by default (falling back to <code>data/.htpasswd-muscatdb</code> when nginx isn't installed, e.g. in dev) and is written <code>0640 root:www-data</code> so only root and nginx's worker group can read the password hashes.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>Why does the auth middleware ignore X-Forwarded-User sometimes?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>nginx sets <code>X-Forwarded-User</code> after a successful HTTP Basic Auth login, but any client can set that same header directly if it can reach the FastAPI process. The middleware therefore only trusts the header when the request's immediate TCP peer is the loopback socket — i.e. when the app is actually sitting behind nginx on <code>127.0.0.1</code> (via <code>muscat-db serve --nginx</code>). If you run <code>muscat-db serve</code> bound to <code>0.0.0.0</code> without nginx in front, any <code>X-Forwarded-User</code> header is silently ignored and requests are treated as unauthenticated, rather than trusting a value an attacker could forge.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What happens to per-user LCO tokens if MUSCAT_DB_SECRET is unset?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>Per-user LCO tokens saved on <code>/settings</code> are encrypted at rest with Fernet symmetric encryption, keyed from <code>MUSCAT_DB_SECRET</code>. If that variable is unset (or changes), saving or reading a token fails with a <code>503</code> (<em>"could not save LCO token"</em> / <em>"stored LCO token cannot be read"</em>) rather than silently storing or returning it in cleartext. Set a long, random <code>MUSCAT_DB_SECRET</code> before onboarding real users, and keep it stable across restarts (e.g. export it from the service environment or a `.env` file, not an ephemeral interactive shell) — rotating it makes previously-encrypted tokens permanently undecryptable, so affected users must re-save their token.</p>
+          </div>
+        </div>
+
         <!-- ==================== Observation Planning ==================== -->
         <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Observation Planning</h3>
 
@@ -1384,6 +1514,21 @@ erDiagram
               <li><strong>Blending</strong> — Stars with close, similarly-bright neighbors (within 12 arcseconds) are penalized because crowding degrades aperture photometry accuracy.</li>
             </ul>
             <p>The optimizer selects the center offset and rotation angle that maximize the cumulative weight of the captured stars while keeping the target safely inside the instrument's footprint edge (margin of 30 arcseconds).</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does bright-star avoidance work in the FOV Optimizer?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>An optional <strong>avoid brighter than</strong> Gmag threshold rejects any candidate pointing whose full footprint contains a star brighter than that limit (the science target itself is exempt). This is useful for steering the field away from a nearby saturating star that would otherwise bleed into the frame or degrade guiding.</p>
+            <ul>
+              <li>The grid search queries Gaia down to the avoidance magnitude (even if brighter than the normal comparison-star magnitude range) so it knows about every star that must be avoided.</li>
+              <li>If every candidate pointing contains at least one too-bright star, the optimizer reports infeasibility explicitly rather than silently returning an unsafe pointing — try a fainter avoidance limit or a larger PA search step.</li>
+              <li>Avoided stars are listed in the results (position, Gmag, separation) so you can confirm which sources drove the chosen pointing.</li>
+            </ul>
           </div>
         </div>
 
@@ -1408,6 +1553,62 @@ erDiagram
           </div>
           <div class="faq-answer">
             <p>The exported Observed-minus-Calculated (O-C) summary CSV text now starts with descriptive comment lines (prefixed by <code>#</code>) explaining that the transit center times (TCs) are in Barycentric Dynamical Time (BJD_TDB). This makes it easy for automated scripts and external fitting tools to parse column formats (planet, epoch, tc, tc_unc) and track time-standard coordinates correctly.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What do the provenance badges (NASA/TOI/AUTO/LINEAR/FIT/manual) on the LCO Schedule ephemeris fields mean?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>Each target-scoped ephemeris field (RA/Dec, T0, period, duration) on the LCO Schedule page shows a small badge indicating where its value came from: <code>NASA</code> or <code>TOI</code> for a catalog lookup, <code>AUTO</code> for a fallback default, <code>LINEAR</code>/<code>FIT</code> for a value derived from a saved ephemeris view's linear fit, or <code>manual</code> once you've hand-edited it.</p>
+            <p>Switching targets blanks all four fields first — an empty field honestly means "no data for this target" rather than a stale value left over from whatever you looked at previously. Re-querying the same target preserves any field you've tagged <code>manual</code> instead of overwriting it, and a catalog miss no longer blanks coordinates you entered by hand.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What safeguards prevent scheduling an unobservable REPEAT_EXPOSE request?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>LCO validates a request's configuration duration against target visibility across the <em>entire</em> request window, including pre/post padding — not just the bare transit shown in the window generator. Before a dry-run IPP check or live submission, the backend re-checks observability at the selected site over the full padded window and rejects the request with a specific reason (which window index, whether it is partially or fully unobservable, the request span in hours) instead of letting it fail opaquely at LCO.</p>
+            <p>If a window is flagged, regenerate windows with "Include padding in obs check" enabled, reduce the pre/post padding, pick a different window or site, or loosen the airmass/moon-separation constraints.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How do the bookmarkable URLs on the scheduler and catalog pages work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The LCO Schedule form and the <code>/toi</code>/<code>/nexsci</code> catalog pages encode their current filter/form state into the URL hash fragment as you interact with them (e.g. <code>/lco/schedule#proposal=TOM00001234&amp;target=TOI-2000&amp;kind=muscat3</code> or <code>/toi#q=TOI-2000&amp;planet=SuperEarth&amp;star=M&amp;sort=period:1</code>), updated in place via <code>history.replaceState()</code> so it never adds browser-history entries.</p>
+            <p>On load, state is restored with this priority: <strong>URL hash &gt; localStorage &gt; built-in defaults</strong>. That means bookmarking or sharing the URL reproduces the exact view regardless of what is saved in the visiting browser's <code>localStorage</code>.</p>
+          </div>
+        </div>
+
+        <!-- ==================== Catalogs & Publications ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Catalogs &amp; Publications</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the NASA ADS publications search on the target page work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The target page has a collapsible <strong>NASA ADS Publications</strong> panel that queries the ADS search API for papers matching a text query (pre-filled with the target name). It requires an ADS API token — set <code>ADS_API_TOKEN</code> (or <code>ADS_DEV_KEY</code>/<code>ADS_TOKEN</code>) in <code>.env</code>, generated from <a href="https://ui.adsabs.harvard.edu/user/settings/token" target="_blank" rel="noopener noreferrer">your ADS token settings</a>. A status dot on the panel shows whether the server has a token configured before you search; results link out to each paper's ADS abstract page by bibcode. No token is ever sent to the browser — the server holds it and proxies the query.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What does the "fast rotator" filter chip on the TOI page mean?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The <code>/toi</code> page left-joins the Boyle+2026 stellar-rotation catalog (<code>final_catalog.feather</code>, matched by TIC ID) onto the TOI table, adding rotation period (P<sub>rot</sub> ± uncertainty), RUWE, contaminant/sector stats, and binarity flag columns. The <strong>Fast rotator (P<sub>rot</sub> &lt; 10 d)</strong> chip in the Rotation chip group filters to TOI hosts with a measured period below 10 days — fast-rotating host stars are more likely to show spot-crossing anomalies and higher photometric variability during a transit, which is useful context before scheduling. A dynamic note near the chip reports how many of the currently filtered targets have a measured P<sub>rot</sub>, with a link to the source paper (arXiv:2603.05586).</p>
           </div>
         </div>
 

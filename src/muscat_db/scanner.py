@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import csv
+import logging
 import os
 import pathlib
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
 from datetime import date, timedelta
 
 from muscat_db.instruments import INSTRUMENTS, OBSLOG_BASE, InstrumentConfig
+
+logger = logging.getLogger(__name__)
 
 # FITS header blocks are 2880 bytes; almost all real headers fit in <=8 blocks.
 _FITS_HEADER_MAX_BYTES = 2880 * 16
@@ -101,7 +104,7 @@ def _read_fits_header_astropy(filepath: str, keys: list[str]) -> dict[str, str]:
                 if all(result.values()):
                     break
     except Exception:
-        pass
+        logger.debug("astropy fallback failed reading FITS header %s", filepath, exc_info=True)
     return result
 
 
@@ -344,7 +347,7 @@ def scan_date_for_all_inst(obsdate: str, max_workers: int | None = None) -> list
                 if result:
                     scanned.append(name)
             except Exception:
-                pass
+                logger.debug("scan_date failed for %s %s", name, obsdate, exc_info=True)
     return scanned
 
 

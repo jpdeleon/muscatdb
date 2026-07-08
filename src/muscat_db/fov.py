@@ -20,20 +20,25 @@ angle, which is cheap (a few hundred evaluations) and avoids local-minima
 trouble that a gradient method would hit with the non-smooth in/out membership.
 
 This module is intentionally dependency-light at import time: ``astropy`` is
-required for the coordinate transforms, but the network query (Gaia via Vizier)
-and ``astroquery`` are imported lazily so the pure-geometry helpers stay
-testable offline.
+required for the coordinate transforms, but the network query (Gaia DR3, via
+the official ESA archive with a VizieR cone-search fallback) and
+``astroquery`` are imported lazily so the pure-geometry helpers stay testable
+offline.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import os
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+
+from muscat_db.cache import LRUCache
 
 logger = logging.getLogger(__name__)
 
@@ -335,18 +340,28 @@ def optimize_pointing(
     offset_steps: int = DEFAULT_OFFSET_STEPS,
     pa_step_deg: float = DEFAULT_PA_STEP_DEG,
     comp_margin: float | None = None,
+    avoid_east: np.ndarray | None = None,
+    avoid_north: np.ndarray | None = None,
 ) -> FovSolution:
     """Grid-search the field center offset and PA maximizing in-field weight.
 
     The target is at the tangent-plane origin and must stay inside the field by
     at least ``margin``. Comparisons are counted if they fall inside the field
     by at least ``comp_margin`` (defaults to ``margin`` if not specified).
+
+    If ``avoid_east``/``avoid_north`` are given (tangent-plane positions of stars
+    too bright to tolerate in the field), any pointing whose footprint contains
+    one of them is rejected. When every candidate pointing is rejected the
+    returned solution keeps its sentinel ``score`` of ``-1.0`` so the caller can
+    report infeasibility.
     """
     if half <= margin:
         msg = f"margin ({margin}) must be smaller than the field half-width ({half})"
         raise ValueError(msg)
 
     comp_margin = comp_margin if comp_margin is not None else margin
+
+    has_avoid = avoid_east is not None and len(avoid_east) > 0
 
     reach = half - margin
     offs = np.linspace(-reach, reach, offset_steps)
@@ -361,6 +376,12 @@ def optimize_pointing(
                     np.array([0.0]), np.array([0.0]), cx, cy, half - margin, pa
                 )[0]:
                     continue
+                # Reject pointings that admit a too-bright star anywhere in the
+                # (full) footprint.
+                if has_avoid and inside_square(
+                    avoid_east, avoid_north, cx, cy, half, pa
+                ).any():
+                    continue
                 # Comparisons inside by at least comp_margin.
                 mask = inside_square(east, north, cx, cy, half - comp_margin, pa)
                 score = float(weights[mask].sum())
@@ -374,6 +395,31 @@ def optimize_pointing(
 # ===========================================================================
 # Catalog query (Gaia DR3 via Vizier)
 # ===========================================================================
+# VizieR signals a server-side failure (e.g. its own database backend being
+# unreachable) as an HTTP 200 VOTable with QUERY_STATUS=ERROR and one or more
+# <INFO name="Error" value="..."/> nodes, rather than a non-2xx response or a
+# raised exception. Left undetected, this looks identical to "no sources in
+# this field" to astroquery (it parses to an empty TableList either way).
+_VIZIER_QUERY_STATUS_ERROR_RE = re.compile(r'name="QUERY_STATUS"\s+value="ERROR"')
+_VIZIER_ERROR_INFO_RE = re.compile(r'<INFO\b[^>]*\bname="Error"[^>]*\bvalue="([^"]*)"')
+_VIZIER_ERROR_NOISE = {"", "--", "-- no connection"}
+
+
+def _vizier_server_error(response_text: str) -> str | None:
+    """Human-readable message if a VizieR response reports a server error.
+
+    Returns ``None`` for a normal response (which may still contain zero
+    matching sources for the query).
+    """
+    if not _VIZIER_QUERY_STATUS_ERROR_RE.search(response_text):
+        return None
+    for match in _VIZIER_ERROR_INFO_RE.finditer(response_text):
+        detail = match.group(1).strip()
+        if detail not in _VIZIER_ERROR_NOISE:
+            return detail
+    return "VizieR reported an unspecified server error"
+
+
 @dataclass
 class StarField:
     ra: np.ndarray
@@ -382,24 +428,72 @@ class StarField:
     bp_rp: np.ndarray
     source: str = ""
     error: str | None = None
+    # Proper motion (mas/yr). ``pmra`` is Gaia's convention: mu_alpha* = mu_alpha
+    # * cos(dec), i.e. already a true angular rate in the eastward direction.
+    # Appended after ``error`` (rather than grouped with gmag/bp_rp) so every
+    # existing positional ``StarField(...)`` call site stays valid.
+    pmra: np.ndarray = field(default_factory=lambda: np.array([]))
+    pmdec: np.ndarray = field(default_factory=lambda: np.array([]))
 
     def __len__(self) -> int:
         return len(self.ra)
 
 
-def query_gaia_field(
-    ra: float,
-    dec: float,
-    radius_arcsec: float,
-    mag_limit: float = 18.0,
+def _query_gaia_esa(
+    ra: float, dec: float, radius_arcsec: float, min_mag: float, max_mag: float
 ) -> StarField:
-    """Cone-search Gaia DR3 (Vizier I/355/gaiadr3) around (ra, dec).
+    """Cone-search Gaia DR3 via the official ESA archive (TAP/ADQL).
 
-    Returns a :class:`StarField`; on failure the arrays are empty and ``error``
-    explains why (callers should surface it rather than crash).
+    This is independent of CDS/VizieR, so it stays available during a VizieR
+    outage (and vice versa). Slower than the VizieR cone-search (a TAP job
+    round trip typically takes several seconds to tens of seconds).
     """
     empty = StarField(
-        np.array([]), np.array([]), np.array([]), np.array([]), "Gaia DR3"
+        np.array([]), np.array([]), np.array([]), np.array([]), "Gaia DR3 (ESA)"
+    )
+    try:
+        from astroquery.gaia import Gaia
+    except Exception as exc:  # pragma: no cover - import guard
+        empty.error = f"astroquery.gaia unavailable: {exc}"
+        return empty
+
+    radius_deg = radius_arcsec / 3600.0
+    mag_clause = (
+        f"phot_g_mean_mag BETWEEN {min_mag} AND {max_mag}"
+        if min_mag > 0
+        else f"phot_g_mean_mag < {max_mag}"
+    )
+    query = (
+        "SELECT TOP 10000 ra, dec, phot_g_mean_mag, bp_rp, pmra, pmdec "
+        "FROM gaiadr3.gaia_source WHERE "
+        f"1=CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', {ra}, {dec}, {radius_deg})) "
+        f"AND {mag_clause} "
+        "ORDER BY phot_g_mean_mag"
+    )
+    try:
+        tab = Gaia.launch_job_async(query).get_results()
+    except Exception as exc:
+        empty.error = f"ESA Gaia query failed: {exc}"
+        logger.warning("ESA Gaia query failed for (%.4f, %.4f): %s", ra, dec, exc)
+        return empty
+
+    return StarField(
+        ra=np.asarray(tab["ra"], dtype=float),
+        dec=np.asarray(tab["dec"], dtype=float),
+        gmag=np.asarray(tab["phot_g_mean_mag"], dtype=float),
+        bp_rp=np.asarray(tab["bp_rp"], dtype=float),
+        pmra=np.asarray(tab["pmra"], dtype=float),
+        pmdec=np.asarray(tab["pmdec"], dtype=float),
+        source="Gaia DR3 (ESA)",
+    )
+
+
+def _query_gaia_vizier(
+    ra: float, dec: float, radius_arcsec: float, min_mag: float, max_mag: float
+) -> StarField:
+    """Cone-search Gaia DR3 via the VizieR mirror (catalog I/355/gaiadr3)."""
+    empty = StarField(
+        np.array([]), np.array([]), np.array([]), np.array([]), "Gaia DR3 (VizieR)"
     )
     try:
         import astropy.units as u
@@ -411,17 +505,33 @@ def query_gaia_field(
 
     try:
         coord = SkyCoord(ra=ra, dec=dec, unit=(u.deg, u.deg), frame="icrs")
+        gmag_filter = f"{min_mag}..{max_mag}" if min_mag > 0 else f"<{max_mag}"
         viz = Vizier(
-            columns=["RA_ICRS", "DE_ICRS", "Gmag", "BP-RP", "_r"],
-            column_filters={"Gmag": f"<{mag_limit}"},
+            columns=["RA_ICRS", "DE_ICRS", "Gmag", "BP-RP", "pmRA", "pmDE", "_r"],
+            column_filters={"Gmag": gmag_filter},
             row_limit=-1,
         )
-        result = viz.query_region(
+        response = viz.query_region_async(
             coord, radius=radius_arcsec * u.arcsec, catalog="I/355/gaiadr3"
         )
     except Exception as exc:
         empty.error = f"Gaia query failed: {exc}"
         logger.warning("Gaia query failed for (%.4f, %.4f): %s", ra, dec, exc)
+        return empty
+
+    server_error = _vizier_server_error(response.text)
+    if server_error:
+        empty.error = f"VizieR server error: {server_error}"
+        logger.warning(
+            "VizieR server error for (%.4f, %.4f): %s", ra, dec, server_error
+        )
+        return empty
+
+    try:
+        result = viz._parse_result(response)
+    except Exception as exc:
+        empty.error = f"Gaia response parse failed: {exc}"
+        logger.warning("Gaia response parse failed for (%.4f, %.4f): %s", ra, dec, exc)
         return empty
 
     if not result or "I/355/gaiadr3" not in [t.meta.get("name") for t in result]:
@@ -434,8 +544,97 @@ def query_gaia_field(
         dec=np.asarray(tab["DE_ICRS"], dtype=float),
         gmag=np.asarray(tab["Gmag"], dtype=float),
         bp_rp=np.asarray(tab["BP-RP"], dtype=float),
-        source="Gaia DR3",
+        pmra=np.asarray(tab["pmRA"], dtype=float),
+        pmdec=np.asarray(tab["pmDE"], dtype=float),
+        source="Gaia DR3 (VizieR)",
     )
+
+
+def query_gaia_field(
+    ra: float,
+    dec: float,
+    radius_arcsec: float,
+    min_mag: float = 0.0,
+    max_mag: float = 18.0,
+    mag_limit: float | None = None,
+) -> StarField:
+    """Cone-search Gaia DR3 around (ra, dec).
+
+    Tries the official ESA archive first (authoritative, but a TAP job round
+    trip can take several seconds); falls back to the VizieR mirror
+    (I/355/gaiadr3) if the ESA archive is unavailable. Returns a
+    :class:`StarField`; on failure the arrays are empty and ``error``
+    explains why (callers should surface it rather than crash).
+    """
+    if mag_limit is not None:
+        max_mag = mag_limit
+
+    esa_stars = _query_gaia_esa(ra, dec, radius_arcsec, min_mag, max_mag)
+    if esa_stars.error is None:
+        return esa_stars
+
+    logger.warning(
+        "Falling back to VizieR for (%.4f, %.4f) after ESA archive error: %s",
+        ra, dec, esa_stars.error,
+    )
+    vizier_stars = _query_gaia_vizier(ra, dec, radius_arcsec, min_mag, max_mag)
+    if vizier_stars.error is None:
+        return vizier_stars
+
+    vizier_stars.error = (
+        f"ESA Gaia archive failed ({esa_stars.error}); "
+        f"VizieR fallback also failed ({vizier_stars.error})"
+    )
+    return vizier_stars
+
+
+# Gaia DR3 astrometry/photometry at a fixed sky position is effectively static
+# (proper motion is negligible at cone-search radii over the timescales this
+# cache lives for), so successful cone-searches are cached with no expiry,
+# just an LRU size cap. Repeated re-optimizations of the same target/instrument
+# (different margin, PA, or magnitude filter) issue the identical cone-search,
+# since none of those knobs affect the query radius or mag range.
+_GAIA_CACHE_MAX = int(os.environ.get("MUSCAT_GAIA_CACHE_MAX", "512"))
+_gaia_cache = LRUCache(maxsize=_GAIA_CACHE_MAX)
+
+
+def _gaia_cache_key(
+    ra: float, dec: float, radius_arcsec: float, min_mag: float, max_mag: float
+) -> tuple:
+    # Round to bucket near-duplicate requests together: 1e-4 deg (~0.36") is
+    # far finer than any FOV footprint, so this never conflates distinct
+    # pointings while still absorbing float noise between repeated calls.
+    return (
+        round(ra, 4), round(dec, 4), round(radius_arcsec, 1),
+        round(min_mag, 2), round(max_mag, 2),
+    )
+
+
+def cached_query_gaia_field(
+    ra: float,
+    dec: float,
+    radius_arcsec: float,
+    min_mag: float = 0.0,
+    max_mag: float = 18.0,
+    mag_limit: float | None = None,
+) -> StarField:
+    """Memoizing wrapper around :func:`query_gaia_field`.
+
+    Only successful lookups are cached; a failed query (ESA and VizieR both
+    down, or a transient network error) is never stored, so it doesn't stay
+    "stuck" for other requests hitting the same field until the process
+    restarts.
+    """
+    if mag_limit is not None:
+        max_mag = mag_limit
+    key = _gaia_cache_key(ra, dec, radius_arcsec, min_mag, max_mag)
+    cached = _gaia_cache.get(key)
+    if cached is not None:
+        return cached
+    result = query_gaia_field(ra, dec, radius_arcsec, min_mag=min_mag, max_mag=max_mag)
+    if result.error is None:
+        _gaia_cache[key] = result
+    return result
 
 
 # ===========================================================================
@@ -451,6 +650,8 @@ class FovResult:
     dec: float = math.nan
     target_gmag: float = math.nan
     target_bp_rp: float | None = None
+    target_pmra: float | None = None
+    target_pmdec: float | None = None
     fov_arcsec: float = math.nan
     fov_half_arcsec: float = math.nan
     margin_arcsec: float = DEFAULT_MARGIN_ARCSEC
@@ -464,6 +665,9 @@ class FovResult:
     n_comps: int = 0
     total_weight: float = 0.0
     catalog: str = "Gaia DR3"
+    avoid_mag: float | None = None
+    n_avoided: int = 0
+    avoided: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = self.__dict__.copy()
@@ -472,6 +676,20 @@ class FovResult:
             if isinstance(v, float) and math.isnan(v):
                 d[k] = None
         return d
+
+
+def _pm_at(arr: np.ndarray, i: int, n: int) -> float | None:
+    """Proper motion component at index ``i``, or ``None`` if unavailable.
+
+    Guards against :class:`StarField` instances built without ``pmra``/
+    ``pmdec`` (e.g. older callers or test doubles), where the array is empty
+    rather than length-``n``, and against Gaia sources lacking a 5-parameter
+    astrometric solution (stored as NaN).
+    """
+    if len(arr) != n:
+        return None
+    v = float(arr[i])
+    return v if math.isfinite(v) else None
 
 
 def _identify_target_star(
@@ -498,12 +716,21 @@ def optimize(
     max_comps: int = 60,
     pa_step_deg: float | None = None,
     sinistro_mode: str | None = None,
+    min_mag: float = 0.0,
+    max_mag: float = 18.0,
+    mag_delta: float | None = None,
+    avoid_mag: float | None = None,
 ) -> FovResult:
     """Resolve a target, pull Gaia neighbours, and optimize pointing + PA.
 
     Either ``target`` (resolvable name) or explicit ``ra``/``dec`` (deg) must be
     given. Returns a :class:`FovResult` suitable for JSON serialization and for
     overplotting in Aladin Lite.
+
+    The Gaia cone-search itself goes through :func:`cached_query_gaia_field`,
+    so re-optimizing the same target/instrument (e.g. after tweaking the
+    margin or magnitude filter, which don't change the query) skips the
+    network round trip.
 
     If ``pa_step_deg`` is None, uses :const:`DEFAULT_PA_STEP_DEG`. Set to a
     large value (e.g. 180) to fix PA at 0° (no rotation).
@@ -512,8 +739,21 @@ def optimize(
 
     For Sinistro, ``sinistro_mode`` selects "full_frame" (26'x26') or
     "central_2k_2x2" (13'x13', default).
+
+    If ``avoid_mag`` is given, any pointing whose footprint contains a star
+    brighter than ``avoid_mag`` (Gmag) is rejected; the science target itself is
+    exempt. If no pointing can avoid every such star, the result carries an
+    error explaining the infeasibility.
+
+    If the resolved target declination never reaches
+    :const:`MIN_ALTITUDE_DEG` above the horizon at ``instrument``'s site, the
+    result carries an error instead of querying Gaia for an unreachable field.
     """
+    if mag_limit != 18.0 and max_mag == 18.0:
+        max_mag = mag_limit
+
     res = FovResult(ok=False, instrument=instrument, target=target)
+    res.avoid_mag = avoid_mag
 
     # --- field size ---
     try:
@@ -542,12 +782,35 @@ def optimize(
         ra, dec = coords
     res.ra, res.dec = float(ra), float(dec)
 
+    # --- visibility from the instrument's site ---
+    if not is_observable(res.dec, instrument):
+        min_dec, max_dec = get_observable_range(instrument)
+        res.error = (
+            f"Target at dec={res.dec:.2f}\N{DEGREE SIGN} is not observable with "
+            f"{instrument} (observable dec range: {min_dec:.1f}\N{DEGREE SIGN} to "
+            f"{max_dec:.1f}\N{DEGREE SIGN})."
+        )
+        return res
+
     # --- candidate stars ---
     radius = half * math.sqrt(2.0) * QUERY_RADIUS_FACTOR
-    stars = query_gaia_field(ra, dec, radius, mag_limit=mag_limit)
+
+    query_min_mag = min_mag
+    query_max_mag = max_mag
+    if mag_delta is not None:
+        query_min_mag = 0.0
+        query_max_mag = max(max_mag, 18.0)
+    if avoid_mag is not None:
+        # Pull the bright stars we must steer around, even when they sit above
+        # the comparison magnitude range.
+        query_min_mag = 0.0
+        query_max_mag = max(query_max_mag, avoid_mag)
+
+    stars = cached_query_gaia_field(ra, dec, radius, min_mag=query_min_mag, max_mag=query_max_mag)
     if stars.error:
         res.error = stars.error
         return res
+    res.catalog = stars.source or res.catalog
     if len(stars) == 0:
         res.error = "No catalog stars found near the target."
         return res
@@ -562,6 +825,10 @@ def optimize(
         res.target_gmag = float(np.nanmedian(stars.gmag))
     if t_idx is not None and np.isfinite(stars.bp_rp[t_idx]):
         res.target_bp_rp = float(stars.bp_rp[t_idx])
+    if t_idx is not None:
+        n_stars = len(stars)
+        res.target_pmra = _pm_at(stars.pmra, t_idx, n_stars)
+        res.target_pmdec = _pm_at(stars.pmdec, t_idx, n_stars)
 
     # --- tangent plane + scoring (exclude the target itself) ---
     east, north = radec_to_tangent(stars.ra, stars.dec, ra, dec)
@@ -571,8 +838,29 @@ def optimize(
     if t_idx is not None:
         weights[t_idx] = 0.0
     weights = np.where(np.isfinite(weights), weights, 0.0)
+
+    # Magnitude filtering mask
+    mag_mask = np.ones(len(stars), dtype=bool)
+    if mag_delta is not None:
+        mag_mask &= (stars.gmag >= res.target_gmag - mag_delta) & (stars.gmag <= res.target_gmag + mag_delta)
+    mag_mask &= (stars.gmag >= min_mag) & (stars.gmag <= max_mag)
+    if t_idx is not None:
+        mag_mask[t_idx] = True
+
+    weights = np.where(mag_mask, weights, 0.0)
     weights = np.where(weights >= WEIGHT_FLOOR, weights, 0.0)
     weights = _blend_penalty(east, north, stars.gmag, weights)
+
+    # --- too-bright stars to steer the field away from (target exempt) ---
+    avoid_east = avoid_north = None
+    avoid_idx = np.array([], dtype=int)
+    if avoid_mag is not None:
+        avoid_mask = np.isfinite(stars.gmag) & (stars.gmag < avoid_mag)
+        if t_idx is not None:
+            avoid_mask[t_idx] = False
+        avoid_idx = np.where(avoid_mask)[0]
+        avoid_east = east[avoid_mask]
+        avoid_north = north[avoid_mask]
 
     # --- search ---
     try:
@@ -581,9 +869,23 @@ def optimize(
             margin=margin_arcsec,
             pa_step_deg=pa_step_deg or DEFAULT_PA_STEP_DEG,
             comp_margin=comp_margin_arcsec,
+            avoid_east=avoid_east,
+            avoid_north=avoid_north,
         )
     except ValueError as exc:
         res.error = str(exc)
+        return res
+
+    # A negative score means no candidate pointing satisfied the constraints.
+    if sol.score < 0:
+        if avoid_mag is not None and len(avoid_idx):
+            res.error = (
+                f"No pointing keeps the target in the field while avoiding all "
+                f"{len(avoid_idx)} star(s) brighter than Gmag {avoid_mag:g}. "
+                f"Try a fainter 'avoid brighter than' limit."
+            )
+        else:
+            res.error = "No valid pointing found for the given constraints."
         return res
 
     res.pa_deg = sol.pa_deg
@@ -600,6 +902,7 @@ def optimize(
     in_field = sol.in_field & (weights > 0)
     idx = np.where(in_field)[0]
     idx = idx[np.argsort(-weights[idx])][:max_comps]
+    n_stars = len(stars)
     comps = []
     for i in idx:
         comps.append(
@@ -611,10 +914,28 @@ def optimize(
                 "weight": round(float(weights[i]), 3),
                 "dmag": round(float(stars.gmag[i] - res.target_gmag), 2),
                 "sep_arcsec": round(float(math.hypot(east[i], north[i])), 1),
+                "pmra": _pm_at(stars.pmra, i, n_stars),
+                "pmdec": _pm_at(stars.pmdec, i, n_stars),
             }
         )
     res.comps = comps
     res.n_comps = len(comps)
     res.total_weight = round(float(weights[in_field].sum()), 2)
+
+    # --- too-bright stars the field was steered around (for display) ---
+    avoided = []
+    for i in avoid_idx:
+        avoided.append(
+            {
+                "ra": float(stars.ra[i]),
+                "dec": float(stars.dec[i]),
+                "gmag": float(stars.gmag[i]),
+                "sep_arcsec": round(float(math.hypot(east[i], north[i])), 1),
+            }
+        )
+    avoided.sort(key=lambda s: s["gmag"])
+    res.avoided = avoided
+    res.n_avoided = len(avoided)
+
     res.ok = True
     return res

@@ -5,6 +5,27 @@
 {% set active_lco_page = "schedule" %}
 {% include "_lco_shared.html" %}
 
+<style>
+  /* Provenance badge shown next to each target-scoped ephemeris field so the
+     user can tell where a value came from (and that it belongs to the current
+     target) rather than trusting a possibly-stale leftover from another one. */
+  .ephem-src {
+    display: inline-block; font-size: 0.62rem; font-weight: 600;
+    letter-spacing: 0.03em; text-transform: uppercase; vertical-align: middle;
+    padding: 0.02rem 0.32rem; margin-left: 0.25rem; border-radius: 0.6rem;
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--accent);
+  }
+  .ephem-src.manual {
+    background: color-mix(in srgb, var(--text-dim) 18%, transparent);
+    color: var(--text-dim);
+  }
+  .ephem-src.none {
+    background: transparent; color: var(--text-dim);
+    font-weight: 500; opacity: 0.5;
+  }
+</style>
+
 <div class="lco-section">
   <h3>Target &amp; Transit Windows</h3>
   <div class="lco-grid">
@@ -17,16 +38,16 @@
         <option value="toi">TOI catalog</option>
         <option value="linear">linear fit</option>
       </select></div>
-    <div class="lco-field"><label for="sch-coords">RA, Dec (deg)</label><input id="sch-coords" type="text" placeholder="e.g. 97.64, 29.67"></div>
+    <div class="lco-field"><label for="sch-coords">RA, Dec (deg) <span class="ephem-src none" id="src-coords">—</span></label><input id="sch-coords" type="text" placeholder="e.g. 97.64, 29.67"></div>
     <div class="lco-field"><label for="sch-range-start">Range start (UTC)</label><input id="sch-range-start" type="date"></div>
     <div class="lco-field"><label for="sch-range-end">Range end (UTC)</label><input id="sch-range-end" type="date"></div>
-    <div class="lco-field"><label for="sch-t0" title="BJD_TDB. Enter mean,uncertainty. Populated by Fetch ephemeris; editable.">t0 (BJD)</label><input id="sch-t0" type="text" inputmode="decimal" placeholder="e.g. 2459000.5,0.0003"></div>
-    <div class="lco-field"><label for="sch-period">Period (days)</label><input id="sch-period" type="text" inputmode="decimal" placeholder="e.g. 1.0914,0.00001"></div>
-    <div class="lco-field"><label for="sch-duration" title="From the catalog when available; override here. Enter mean,uncertainty.">Duration (hr)</label><input id="sch-duration" type="text" inputmode="decimal" placeholder="e.g. 2.5,0.1"></div>
+    <div class="lco-field"><label for="sch-t0" title="BJD_TDB. Enter mean,uncertainty. Populated by Fetch ephemeris; editable.">t0 (BJD) <span class="ephem-src none" id="src-t0">—</span></label><input id="sch-t0" type="text" inputmode="decimal" placeholder="e.g. 2459000.5,0.0003"></div>
+    <div class="lco-field"><label for="sch-period">Period (days) <span class="ephem-src none" id="src-period">—</span></label><input id="sch-period" type="text" inputmode="decimal" placeholder="e.g. 1.0914,0.00001"></div>
+    <div class="lco-field"><label for="sch-duration" title="From the catalog when available; override here. Enter mean,uncertainty.">Duration (hr) <span class="ephem-src none" id="src-duration">—</span></label><input id="sch-duration" type="text" inputmode="decimal" placeholder="e.g. 2.5,0.1"></div>
     <div class="lco-field"><label for="sch-pad-before">Pre-ingress (min)</label><input id="sch-pad-before" type="number" step="any" value="45"></div>
     <div class="lco-field"><label for="sch-pad-after">Post-egress (min)</label><input id="sch-pad-after" type="number" step="any" value="45"></div>
     <div class="lco-field"><label for="sch-include-padding" style="margin: 0;" title="When on, the padded baseline (start→end) must also be observable for a transit to rate 'full'. When off, padding is used only for the displayed span and the observability check spans just the transit (mid ± duration/2).">Include padding in obs check</label>
-      <input id="sch-include-padding" type="checkbox"></div>
+      <input id="sch-include-padding" type="checkbox" checked></div>
   </div>
   <div class="lco-grid" style="margin-top: 0.6rem;">
     <div class="lco-field">
@@ -47,8 +68,8 @@
         <option value="nautical" selected>Nautical (−12°)</option>
         <option value="astronomical">Astronomical (−18°)</option>
       </select></div>
-    <div class="lco-field"><label for="sch-max-airmass">Max airmass</label><input id="sch-max-airmass" type="number" step="any" value="2"></div>
-    <div class="lco-field"><label for="sch-min-lunar">Min lunar (deg)</label><input id="sch-min-lunar" type="number" step="any" value="30"></div>
+    <div class="lco-field"><label for="sch-obs-airmass">Max airmass</label><input id="sch-obs-airmass" type="number" step="any" value="2"></div>
+    <div class="lco-field"><label for="sch-moon-sep">Min lunar (deg)</label><input id="sch-moon-sep" type="number" step="any" value="30"></div>
     <button class="btn" type="button" id="btn-fov" title="Optimize field-of-view pointing for this target">Show FOV</button>
   </div>
   <div class="lco-actions">
@@ -60,6 +81,7 @@
         <option value="all">all</option>
         <option value="obs">partial + full</option>
         <option value="full">full only</option>
+        <option value="split">split only</option>
       </select>
     </label>
     <span class="lco-msg" id="msg-windows" style="margin: 0;"></span>
@@ -147,14 +169,14 @@
     <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.5rem 1rem;">
       <div class="lco-field"><label for="sch-exp-mode">Exp mode</label>
         <select id="sch-exp-mode"><option value="SYNCHRONOUS">Sync</option><option value="ASYNCHRONOUS">Async</option></select></div>
-      <div class="lco-field"><label for="sch-readout">Readout mode</label><input id="sch-readout" type="text" value="MUSCAT_FAST" style="font-size: 0.8rem;"></div>
+      <div class="lco-field"><label for="sch-readout">Readout mode</label><select id="sch-readout" style="font-size: 0.8rem;"><option value="MUSCAT_FAST">MUSCAT_FAST</option><option value="MUSCAT_SLOW">MUSCAT_SLOW</option></select></div>
     </div>
     <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dim); margin-top: 0.6rem; margin-bottom: 0.4rem;">Narrowband filters:</div>
     <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap: 0.5rem 1rem;">
-      <div class="lco-field"><label for="sch-nb-g">g</label><select id="sch-nb-g"><option value="out">out</option><option value="in">in</option></select></div>
-      <div class="lco-field"><label for="sch-nb-r">r</label><select id="sch-nb-r"><option value="out">out</option><option value="in">in</option></select></div>
-      <div class="lco-field"><label for="sch-nb-i">i</label><select id="sch-nb-i"><option value="out">out</option><option value="in">in</option></select></div>
-      <div class="lco-field"><label for="sch-nb-z">z</label><select id="sch-nb-z"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-g">gp</label><select id="sch-nb-g"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-r">rp</label><select id="sch-nb-r"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-i">ip</label><select id="sch-nb-i"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-z">zs</label><select id="sch-nb-z"><option value="out">out</option><option value="in">in</option></select></div>
     </div>
   </div>
 
@@ -162,6 +184,7 @@
     <div class="lco-field"><label for="sch-ipp">IPP value</label><input id="sch-ipp" type="number" step="any" value="1.0"></div>
     <div class="lco-field"><label for="sch-type">Type</label>
       <select id="sch-type">
+        <option value="REPEAT_EXPOSE">REPEAT_EXPOSE</option>
         <option value="EXPOSE">EXPOSE</option>
       </select>
     </div>
@@ -177,7 +200,7 @@
         <option value="OFF">OFF</option>
       </select>
     </div>
-    <div class="lco-field"><label for="sch-effective-exptime">Exp time (s)</label><input id="sch-effective-exptime" type="text" inputmode="decimal" placeholder="60"></div>
+    <div class="lco-field sinistro-only"><label for="sch-effective-exptime">Exp time (s)</label><input id="sch-effective-exptime" type="text" inputmode="decimal" placeholder="60"></div>
     <div class="lco-field sinistro-only"><label for="sch-effective-mode">Readout</label>
       <select id="sch-effective-mode">
         <option value="central_2k_2x2">2k 2x2</option>
@@ -191,8 +214,73 @@
   <p class="lco-note">These scheduling inputs are separate from the archive page.</p>
 </div>
 
-<div class="lco-section">
-  <h3>Dry-run &amp; Submit</h3>
+<div class="lco-section" id="split-section" style="display: none;">
+  <h3>Split Request (two-site relay)</h3>
+  <p class="lco-note" id="split-note"></p>
+  <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
+    <div class="lco-field"><label for="sch-site-a">Leg A site (ingress)</label>
+      <select id="sch-site-a">
+        <option value="">— select —</option>
+        <option value="ogg">ogg</option>
+        <option value="coj">coj</option>
+        <option value="lsc">lsc</option>
+        <option value="cpt">cpt</option>
+        <option value="tfn">tfn</option>
+        <option value="elp">elp</option>
+      </select>
+    </div>
+    <div class="lco-field"><label for="sch-site-b">Leg B site (egress)</label>
+      <select id="sch-site-b">
+        <option value="">— select —</option>
+        <option value="ogg">ogg</option>
+        <option value="coj">coj</option>
+        <option value="lsc">lsc</option>
+        <option value="cpt">cpt</option>
+        <option value="tfn">tfn</option>
+        <option value="elp">elp</option>
+      </select>
+    </div>
+  </div>
+  <div class="lco-actions">
+    <button class="btn primary" type="button" id="btn-split-dry-run">Check settings (both legs)</button>
+    <span class="lco-msg" id="msg-split-ipp" style="margin: 0;"></span>
+  </div>
+  <div id="split-ipp-result" style="margin-top: 0.75rem; display: none;">
+    <div class="lco-grid" style="grid-template-columns: 1fr 1fr;">
+      <div>
+        <div style="font-weight: 600; font-size: 0.8rem; color: var(--text-dim); margin-bottom: 0.25rem;">Leg A</div>
+        <div class="lco-note" id="split-a-summary"></div>
+      </div>
+      <div>
+        <div style="font-weight: 600; font-size: 0.8rem; color: var(--text-dim); margin-bottom: 0.25rem;">Leg B</div>
+        <div class="lco-note" id="split-b-summary"></div>
+      </div>
+    </div>
+  </div>
+  <div class="lco-actions" style="margin-top: 0.6rem;">
+    <button class="btn" type="button" id="btn-submit-leg-a" disabled
+      title="Enabled once leg A passes its own dry-run. Requires MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
+      Submit Leg A only
+    </button>
+    <button class="btn" type="button" id="btn-submit-leg-b" disabled
+      title="Enabled once leg B passes its own dry-run. Requires MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
+      Submit Leg B only
+    </button>
+    <button class="btn primary" type="button" id="btn-split-submit" disabled
+      title="Enabled after both legs pass dry-run. Requires MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
+      Submit both
+    </button>
+  </div>
+  <div id="split-partial-warning" style="display: none; margin-top: 0.75rem; padding: 0.6rem 0.8rem; border-radius: 8px; background: color-mix(in srgb, #e0a23b 18%, transparent); border: 1px solid #e0a23b;">
+    <strong>⚠ Partial booking:</strong> <span id="split-partial-text"></span>
+  </div>
+  <p class="lco-note">Each leg is an independent LCO booking. "Submit both" is not atomic — if leg B fails
+    after leg A is booked, leg A stays booked (see the warning above); use "Submit Leg B only" to retry it.
+    There is no automatic cancellation.</p>
+</div>
+
+<div class="lco-section" id="single-submit-section">
+  <h3>Single site request</h3>
   <div class="lco-actions">
     <button class="btn primary" type="button" id="btn-dry-run">Check settings</button>
     <button class="btn" type="button" id="btn-submit" disabled
@@ -224,6 +312,44 @@
     var e = el(id); if (!e) return;
     e.textContent = text || '';
     e.className = 'lco-msg' + (kind ? ' ' + kind : '');
+  }
+  function escapeHtml(text) {
+    return String(text).replace(/[&<>"']/g, function (ch) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch];
+    });
+  }
+  function msgHtml(id, html, kind) {
+    var e = el(id); if (!e) return;
+    e.innerHTML = html || '';
+    e.className = 'lco-msg' + (kind ? ' ' + kind : '');
+  }
+
+  // --- Ephemeris field provenance -----------------------------------------
+  // These four fields are target-scoped: their value only makes sense for the
+  // target it was resolved for. We track which target the current values belong
+  // to (ephemTarget) and where each came from (fieldSources), so fetching a new
+  // target can't silently leave another target's numbers in place.
+  var EPHEM_FIELDS = ['sch-coords', 'sch-t0', 'sch-period', 'sch-duration'];
+  var SRC_BADGE = {
+    'sch-coords': 'src-coords', 'sch-t0': 'src-t0',
+    'sch-period': 'src-period', 'sch-duration': 'src-duration'
+  };
+  var fieldSources = {};   // field id -> source label ('NASA' | 'manual' | ...)
+  var ephemTarget = '';    // target the ephemeris fields currently describe
+
+  function setFieldSource(id, source) {
+    fieldSources[id] = source || '';
+    var b = el(SRC_BADGE[id]); if (!b) return;
+    if (source) {
+      b.textContent = source;
+      b.className = 'ephem-src' + (source === 'manual' ? ' manual' : '');
+    } else {
+      b.textContent = '—';
+      b.className = 'ephem-src none';
+    }
+  }
+  function clearEphemFields() {
+    EPHEM_FIELDS.forEach(function (id) { setVal(id, ''); setFieldSource(id, ''); });
   }
   function parseTupleValue(raw) {
     var s = (raw || '').trim();
@@ -265,10 +391,10 @@
     'sch-twilight','sch-sites','win-filter',
     'sch-kind','sch-name','sch-count','sch-exp-g','sch-exp-r','sch-exp-i','sch-exp-z',
     'sch-exp-mode','sch-readout','sch-muscat-site','sch-nb-g','sch-nb-r','sch-nb-i','sch-nb-z',
-    'sch-sin-count','sch-site',
+    'sch-sin-count','sch-site','sch-site-a','sch-site-b',
     'sch-type','sch-observation-type','sch-guiding-config',
     'sch-effective-filter','sch-effective-exptime','sch-effective-mode',
-    'sch-max-airmass','sch-min-lunar','sch-ipp'
+    'sch-obs-airmass','sch-moon-sep','sch-ipp'
   ];
 
   var CHECK_IDS = ['sch-include-padding'];
@@ -279,28 +405,61 @@
     return s ? [s] : [];
   }
 
+  // ── URL slug encoding/decoding for bookmarkable form options ─────────────
+  function encodeOptions(opts) {
+    var parts = [];
+    // Encode only key scheduler parameters to keep URLs readable.
+    ['sch-proposal', 'sch-target', 'sch-planet', 'sch-kind', 'sch-coords', 'sch-range-start', 'sch-range-end'].forEach(function (id) {
+      if (opts[id]) parts.push(id.slice(4) + '=' + encodeURIComponent(opts[id]));
+    });
+    return parts.length ? '#' + parts.join('&') : '';
+  }
+  function decodeSlug() {
+    var hash = window.location.hash.slice(1);
+    if (!hash) return null;
+    var params = new URLSearchParams(hash);
+    var opts = {};
+    var keys = ['proposal', 'target', 'planet', 'kind', 'coords', 'range-start', 'range-end'];
+    keys.forEach(function (k) {
+      if (params.has(k)) opts['sch-' + k] = decodeURIComponent(params.get(k));
+    });
+    return Object.keys(opts).length ? opts : null;
+  }
+
   function collectOptions() {
     var o = {};
     TEXT_IDS.forEach(function (id) { o[id] = val(id); });
     CHECK_IDS.forEach(function (id) { o[id] = chk(id); });
+    o['_ephemTarget'] = ephemTarget;
+    o['_fieldSources'] = fieldSources;
     return o;
   }
   function saveOptions() {
-    try { localStorage.setItem(OPT_KEY, JSON.stringify(collectOptions())); } catch (e) {}
+    var opts = collectOptions();
+    try { localStorage.setItem(OPT_KEY, JSON.stringify(opts)); } catch (e) {}
+    // Update URL slug for bookmarking/sharing.
+    window.history.replaceState(null, '', window.location.pathname + encodeOptions(opts));
   }
   function restoreOptions() {
-    var saved;
-    try { saved = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); } catch (e) { saved = null; }
+    // Priority: URL slug > localStorage > defaults.
+    var saved = decodeSlug();
+    if (!saved) {
+      try { saved = JSON.parse(localStorage.getItem(OPT_KEY) || 'null'); } catch (e) { saved = null; }
+    }
     if (!saved) return;
     TEXT_IDS.forEach(function (id) { if (saved[id] !== undefined && saved[id] !== '') setVal(id, saved[id]); });
     CHECK_IDS.forEach(function (id) { if (saved[id] !== undefined) setChk(id, saved[id]); });
     if (saved['sch-source']) pendingSource = saved['sch-source'];
+    if (typeof saved['_ephemTarget'] === 'string') ephemTarget = saved['_ephemTarget'];
+    var savedSrc = saved['_fieldSources'] || {};
+    EPHEM_FIELDS.forEach(function (id) { setFieldSource(id, savedSrc[id] || ''); });
   }
   document.addEventListener('change', function (e) {
     if (e.target && (TEXT_IDS.indexOf(e.target.id) !== -1 || CHECK_IDS.indexOf(e.target.id) !== -1)) {
       saveOptions();
       el('btn-submit').disabled = true;
       lastDryRunHash = null;
+      resetSplitSubmitState();
     }
   });
 
@@ -330,6 +489,10 @@
   var targetRefreshTimer = null;
   var lastWindows = [];
   var lastDryRunHash = null;
+  var lastSplitDryRunHashes = null;   // { a: hash|null, b: hash|null } -- each leg only gets a
+                                       // hash once ITS OWN dry-run passes, independent of the other
+  var lastSplitLegAResult = null;     // leg A's submit result, once booked
+  var lastSplitLegBResult = null;     // leg B's submit result, once booked
 
   function setDot(id, ok) { var e = el(id); if (e) e.className = 'dot ' + (ok ? 'ok' : 'no'); }
   fetch('/api/lco/config').then(function (r) { return r.json(); }).then(function (d) {
@@ -364,38 +527,62 @@
     e.value = v;
   }
 
-  function getWindowDuration() {
-    var selected = selectedWindows();
-    if (!selected.length) return 0;
-    var first = selected[0];
+  function windowDurationSec(startIso, endIso) {
     try {
-      var start = new Date(first.start).getTime();
-      var end = new Date(first.end).getTime();
-      return (end - start) / 1000;
+      return (new Date(endIso).getTime() - new Date(startIso).getTime()) / 1000;
     } catch (e) {
       return 0;
     }
   }
 
+  function getWindowDuration() {
+    var selected = selectedWindows();
+    if (!selected.length) return 0;
+    return windowDurationSec(selected[0].start, selected[0].end);
+  }
+
+  // Pure REPEAT_EXPOSE/EXPOSE packing math, shared by the single-submit
+  // exposure-count field and the per-leg split-submit exposure counts (each
+  // leg's window is shorter than the original full-baseline window, so each
+  // needs its own count computed from its own span). Returns null when the
+  // count can't be determined yet (no window / no exposure time set).
+  function computeExposureCount(kind, windowSec, requestType, bandTimes, sinExpTime) {
+    if (!windowSec) return null;
+    if (kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4') {
+      // REPEAT_EXPOSE repeats a single exposure block for the whole
+      // repeat_duration (≈ the window span), so exposure_count must stay 1.
+      // Packing it to fill the window makes LCO's single-pass ≈ the window,
+      // which then exceeds repeat_duration ("repeat_duration is less than the
+      // minimum required to repeat at least once"). Only one-shot EXPOSE packs.
+      if ((requestType || 'REPEAT_EXPOSE') === 'REPEAT_EXPOSE') return 1;
+      var maxExpTime = Math.max.apply(null, (bandTimes || []).filter(function (v) { return v !== null; }));
+      if (maxExpTime === -Infinity || !maxExpTime) return null;
+      var overhead = 5;
+      var count = Math.floor((windowSec - 60) / (maxExpTime + overhead));
+      return count >= 1 ? Math.max(1, count) : null;
+    } else if (kind === 'sinistro') {
+      // Same REPEAT_EXPOSE constraint as MuSCAT above: repeat_duration is
+      // derived from the window span (lco.py's _repeat_duration), so packing
+      // exposure_count to fill the window leaves no room to repeat that block
+      // even once, and LCO rejects it ("repeat_duration ... is less than the
+      // minimum required to repeat at least once"). Only EXPOSE packs.
+      if ((requestType || 'REPEAT_EXPOSE') === 'REPEAT_EXPOSE') return 1;
+      if (!sinExpTime) return null;
+      var overhead2 = 3;
+      var count2 = Math.floor((windowSec - 30) / (sinExpTime + overhead2));
+      return count2 >= 1 ? Math.max(1, count2) : null;
+    }
+    return null;
+  }
+
   function updateExposureCount() {
     var kind = val('sch-kind');
     var windowSec = getWindowDuration();
-    if (!windowSec) return;
-
-    if (kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4') {
-      var times = [num('sch-exp-g'), num('sch-exp-r'), num('sch-exp-i'), num('sch-exp-z')];
-      var maxExpTime = Math.max.apply(null, times.filter(function (v) { return v !== null; }));
-      if (maxExpTime === -Infinity || !maxExpTime) return;
-      var overhead = 5;
-      var count = Math.floor((windowSec - 60) / (maxExpTime + overhead));
-      if (count >= 1) setVal('sch-count', String(Math.max(1, count)));
-    } else if (kind === 'sinistro') {
-      var expTime = num('sch-effective-exptime');
-      if (!expTime) return;
-      var overhead = 3;
-      var count = Math.floor((windowSec - 30) / (expTime + overhead));
-      if (count >= 1) setVal('sch-sin-count', String(Math.max(1, count)));
-    }
+    var times = [num('sch-exp-g'), num('sch-exp-r'), num('sch-exp-i'), num('sch-exp-z')];
+    var count = computeExposureCount(kind, windowSec, val('sch-type'), times, num('sch-effective-exptime'));
+    if (count === null) return;
+    if (kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4') setVal('sch-count', String(count));
+    else if (kind === 'sinistro') setVal('sch-sin-count', String(count));
   }
 
   function updateScheduleFields() {
@@ -558,14 +745,17 @@
     opts = opts || {};
     var coords = info && info.coordinates;
     if (!coords || coords.ra == null || coords.dec == null) {
-      setVal('sch-coords', '');
-      saveOptions();
+      // Catalog lookup returned nothing. Do NOT wipe the field: staleness is
+      // already handled by clearing on target change, so any value present here
+      // is either a manual entry for this target or a prior resolve — keep it.
+      if (val('sch-coords') && !fieldSources['sch-coords']) setFieldSource('sch-coords', 'manual');
       throw new Error('Coordinates not found for ' + (info && info.target ? info.target : 'that target'));
     }
     if (opts.isInitialLoad && val('sch-coords')) {
       return;
     }
     setVal('sch-coords', coords.ra.toFixed(5) + ', ' + coords.dec.toFixed(5));
+    setFieldSource('sch-coords', String(coords.source || 'catalog').toUpperCase());
     saveOptions();
   }
 
@@ -588,18 +778,28 @@
     // Duration follows the selected catalog when it provides one (toi -> TOI,
     // nasa -> NASA); other sources (auto / dataset / linear) have no duration of
     // their own, so fall back to NASA then TOI.
-    var dur = null, durUnc = null;
-    if (source === 'toi' && toi.duration != null) { dur = toi.duration; durUnc = toi.duration_unc; }
-    else if (source === 'nasa' && nasa.duration != null) { dur = nasa.duration; durUnc = nasa.duration_unc; }
-    else if (nasa.duration != null) { dur = nasa.duration; durUnc = nasa.duration_unc; }
-    else if (toi.duration != null) { dur = toi.duration; durUnc = toi.duration_unc; }
-    if (dur != null) setVal('sch-duration', tupleString(dur, durUnc));
+    var dur = null, durUnc = null, durSrc = null;
+    if (source === 'toi' && toi.duration != null) { dur = toi.duration; durUnc = toi.duration_unc; durSrc = 'TOI'; }
+    else if (source === 'nasa' && nasa.duration != null) { dur = nasa.duration; durUnc = nasa.duration_unc; durSrc = 'NASA'; }
+    else if (nasa.duration != null) { dur = nasa.duration; durUnc = nasa.duration_unc; durSrc = 'NASA'; }
+    else if (toi.duration != null) { dur = toi.duration; durUnc = toi.duration_unc; durSrc = 'TOI'; }
+    if (dur != null) { setVal('sch-duration', tupleString(dur, durUnc)); setFieldSource('sch-duration', durSrc); }
 
     if (!source) {
       var auto = autoEphemerisForPlanet(info, planet);
-      if (!auto) { msg('msg-windows', 'No ephemeris found for ' + planet, 'err'); return; }
+      if (!auto) {
+        setVal('sch-t0', '');
+        setVal('sch-period', '');
+        setFieldSource('sch-t0', '');
+        setFieldSource('sch-period', '');
+        saveOptions();
+        msg('msg-windows', 'No ephemeris found for ' + planet, 'err');
+        return;
+      }
       setVal('sch-t0', tupleString(auto.data.t0, auto.data.t0_unc));
       setVal('sch-period', tupleString(auto.data.period, auto.data.period_unc));
+      setFieldSource('sch-t0', auto.label);
+      setFieldSource('sch-period', auto.label);
       saveOptions();
       msg('msg-windows', auto.label + ': t0=' + auto.data.t0 + ', P=' + auto.data.period + ' d' + (dur != null ? ', dur=' + dur + ' h' : ''), 'ok');
       return;
@@ -607,9 +807,19 @@
 
     if (source === 'nasa' || source === 'toi') {
       var ephem = source === 'nasa' ? nasa : toi;
-      if (ephem.t0 == null || ephem.period == null) { msg('msg-windows', 'No ' + source.toUpperCase() + ' ephemeris for ' + planet, 'err'); return; }
+      if (ephem.t0 == null || ephem.period == null) {
+        setVal('sch-t0', '');
+        setVal('sch-period', '');
+        setFieldSource('sch-t0', '');
+        setFieldSource('sch-period', '');
+        saveOptions();
+        msg('msg-windows', 'No ' + source.toUpperCase() + ' ephemeris for ' + planet, 'err');
+        return;
+      }
       setVal('sch-t0', tupleString(ephem.t0, ephem.t0_unc));
       setVal('sch-period', tupleString(ephem.period, ephem.period_unc));
+      setFieldSource('sch-t0', source.toUpperCase());
+      setFieldSource('sch-period', source.toUpperCase());
       saveOptions();
       msg('msg-windows', source.toUpperCase() + ': t0=' + ephem.t0 + ', P=' + ephem.period + ' d' + (dur != null ? ', dur=' + dur + ' h' : ''), 'ok');
       return;
@@ -622,9 +832,11 @@
       if (!pe) { msg('msg-windows', 'No fitted ephemeris for ' + planet + ' in that dataset', 'err'); return; }
       setVal('sch-t0', tupleString(pe.t0, pe.t0_unc));
       setVal('sch-period', tupleString(pe.period, pe.period_unc));
+      setFieldSource('sch-t0', 'FIT');
+      setFieldSource('sch-period', 'FIT');
       // Prefer the fit's own duration (hours); otherwise keep the catalog value
       // already set above.
-      if (pe.duration != null) { dur = pe.duration; setVal('sch-duration', tupleString(pe.duration, pe.duration_unc)); }
+      if (pe.duration != null) { dur = pe.duration; setVal('sch-duration', tupleString(pe.duration, pe.duration_unc)); setFieldSource('sch-duration', 'FIT'); }
       saveOptions();
       msg('msg-windows', datasetLabel(ds) + ': t0=' + pe.t0 + ', P=' + pe.period + ' d' + (dur != null ? ', dur=' + dur + ' h' : ''), 'ok');
       return;
@@ -648,6 +860,8 @@
         if (!res) { msg('msg-windows', 'Linear fit unavailable for ' + planet, 'err'); return; }
         setVal('sch-t0', tupleString(res.t0_fit, res.t0_fit_unc));
         setVal('sch-period', tupleString(res.period_fit, res.period_fit_unc));
+        setFieldSource('sch-t0', 'LINEAR');
+        setFieldSource('sch-period', 'LINEAR');
         saveOptions();
         var nfit = (res.points || []).filter(function (p) { return p.checked; }).length;
         msg('msg-windows', (res.was_fit ? 'Linear fit' : 'Seed (need ≥2 epochs)') + ': t0=' + res.t0_fit + ', P=' + res.period_fit + ' d (' + nfit + ' epochs)', 'ok');
@@ -658,6 +872,16 @@
     opts = opts || {};
     var target = val('sch-target');
     if (!target) return Promise.resolve();
+    // Target changed since these fields were last populated: blank the
+    // target-scoped ephemeris fields so nothing from the previous target
+    // lingers. A field left empty after the fetch honestly means "no data for
+    // this target" rather than a stale leftover. Skipped on the initial page
+    // load, where restored values already belong to the restored target.
+    if (!opts.isInitialLoad && target !== ephemTarget) {
+      clearEphemFields();
+      saveOptions();
+    }
+    ephemTarget = target;
     if (!opts.silent) msg('msg-windows', 'Fetching target info…');
     return fetchTargetInfo(target).then(function (info) {
       if (!info.ok) {
@@ -686,8 +910,41 @@
     return sites;
   }
 
+  // 'split_gap' (a real gap remains near the handoff) and 'split_overlap'
+  // (the two sites' coverage meets or overlaps with no gap) are the two
+  // two-site relay outcomes -- 'partial' is reserved for the single-site case.
+  function isSplitRating(rating) {
+    return rating === 'split_gap' || rating === 'split_overlap';
+  }
+
+  // For a split transit, always plot exactly the relay pair (chronological:
+  // early site first) so the handoff is visible; otherwise fall back to the
+  // usual best-site-first ordering.
+  function sitesForPlot(o) {
+    if (o && isSplitRating(o.rating) && o.split_sites && o.split_sites.length) {
+      return o.split_sites.slice();
+    }
+    return sitesBestFirst(o);
+  }
+
+  function bracketWarning(o) {
+    if (o.ingress_bracket_ok === false && o.egress_bracket_ok === false) return ' ⚠ ingress+egress too close to handoff';
+    if (o.ingress_bracket_ok === false) return ' ⚠ ingress too close to handoff';
+    if (o.egress_bracket_ok === false) return ' ⚠ egress too close to handoff';
+    return '';
+  }
+
   function obsCellHtml(o) {
     if (!o || !o.rating || o.rating === 'none') return '<span style="color: var(--text-dim);">—</span>';
+    if (isSplitRating(o.rating)) {
+      var isGap = o.rating === 'split_gap';
+      var splitLabel = (isGap ? 'Split gap' : 'Split overlap') + ' @ ' + (o.split_sites || []).join('→');
+      if (o.split_overlap_min) splitLabel += ' (' + o.split_overlap_min + 'min overlap)';
+      if (o.split_gap_min) splitLabel += ' (' + o.split_gap_min + 'min gap)';
+      splitLabel += bracketWarning(o);
+      var splitColor = isGap ? '#c879e0' : '#6c8cff';
+      return '<span style="color: ' + splitColor + '; font-weight: 600;">' + splitLabel + '</span>';
+    }
     var sites = sitesBestFirst(o);
     var label = (o.rating === 'full' ? 'Full' : 'Partial') + (sites.length ? ' @ ' + sites.join(', ') : '');
     var color = o.rating === 'full' ? '#2ecc71' : '#e0a23b';
@@ -719,7 +976,8 @@
       var rating = tr.getAttribute('data-rating') || 'none';
       var show = mode === 'all' ||
         (mode === 'obs' && rating !== 'none') ||
-        (mode === 'full' && rating === 'full');
+        (mode === 'full' && rating === 'full') ||
+        (mode === 'split' && isSplitRating(rating));
       tr.style.display = show ? '' : 'none';
     });
   }
@@ -730,6 +988,16 @@
     if (uncMin >= 10) return '± ' + uncMin.toFixed(1) + ' min';
     if (uncMin >= 1) return '± ' + uncMin.toFixed(2) + ' min';
     return '± ' + uncMin.toFixed(3) + ' min';
+  }
+
+  // Format an ISO UTC timestamp (e.g. "2026-07-08T12:34:56Z") for display in
+  // the windows table, truncated to minute precision: "2026-07-08 12:34".
+  // Only affects display; the underlying w.start/mid/end keep full precision
+  // for plotting and request submission.
+  function fmtWindowTime(iso) {
+    if (!iso) return '-';
+    var m = String(iso).match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
+    return m ? m[1] + ' ' + m[2] : String(iso);
   }
 
   function updateRequestName() {
@@ -783,7 +1051,7 @@
       }
 
       tr.innerHTML = '<td><input type="checkbox" data-i="' + i + '"' + (checked ? ' checked' : '') + '></td>' +
-        '<td>' + w.epoch + '</td><td>' + w.start + '</td><td>' + w.mid + '</td><td>' + uncText + '</td><td>' + w.end + '</td>' +
+        '<td>' + w.epoch + '</td><td>' + fmtWindowTime(w.start) + '</td><td>' + fmtWindowTime(w.mid) + '</td><td>' + uncText + '</td><td>' + fmtWindowTime(w.end) + '</td>' +
         '<td>' + obsCellHtml(o) + '</td>' +
         '<td><a href="#" class="vis-link" data-i="' + i + '" title="Show the astropy visibility plot for this transit below the table">show plot</a></td>';
       tb.appendChild(tr);
@@ -792,6 +1060,85 @@
     el('win-all').checked = selectedWindowIndices().length === lastWindows.length;
     applyWinFilter();
     updateRequestName();
+    updateSplitPanel();
+  }
+
+  // Returns the observability of the single checked window when it's rated
+  // split_gap or split_overlap (the only cases the split-request panel
+  // applies to), else null.
+  function currentSplitObservability() {
+    var idxs = selectedWindowIndices();
+    if (idxs.length !== 1) return null;
+    var w = lastWindows[idxs[0]];
+    return (w && w.observability && isSplitRating(w.observability.rating)) ? w.observability : null;
+  }
+
+  // Shows/hides the "Split Request" panel based on the current window
+  // selection, and resets its dry-run/submit state whenever the selection (or
+  // its split_sites) changes so a stale dry-run hash can never be submitted
+  // against a different pair of legs. Mutually exclusive with the generic
+  // "Dry-run & Submit" section: a single-site submit doesn't apply to a
+  // window with no full single-site coverage, and showing both at once left
+  // two unrelated pairs of "check settings"/"submit" buttons on screen.
+  function updateSplitPanel() {
+    var o = currentSplitObservability();
+    var panel = el('split-section');
+    var singlePanel = el('single-submit-section');
+    if (!panel) return;
+    if (!o) {
+      panel.style.display = 'none';
+      if (singlePanel) singlePanel.style.display = '';
+      return;
+    }
+    if (singlePanel) singlePanel.style.display = 'none';
+    el('btn-submit').disabled = true;
+    lastDryRunHash = null;
+    panel.style.display = '';
+    setSelectValue('sch-site-a', o.split_sites[0]);
+    setSelectValue('sch-site-b', o.split_sites[1]);
+    el('btn-submit-leg-a').textContent = 'Submit ' + o.split_sites[0].toUpperCase() + ' only';
+    el('btn-submit-leg-b').textContent = 'Submit ' + o.split_sites[1].toUpperCase() + ' only';
+    var note = (o.rating === 'split_gap' ? 'Gap relay: ' : 'Overlap relay: ') + o.split_sites.join(' → ').toUpperCase();
+    if (o.split_overlap_min) note += ' (' + o.split_overlap_min + ' min overlap)';
+    if (o.split_gap_min) note += ' (' + o.split_gap_min + ' min gap — neither site observes this stretch)';
+    note += bracketWarning(o);
+    el('split-note').textContent = note;
+    resetSplitSubmitState();
+  }
+
+  function resetSplitSubmitState() {
+    lastSplitDryRunHashes = null;
+    lastSplitLegAResult = null;
+    lastSplitLegBResult = null;
+    el('btn-submit-leg-a').disabled = true;
+    el('btn-submit-leg-b').disabled = true;
+    el('btn-split-submit').disabled = true;
+    el('split-ipp-result').style.display = 'none';
+    el('split-partial-warning').style.display = 'none';
+    msg('msg-split-ipp', '');
+  }
+
+  // Builds the two leg payloads for a split submission by cloning the shared
+  // single-request params (buildParams()) and overriding the per-leg site,
+  // window span, and exposure count -- everything else (target, proposal,
+  // filters, IPP, guiding, etc.) is shared between both legs.
+  function buildSplitParams() {
+    var o = currentSplitObservability();
+    if (!o) return null;
+    var kind = val('sch-kind');
+    var base = buildParams();
+    var siteIds = ['sch-site-a', 'sch-site-b'];
+    var legs = o.split_windows.map(function (sw, idx) {
+      var leg = JSON.parse(JSON.stringify(base));
+      leg.site = val(siteIds[idx]) || sw.site;
+      leg.windows = [{ start: sw.start, end: sw.end }];
+      var windowSec = windowDurationSec(sw.start, sw.end);
+      var times = [num('sch-exp-g'), num('sch-exp-r'), num('sch-exp-i'), num('sch-exp-z')];
+      var count = computeExposureCount(kind, windowSec, val('sch-type'), times, num('sch-effective-exptime'));
+      if (count !== null) leg.exposure_count = count;
+      return leg;
+    });
+    return { leg_a: legs[0], leg_b: legs[1] };
   }
 
   // Drop any rendered windows so a failed/empty Generate can't leave stale rows
@@ -893,10 +1240,16 @@
     traces.push({ x: primary.times, y: primary.moon_alt, name: 'Moon', mode: 'lines', line: { color: isDark ? '#aaa' : '#555', width: 1.5, dash: 'dash' }, hovertemplate: '%{x|%H:%M} UTC<br>Moon alt: %{y:.1f}°<extra>Moon</extra>' });
     traces.push({ x: primary.times, y: primary.sun_alt, name: 'Sun', mode: 'lines', line: { color: '#e07b53', width: 1, dash: 'dot' }, hovertemplate: '%{x|%H:%M} UTC<br>Sun alt: %{y:.1f}°<extra>Sun</extra>' });
 
-    // x-range = 24-hour window from 00:00 UT to 00:00 UT next day (shifted 1 day later)
-    var firstTime = new Date(primary.times[0]);
-    var xMin = new Date(Date.UTC(firstTime.getUTCFullYear(), firstTime.getUTCMonth(), firstTime.getUTCDate() + 1, 0, 0, 0)).toISOString();
-    var xMax = new Date(Date.UTC(firstTime.getUTCFullYear(), firstTime.getUTCMonth(), firstTime.getUTCDate() + 2, 0, 0, 0)).toISOString();
+    // x-range = the full computed span (mid ± 8h from /api/lco/visibility),
+    // so the transit -- and, for a split window, both relay sites' coverage
+    // -- is always in view. The previous "+1 day off mid-8h's calendar date"
+    // heuristic assumed mid always fell late enough in the UTC day that
+    // mid-8h landed on the *previous* date; whenever mid was early/mid-day
+    // UTC instead (e.g. a 22:11 UTC mid, common for split relay windows),
+    // mid-8h fell on the *same* date and the +1-day shift picked the wrong
+    // night entirely.
+    var xMin = primary.times[0];
+    var xMax = primary.times[primary.times.length - 1];
 
     // Right y-axis: airmass ticks placed at the corresponding altitude values so
     // they align correctly with the left altitude axis.
@@ -920,6 +1273,31 @@
       { type: 'line', xref: 'x', yref: 'y', x0: x0, x1: x1, y0: primary.sun_alt_limit, y1: primary.sun_alt_limit, line: { color: '#e07b53', width: 1, dash: 'dot' } },
       { type: 'line', xref: 'x', yref: 'y', x0: x0, x1: x1, y0: 0, y1: 0, line: { color: grid, width: 1 } }
     ];
+    var annotations = [
+      { x: primary.ingress, y: 90, xref: 'x', yref: 'y', text: 'transit', showarrow: false, font: { color: '#45d6b5', size: 10 }, xanchor: 'left', yanchor: 'top' },
+      { x: 0.01, y: 0.02, xref: 'paper', yref: 'paper', xanchor: 'left', yanchor: 'bottom', showarrow: false, font: { color: fg, size: 10 }, text: 'alt≥' + primary.alt_limit + '° · sun<' + primary.sun_alt_limit + '°' }
+    ];
+    // For a split_gap/split_overlap transit, draw each relay site's own
+    // observable arc as a thin colored bar stacked near the top of the plot
+    // -- the overlap or gap between the two bars is exactly the handoff.
+    if (w.observability && isSplitRating(w.observability.rating) && w.observability.split_windows) {
+      w.observability.split_windows.forEach(function (sw, idx) {
+        var seriesIdx = series.findIndex(function (s) { return s.site === sw.site; });
+        var color = siteColor(sw.site, seriesIdx >= 0 ? seriesIdx : idx);
+        var bandTop = 0.99 - idx * 0.07;
+        var bandBottom = bandTop - 0.045;
+        shapes.push({
+          type: 'rect', xref: 'x', yref: 'paper',
+          x0: sw.start, x1: sw.end, y0: bandBottom, y1: bandTop,
+          fillcolor: color, opacity: 0.85, line: { width: 0 }, layer: 'above'
+        });
+        annotations.push({
+          x: sw.start, y: (bandTop + bandBottom) / 2, xref: 'x', yref: 'paper',
+          xanchor: 'right', yanchor: 'middle', showarrow: false,
+          font: { color: color, size: 9 }, text: sw.site.toUpperCase() + ' '
+        });
+      });
+    }
     var layout = {
       margin: { l: 45, r: 65, t: 30, b: 36 },
       paper_bgcolor: 'rgba(0,0,0,0)',
@@ -930,10 +1308,7 @@
       yaxis2: { overlaying: 'y', side: 'right', range: [primary.alt_limit, 90], tickvals: amTickVals, ticktext: amTickText, title: 'Airmass', showgrid: false, zeroline: false, tickfont: { size: 10 } },
       legend: { orientation: 'h', y: 1.15, x: 0, xanchor: 'left', font: { size: 10 } },
       shapes: shapes,
-      annotations: [
-        { x: primary.ingress, y: 90, xref: 'x', yref: 'y', text: 'transit', showarrow: false, font: { color: '#45d6b5', size: 10 }, xanchor: 'left', yanchor: 'top' },
-        { x: 0.01, y: 0.02, xref: 'paper', yref: 'paper', xanchor: 'left', yanchor: 'bottom', showarrow: false, font: { color: fg, size: 10 }, text: 'alt≥' + primary.alt_limit + '° · sun<' + primary.sun_alt_limit + '°' }
-      ]
+      annotations: annotations
     };
     Plotly.newPlot('vis-plot', traces, layout, { responsive: true, displayModeBar: false });
   }
@@ -941,6 +1316,13 @@
   el('btn-fetch-ephem').addEventListener('click', function () {
     var target = val('sch-target');
     if (!target) { msg('msg-windows', 'Enter a target first', 'err'); return; }
+    // Force a genuine re-pull from the catalogs/fits. The auto-triggers (typing,
+    // blur, source/planet change) reuse fetchTargetInfo's cache, so an explicit
+    // click here would otherwise just re-apply stale data. Invalidating the
+    // cache makes the button the one path that refreshes NASA/TOI ephemerides
+    // and picks up newly completed transit fits for the linear-fit source.
+    lastTargetInfo = null;
+    lastInfoTarget = '';
     refreshTargetFields();
   });
 
@@ -975,10 +1357,24 @@
     }
   });
 
+  // Hand-editing a target-scoped field tags it 'manual' and binds it to the
+  // current target, so a subsequent fetch of the same target won't clear it
+  // and its provenance reads 'manual' rather than a catalog name. Programmatic
+  // setVal() does not fire 'input', so this only reacts to real user edits.
+  EPHEM_FIELDS.forEach(function (id) {
+    var e = el(id); if (!e) return;
+    e.addEventListener('input', function () {
+      setFieldSource(id, val(id) ? 'manual' : '');
+      ephemTarget = val('sch-target');
+      saveOptions();
+    });
+  });
+
   el('win-all').addEventListener('change', function () {
     document.querySelectorAll('#windows-body input[type=checkbox]').forEach(function (c) { c.checked = el('win-all').checked; });
     saveScheduleState();
     updateRequestName();
+    updateSplitPanel();
   });
   el('win-filter').addEventListener('change', function () {
     applyWinFilter();
@@ -989,6 +1385,7 @@
       saveScheduleState();
       updateRequestName();
       updateExposureCount();
+      updateSplitPanel();
       el('btn-submit').disabled = true;
       lastDryRunHash = null;
     }
@@ -1005,6 +1402,10 @@
       node.addEventListener('change', updateExposureCount);
     }
   });
+
+  // Switching between REPEAT_EXPOSE (count stays 1) and EXPOSE (count packs the
+  // window) must recompute exposure_count.
+  el('sch-type').addEventListener('change', updateExposureCount);
 
   el('btn-gen-windows').addEventListener('click', function () {
     // Hide the plot when generating new windows
@@ -1035,11 +1436,11 @@
     if (padBefore === null || padBefore < 0 || padAfter === null || padAfter < 0) {
       msg('msg-windows', 'Padding values must be zero or greater.', 'err'); return;
     }
-    var airmass = num('sch-max-airmass');
+    var airmass = num('sch-obs-airmass');
     if (airmass === null || airmass < 1) {
       msg('msg-windows', 'Airmass limit must be ≥ 1.', 'err'); return;
     }
-    var moonSep = num('sch-min-lunar');
+    var moonSep = num('sch-moon-sep');
     if (moonSep === null || moonSep < 0) {
       msg('msg-windows', 'Minimum moon separation must be ≥ 0.', 'err'); return;
     }
@@ -1084,9 +1485,10 @@
     if (!dur) { msg('msg-windows', 'Set the transit duration first', 'err'); return; }
     var w = lastWindows[+link.getAttribute('data-i')];
     if (!w) return;
-    // Plot every site that can see this transit (best first); fall back to the
-    // kind's default site when there's no observability info.
-    var sites = (w.observability ? sitesBestFirst(w.observability) : []);
+    // Plot every site that can see this transit (best first, or exactly the
+    // relay pair for a 'split' transit); fall back to the kind's default site
+    // when there's no observability info.
+    var sites = (w.observability ? sitesForPlot(w.observability) : []);
     if (!sites.length) sites = [siteForWindow(w)];
     var lcoParams = new URLSearchParams({
       season: 'false', ra: ra, dec: dec,
@@ -1099,8 +1501,8 @@
     Promise.all(sites.map(function (s) {
       var q = new URLSearchParams({
         ra: ra, dec: dec, mid: w.mid, duration: String(dur), site: s,
-        obs_airmass: val('sch-max-airmass') || '2.0', twilight: val('sch-twilight'),
-        moon_sep_min: val('sch-min-lunar') || '30'
+        obs_airmass: val('sch-obs-airmass') || '2.0', twilight: val('sch-twilight'),
+        moon_sep_min: val('sch-moon-sep') || '30'
       });
       return fetch('/api/lco/visibility?' + q.toString())
         .then(function (r) { return r.json(); })
@@ -1123,8 +1525,13 @@
         return r.site.toUpperCase() + ': ' + visibleHours.toFixed(2) + 'h';
       });
 
+      var handoffNote = '';
+      if (isSplitRating(rating) && w.observability) {
+        if (w.observability.split_overlap_min) handoffNote += ', ' + w.observability.split_overlap_min + 'min overlap';
+        if (w.observability.split_gap_min) handoffNote += ', ' + w.observability.split_gap_min + 'min gap';
+      }
       var caption = (val('sch-target') || 'target') + ' @ ' + siteLabel + ' — ' + w.mid.slice(0, 10) +
-        (rating ? ' (' + rating + ')' : '') +
+        (rating ? ' (' + rating + handoffNote + ')' : '') +
         ' — visible: ' + visParts.join(', ');
       el('vis-caption').textContent = caption;
       renderVisibility(ok, w);
@@ -1141,8 +1548,9 @@
     var p = {
       kind: kind, name: val('sch-name'), proposal: val('sch-proposal'),
       target_name: val('sch-target'), ra: coords.ra, dec: coords.dec,
-      max_airmass: num('sch-max-airmass'), min_lunar_distance: num('sch-min-lunar'),
+      max_airmass: num('sch-obs-airmass'), min_lunar_distance: num('sch-moon-sep'),
       ipp_value: num('sch-ipp'), windows: selectedWindows(),
+      twilight: val('sch-twilight'),
       type: val('sch-type'),
       observation_type: val('sch-observation-type'),
       guiding_config: val('sch-guiding-config')
@@ -1196,10 +1604,27 @@
           }
         });
       }
+      if (req.non_field_errors && Array.isArray(req.non_field_errors)) {
+        req.non_field_errors.forEach(function (m) { messages.push('❌ ' + m); });
+      }
     });
 
     if (errors.requestgroups) {
       messages.push('❌ Invalid request group format');
+    }
+
+    // Fallback for any LCO error shape not recognized above (e.g. a bad
+    // proposal id, a rejected instrument config field, future response keys
+    // LCO adds). Without this, an unrecognized-but-real error silently reads
+    // as "no errors" and the dry-run would wrongly enable Submit.
+    if (!messages.length) {
+      var extra = [];
+      (function collect(node) {
+        if (typeof node === 'string') { extra.push(node); return; }
+        if (Array.isArray(node)) { node.forEach(collect); return; }
+        if (node && typeof node === 'object') { Object.keys(node).forEach(function (k) { collect(node[k]); }); }
+      })(errors);
+      if (extra.length) messages.push('❌ ' + extra.join(' '));
     }
 
     return messages.length ? messages : null;
@@ -1207,6 +1632,16 @@
 
   el('btn-dry-run').addEventListener('click', function () {
     if (!selectedWindows().length) { msg('msg-ipp', 'Generate and select at least one window first', 'err'); return; }
+    // Pre-check the request-level required fields so the user gets a specific
+    // message instead of the backend's generic "missing required parameters".
+    if (!val('sch-target')) { msg('msg-ipp', 'Enter a target', 'err'); return; }
+    var reqCoords = parseCoords();
+    if (reqCoords.ra === null || reqCoords.dec === null) {
+      msg('msg-ipp', 'Enter valid "RA, Dec (deg)" — resolve the target or type coordinates', 'err');
+      return;
+    }
+    if (!val('sch-proposal')) { msg('msg-ipp', 'Select a proposal', 'err'); return; }
+    if (!val('sch-name')) { msg('msg-ipp', 'Request name is empty — reselect a window to auto-fill it', 'err'); return; }
     var kind = val('sch-kind');
     if (kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4') {
       var hasExp = false;
@@ -1245,9 +1680,30 @@
       }).catch(function (e) { msg('msg-ipp', String(e), 'err'); });
   });
 
-  el('btn-submit').addEventListener('click', function () {
-    if (!lastDryRunHash) { msg('msg-ipp', 'Run a dry-run first', 'err'); return; }
-    if (!window.confirm('Submit this request to LCO? This consumes real telescope time.')) return;
+  // Shared by the single-site and split submit flows: LCO's submit response
+  // carries the booked request id(s) either as result.id or result.requests[].id.
+  function extractRequestIds(result) {
+    result = result || {};
+    var ids = [];
+    if (Array.isArray(result.requests)) {
+      result.requests.forEach(function (request) {
+        if (request && request.id !== undefined && request.id !== null) ids.push(request.id);
+      });
+    }
+    if (!ids.length && result.id !== undefined && result.id !== null) ids.push(result.id);
+    return ids;
+  }
+
+  function requestLinksHtml(ids) {
+    if (!ids.length) return '';
+    return ids.map(function (id) {
+      var idText = escapeHtml(id);
+      var href = 'https://observe.lco.global/requests/' + encodeURIComponent(id);
+      return '<a href="' + href + '" target="_blank" rel="noopener">' + idText + '</a>';
+    }).join(', ');
+  }
+
+  function submitLcoRequest() {
     var body = buildParams();
     body.confirm = true;
     body.dry_run_hash = lastDryRunHash;
@@ -1255,15 +1711,193 @@
     fetch('/api/lco/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       .then(function (r) { return r.json(); }).then(function (d) {
         if (!d.ok) { msg('msg-ipp', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
-        msg('msg-ipp', 'Submitted: ' + JSON.stringify(d.result && d.result.id ? d.result.id : d.result), 'ok');
+        var ids = extractRequestIds(d.result);
+        if (ids.length) {
+          msgHtml('msg-ipp', 'Submitted: ' + requestLinksHtml(ids), 'ok');
+        } else {
+          msg('msg-ipp', 'Submitted: ' + JSON.stringify(d.result || {}), 'ok');
+        }
       }).catch(function (e) { msg('msg-ipp', String(e), 'err'); });
+  }
+
+  el('btn-submit').addEventListener('click', function () {
+    if (!lastDryRunHash) { msg('msg-ipp', 'Run a dry-run first', 'err'); return; }
+    showConfirmModal(
+      'Submit LCO request?',
+      'This consumes real telescope time.',
+      { confirmLabel: 'Submit', confirmClass: 'btn danger' }
+    ).then(function (confirmed) {
+      if (confirmed) submitLcoRequest();
+    });
+  });
+
+  function summarizeSplitLeg(leg) {
+    var ipp = (leg && leg.ipp) || {};
+    var errors = formatLcoErrors(ipp);
+    if (errors) {
+      return '<div style="color: var(--red); font-weight: 600;">Validation errors:</div>' +
+        '<div style="font-size: 0.85rem; line-height: 1.5;">' + errors.map(escapeHtml).join('<br>') + '</div>';
+    }
+    var allowed = ipp.max_allowable_ipp_value !== undefined ? ipp.max_allowable_ipp_value : 'OK';
+    return 'Max allowable IPP: ' + allowed + ' · hash ' + ((leg && leg.payload_hash) || '').slice(0, 12);
+  }
+
+  el('btn-split-dry-run').addEventListener('click', function () {
+    var params = buildSplitParams();
+    if (!params) { msg('msg-split-ipp', 'Select exactly one window rated "split" first', 'err'); return; }
+    if (!val('sch-target')) { msg('msg-split-ipp', 'Enter a target', 'err'); return; }
+    var reqCoords = parseCoords();
+    if (reqCoords.ra === null || reqCoords.dec === null) {
+      msg('msg-split-ipp', 'Enter valid "RA, Dec (deg)" — resolve the target or type coordinates', 'err');
+      return;
+    }
+    if (!val('sch-proposal')) { msg('msg-split-ipp', 'Select a proposal', 'err'); return; }
+    if (!val('sch-site-a') || !val('sch-site-b')) { msg('msg-split-ipp', 'Select both Leg A and Leg B sites', 'err'); return; }
+    if (val('sch-site-a') === val('sch-site-b')) { msg('msg-split-ipp', 'Leg A and Leg B must be different sites', 'err'); return; }
+    var kind = val('sch-kind');
+    if (kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4') {
+      var hasExp = false;
+      ['g', 'r', 'i', 'z'].forEach(function (b) { if (num('sch-exp-' + b) !== null) hasExp = true; });
+      if (!hasExp) { msg('msg-split-ipp', 'Enter at least one exposure time (g, r, i, or z)', 'err'); return; }
+    }
+    resetSplitSubmitState();
+    msg('msg-split-ipp', 'Running dry-run for both legs…');
+    fetch('/api/lco/split-ipp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) {
+          msg('msg-split-ipp', 'Leg ' + (d.leg === 'leg_b' ? 'B' : 'A') + ' failed: ' + (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err');
+          return;
+        }
+        el('split-ipp-result').style.display = '';
+        el('split-a-summary').innerHTML = summarizeSplitLeg(d.leg_a);
+        el('split-b-summary').innerHTML = summarizeSplitLeg(d.leg_b);
+        // Each leg's own submit button only depends on ITS OWN dry-run passing
+        // -- a failing leg B doesn't block submitting a passing leg A alone.
+        var legAOk = !formatLcoErrors(d.leg_a.ipp);
+        var legBOk = !formatLcoErrors(d.leg_b.ipp);
+        lastSplitDryRunHashes = { a: legAOk ? d.leg_a.payload_hash : null, b: legBOk ? d.leg_b.payload_hash : null };
+        el('btn-submit-leg-a').disabled = !legAOk;
+        el('btn-submit-leg-b').disabled = !legBOk;
+        el('btn-split-submit').disabled = !(legAOk && legBOk);
+        if (legAOk && legBOk) {
+          msg('msg-split-ipp', 'Both legs OK.', 'ok');
+        } else if (legAOk || legBOk) {
+          msg('msg-split-ipp', (legAOk ? 'Leg A' : 'Leg B') + ' OK — the other leg has validation errors (see above). You can still submit the valid leg alone.', 'err');
+        } else {
+          msg('msg-split-ipp', 'Both legs have validation errors — see details above.', 'err');
+        }
+        saveScheduleState();
+      }).catch(function (e) { msg('msg-split-ipp', String(e), 'err'); });
+  });
+
+  // Submits exactly one leg via the plain single-site /api/lco/submit
+  // endpoint (a leg is just a normal single-site request whose window is
+  // that site's own trimmed coverage span) -- used for "Submit Leg A/B only"
+  // and to retry a leg after "Submit both" partially fails.
+  function submitSingleSplitLeg(which) {
+    var params = buildSplitParams();
+    var hash = lastSplitDryRunHashes && lastSplitDryRunHashes[which];
+    if (!params || !hash) { msg('msg-split-ipp', 'Run the dry-run first (leg ' + which.toUpperCase() + ' must pass)', 'err'); return; }
+    var body = which === 'a' ? params.leg_a : params.leg_b;
+    body.confirm = true;
+    body.dry_run_hash = hash;
+    msg('msg-split-ipp', 'Submitting leg ' + which.toUpperCase() + '…');
+    fetch('/api/lco/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) { msg('msg-split-ipp', 'Leg ' + which.toUpperCase() + ' failed: ' + (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
+        var ids = extractRequestIds(d.result);
+        // This leg is now a real booking -- disable its own button and
+        // "Submit both" (which would otherwise try to book it again).
+        el(which === 'a' ? 'btn-submit-leg-a' : 'btn-submit-leg-b').disabled = true;
+        el('btn-split-submit').disabled = true;
+        lastSplitDryRunHashes[which] = null;
+        if (which === 'a') { lastSplitLegAResult = d.result; } else { lastSplitLegBResult = d.result; }
+        el('split-partial-warning').style.display = 'none';
+        msgHtml('msg-split-ipp', 'Leg ' + which.toUpperCase() + ' booked: ' + requestLinksHtml(ids), 'ok');
+      }).catch(function (e) { msg('msg-split-ipp', String(e), 'err'); });
+  }
+
+  el('btn-submit-leg-a').addEventListener('click', function () {
+    if (el('btn-submit-leg-a').disabled) return;
+    showConfirmModal(
+      'Submit Leg A only?',
+      'This books real telescope time at ' + escapeHtml((val('sch-site-a') || '').toUpperCase()) + '.',
+      { confirmLabel: 'Submit', confirmClass: 'btn danger' }
+    ).then(function (confirmed) { if (confirmed) submitSingleSplitLeg('a'); });
+  });
+
+  el('btn-submit-leg-b').addEventListener('click', function () {
+    if (el('btn-submit-leg-b').disabled) return;
+    showConfirmModal(
+      'Submit Leg B only?',
+      'This books real telescope time at ' + escapeHtml((val('sch-site-b') || '').toUpperCase()) + '.',
+      { confirmLabel: 'Submit', confirmClass: 'btn danger' }
+    ).then(function (confirmed) { if (confirmed) submitSingleSplitLeg('b'); });
+  });
+
+  function submitSplitLcoRequest() {
+    var params = buildSplitParams();
+    if (!params || !lastSplitDryRunHashes || !lastSplitDryRunHashes.a || !lastSplitDryRunHashes.b) {
+      msg('msg-split-ipp', 'Run a dry-run first (both legs must pass)', 'err'); return;
+    }
+    var body = {
+      leg_a: params.leg_a, leg_b: params.leg_b, confirm: true,
+      dry_run_hash_a: lastSplitDryRunHashes.a, dry_run_hash_b: lastSplitDryRunHashes.b
+    };
+    msg('msg-split-ipp', 'Submitting leg A, then leg B…');
+    fetch('/api/lco/split-submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (d.ok) {
+          // Both legs are now real bookings -- disable every submit button so
+          // a stray click can't book either leg a second time.
+          el('btn-submit-leg-a').disabled = true;
+          el('btn-submit-leg-b').disabled = true;
+          el('btn-split-submit').disabled = true;
+          lastSplitDryRunHashes = null;
+          var idsA = extractRequestIds(d.leg_a.result);
+          var idsB = extractRequestIds(d.leg_b.result);
+          msgHtml('msg-split-ipp', 'Submitted — leg A: ' + requestLinksHtml(idsA) + ' · leg B: ' + requestLinksHtml(idsB), 'ok');
+          el('split-partial-warning').style.display = 'none';
+          return;
+        }
+        if (d.partial) {
+          // Leg A is already a real booking -- disable both its own button
+          // and "Submit both" so neither can re-submit (and re-book) leg A;
+          // "Submit Leg B only" (if leg B's dry-run passed) is safe from here.
+          el('btn-submit-leg-a').disabled = true;
+          el('btn-split-submit').disabled = true;
+          lastSplitDryRunHashes.a = null;
+          lastSplitLegAResult = d.leg_a && d.leg_a.result;
+          var bookedIds = extractRequestIds(lastSplitLegAResult);
+          el('split-partial-text').innerHTML = 'Leg A (' + escapeHtml((val('sch-site-a') || '').toUpperCase()) +
+            ') is booked: ' + requestLinksHtml(bookedIds) + '. Leg B failed: ' +
+            escapeHtml((d.leg_b && d.leg_b.error) || 'failed') + '. Use "Submit Leg B only" to retry it.';
+          el('split-partial-warning').style.display = '';
+          msg('msg-split-ipp', 'Leg A booked, leg B failed — see the warning above.', 'err');
+          return;
+        }
+        msg('msg-split-ipp', 'Leg ' + (d.leg === 'leg_b' ? 'B' : 'A') + ' failed: ' + (d.error || 'failed'), 'err');
+      }).catch(function (e) { msg('msg-split-ipp', String(e), 'err'); });
+  }
+
+  el('btn-split-submit').addEventListener('click', function () {
+    if (!lastSplitDryRunHashes || !lastSplitDryRunHashes.a || !lastSplitDryRunHashes.b) {
+      msg('msg-split-ipp', 'Run a dry-run first (both legs must pass)', 'err'); return;
+    }
+    showConfirmModal(
+      'Submit split LCO request?',
+      'This books two separate telescope-time requests (leg A, then leg B). This is not one atomic action — see the note below the buttons.',
+      { confirmLabel: 'Submit both', confirmClass: 'btn danger' }
+    ).then(function (confirmed) {
+      if (confirmed) submitSplitLcoRequest();
+    });
   });
 
   el('btn-fov').addEventListener('click', function () {
     var target = val('sch-target');
     var inst = val('sch-kind');
-    if (!target) { alert('Please enter a target'); return; }
-    if (!inst) { alert('Please select an instrument'); return; }
+    if (!target) { showMessageModal('Missing target', 'Please enter a target'); return; }
+    if (!inst) { showMessageModal('Missing instrument', 'Please select an instrument'); return; }
     var url = '/fov?target=' + encodeURIComponent(target) + '&inst=' + encodeURIComponent(inst);
     window.location.href = url;
   });
@@ -1271,14 +1905,21 @@
   el('btn-exp').addEventListener('click', function () {
     var target = val('sch-target');
     var inst = val('sch-kind');
-    if (!target) { alert('Please enter a target'); return; }
-    if (!inst) { alert('Please select an instrument'); return; }
+    if (!target) { showMessageModal('Missing target', 'Please enter a target'); return; }
+    if (!inst) { showMessageModal('Missing instrument', 'Please select an instrument'); return; }
     var url = '/exposure?target=' + encodeURIComponent(target) + '&inst=' + encodeURIComponent(inst);
     window.location.href = url;
   });
 
   function prefillFromView() {
-    var slug = new URLSearchParams(window.location.search).get('view');
+    var params = new URLSearchParams(window.location.search);
+    var target = params.get('target');
+    if (target && !val('sch-target')) {
+      setVal('sch-target', target);
+      saveOptions();
+      refreshTargetFields({ silent: true });
+    }
+    var slug = params.get('view');
     if (!slug) return;
     fetch('/api/ephemeris/view/' + encodeURIComponent(slug)).then(function (r) { return r.json(); }).then(function (d) {
       if (!d.ok || !d.state) return;

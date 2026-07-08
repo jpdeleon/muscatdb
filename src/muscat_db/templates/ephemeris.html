@@ -68,7 +68,7 @@
   <!-- Automatic Fit Controls -->
   <div id="action-section" style="display: none; gap: 1rem; align-items: center; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 1.5rem;">
     <div class="opt-check-row" title="Unweighted fit treats all transits equally. Weighted fit uses individual fit uncertainties." style="padding: 0; display: flex; align-items: center; gap: 0.85rem; min-height: 34px;">
-      <span style="font-size: 0.85rem; color: var(--text-dim); font-weight: 500; white-space: nowrap;">⚙️ Fitting Method</span>
+      <span style="font-size: 0.85rem; color: var(--text-dim); font-weight: 500; white-space: nowrap;">Fitting Method</span>
       <label class="opt-check-item" style="display: inline-flex; align-items: center; gap: 0.35rem; cursor: pointer;">
         <input type="radio" name="fit-method-type" value="unweighted" checked style="margin: 0;">
         <span style="font-size: 0.85rem;">Unweighted</span>
@@ -357,7 +357,8 @@
     window.history.replaceState(null, '', url);
     const lcoLink = document.getElementById('lco-schedule-link');
     if (lcoLink) {
-      lcoLink.href = `/lco/schedule?view=${encodeURIComponent(slug)}`;
+      const firstTarget = loadedTargets.slice().sort()[0];
+      lcoLink.href = `/lco/schedule?target=${encodeURIComponent(firstTarget)}&view=${encodeURIComponent(slug)}`;
       lcoLink.style.display = 'inline-flex';
     }
   }
@@ -569,7 +570,7 @@
       .then(r => r.json())
       .then(res => {
         if (!res.ok) {
-          alert('Error: ' + (res.error || 'Failed to retrieve target info'));
+          showMessageModal('Error', res.error || 'Failed to retrieve target info');
           return;
         }
         
@@ -588,7 +589,7 @@
       })
       .catch(e => {
         console.error(e);
-        alert('Network error loading target data.');
+        showMessageModal('Network Error', 'Error loading target data.');
       })
       .finally(() => {
         // Trigger base.html loader completion
@@ -626,7 +627,7 @@
       })
       .catch(e => {
         console.error(e);
-        alert('Error loading target data.');
+        showMessageModal('Error', 'Error loading target data.');
       })
       .finally(() => {
         if (window.done) window.done();
@@ -1155,7 +1156,7 @@
       const t0 = parseFloat(card.querySelector('.planet-t0').value);
       const period = parseFloat(card.querySelector('.planet-period').value);
       if (isNaN(t0) || isNaN(period) || period <= 0) {
-        alert(`Please enter valid orbital parameters for planet ${pl.toLowerCase()}`);
+        showMessageModal('Invalid orbital parameters', `Please enter valid orbital parameters for planet ${pl.toLowerCase()}`);
         valid = false;
         return;
       }
@@ -1203,7 +1204,7 @@
     .then(res => {
       if (requestSeq !== computeFitRequestSeq) return;
       if (!res.ok) {
-        alert('Fit calculation failed: ' + (res.error || 'Unknown error'));
+        showMessageModal('Fit calculation failed', res.error || 'Unknown error');
         return;
       }
       fitResults = res.results;
@@ -1216,7 +1217,7 @@
     .catch(e => {
       if (requestSeq !== computeFitRequestSeq) return;
       console.error(e);
-      alert('Error calculating ephemeris fit.');
+      showMessageModal('Error', 'Error calculating ephemeris fit.');
     })
     .finally(() => {
       if (requestSeq === computeFitRequestSeq) {
@@ -1241,13 +1242,13 @@
         fitSummaryHtml = `
           <div style="margin-top: 0.5rem; font-size: 0.85rem;">
             <p style="margin-bottom: 0.35rem;" title="Epoch centered to minimize parameter covariance, matching allesfitter2.">
-              <strong>Centered T0 (E = ${res.E_center}):</strong> <span class="text-highlight">${res.t0_fit_centered.toFixed(6)} ± ${res.t0_fit_centered_unc.toFixed(6)} BJD</span>
+              <strong>Centered T0 (E = ${res.E_center}):</strong> <span class="text-highlight">${MuscatFormat.pair(res.t0_fit_centered, res.t0_fit_centered_unc).text} BJD</span>
             </p>
             <p style="margin-bottom: 0.35rem;">
-              <strong>Extrapolated T0 (E = 0):</strong> <span class="text-highlight">${res.t0_fit.toFixed(6)} ± ${res.t0_fit_unc.toFixed(6)} BJD</span>
+              <strong>Extrapolated T0 (E = 0):</strong> <span class="text-highlight">${MuscatFormat.pair(res.t0_fit, res.t0_fit_unc).text} BJD</span>
             </p>
             <p style="margin-bottom: 0.35rem;">
-              <strong>Fitted Period:</strong> <span class="text-highlight">${res.period_fit.toFixed(8)} ± ${res.period_fit_unc.toFixed(8)} days</span>
+              <strong>Fitted Period:</strong> <span class="text-highlight">${MuscatFormat.pair(res.period_fit, res.period_fit_unc, 1, 8).text} days</span>
             </p>
             <p style="margin-bottom: 0rem; font-size: 0.75rem; color: var(--green); font-weight: 500;">
               ✓ ${methodLabel} linear fit converged successfully
@@ -1641,9 +1642,7 @@
   }
 
   function formatSummaryNumber(value, digits) {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return '';
-    return n.toFixed(digits).replace(/0+$/, '').replace(/\.$/, '');
+    return MuscatFormat.fixedOrBlank(value, digits);
   }
 
   function buildOCSummaryText() {
@@ -1673,7 +1672,7 @@
   function prepareOCSummaryTXTLink(event) {
     if (!fitResults) {
       event.preventDefault();
-      alert('No O-C plot results are available yet.');
+      showMessageModal('No results', 'No O-C plot results are available yet.');
       return;
     }
 

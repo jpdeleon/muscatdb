@@ -20,12 +20,10 @@ from __future__ import annotations
 import argparse
 import csv
 import os
-import re
 import sqlite3
 import sys
 import time
-from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent

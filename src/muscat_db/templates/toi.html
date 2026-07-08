@@ -1,0 +1,1212 @@
+{% extends "base.html" %}
+{% block title %}TOI Catalog — MuSCAT-db{% endblock %}
+{% block content %}
+<script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
+
+<style>
+  .toi-meta { color: var(--text-dim); font-size: 0.85rem; margin: 0.25rem 0 1rem; }
+  .chip-bar { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.5rem; }
+  .chip-bar .chip-label { font-size: 0.85rem; color: var(--text-dim); font-weight: 500; min-width: 6rem; }
+  .toi-chip { cursor: pointer; }
+  .toi-section > summary { cursor: pointer; padding: 0.5rem 0; color: var(--text-dim); font-size: 1rem; font-weight: 600; }
+  #toi-table th, #toi-table td { white-space: nowrap; }
+  #toi-table td.num { font-variant-numeric: tabular-nums; text-align: right; }
+  #toi-table thead tr:first-child th { cursor: pointer; user-select: none; }
+  .sort-ind { font-size: 0.7rem; color: var(--accent); margin-left: 0.15rem; }
+  .plot-controls { display: flex; gap: 0.6rem 1rem; align-items: center; flex-wrap: wrap; margin: 0.75rem 0; }
+  .plot-controls label { font-size: 0.85rem; color: var(--text-dim); display: flex; align-items: center; gap: 0.35rem; }
+  .plot-controls select, .plot-controls input[type="range"] { background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 0.25rem 0.4rem; font-size: 0.85rem; }
+  #toi-plot { width: 100%; height: 600px; }
+</style>
+
+<h1>TESS Objects of Interest</h1>
+<p class="toi-meta">
+  Source: <code>data/TOIs.csv</code> — {{ '{:,}'.format(n_rows) }} objects, all TFOPWG dispositions
+  · <strong>{{ '{:,}'.format(n_indb) }}</strong> in muscat-db (★ markers, click a point to open its target page)
+  · <strong>{{ '{:,}'.format(n_boyle) }}</strong> with Boyle2026 rotation data (RUWE, P<sub>rot</sub>, binarity flags)
+  · <strong>{{ '{:,}'.format(n_harps) }}</strong> with HARPS RVBank data
+  · <strong>{{ '{:,}'.format(n_nasa_confirmed) }}</strong> confirmed in NASA PSCompPars
+  {% if toi_updated %}· catalog last updated {{ toi_updated }}{% endif %}.
+</p>
+
+<div class="search-bar">
+  <input id="toi-search" type="text" placeholder="Search TOI, TIC ID, or planet name…" autocomplete="off">
+  <span id="toi-count" class="hint"></span>
+  <button id="toi-clear" type="button" class="csv-btn" style="display: none; background: var(--border); color: var(--text); border: none; cursor: pointer; margin-right: 0.25rem;">✕ Clear filters</button>
+  <a id="toi-export" href="#" class="csv-btn" download="tois_filtered.csv">⬇ CSV (filtered)</a>
+</div>
+
+<div class="chip-bar">
+  <span class="chip-label">Planet type:</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="USP">USP</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Hot Jupiter">Hot Jupiter</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Jupiter-size">Jupiter-size</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Neptune-size">Neptune-size</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Sub-Neptune">Sub-Neptune</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Super-Earth">Super-Earth</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Earth-size">Earth-size</span>
+</div>
+<div class="chip-bar">
+  <span class="chip-label">Host star:</span>
+  <span class="badge instrument-badge toi-chip" data-group="star" data-key="M">M dwarf</span>
+  <span class="badge instrument-badge toi-chip" data-group="star" data-key="K">K type</span>
+  <span class="badge instrument-badge toi-chip" data-group="star" data-key="G">G type</span>
+  <span class="badge instrument-badge toi-chip" data-group="star" data-key="F">F type</span>
+  <span class="badge instrument-badge toi-chip" data-group="star" data-key="A+">A / hotter</span>
+</div>
+<div class="chip-bar">
+  <span class="chip-label">Candidate type:</span>
+  <span class="badge instrument-badge toi-chip" data-group="disp" data-key="PC"  title="Planet Candidate">PC</span>
+  <span class="badge instrument-badge toi-chip" data-group="disp" data-key="CP"  title="Confirmed Planet">CP</span>
+  <span class="badge instrument-badge toi-chip" data-group="disp" data-key="KP"  title="Known Planet">KP</span>
+  <span class="badge instrument-badge toi-chip" data-group="disp" data-key="APC" title="Ambiguous Planet Candidate">APC</span>
+  <span class="badge instrument-badge toi-chip" data-group="disp" data-key="FP"  title="False Positive">FP</span>
+  <span class="badge instrument-badge toi-chip" data-group="disp" data-key="FA"  title="False Alarm">FA</span>
+  <span class="badge instrument-badge toi-chip" data-group="disp" data-key="__blank__" title="No TFOPWG disposition">Unset</span>
+  <span class="badge instrument-badge toi-chip" data-group="nasa" data-key="1" title="Only TOIs matched to the NASA confirmed-planet composite catalog by TIC ID and period">NASA confirmed</span>
+</div>
+<div class="chip-bar">
+  <span class="chip-label">Multiplicity:</span>
+  <span class="badge instrument-badge toi-chip" data-group="multi" data-key="1">Single</span>
+  <span class="badge instrument-badge toi-chip" data-group="multi" data-key="2">2-planet</span>
+  <span class="badge instrument-badge toi-chip" data-group="multi" data-key="3">3-planet</span>
+  <span class="badge instrument-badge toi-chip" data-group="multi" data-key="4">4-planet</span>
+  <span class="badge instrument-badge toi-chip" data-group="multi" data-key="5+">5+ planet</span>
+</div>
+<div class="chip-bar">
+  <span class="chip-label">Rotation:</span>
+  <span class="badge instrument-badge toi-chip" data-group="rot" data-key="fast" title="Host-star rotation period P_rot < 10 days (Boyle+2026)">Fast rotator (P<sub>rot</sub> &lt; 10 d)</span>
+</div>
+<p class="toi-meta" id="toi-rot-note" style="margin-top:0.25rem;"></p>
+<div class="chip-bar">
+  <span class="chip-label">muscat-db:</span>
+  <span class="badge instrument-badge toi-chip" data-group="indb" data-key="1" title="Only TOIs whose host star has data in muscat-db">★ In muscat-db</span>
+</div>
+<div class="chip-bar">
+  <span class="chip-label">RV data:</span>
+  <span class="badge instrument-badge toi-chip" data-group="harps" data-key="1" title="Only TOIs coordinate-matched to the public HARPS RVBank catalog">has HARPS RV</span>
+</div>
+
+<details id="toi-table-section" class="toi-section" open style="margin-top:1rem;">
+  <summary>Catalog table</summary>
+  <div class="top-scrollbar-wrapper" id="toi-top-scrollbar" style="overflow-x: auto; overflow-y: hidden; display: none; margin-top: 0.5rem;">
+    <div style="height: 1px;"></div>
+  </div>
+  <div class="csv-wrap" id="toi-csv-wrap">
+    <table id="toi-table">
+      <thead>
+        <tr id="toi-head-labels"></tr>
+        <tr class="filter-row" id="toi-head-filters"></tr>
+      </thead>
+      <tbody id="toi-tbody"></tbody>
+    </table>
+  </div>
+  <p id="toi-cap-note" class="hint" style="margin-top:0.5rem;"></p>
+</details>
+
+<details id="toi-plot-section" class="toi-section" open style="margin-top:1.25rem;">
+  <summary>Interactive plot</summary>
+  <div class="plot-controls">
+    <label>X <select id="plot-x"></select></label>
+    <label>Y <select id="plot-y"></select></label>
+    <label>Color <select id="plot-color"></select></label>
+    <label><input type="checkbox" id="plot-logx"> log X</label>
+    <label><input type="checkbox" id="plot-logy"> log Y</label>
+    <label title="Show 1σ error bars on the X axis (where the catalog provides them)"><input type="checkbox" id="plot-errx"> ± X unc</label>
+    <label title="Show 1σ error bars on the Y axis (where the catalog provides them)"><input type="checkbox" id="plot-erry"> ± Y unc</label>
+    <label id="lbl-desert-mazeh" style="display: none;"><input type="checkbox" id="plot-desert-mazeh"> Neptune Desert (Mazeh+2016)</label>
+    <label id="lbl-desert-castro" style="display: none;"><input type="checkbox" id="plot-desert-castro"> Neptune Desert (Castro-Gonzalez+2024)</label>
+    <label id="lbl-radgap" style="display: none;"><input type="checkbox" id="plot-radgap"> Radius Gap</label>
+    <label id="lbl-comp-iron" style="display: none;"><input type="checkbox" id="plot-comp-iron"> 100% Iron (Seager+07)</label>
+    <label id="lbl-comp-iron-rich" style="display: none;"><input type="checkbox" id="plot-comp-iron-rich"> 67.5% Fe (Seager+07)</label>
+    <label id="lbl-comp-earth" style="display: none;"><input type="checkbox" id="plot-comp-earth"> Earth-like (30% Fe, Seager+07)</label>
+    <label id="lbl-comp-rock" style="display: none;"><input type="checkbox" id="plot-comp-rock"> 100% Silicate (Seager+07)</label>
+    <label id="lbl-comp-water-rich" style="display: none;"><input type="checkbox" id="plot-comp-water-rich"> 25% H2O (Seager+07)</label>
+    <label id="lbl-comp-water" style="display: none;"><input type="checkbox" id="plot-comp-water"> 100% Water (Seager+07)</label>
+    <label>Size <input type="range" id="plot-size" min="3" max="14" step="1" value="6"></label>
+    <span id="plot-count" class="hint"></span>
+  </div>
+  <div id="toi-plot"></div>
+</details>
+
+<script>
+  const TOI = {{ toi_json | safe }};
+</script>
+<script>
+(function () {
+  "use strict";
+  const N = TOI.toi ? TOI.toi.length : 0;
+  const CAP = 1000;  // max rows painted into the DOM at once (plot uses all)
+
+  // ── column model (drives table, filter row, and plot axis menus) ───────────
+  const COLS = [
+    { key: 'toi',      label: 'TOI',         type: 'text' },
+    { key: 'tic',      label: 'TIC ID',      type: 'text' },
+    { key: 'name',     label: 'Planet Name', type: 'text' },
+    { key: 'disp',     label: 'Disp',        type: 'text' },
+    { key: 'nasa_confirmed', label: 'NASA Confirmed', type: 'num' },
+    { key: 'nasa_planet_name', label: 'NASA Planet', type: 'text' },
+    { key: 'period',   label: 'Period (d)',  type: 'num', plot: 'Period (days)',        err: 'period_err' },
+    { key: 'duration', label: 'Dur (h)',     type: 'num', plot: 'Duration (hours)',     err: 'duration_err' },
+    { key: 'depth',    label: 'Depth (ppm)', type: 'num', plot: 'Depth (ppm)',          err: 'depth_err' },
+    { key: 'radius',   label: 'Rₚ (R⊕)',     type: 'num', plot: 'Planet Radius (R⊕)',   err: 'radius_err' },
+    { key: 'teq',      label: 'T_eq (K)',    type: 'num', plot: 'Equil Temp (K)' },
+    { key: 'insol',    label: 'Insol (S⊕)',  type: 'num', plot: 'Insolation (S⊕)' },
+    { key: 'tmag',     label: 'TESS mag',    type: 'num', plot: 'TESS Mag',             err: 'tmag_err' },
+    { key: 'steff',    label: 'Teff (K)',    type: 'num', plot: 'Stellar Teff (K)',     err: 'steff_err' },
+    { key: 'srad',     label: 'R★ (R☉)',     type: 'num', plot: 'Stellar Radius (R☉)',  err: 'srad_err' },
+    { key: 'dist',     label: 'Dist (pc)',   type: 'num', plot: 'Distance (pc)',        err: 'dist_err' },
+    { key: 'ra',       label: 'RA (°)',      type: 'num', plot: 'RA (deg)' },
+    { key: 'dec',      label: 'Dec (°)',     type: 'num', plot: 'Dec (deg)' },
+    { key: 'has_harps_rv', label: 'HARPS RV', type: 'num' },
+    // Boyle2026 stellar-rotation catalog, left-joined by TIC ID (nulls where
+    // the TOI's host star is not in that catalog). Flags are 0/1.
+    { key: 'ruwe',                  label: 'RUWE',        type: 'num', plot: 'Gaia RUWE' },
+    { key: 'non_single_star',       label: 'NSS',         type: 'num' },
+    { key: 'adopted_period',        label: 'P_rot (d)',   type: 'num', plot: 'Rotation Period (days)', err: 'adopted_period_unc' },
+    { key: 'adopted_period_unc',    label: 'P_rot unc',   type: 'num' },
+    { key: 'flag_multiple_periods', label: 'Multi P',     type: 'num' },
+    { key: 'flag_possible_binary',  label: 'Binary?',     type: 'num' },
+    { key: 'final_n_contams',       label: 'N contam',    type: 'num', plot: 'N contaminants' },
+    { key: 'flag_doubled_period',   label: '2×P?',        type: 'num' },
+    { key: 'n_secs',                label: 'N sec',       type: 'num', plot: 'N sectors' },
+    { key: 'n_sec_ratio',           label: 'Sec ratio',   type: 'num', plot: 'Sector detection ratio' },
+    { key: 'median_amplitude',      label: 'Median amp',  type: 'num', plot: 'Median rot. amplitude' },
+    { key: 'sectors',               label: 'Sectors',     type: 'text' },
+    { key: 'sector_periods',        label: 'Sector P (d)', type: 'text' },
+  ];
+  // Plot axis menus only list numeric columns with a plot label (0/1 flag
+  // columns stay table-only: filterable and sortable, but not plottable).
+  const NUM_COLS = COLS.filter(c => c.type === 'num' && c.plot);
+  const colByKey = {};
+  COLS.forEach(c => { colByKey[c.key] = c; });
+
+  // ── classification (thresholds confirmed with the user) ────────────────────
+  function sizeClassOf(r) {
+    if (r == null) return null;
+    if (r < 1.25) return 'Earth-size';
+    if (r < 2)    return 'Super-Earth';
+    if (r < 4)    return 'Sub-Neptune';
+    if (r < 8)    return 'Neptune-size';
+    return 'Jupiter-size';
+  }
+  function planetTagsOf(r, p) {
+    const tags = [];
+    const sc = sizeClassOf(r);
+    if (sc) tags.push(sc);
+    if (p != null && p < 1) tags.push('USP');
+    if (r != null && p != null && r > 8 && p < 10) tags.push('Hot Jupiter');
+    return tags;
+  }
+  function starClassOf(teff) {
+    if (teff == null) return null;
+    if (teff < 3900) return 'M';
+    if (teff < 5300) return 'K';
+    if (teff < 6000) return 'G';
+    if (teff < 7300) return 'F';
+    return 'A+';
+  }
+  function rotClassOf(p) {
+    // Fast rotators spin with P_rot < 10 d. Null P_rot (host star absent from
+    // the Boyle+2026 catalog) stays unclassified and never matches the chip.
+    if (p == null) return null;
+    return p < 10 ? 'fast' : 'slow';
+  }
+
+  // Precompute derived per-row classifications once.
+  const planetTags = new Array(N);   // array of tag-sets (as arrays)
+  const sizeClass  = new Array(N);
+  const starClass  = new Array(N);
+  const multiClass = new Array(N);
+  const rotClass   = new Array(N);
+
+  const ticCounts = {};
+  for (let i = 0; i < N; i++) {
+    const tic = TOI.tic[i];
+    if (tic) {
+      ticCounts[tic] = (ticCounts[tic] || 0) + 1;
+    }
+  }
+
+  function multiplicityClassOf(m) {
+    if (m === 1) return '1';
+    if (m === 2) return '2';
+    if (m === 3) return '3';
+    if (m === 4) return '4';
+    return '5+';
+  }
+
+  function multiLabelOf(c) {
+    if (c === '1') return 'Single';
+    if (c === '2') return '2-planet';
+    if (c === '3') return '3-planet';
+    if (c === '4') return '4-planet';
+    if (c === '5+') return '5+ planet';
+    return '—';
+  }
+
+  for (let i = 0; i < N; i++) {
+    const r = TOI.radius[i], p = TOI.period[i];
+    planetTags[i] = planetTagsOf(r, p);
+    sizeClass[i]  = sizeClassOf(r);
+    starClass[i]  = starClassOf(TOI.steff[i]);
+    rotClass[i]   = rotClassOf(TOI.adopted_period[i]);
+    const tic = TOI.tic[i];
+    const m = tic ? (ticCounts[tic] || 1) : 1;
+    multiClass[i] = multiplicityClassOf(m);
+  }
+
+  const STAR_COLORS = { M: '#d1495b', K: '#e8a03d', G: '#57a773', F: '#3b7dd8', 'A+': '#9b59b6', '—': '#9aa0a6' };
+  const SIZE_COLORS = { 'Earth-size': '#4e79a7', 'Super-Earth': '#59a14f', 'Sub-Neptune': '#e0b13a',
+                        'Neptune-size': '#b07aa1', 'Jupiter-size': '#e15759', '—': '#9aa0a6' };
+  const DISP_COLORS = { PC: '#3b7dd8', CP: '#57a773', KP: '#17a2b8', APC: '#e8a03d',
+                        FP: '#e15759', FA: '#b07aa1', '—': '#9aa0a6' };
+  const MULTI_COLORS = { 'Single': '#9aa0a6', '2-planet': '#57a773', '3-planet': '#3b7dd8',
+                         '4-planet': '#e8a03d', '5+ planet': '#9b59b6', '—': '#9aa0a6' };
+  const STAR_ORDER = ['M', 'K', 'G', 'F', 'A+', '—'];
+  const SIZE_ORDER = ['Earth-size', 'Super-Earth', 'Sub-Neptune', 'Neptune-size', 'Jupiter-size', '—'];
+  const DISP_ORDER = ['PC', 'CP', 'KP', 'APC', 'FP', 'FA', '—'];
+  const MULTI_ORDER = ['Single', '2-planet', '3-planet', '4-planet', '5+ planet', '—'];
+
+  // ── DOM refs ───────────────────────────────────────────────────────────────
+  const searchEl  = document.getElementById('toi-search');
+  const countEl   = document.getElementById('toi-count');
+  const capNoteEl = document.getElementById('toi-cap-note');
+  const rotNoteEl = document.getElementById('toi-rot-note');
+  const tbodyEl   = document.getElementById('toi-tbody');
+  const headLabels = document.getElementById('toi-head-labels');
+  const headFilters = document.getElementById('toi-head-filters');
+  const exportEl  = document.getElementById('toi-export');
+  const chips     = Array.from(document.querySelectorAll('.toi-chip'));
+
+  const selX = document.getElementById('plot-x');
+  const selY = document.getElementById('plot-y');
+  const selColor = document.getElementById('plot-color');
+  const logXEl = document.getElementById('plot-logx');
+  const logYEl = document.getElementById('plot-logy');
+  const errXEl = document.getElementById('plot-errx');
+  const errYEl = document.getElementById('plot-erry');
+  const sizeEl = document.getElementById('plot-size');
+  const plotCountEl = document.getElementById('plot-count');
+  const plotDiv = document.getElementById('toi-plot');
+
+  // ── build table header + filter row ────────────────────────────────────────
+  COLS.forEach(c => {
+    const th = document.createElement('th');
+    th.className = 'no-sort';           // opt out of base.html's DOM sorter
+    th.dataset.key = c.key;
+    th.innerHTML = c.label + ' <span class="sort-ind"></span>';
+    headLabels.appendChild(th);
+
+    const fth = document.createElement('th');
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.dataset.col = c.key;
+    inp.placeholder = c.type === 'num' ? '<1  1-4  >10' : 'text…';
+    fth.appendChild(inp);
+    headFilters.appendChild(fth);
+  });
+  const colInputs = Array.from(headFilters.querySelectorAll('input'));
+
+  // ── populate plot menus ────────────────────────────────────────────────────
+  NUM_COLS.forEach(c => {
+    selX.add(new Option(c.plot, c.key));
+    selY.add(new Option(c.plot, c.key));
+  });
+  [['none', 'None'], ['star', 'Star type'], ['size', 'Planet size'], ['disp', 'Disposition'],
+   ['multi', 'System multiplicity'],
+   ['steff', 'Stellar Teff'], ['teq', 'Equil Temp'], ['insol', 'Insolation'], ['tmag', 'TESS mag']]
+    .forEach(([v, t]) => selColor.add(new Option(t, v)));
+  selX.value = 'period'; selY.value = 'radius'; selColor.value = 'star';
+  logXEl.checked = true; logYEl.checked = true;
+
+  // ── filter parsers (mirrors index.html) ────────────────────────────────────
+  function makeNumeric(raw) {
+    const s = raw.trim();
+    if (!s) return null;
+    let m;
+    if ((m = s.match(/^(<=|>=|<|>|=)?\s*(-?\d+(?:\.\d+)?)$/))) {
+      const op = m[1] || '=', v = parseFloat(m[2]);
+      return x => {
+        if (x == null || isNaN(x)) return false;
+        if (op === '<')  return x <  v;
+        if (op === '<=') return x <= v;
+        if (op === '>')  return x >  v;
+        if (op === '>=') return x >= v;
+        return Math.abs(x - v) < 1e-9;
+      };
+    }
+    if ((m = s.match(/^(-?\d+(?:\.\d+)?)\s*(?:-|\.\.|:|to)\s*(-?\d+(?:\.\d+)?)$/))) {
+      const a = parseFloat(m[1]), b = parseFloat(m[2]);
+      const lo = Math.min(a, b), hi = Math.max(a, b);
+      return x => x != null && !isNaN(x) && x >= lo && x <= hi;
+    }
+    return 'INVALID';
+  }
+  function makeText(raw) {
+    const s = raw.trim();
+    if (!s) return null;
+    const needles = s.toLowerCase().split(/\s*,\s*/).filter(Boolean);
+    return hay => {
+      const h = (hay == null ? '' : String(hay)).toLowerCase();
+      return needles.some(n => h.includes(n));
+    };
+  }
+
+  // ── filter state ───────────────────────────────────────────────────────────
+  const selectedPlanet = new Set();
+  const selectedStar = new Set();
+  const selectedDisp = new Set();          // TFOPWG codes; '' matches the "Unset" chip
+  const selectedMulti = new Set();
+  const selectedRot = new Set();           // 'fast' = P_rot < 10 d (Boyle+2026)
+  const selectedIndb = new Set();          // '1' = only targets present in muscat-db
+  const selectedHarps = new Set();         // '1' = coordinate match in HARPS RVBank
+  const selectedNasa = new Set();          // '1' = matched to NASA confirmed-planet catalog
+  let sortState = { key: null, dir: 0 };   // dir: 1 asc, -1 desc
+
+  function buildColPredicates() {
+    const preds = [];
+    colInputs.forEach(inp => {
+      const c = colByKey[inp.dataset.col];
+      if (!c) return;
+      const build = c.type === 'num' ? makeNumeric : makeText;
+      const p = build(inp.value);
+      inp.classList.remove('invalid');
+      if (p === 'INVALID') { inp.classList.add('invalid'); return; }
+      if (p) preds.push({ key: c.key, fn: p });
+    });
+    return preds;
+  }
+
+  function computeFiltered() {
+    const q = searchEl.value.trim().toLowerCase();
+    const colPreds = buildColPredicates();
+    const usePlanet = selectedPlanet.size > 0;
+    const useStar = selectedStar.size > 0;
+    const useDisp = selectedDisp.size > 0;
+    const useMulti = selectedMulti.size > 0;
+    const useRot = selectedRot.size > 0;
+    const useIndb = selectedIndb.size > 0;
+    const useHarps = selectedHarps.size > 0;
+    const useNasa = selectedNasa.size > 0;
+    const out = [];
+    for (let i = 0; i < N; i++) {
+      if (q) {
+        const hay = (TOI.toi[i] + ' ' + TOI.tic[i] + ' ' + TOI.name[i]).toLowerCase();
+        if (hay.indexOf(q) === -1) continue;
+      }
+      let ok = true;
+      for (let k = 0; k < colPreds.length; k++) {
+        if (!colPreds[k].fn(TOI[colPreds[k].key][i])) { ok = false; break; }
+      }
+      if (!ok) continue;
+      if (usePlanet) {
+        const tags = planetTags[i];
+        let hit = false;
+        for (let t = 0; t < tags.length; t++) { if (selectedPlanet.has(tags[t])) { hit = true; break; } }
+        if (!hit) continue;
+      }
+      if (useStar) {
+        if (!selectedStar.has(starClass[i])) continue;
+      }
+      if (useDisp) {
+        if (!selectedDisp.has((TOI.disp[i] || '').toUpperCase())) continue;
+      }
+      if (useMulti) {
+        if (!selectedMulti.has(multiClass[i])) continue;
+      }
+      if (useRot) {
+        if (!selectedRot.has(rotClass[i])) continue;
+      }
+      if (useIndb && !TOI.indb[i]) continue;
+      if (useHarps && !TOI.has_harps_rv[i]) continue;
+      if (useNasa && !TOI.nasa_confirmed[i]) continue;
+      out.push(i);
+    }
+    if (sortState.key) applySort(out);
+    return out;
+  }
+
+  function applySort(idx) {
+    const c = colByKey[sortState.key];
+    const key = sortState.key, dir = sortState.dir;
+    if (c.type === 'num') {
+      idx.sort((a, b) => {
+        const va = TOI[key][a], vb = TOI[key][b];
+        if (va == null && vb == null) return 0;
+        if (va == null) return 1;          // nulls always last
+        if (vb == null) return -1;
+        return (va - vb) * dir;
+      });
+    } else {
+      idx.sort((a, b) => {
+        const va = TOI[key][a] || '', vb = TOI[key][b] || '';
+        if (!va && !vb) return 0;
+        if (!va) return 1;
+        if (!vb) return -1;
+        return va.localeCompare(vb, undefined, { numeric: true }) * dir;
+      });
+    }
+  }
+
+  // ── number formatting (≤6 decimals, precision-aware) ───────────────────────
+  const fmtNum = MuscatFormat.auto;
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, ch =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+  }
+
+  function rowHtml(i) {
+    const cells = COLS.map(c => {
+      const v = TOI[c.key][i];
+      if (c.key === 'toi') {
+        const tic = TOI.tic[i];
+        const label = v ? ('TOI-' + v) : (TOI.name[i] || TOI.tic[i] || '—');
+        if (tic) {
+          return '<td><a href="https://exofop.ipac.caltech.edu/tess/target.php?id=' +
+            encodeURIComponent(tic) + '" target="_blank" rel="noopener">' + esc(label) + '</a></td>';
+        }
+        return '<td>' + esc(label) + '</td>';
+      }
+      if (c.key === 'disp') {
+        const raw = v || '—';
+        let html = '<td>' + esc(raw);
+        if ((raw || '').toUpperCase() === 'PC' && TOI.nasa_confirmed[i]) {
+          html += ' <span class="badge instrument-badge" title="Matched to NASA PSCompPars confirmed planet catalog">NASA confirmed</span>';
+        }
+        return html + '</td>';
+      }
+      if (c.key === 'nasa_confirmed') {
+        return '<td>' + (v ? 'yes' : '—') + '</td>';
+      }
+      if (c.type === 'num') return '<td class="num">' + fmtNum(v) + '</td>';
+      return '<td>' + esc(v || '—') + '</td>';
+    });
+    return '<tr>' + cells.join('') + '</tr>';
+  }
+
+  function renderTable(idx) {
+    const shown = Math.min(idx.length, CAP);
+    let html = '';
+    for (let k = 0; k < shown; k++) html += rowHtml(idx[k]);
+    tbodyEl.innerHTML = html;
+    capNoteEl.textContent = idx.length > CAP
+      ? ('Showing first ' + CAP.toLocaleString() + ' of ' + idx.length.toLocaleString() +
+         ' matching rows — refine filters to narrow the table. The plot below uses all matching rows.')
+      : '';
+
+    // Initialize resizable columns with actual rows populated to avoid locking in empty-table widths
+    const table = document.getElementById('toi-table');
+    if (table && window.initTable && !table.dataset.initializedWithRows && shown > 0) {
+      delete table.dataset.resizableInit;
+      table.classList.remove('resizable-init');
+      if (table.tHead && table.tHead.rows[0]) {
+        Array.from(table.tHead.rows[0].cells).forEach(th => {
+          th.querySelectorAll('.col-resizer').forEach(h => h.remove());
+          th.style.width = '';
+          th.style.maxWidth = '';
+        });
+      }
+      table.dataset.initializedWithRows = '1';
+      window.initTable(table);
+    }
+  }
+
+  function updateSortIndicators() {
+    headLabels.querySelectorAll('th').forEach(th => {
+      const ind = th.querySelector('.sort-ind');
+      if (!ind) return;
+      ind.textContent = (th.dataset.key === sortState.key)
+        ? (sortState.dir === 1 ? '▲' : '▼') : '';
+    });
+  }
+
+  // ── plot ───────────────────────────────────────────────────────────────────
+  function categoryOf(i, mode) {
+    if (mode === 'star') return starClass[i] || '—';
+    if (mode === 'size') return sizeClass[i] || '—';
+    if (mode === 'disp') return TOI.disp[i] || '—';
+    if (mode === 'multi') return multiLabelOf(multiClass[i]) || '—';
+    return '';
+  }
+  function catMeta(mode) {
+    if (mode === 'star') return { order: STAR_ORDER, colors: STAR_COLORS };
+    if (mode === 'size') return { order: SIZE_ORDER, colors: SIZE_COLORS };
+    if (mode === 'disp') return { order: DISP_ORDER, colors: DISP_COLORS };
+    if (mode === 'multi') return { order: MULTI_ORDER, colors: MULTI_COLORS };
+    return null;
+  }
+
+  function pointText(i) {
+    const t = TOI.toi[i] ? ('TOI-' + TOI.toi[i]) : (TOI.name[i] || TOI.tic[i] || '');
+    return TOI.name[i] ? (t + ' · ' + TOI.name[i]) : t;
+  }
+
+  function buildTraces(idx) {
+    const xk = selX.value, yk = selY.value, mode = selColor.value;
+    const logx = logXEl.checked, logy = logYEl.checked;
+    const size = +sizeEl.value;
+    const xlabel = colByKey[xk].plot, ylabel = colByKey[yk].plot;
+    const xErrCol = colByKey[xk].err, yErrCol = colByKey[yk].err;
+    // Error bars only where the catalog carries an uncertainty column. Plotly's
+    // WebGL (scattergl) traces ignore error bars, so fall back to SVG scatter
+    // whenever a bar is actually drawn.
+    const showErrX = errXEl.checked && !!xErrCol;
+    const showErrY = errYEl.checked && !!yErrCol;
+    const traceType = (showErrX || showErrY) ? 'scatter' : 'scattergl';
+    const hovertmpl = '%{text}<br>' + xlabel + ': %{x}<br>' + ylabel + ': %{y}<extra></extra>';
+
+    function usable(i) {
+      const x = TOI[xk][i], y = TOI[yk][i];
+      if (x == null || y == null) return false;
+      if (logx && !(x > 0)) return false;
+      if (logy && !(y > 0)) return false;
+      return true;
+    }
+    function errX(i) { const e = TOI[xErrCol][i]; return e == null ? 0 : Math.abs(e); }
+    function errY(i) { const e = TOI[yErrCol][i]; return e == null ? 0 : Math.abs(e); }
+    // muscat-db members get a (slightly larger) star; everyone else a circle.
+    const indb = i => TOI.indb && TOI.indb[i];
+    const symOf = i => (indb(i) ? 'star' : 'circle');
+    const sizeOf = i => (indb(i) ? size + 3 : size);
+    const textOf = i => pointText(i) + (indb(i) ? ' ★ (in muscat-db)' : '');
+    const linkOf = i => (TOI.tname ? TOI.tname[i] : '');
+
+    function push(a, i) {
+      a.x.push(TOI[xk][i]); a.y.push(TOI[yk][i]); a.text.push(textOf(i));
+      a.sym.push(symOf(i)); a.sz.push(sizeOf(i)); a.cd.push(linkOf(i));
+      if (showErrX) a.ex.push(errX(i));
+      if (showErrY) a.ey.push(errY(i));
+    }
+    const newAcc = () => ({ x: [], y: [], text: [], sym: [], sz: [], cd: [], ex: [], ey: [], c: [] });
+
+    function finish(trace, a, barColor) {
+      trace.type = traceType;
+      trace.mode = 'markers';
+      trace.hovertemplate = hovertmpl;
+      trace.customdata = a.cd;          // per-point target-page link (click handler)
+      trace.marker = trace.marker || {};
+      if (trace.marker.opacity == null) trace.marker.opacity = 0.72;
+      trace.marker.symbol = a.sym;
+      trace.marker.size = a.sz;
+      if (showErrX) trace.error_x = { type: 'data', array: a.ex, visible: true, thickness: 1, width: 0, color: barColor };
+      if (showErrY) trace.error_y = { type: 'data', array: a.ey, visible: true, thickness: 1, width: 0, color: barColor };
+      return trace;
+    }
+
+    const numericColor = ['steff', 'teq', 'insol', 'tmag'].includes(mode);
+    let plotted = 0;
+    let traces;
+
+    if (numericColor) {
+      const a = newAcc();
+      for (let k = 0; k < idx.length; k++) {
+        const i = idx[k];
+        if (!usable(i) || TOI[mode][i] == null) continue;
+        push(a, i); a.c.push(TOI[mode][i]);
+      }
+      plotted = a.x.length;
+      traces = [finish({
+        x: a.x, y: a.y, text: a.text,
+        marker: { color: a.c, colorscale: 'Viridis', showscale: true,
+                  colorbar: { title: { text: colByKey[mode].plot, side: 'right' }, thickness: 12 } },
+      }, a, 'rgba(130,130,130,0.45)')];
+    } else {
+      const meta = catMeta(mode);
+      if (!meta) {
+        const a = newAcc();
+        for (let k = 0; k < idx.length; k++) {
+          const i = idx[k];
+          if (!usable(i)) continue;
+          push(a, i);
+        }
+        plotted = a.x.length;
+        traces = [finish({ x: a.x, y: a.y, text: a.text, name: 'TOI', marker: { color: '#3b7dd8' } },
+                         a, 'rgba(59,125,216,0.4)')];
+      } else {
+        const groups = {};
+        meta.order.forEach(cat => { groups[cat] = newAcc(); });
+        for (let k = 0; k < idx.length; k++) {
+          const i = idx[k];
+          if (!usable(i)) continue;
+          const cat = categoryOf(i, mode);
+          push(groups[cat] || (groups[cat] = newAcc()), i);
+          plotted++;
+        }
+        traces = meta.order.filter(cat => groups[cat] && groups[cat].x.length).map(cat => {
+          const a = groups[cat], color = meta.colors[cat] || '#9aa0a6';
+          return finish({ x: a.x, y: a.y, text: a.text, name: cat + ' (' + a.x.length + ')',
+                          marker: { color } }, a, color);
+        });
+      }
+    }
+    return { traces, plotted, xlabel, ylabel, logx, logy };
+  }
+
+  function linspace(start, end, num) {
+    const arr = [];
+    const step = (end - start) / (num - 1);
+    for (let i = 0; i < num; i++) {
+      arr.push(start + step * i);
+    }
+    return arr;
+  }
+
+  function drawPlot(idx) {
+    if (!window.Plotly) return;
+    const { traces, plotted, xlabel, ylabel, logx, logy } = buildTraces(idx);
+
+    // Add custom boundaries if checkboxed and plot has period vs radius
+    const xk = selX.value, yk = selY.value;
+    const isPeriodRadius = (xk === 'period' && yk === 'radius') || (xk === 'radius' && yk === 'period');
+    const isMass = k => k === 'mass' || k === 'massj';
+    const isRadius = k => k === 'radius' || k === 'radj';
+    const isMassRadius = (isMass(xk) && isRadius(yk)) || (isRadius(xk) && isMass(yk));
+
+    const lblDesertMazeh = document.getElementById('lbl-desert-mazeh');
+    const lblDesertCastro = document.getElementById('lbl-desert-castro');
+    const lblRadGap = document.getElementById('lbl-radgap');
+    if (lblDesertMazeh && lblDesertCastro && lblRadGap) {
+      const show = isPeriodRadius ? 'inline-flex' : 'none';
+      lblDesertMazeh.style.display = show;
+      lblDesertCastro.style.display = show;
+      lblRadGap.style.display = show;
+    }
+
+    const lblCompIron = document.getElementById('lbl-comp-iron');
+    const lblCompIronRich = document.getElementById('lbl-comp-iron-rich');
+    const lblCompEarth = document.getElementById('lbl-comp-earth');
+    const lblCompRock = document.getElementById('lbl-comp-rock');
+    const lblCompWaterRich = document.getElementById('lbl-comp-water-rich');
+    const lblCompWater = document.getElementById('lbl-comp-water');
+    if (lblCompIron && lblCompIronRich && lblCompEarth && lblCompRock && lblCompWaterRich && lblCompWater) {
+      const showComp = isMassRadius ? 'inline-flex' : 'none';
+      lblCompIron.style.display = showComp;
+      lblCompIronRich.style.display = showComp;
+      lblCompEarth.style.display = showComp;
+      lblCompRock.style.display = showComp;
+      lblCompWaterRich.style.display = showComp;
+      lblCompWater.style.display = showComp;
+    }
+
+    if (isPeriodRadius) {
+      const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+      const castroColor = isDark ? '#ffffff' : '#000000';
+      const mazehColor = isDark ? '#8b949e' : '#7f7f7f';
+
+      const makeLineTrace = (p_arr, r_arr, name, color, dash) => {
+        const x_data = (xk === 'period') ? p_arr : r_arr;
+        const y_data = (xk === 'period') ? r_arr : p_arr;
+        return {
+          x: x_data,
+          y: y_data,
+          mode: 'lines',
+          name: name,
+          line: { color: color, width: 2, dash: dash },
+          hoverinfo: 'skip',
+          showlegend: true
+        };
+      };
+
+      if (document.getElementById('plot-desert-mazeh').checked) {
+        // Theoretical boundaries — truncate at intersection for a triangular wedge
+        const p_theo = linspace(Math.log10(0.1), Math.log10(20), 100).map(x => Math.pow(10, x));
+        const r_lower = p_theo.map(p => Math.pow(p, 0.68));
+        const r_upper = p_theo.map(p => 14.8 * Math.pow(p, -0.33));
+
+        let idx = r_lower.findIndex((r, i) => r >= r_upper[i]);
+        if (idx === -1) idx = r_lower.length;
+        else idx += 1;
+
+        traces.push(makeLineTrace(p_theo.slice(0, idx), r_lower.slice(0, idx), 'Neptune Desert (Mazeh+2016 Lower)', mazehColor, 'dash'));
+        traces.push(makeLineTrace(p_theo.slice(0, idx), r_upper.slice(0, idx), 'Neptune Desert (Mazeh+2016 Upper)', mazehColor, 'dash'));
+      }
+
+      if (document.getElementById('plot-desert-castro').checked) {
+        // Empirical boundary (Castro-González et al. 2024)
+        const n_emp = 50;
+        const x1_log = Array(n_emp).fill(-0.30);
+        const y1_log = linspace(-0.07, 0.195, n_emp);
+        const x_low_log = linspace(-0.30, 0.47, n_emp);
+        const y_low_log = x_low_log.map(x => 0.55 * x + 0.36);
+        const x_right_log = Array(n_emp).fill(0.47);
+        const y_right_log = linspace(0.6185, 0.9379, n_emp);
+        const x_up_log = linspace(0.47, 0.12, n_emp);
+        const y_up_log = x_up_log.map(x => -0.43 * x + 1.14);
+        const x2_log = Array(n_emp).fill(0.12);
+        const y2_log = linspace(1.0884, 1.20, n_emp);
+
+        const p_emp_log = [...x1_log, ...x_low_log, ...x_right_log, ...x_up_log, ...x2_log];
+        const r_emp_log = [...y1_log, ...y_low_log, ...y_right_log, ...y_up_log, ...y2_log];
+
+        const p_emp = p_emp_log.map(x => Math.pow(10, x));
+        const r_emp = r_emp_log.map(y => Math.pow(10, y));
+
+        traces.push(makeLineTrace(p_emp, r_emp, 'Neptune Desert (Castro-Gonzalez+2024)', castroColor, 'solid'));
+      }
+
+      if (document.getElementById('plot-radgap').checked) {
+        const p_gap = linspace(Math.log10(0.5), Math.log10(100), 100).map(x => Math.pow(10, x));
+        const r_gap = p_gap.map(p => Math.pow(p, -0.09) * Math.pow(10, 0.37));
+
+        traces.push(makeLineTrace(p_gap, r_gap, 'Radius Gap (Van Eylen+2018)', castroColor, 'dash'));
+      }
+    }
+
+    if (isMassRadius) {
+      const getPlotCoords = (Mp, Rp) => {
+        let valX, valY;
+        if (xk === 'mass') valX = Mp;
+        else if (xk === 'massj') valX = Mp / 317.8;
+        else if (xk === 'radius') valX = Rp;
+        else if (xk === 'radj') valX = Rp / 11.209;
+        
+        if (yk === 'mass') valY = Mp;
+        else if (yk === 'massj') valY = Mp / 317.8;
+        else if (yk === 'radius') valY = Rp;
+        else if (yk === 'radj') valY = Rp / 11.209;
+        return [valX, valY];
+      };
+
+      const seagerRadius = (Mp, m1, r1) => {
+        const k1 = -0.20945;
+        const k2 = 0.0804;
+        const k3 = 0.394;
+        const ms = Mp / m1;
+        const log_rs = k1 + (1.0 / 3.0) * Math.log10(ms) - k2 * Math.pow(ms, k3);
+        return Math.pow(10, log_rs) * r1;
+      };
+
+      const makeCompLineTrace = (m_arr, name, color, m1, r1) => {
+        const xs = [];
+        const ys = [];
+        for (let i = 0; i < m_arr.length; i++) {
+          const rp = seagerRadius(m_arr[i], m1, r1);
+          const [vx, vy] = getPlotCoords(m_arr[i], rp);
+          xs.push(vx);
+          ys.push(vy);
+        }
+        return {
+          x: xs,
+          y: ys,
+          mode: 'lines',
+          name: name,
+          line: { color: color, width: 2 },
+          hoverinfo: 'skip',
+          showlegend: true
+        };
+      };
+
+      const min_m_log = Math.log10(0.05);
+      const max_m_log = Math.log10(50.0);
+      const n_pts = 100;
+      const m_pts = [];
+      for (let i = 0; i < n_pts; i++) {
+        m_pts.push(Math.pow(10, min_m_log + (max_m_log - min_m_log) * i / (n_pts - 1)));
+      }
+
+      const comps = [
+        { id: 'plot-comp-iron', name: '100% Iron (Seager+07)', m1: 5.80, r1: 2.52, color: '#e056fd' },
+        { id: 'plot-comp-iron-rich', name: '67.5% Fe (Seager+07)', m1: 6.41, r1: 2.84, color: '#ff7979' },
+        { id: 'plot-comp-earth', name: 'Earth-like (30% Fe, Seager+07)', m1: 6.41, r1: 3.19, color: '#2ed573' },
+        { id: 'plot-comp-rock', name: '100% Silicate (Seager+07)', m1: 10.55, r1: 3.90, color: '#ffa502' },
+        { id: 'plot-comp-water-rich', name: '25% H2O (Seager+07)', m1: 6.41, r1: 3.63, color: '#1e90ff' },
+        { id: 'plot-comp-water', name: '100% Water (Seager+07)', m1: 5.52, r1: 4.43, color: '#70a1ff' }
+      ];
+
+      comps.forEach(c => {
+        if (document.getElementById(c.id).checked) {
+          traces.push(makeCompLineTrace(m_pts, c.name, c.color, c.m1, c.r1));
+        }
+      });
+    }
+
+    const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const grid = dark ? '#30363d' : '#e1e4e8';
+    const minorGrid = dark ? '#21262d' : '#f0f1f2';
+    const layout = {
+      margin: { l: 64, r: 20, t: 10, b: 52 },
+      paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+      font: { color: dark ? '#c9d1d9' : '#24292f', size: 12 },
+      xaxis: {
+        title: { text: xlabel },
+        type: logx ? 'log' : 'linear',
+        // Plotly's default log-axis sub-decade ticks (2, 5, ...) label only the
+        // bare digit, not the actual value (e.g. "5" at position 50). '~r' forces
+        // every tick, including those, to render its real value.
+        tickformat: logx ? '~r' : undefined,
+        gridcolor: grid,
+        zeroline: false,
+        automargin: true,
+        minor: logx ? { ticks: 'outside', showgrid: true, gridcolor: minorGrid } : undefined
+      },
+      yaxis: {
+        title: { text: ylabel },
+        type: logy ? 'log' : 'linear',
+        tickformat: logy ? '~r' : undefined,
+        gridcolor: grid,
+        zeroline: false,
+        automargin: true,
+        minor: logy ? { ticks: 'outside', showgrid: true, gridcolor: minorGrid } : undefined
+      },
+      hovermode: 'closest',
+      legend: { orientation: 'v', bgcolor: 'rgba(0,0,0,0)' },
+      showlegend: traces.length > 1,
+    };
+    Plotly.react(plotDiv, traces, layout, { responsive: true, displayModeBar: true, displaylogo: false });
+    plotCountEl.textContent = plotted.toLocaleString() + ' points plotted';
+    bindPlotClick();
+  }
+
+  // Clicking a point opens that TOI's target page in a new tab. Bound once;
+  // Plotly.react preserves handlers attached to the div.
+  let plotClickBound = false;
+  function bindPlotClick() {
+    if (plotClickBound || !plotDiv.on) return;
+    plotClickBound = true;
+    plotDiv.on('plotly_click', function (ev) {
+      const pt = ev && ev.points && ev.points[0];
+      const name = pt && pt.customdata;
+      if (name) window.open('/target?name=' + encodeURIComponent(name), '_blank', 'noopener');
+    });
+  }
+
+  // ── URL slug encoding/decoding for bookmarkable filters ──────────────────
+  function encodeState(state) {
+    const parts = [];
+    if (state.q) parts.push('q=' + encodeURIComponent(state.q));
+    if (state.planet && state.planet.length) parts.push('planet=' + state.planet.join(','));
+    if (state.star && state.star.length) parts.push('star=' + state.star.join(','));
+    if (state.disp && state.disp.length) parts.push('disp=' + state.disp.join(','));
+    if (state.multi && state.multi.length) parts.push('multi=' + state.multi.join(','));
+    if (state.rot && state.rot.length) parts.push('rot=' + state.rot.join(','));
+    if (state.indb && state.indb.length) parts.push('indb=' + state.indb.join(','));
+    if (state.harps && state.harps.length) parts.push('harps=' + state.harps.join(','));
+    if (state.nasa && state.nasa.length) parts.push('nasa=' + state.nasa.join(','));
+    if (state.sort && state.sort.key) parts.push('sort=' + state.sort.key + ':' + state.sort.dir);
+    if (state.plot) {
+      if (state.plot.x) parts.push('x=' + state.plot.x);
+      if (state.plot.y) parts.push('y=' + state.plot.y);
+      if (state.plot.color) parts.push('color=' + state.plot.color);
+      if (state.plot.logx) parts.push('logx=1');
+      if (state.plot.logy) parts.push('logy=1');
+      if (state.plot.errx) parts.push('errx=1');
+      if (state.plot.erry) parts.push('erry=1');
+      if (state.plot.mazeh) parts.push('mazeh=1');
+      if (state.plot.castro) parts.push('castro=1');
+      if (state.plot.radgap) parts.push('radgap=1');
+      if (state.plot.compIron) parts.push('compIron=1');
+      if (state.plot.compIronRich) parts.push('compIronRich=1');
+      if (state.plot.compEarth) parts.push('compEarth=1');
+      if (state.plot.compRock) parts.push('compRock=1');
+      if (state.plot.compWaterRich) parts.push('compWaterRich=1');
+      if (state.plot.compWater) parts.push('compWater=1');
+      if (state.plot.size && state.plot.size !== '6') parts.push('size=' + state.plot.size);
+    }
+    return parts.length ? '#' + parts.join('&') : '';
+  }
+  function decodeSlug() {
+    const hash = window.location.hash.slice(1);
+    if (!hash) return null;
+    const state = {};
+    const params = new URLSearchParams(hash);
+    if (params.has('q')) searchEl.value = decodeURIComponent(params.get('q'));
+    ['planet', 'star', 'disp', 'multi', 'rot', 'indb', 'harps', 'nasa'].forEach(k => {
+      if (params.has(k)) state[k] = params.get(k).split(',');
+    });
+    if (params.has('sort')) {
+      const [k, d] = params.get('sort').split(':');
+      state.sort = { key: k, dir: parseInt(d) || 0 };
+    }
+    if (!state.plot) state.plot = {};
+    if (params.has('x')) state.plot.x = params.get('x');
+    if (params.has('y')) state.plot.y = params.get('y');
+    if (params.has('color')) state.plot.color = params.get('color');
+    if (params.has('logx')) state.plot.logx = true;
+    if (params.has('logy')) state.plot.logy = true;
+    if (params.has('errx')) state.plot.errx = true;
+    if (params.has('erry')) state.plot.erry = true;
+    if (params.has('mazeh')) state.plot.mazeh = true;
+    if (params.has('castro')) state.plot.castro = true;
+    if (params.has('radgap')) state.plot.radgap = true;
+    if (params.has('compIron')) state.plot.compIron = true;
+    if (params.has('compIronRich')) state.plot.compIronRich = true;
+    if (params.has('compEarth')) state.plot.compEarth = true;
+    if (params.has('compRock')) state.plot.compRock = true;
+    if (params.has('compWaterRich')) state.plot.compWaterRich = true;
+    if (params.has('compWater')) state.plot.compWater = true;
+    if (params.has('size')) state.plot.size = params.get('size');
+    return Object.keys(state).length ? state : null;
+  }
+
+  // ── persistence ────────────────────────────────────────────────────────────
+  const LS = window.MuscatStorage;
+  function saveState() {
+    const state = {
+      q: searchEl.value,
+      planet: Array.from(selectedPlanet), star: Array.from(selectedStar),
+      disp: Array.from(selectedDisp),
+      multi: Array.from(selectedMulti),
+      rot: Array.from(selectedRot),
+      indb: Array.from(selectedIndb),
+      harps: Array.from(selectedHarps),
+      nasa: Array.from(selectedNasa),
+      sort: sortState,
+      plot: { x: selX.value, y: selY.value, color: selColor.value,
+              logx: logXEl.checked, logy: logYEl.checked,
+              errx: errXEl.checked, erry: errYEl.checked, size: sizeEl.value,
+              mazeh: document.getElementById('plot-desert-mazeh').checked,
+              castro: document.getElementById('plot-desert-castro').checked,
+              radgap: document.getElementById('plot-radgap').checked,
+              compIron: document.getElementById('plot-comp-iron').checked,
+              compIronRich: document.getElementById('plot-comp-iron-rich').checked,
+              compEarth: document.getElementById('plot-comp-earth').checked,
+              compRock: document.getElementById('plot-comp-rock').checked,
+              compWaterRich: document.getElementById('plot-comp-water-rich').checked,
+              compWater: document.getElementById('plot-comp-water').checked },
+    };
+    if (LS) {
+      const cols = {};
+      colInputs.forEach(inp => { if (inp.value) cols[inp.dataset.col] = inp.value; });
+      state.cols = cols;
+      LS.setJSON('toi:state', state);
+    }
+    // Update URL slug for bookmarking/sharing.
+    window.history.replaceState(null, '', window.location.pathname + encodeState(state));
+  }
+  function restoreState() {
+    // Priority: URL slug > localStorage > defaults.
+    let s = decodeSlug() || (LS ? LS.getJSON('toi:state', null) : null);
+    if (!s) return;
+    if (s.q) searchEl.value = s.q;
+    if (s.cols) colInputs.forEach(inp => { if (s.cols[inp.dataset.col]) inp.value = s.cols[inp.dataset.col]; });
+    (s.planet || []).forEach(k => selectedPlanet.add(k));
+    (s.star || []).forEach(k => selectedStar.add(k));
+    (s.disp || []).forEach(k => selectedDisp.add(k));
+    (s.multi || []).forEach(k => selectedMulti.add(k));
+    (s.rot || []).forEach(k => selectedRot.add(k));
+    (s.indb || []).forEach(k => selectedIndb.add(k));
+    (s.harps || []).forEach(k => selectedHarps.add(k));
+    (s.nasa || []).forEach(k => selectedNasa.add(k));
+    chips.forEach(ch => {
+      if (setForGroup(ch.dataset.group).has(keyForChip(ch))) ch.classList.add('active');
+    });
+    if (s.sort && s.sort.key) sortState = s.sort;
+    if (s.plot) {
+      if (s.plot.x) selX.value = s.plot.x;
+      if (s.plot.y) selY.value = s.plot.y;
+      if (s.plot.color) selColor.value = s.plot.color;
+      logXEl.checked = !!s.plot.logx; logYEl.checked = !!s.plot.logy;
+      errXEl.checked = !!s.plot.errx; errYEl.checked = !!s.plot.erry;
+      if (s.plot.mazeh) document.getElementById('plot-desert-mazeh').checked = !!s.plot.mazeh;
+      if (s.plot.castro) document.getElementById('plot-desert-castro').checked = !!s.plot.castro;
+      if (s.plot.radgap) document.getElementById('plot-radgap').checked = !!s.plot.radgap;
+      if (s.plot.compIron) document.getElementById('plot-comp-iron').checked = !!s.plot.compIron;
+      if (s.plot.compIronRich) document.getElementById('plot-comp-iron-rich').checked = !!s.plot.compIronRich;
+      if (s.plot.compEarth) document.getElementById('plot-comp-earth').checked = !!s.plot.compEarth;
+      if (s.plot.compRock) document.getElementById('plot-comp-rock').checked = !!s.plot.compRock;
+      if (s.plot.compWaterRich) document.getElementById('plot-comp-water-rich').checked = !!s.plot.compWaterRich;
+      if (s.plot.compWater) document.getElementById('plot-comp-water').checked = !!s.plot.compWater;
+      if (s.plot.size) sizeEl.value = s.plot.size;
+    }
+  }
+
+  // ── CSV export of the current filtered set ─────────────────────────────────
+  function buildCsv(idx) {
+    const header = COLS.map(c => c.label).join(',');
+    const lines = [header];
+    for (let k = 0; k < idx.length; k++) {
+      const i = idx[k];
+      lines.push(COLS.map(c => {
+        let v = TOI[c.key][i];
+        if (v == null) return '';
+        v = String(v);
+        return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+      }).join(','));
+    }
+    return lines.join('\n');
+  }
+  let csvUrl = null;
+  function refreshCsv(idx) {
+    if (csvUrl) URL.revokeObjectURL(csvUrl);
+    csvUrl = URL.createObjectURL(new Blob([buildCsv(idx)], { type: 'text/csv' }));
+    exportEl.href = csvUrl;
+  }
+
+  // ── main apply ─────────────────────────────────────────────────────────────
+  const clearEl = document.getElementById('toi-clear');
+  function updateClearButtonVisibility() {
+    if (!clearEl) return;
+    const hasSearch = !!searchEl.value.trim();
+    const hasColFilters = colInputs.some(inp => !!inp.value.trim());
+    const hasChips = selectedPlanet.size > 0 || selectedStar.size > 0 || selectedDisp.size > 0 || selectedMulti.size > 0 || selectedRot.size > 0 || selectedIndb.size > 0 || selectedHarps.size > 0 || selectedNasa.size > 0;
+    clearEl.style.display = (hasSearch || hasColFilters || hasChips) ? 'inline-flex' : 'none';
+  }
+
+  if (clearEl) {
+    clearEl.addEventListener('click', function () {
+      searchEl.value = '';
+      colInputs.forEach(inp => { inp.value = ''; inp.classList.remove('invalid'); });
+      selectedPlanet.clear();
+      selectedStar.clear();
+      selectedDisp.clear();
+      selectedMulti.clear();
+      selectedRot.clear();
+      selectedIndb.clear();
+      selectedHarps.clear();
+      selectedNasa.clear();
+      chips.forEach(ch => ch.classList.remove('active'));
+      apply();
+    });
+  }
+
+  let lastIdx = [];
+  function apply() {
+    const idx = computeFiltered();
+    lastIdx = idx;
+    countEl.textContent = idx.length.toLocaleString() + ' / ' + N.toLocaleString() + ' objects';
+    if (rotNoteEl) {
+      let nRot = 0;
+      for (let k = 0; k < idx.length; k++) { if (TOI.adopted_period[idx[k]] != null) nRot++; }
+      rotNoteEl.innerHTML =
+        'P<sub>rot</sub> data from <a href="https://arxiv.org/abs/2603.05586" target="_blank" rel="noopener">Boyle+2026</a>' +
+        ' (rotation periods measured from TESS light curves) — only <strong>' + nRot.toLocaleString() +
+        '</strong> of ' + idx.length.toLocaleString() + ' filtered targets have P<sub>rot</sub> data.';
+    }
+    updateSortIndicators();
+    renderTable(idx);
+    refreshCsv(idx);
+    drawPlot(idx);
+    updateClearButtonVisibility();
+    saveState();
+  }
+
+  // debounce text-driven filtering; keep chips/plot changes immediate
+  let t = null;
+  function applySoon() { clearTimeout(t); t = setTimeout(apply, 140); }
+
+  searchEl.addEventListener('input', applySoon);
+  colInputs.forEach(inp => inp.addEventListener('input', applySoon));
+  function setForGroup(group) {
+    return group === 'planet' ? selectedPlanet : group === 'star' ? selectedStar : group === 'multi' ? selectedMulti : group === 'rot' ? selectedRot : group === 'indb' ? selectedIndb : group === 'harps' ? selectedHarps : group === 'nasa' ? selectedNasa : selectedDisp;
+  }
+  function keyForChip(ch) {
+    // The "Unset" disposition chip uses a sentinel so the attribute is non-empty.
+    return ch.dataset.key === '__blank__' ? '' : ch.dataset.key;
+  }
+  chips.forEach(ch => ch.addEventListener('click', function () {
+    const set = setForGroup(ch.dataset.group);
+    const key = keyForChip(ch);
+    if (set.has(key)) { set.delete(key); ch.classList.remove('active'); }
+    else { set.add(key); ch.classList.add('active'); }
+    apply();
+  }));
+  headLabels.querySelectorAll('th').forEach(th => th.addEventListener('click', function () {
+    const key = th.dataset.key;
+    if (sortState.key !== key) sortState = { key, dir: 1 };
+    else if (sortState.dir === 1) sortState.dir = -1;
+    else sortState = { key: null, dir: 0 };
+    apply();
+  }));
+  [selX, selY, selColor].forEach(el => el.addEventListener('change', () => { drawPlot(lastIdx); saveState(); }));
+  [logXEl, logYEl, errXEl, errYEl].forEach(el => el.addEventListener('change', () => { drawPlot(lastIdx); saveState(); }));
+  [
+    document.getElementById('plot-desert-mazeh'),
+    document.getElementById('plot-desert-castro'),
+    document.getElementById('plot-radgap'),
+    document.getElementById('plot-comp-iron'),
+    document.getElementById('plot-comp-iron-rich'),
+    document.getElementById('plot-comp-earth'),
+    document.getElementById('plot-comp-rock'),
+    document.getElementById('plot-comp-water-rich'),
+    document.getElementById('plot-comp-water')
+  ].forEach(el => {
+    if (el) el.addEventListener('change', () => { drawPlot(lastIdx); saveState(); });
+  });
+  sizeEl.addEventListener('input', () => { drawPlot(lastIdx); saveState(); });
+
+  // Re-theme the plot when the global light/dark toggle flips.
+  new MutationObserver(() => drawPlot(lastIdx))
+    .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+  // Persist the two <details> open states.
+  ['toi-table-section', 'toi-plot-section'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el || !LS) return;
+    const v = LS.get('toi:open:' + id, null);
+    if (v === 'closed') el.open = false;
+    el.addEventListener('toggle', () => LS.set('toi:open:' + id, el.open ? 'open' : 'closed'));
+  });
+
+  // ── double horizontal scrollbar ────────────────────────────────────────────
+  function getScrollbarHeight() {
+    const el = document.createElement('div');
+    el.style.width = '100px';
+    el.style.height = '100px';
+    el.style.overflow = 'scroll';
+    el.style.position = 'absolute';
+    el.style.top = '-9999px';
+    document.body.appendChild(el);
+    const h = el.offsetHeight - el.clientHeight;
+    document.body.removeChild(el);
+    return h;
+  }
+
+  function setupDoubleScrollbar(topWrapperId, tableWrapperId) {
+    const topWrapper = document.getElementById(topWrapperId);
+    const tableWrapper = document.getElementById(tableWrapperId);
+    if (!topWrapper || !tableWrapper) return;
+
+    const scrollDiv = topWrapper.querySelector('div');
+    if (!scrollDiv) return;
+
+    const updateScrollbar = () => {
+      const sbHeight = getScrollbarHeight();
+      const needsScroll = sbHeight > 0 && tableWrapper.scrollWidth > tableWrapper.clientWidth;
+      if (needsScroll) {
+        topWrapper.style.display = 'block';
+        topWrapper.style.height = sbHeight + 'px';
+        scrollDiv.style.width = tableWrapper.scrollWidth + 'px';
+        topWrapper.scrollLeft = tableWrapper.scrollLeft;
+      } else {
+        topWrapper.style.display = 'none';
+      }
+    };
+
+    const resizeObserver = new ResizeObserver(updateScrollbar);
+    resizeObserver.observe(tableWrapper);
+    
+    const mutationObserver = new MutationObserver(updateScrollbar);
+    mutationObserver.observe(tableWrapper, { childList: true, subtree: true });
+
+    let activeEl = null;
+    topWrapper.addEventListener('scroll', () => {
+      if (activeEl === null) activeEl = topWrapper;
+      if (activeEl === topWrapper) {
+        tableWrapper.scrollLeft = topWrapper.scrollLeft;
+      }
+    });
+
+    tableWrapper.addEventListener('scroll', () => {
+      if (activeEl === null) activeEl = tableWrapper;
+      if (activeEl === tableWrapper) {
+        topWrapper.scrollLeft = tableWrapper.scrollLeft;
+      }
+    });
+
+    const clearActive = () => { activeEl = null; };
+    topWrapper.addEventListener('mouseup', clearActive);
+    topWrapper.addEventListener('touchend', clearActive);
+    tableWrapper.addEventListener('mouseup', clearActive);
+    tableWrapper.addEventListener('touchend', clearActive);
+
+    updateScrollbar();
+  }
+  setupDoubleScrollbar('toi-top-scrollbar', 'toi-csv-wrap');
+
+  restoreState();
+  apply();
+})();
+</script>
+{% endblock %}

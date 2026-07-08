@@ -42,9 +42,6 @@
   }
   .lco-actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-top: 0.4rem; }
   .lco-note { font-size: 0.78rem; color: var(--text-dim); margin-top: 0.5rem; }
-  .lco-msg { font-size: 0.82rem; margin-top: 0.5rem; min-height: 1em; }
-  .lco-msg.err { color: #e07b53; }
-  .lco-msg.ok { color: #2ecc71; }
   .lco-table-wrap { overflow-x: auto; }
   table.lco-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
   table.lco-table th, table.lco-table td { padding: 0.4rem 0.55rem; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
@@ -83,7 +80,7 @@
   <span class="pill"><span class="dot" id="cfg-token"></span> API token</span>
   <span class="pill"><span class="dot" id="cfg-root"></span> Download root</span>
   <span class="pill"><span class="dot" id="cfg-submit"></span> Live submit</span>
-  <span class="lco-note" style="margin: 0;">Tokens stay server-side. v1 stops at the IPP dry-run; live submission is gated.</span>
+  <span class="lco-note" style="margin: 0;">Set up LCO API access from <a href="https://observe.lco.global/accounts/profile" target="_blank" rel="noopener">your LCO profile</a>, then save your token in <a href="/settings">Settings</a>.</span>
 </div>
 
 <div class="lco-page-nav">
