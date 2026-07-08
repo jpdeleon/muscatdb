@@ -1073,6 +1073,10 @@ class TestStartRun:
         monkeypatch.setenv("MUSCAT_DB_PATH", str(tmp_path / "muscat.db"))
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path / "out"))
         monkeypatch.setenv("MUSCAT_PROSE_PYTHON", "/bin/sh")
+        # build_command is mocked below, so the pipeline cwd only needs to be a
+        # real directory. Point it at tmp_path so the test is hermetic and does
+        # not require the ext_tools/prose2 checkout (absent off-host / on CI).
+        monkeypatch.setenv("MUSCAT_PROSE_PROJECT", str(tmp_path))
         from dataclasses import replace
         from muscat_db.instruments import INSTRUMENTS as _INST
         raw = tmp_path / "raw" / DATE
@@ -1776,7 +1780,7 @@ class TestRoutes:
         assert len(norm_queries) >= 1, \
             f"Should have queried with space-normalized target, got: {seen_urls}"
 
-    def test_transit_fit_query_archive_local_csv(self, client):
+    def test_transit_fit_query_archive_local_csv(self, client, catalog):
         # 1. Test local NASA Exoplanet Archive CSV query
         r = client.get("/transit-fit/query-archive?target=HIP67522")
         assert r.status_code == 200
@@ -1878,7 +1882,7 @@ class TestRoutes:
         assert res["ok"] is True
         assert isinstance(res["targets"], list)
 
-    def test_api_ephemeris_target_info(self, client):
+    def test_api_ephemeris_target_info(self, client, catalog):
         r = client.get("/api/ephemeris/target-info")
         assert r.status_code == 422
         
