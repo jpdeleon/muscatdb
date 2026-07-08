@@ -357,7 +357,7 @@
         loading = true;
         status.textContent = 'Loading HARPS RVBank rows...';
         status.style.color = 'var(--text-dim)';
-        fetch('/api/target/harps-rv?name=' + encodeURIComponent(targetName))
+        fetch('/api/targets/harps-rv?name=' + encodeURIComponent(targetName))
           .then(res => res.json().then(data => ({ ok: res.ok, data: data })))
           .then(result => {
             if (!result.ok || !result.data.ok) {
@@ -437,7 +437,7 @@
         status.style.color = 'var(--text-dim)';
         resultsList.innerHTML = '';
 
-        fetch('/api/target/publications?q=' + encodeURIComponent(query))
+        fetch('/api/targets/publications?q=' + encodeURIComponent(query))
           .then(res => {
             if (!res.ok) {
               return res.json().then(err => {
