@@ -421,15 +421,15 @@ def test_target_detail_has_lco_schedule_and_archive_buttons(mock_db, monkeypatch
     assert 'href="/lco/archive?target=V1298TAU"' in html
     assert (
         '<a href="https://exoplanetarchive.ipac.caltech.edu/overview/V1298TAU" '
-        'target="_blank" rel="noopener">NASA Archive</a>'
+        'target="_blank" rel="noopener">NASA Archive ↗</a>'
     ) in html
     assert (
         '<a href="https://exofop.ipac.caltech.edu/tess/target.php?id=12345" '
-        'target="_blank" rel="noopener">ExoFOP-TESS</a>'
+        'target="_blank" rel="noopener">ExoFOP-TESS ↗</a>'
     ) in html
     assert (
         '<a href="https://tess.cuikaiming.com/12345" '
-        'target="_blank" rel="noopener">TESS Viewer</a>'
+        'target="_blank" rel="noopener">TESS Viewer ↗</a>'
     ) in html
     assert 'then save your token in <a href="/settings">Settings</a>.' in html
     assert "then set the token as" not in html
@@ -469,7 +469,7 @@ def test_target_detail_harps_panel_is_lazy_loaded(mock_db, monkeypatch):
     r = TestClient(app).get("/target?name=HD209458")
     assert r.status_code == 200
     assert "HARPS RVBank Data" in r.text
-    assert "/api/target/harps-rv?name=" in r.text
+    assert "/api/targets/harps-rv?name=" in r.text
     assert "Open this section to load coordinate-matched HARPS RVBank rows." in r.text
     assert "Match tolerance: 5 arcsec." in r.text
     assert "2451000.123456" not in r.text
@@ -515,7 +515,7 @@ def test_target_harps_rv_api_returns_table_payload(mock_db, monkeypatch):
         },
     )
 
-    r = TestClient(app).get("/api/target/harps-rv?name=HD209458")
+    r = TestClient(app).get("/api/targets/harps-rv?name=HD209458")
     assert r.status_code == 200
     data = r.json()
     assert data["ok"] is True
@@ -1857,7 +1857,7 @@ def test_api_target_publications_token_missing(monkeypatch):
     monkeypatch.delenv("ADS_DEV_KEY", raising=False)
     monkeypatch.delenv("ADS_TOKEN", raising=False)
     
-    r = TestClient(app).get("/api/target/publications", params={"q": "WASP-12"})
+    r = TestClient(app).get("/api/targets/publications", params={"q": "WASP-12"})
     assert r.status_code == 400
     assert r.json()["token_missing"] is True
     assert "not configured" in r.json()["error"]
@@ -1871,7 +1871,7 @@ def test_api_target_publications_success(monkeypatch, mocker):
     mock_response.read.return_value = b'{"response": {"docs": [{"bibcode": "2020ApJ...123..456A", "title": ["A Great Paper"], "author": ["Astronomer, A."], "pubdate": "2020-01-00", "pub": "ApJ", "citation_count": 10}]}}'
     mock_urlopen = mocker.patch("urllib.request.urlopen", return_value=mock_response)
     
-    r = TestClient(app).get("/api/target/publications", params={"q": "WASP-12"})
+    r = TestClient(app).get("/api/targets/publications", params={"q": "WASP-12"})
     assert r.status_code == 200
     
     called_req = mock_urlopen.call_args[0][0]
@@ -1904,7 +1904,7 @@ def test_api_target_publications_uses_saved_ads_token(mock_db, monkeypatch, mock
     mock_response.read.return_value = b'{"response": {"docs": []}}'
     mock_urlopen = mocker.patch("urllib.request.urlopen", return_value=mock_response)
 
-    r = client.get("/api/target/publications", headers=headers, params={"q": "WASP-12"})
+    r = client.get("/api/targets/publications", headers=headers, params={"q": "WASP-12"})
 
     assert r.status_code == 200
     called_req = mock_urlopen.call_args[0][0]
@@ -1913,7 +1913,7 @@ def test_api_target_publications_uses_saved_ads_token(mock_db, monkeypatch, mock
 
 
 def test_api_target_publications_empty_query():
-    r = TestClient(app).get("/api/target/publications", params={"q": ""})
+    r = TestClient(app).get("/api/targets/publications", params={"q": ""})
     assert r.status_code == 400
     assert r.json()["ok"] is False
 
