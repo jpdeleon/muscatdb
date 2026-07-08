@@ -352,6 +352,14 @@ class TestListOutputs:
         out = phot.list_outputs(INST, DATE, TARGET)
         assert out["ref_header"] == f"{TARGET}_{INST}_{DATE}_ref_header.txt"
 
+    def test_classifies_ref_selection(self, prose_dir):
+        # --ref_select quality writes a <stem>_ref_selection.txt audit sidecar;
+        # it is discovered for the "view ref selection" link.
+        rdir = prose_dir / INST / DATE
+        (rdir / f"{TARGET}_{INST}_{DATE}_ref_selection.txt").write_text("method: quality\n")
+        out = phot.list_outputs(INST, DATE, TARGET)
+        assert out["ref_selection"] == f"{TARGET}_{INST}_{DATE}_ref_selection.txt"
+
     def test_ref_header_follows_selected_site(self, monkeypatch, tmp_path):
         # The ref header is per-reduction, so it must track the selected site.
         base = tmp_path / "prose"
@@ -411,6 +419,33 @@ class TestListOutputs:
         (rdir / "run.log").write_text(f"Running reduction for {TARGET}\n--test_run option enabled\n")
         status = phot.get_photometry_status(INST, DATE, TARGET)
         assert status == "test"
+
+    def test_get_photometry_status_detects_run_scoped_only(self, prose_dir):
+        """Regression: photometry written *only* to a
+        ``_runs/<target>/<run_id>/`` subdir (no legacy dir) must still be
+        detected. Aggregating only the legacy dir made the Targets/target pages
+        report 'none' for every modern run-scoped reduction."""
+        target = "RUN-ONLY"  # not seeded in the legacy dir by the fixture
+        rdir = _make_run_outputs(prose_dir, "default", target=target)
+        bstem = f"{target}_{INST}_gp_{DATE}"
+        (rdir / (bstem + ".csv")).write_text(
+            "BJD_TDB,Flux,Flux_Err\n" + "\n".join("2460807.84,1.0001,0.0019" for _ in range(20))
+        )
+        assert phot.get_photometry_status(INST, DATE, target) == "full"
+
+    def test_get_photometry_status_full_wins_across_runs(self, prose_dir):
+        """A full run anywhere makes the target full even if another run is only a
+        stub, and the result is not clobbered by run iteration order."""
+        target = "MULTI-RUN"
+        # A stub run (short CSV, no full log) plus a full run (long CSV).
+        stub = _make_run_outputs(prose_dir, "stub", target=target)
+        (stub / "run.log").write_text("--test_run option enabled\n")
+        full = _make_run_outputs(prose_dir, "full", target=target)
+        bstem = f"{target}_{INST}_gp_{DATE}"
+        (full / (bstem + ".csv")).write_text(
+            "BJD_TDB,Flux,Flux_Err\n" + "\n".join("2460807.84,1.0001,0.0019" for _ in range(20))
+        )
+        assert phot.get_photometry_status(INST, DATE, target) == "full"
 
 
 # ── safe file serving ────────────────────────────────────────────────────────
@@ -494,6 +529,7 @@ class TestRunOptions:
         # default numerics are NOT echoed
         for flag in ("--gif_stride", "--max_num_stars", "--cutout_size",
                      "--ccd_trim", "--edge_margin", "--bin_size_minutes", "--ref_band",
+                     "--ref_select", "--ref_select_top_k",
                      "--aper_radii", "--no_gif", "--use_barycorrpy"):
             assert flag not in cmd
         assert "--avoid_nearby_star" in cmd
@@ -505,6 +541,8 @@ class TestRunOptions:
             "bands": ["gp", "rp"],
             "ref_band": "gp",
             "refid": "3",
+            "ref_select": "quality",
+            "ref_select_top_k": "3",
             "aper_radii": "10,20,2",
             "annulus": "25,40",
             "aper_unit": "fwhm",
@@ -522,6 +560,8 @@ class TestRunOptions:
         assert cmd[cmd.index("--bands") + 1:cmd.index("--bands") + 3] == ["gp", "rp"]
         assert "--ref_band gp" in s
         assert "--refid 3" in s
+        assert "--ref_select quality" in s
+        assert "--ref_select_top_k 3" in s
         assert "--aper_radii 10,20,2" in s
         assert "--annulus 25,40" in s
         assert "--aper_unit fwhm" in s
@@ -532,6 +572,30 @@ class TestRunOptions:
         assert "--use_barycorrpy" in cmd
         assert "--gif_stride 50" in s
         assert "--nan-imputation-method median" in s
+
+    def test_ref_select_quality_default_top_k_not_echoed(self, monkeypatch, tmp_path):
+        # ref_select_top_k left at the RUN_DEFAULTS value should not be echoed
+        # even when ref_select=quality is (mirrors the numeric-override-only-
+        # when-changed convention used elsewhere in build_command).
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        cmd = phot.build_command(
+            INST, DATE, TARGET,
+            {"ref_select": "quality", "ref_select_top_k": phot.RUN_DEFAULTS["ref_select_top_k"]},
+            test_run=False,
+        )
+        assert "--ref_select quality" in " ".join(cmd)
+        assert "--ref_select_top_k" not in cmd
+
+    def test_ref_select_position_never_echoed_even_with_custom_top_k(self, monkeypatch, tmp_path):
+        # ref_select=position (default strategy) should never emit either flag,
+        # even if ref_select_top_k was changed -- top_k is meaningless without
+        # quality mode.
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        cmd = phot.build_command(
+            INST, DATE, TARGET, {"ref_select": "position", "ref_select_top_k": "9"}, test_run=False
+        )
+        assert "--ref_select" not in cmd
+        assert "--ref_select_top_k" not in cmd
 
     def test_edge_margin_zero_is_emitted_to_disable(self, monkeypatch, tmp_path):
         # 0 is a meaningful value (disable edge exclusion), distinct from the
@@ -635,6 +699,18 @@ class TestRunOptions:
         )
         assert err and "one of the selected bands" in err.lower()
 
+    def test_validate_rejects_bad_ref_select(self):
+        err = phot.validate_run_options(
+            phot.normalize_run_options({"bands": ["gp"], "ref_select": "best"})
+        )
+        assert err and "position" in err.lower() and "quality" in err.lower()
+
+    def test_validate_rejects_non_positive_ref_select_top_k(self):
+        err = phot.validate_run_options(
+            phot.normalize_run_options({"bands": ["gp"], "ref_select_top_k": "0"})
+        )
+        assert err and "top-k" in err.lower()
+
     def test_validate_avoid_ids_require_reference_band(self):
         err = phot.validate_run_options(
             phot.normalize_run_options({"bands": ["gp"], "avoid_comparison_ids": "5"})
@@ -698,9 +774,166 @@ class TestStartRun:
         assert r["ok"] is False
         assert "raw data not found" in r["error"]
 
+    def test_overwrite_false_refuses_existing_products_without_deleting(
+        self, monkeypatch, tmp_path
+    ):
+        from dataclasses import replace
+        from muscat_db.instruments import INSTRUMENTS
+
+        raw_root = tmp_path / "raw"
+        (raw_root / DATE).mkdir(parents=True)
+        out_root = tmp_path / "out"
+        rdir = out_root / INST / DATE / "_runs" / TARGET.replace(" ", "") / "default"
+        rdir.mkdir(parents=True)
+        stale_csv = rdir / f"{TARGET}_{INST}_gp_{DATE}.csv"
+        stale_png = rdir / f"{TARGET}_{INST}_{DATE}_lightcurves.png"
+        stale_csv.write_text("old\n")
+        stale_png.write_bytes(b"old")
+
+        patched = dict(INSTRUMENTS)
+        patched[INST] = replace(INSTRUMENTS[INST], data_dir=str(raw_root))
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(out_root))
+        monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
+        monkeypatch.setattr(phot.subprocess, "Popen", lambda *_a, **_k: pytest.fail("pipeline should not launch"))
+
+        result = phot.start_run(
+            INST,
+            DATE,
+            TARGET,
+            options={"run_name": "", "overwrite": False},
+            test_run=True,
+        )
+
+        assert result["ok"] is False
+        assert "already exist" in result["error"]
+        assert stale_csv.read_text() == "old\n"
+        assert stale_png.read_bytes() == b"old"
+
+    def test_overwrite_true_deletes_previous_products_before_launch(
+        self, monkeypatch, tmp_path
+    ):
+        from dataclasses import replace
+        from muscat_db.instruments import INSTRUMENTS
+
+        class FakeProc:
+            pid = os.getpid()
+
+            def poll(self):
+                return None
+
+        class Store:
+            def save(self, **_kwargs):
+                pass
+
+            def delete(self, _key):
+                pass
+
+        raw_root = tmp_path / "raw"
+        (raw_root / DATE).mkdir(parents=True)
+        out_root = tmp_path / "out"
+        rdir = out_root / INST / DATE / "_runs" / TARGET.replace(" ", "") / "default"
+        rdir.mkdir(parents=True)
+        old_files = [
+            rdir / f"{TARGET}_{INST}_gp_{DATE}.csv",
+            rdir / f"{TARGET}_{INST}_{DATE}.npz",
+            rdir / f"{TARGET}_{INST}_{DATE}_ref_header.txt",
+        ]
+        for p in old_files:
+            p.write_text("old\n")
+        other_target = out_root / INST / DATE / f"Other_{INST}_{DATE}.npz"
+        other_target.write_text("keep\n")
+
+        patched = dict(INSTRUMENTS)
+        patched[INST] = replace(INSTRUMENTS[INST], data_dir=str(raw_root))
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(out_root))
+        monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
+        monkeypatch.setattr(phot, "get_job_store", lambda: Store())
+        monkeypatch.setattr(phot.subprocess, "Popen", lambda *_a, **_k: FakeProc())
+
+        with phot._LOCK:
+            phot._JOBS.clear()
+        try:
+            result = phot.start_run(
+                INST,
+                DATE,
+                TARGET,
+                options={"run_name": "", "overwrite": True},
+                test_run=True,
+            )
+            assert result["ok"] is True
+            assert all(not p.exists() for p in old_files)
+            assert other_target.read_text() == "keep\n"
+            assert phot._run_log_path(rdir, INST, DATE, TARGET, "default").is_file()
+        finally:
+            with phot._LOCK:
+                for job in phot._JOBS.values():
+                    try:
+                        job.logf.close()
+                    except OSError:
+                        pass
+                phot._JOBS.clear()
+
     def test_job_status_none_when_not_started(self):
         s = phot.job_status(INST, "111111", "Nobody")
         assert s["state"] == "none"
+
+    def test_existing_full_job_reused_before_capacity_queue(self, monkeypatch, tmp_path):
+        """Same-key running jobs must not be converted to pending rows just
+        because the full-job queue is at capacity."""
+        from dataclasses import replace
+        from muscat_db.instruments import INSTRUMENTS
+
+        class RunningProc:
+            pid = 12345
+
+            def poll(self):
+                return None
+
+        class NoQueueStore:
+            def enqueue(self, **_kwargs):
+                pytest.fail("same-key running job must be reused, not queued")
+
+        raw_root = tmp_path / "raw"
+        (raw_root / DATE).mkdir(parents=True)
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path / "out"))
+        patched = dict(INSTRUMENTS)
+        patched[INST] = replace(INSTRUMENTS[INST], data_dir=str(raw_root))
+        monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
+        monkeypatch.setattr(phot, "_count_running_full", lambda: 1)
+        monkeypatch.setattr(phot, "get_job_store", lambda: NoQueueStore())
+
+        log_path = tmp_path / "running.log"
+        logf = log_path.open("w")
+        key = phot.job_key(INST, DATE, TARGET, "default")
+        with phot._LOCK:
+            phot._JOBS.clear()
+            phot._JOBS[key] = phot.Job(
+                key=key,
+                inst=INST,
+                date=DATE,
+                target=TARGET,
+                cmd=["prose"],
+                proc=RunningProc(),
+                logf=logf,
+                log_path=log_path,
+                run_type="full",
+                run_id="default",
+                run_name="default",
+            )
+        try:
+            result = phot.start_run(
+                INST, DATE, TARGET, options={"overwrite": False}, test_run=False
+            )
+            assert result == {
+                "ok": True,
+                "key": key,
+                "already_running": True,
+                "run_id": "default",
+            }
+        finally:
+            logf.close()
+            with phot._LOCK:
+                phot._JOBS.clear()
 
     def test_job_status_reports_persisted_error_when_job_gone(
         self, monkeypatch, tmp_path
@@ -1056,6 +1289,7 @@ class TestRoutes:
         assert r.status_code == 200
         assert f"{TARGET}_{INST}_{DATE}_lightcurves.png" in r.text
         assert "Per-band products" in r.text
+        assert "MuscatRouteState.rememberPhotometry" in r.text
 
     def test_photometry_page_versions_artifact_urls(self, client):
         r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
@@ -1181,6 +1415,17 @@ class TestRoutes:
         assert "--use_barycorrpy" in body["command"]
         assert "--max_num_stars 7" in body["command"]
 
+    def test_command_route_echoes_ref_select_quality(self, client):
+        r = client.post("/photometry/command", json={
+            "inst": INST, "date": DATE, "target": TARGET, "test_run": False,
+            "options": {"bands": ["gp"], "ref_select": "quality", "ref_select_top_k": 3},
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["error"] is None
+        assert "--ref_select quality" in body["command"]
+        assert "--ref_select_top_k 3" in body["command"]
+
     def test_command_route_reports_validation_error(self, client):
         r = client.post("/photometry/command", json={
             "inst": INST, "date": DATE, "target": TARGET,
@@ -1192,7 +1437,8 @@ class TestRoutes:
     def test_page_has_options_form(self, client):
         r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
         assert r.status_code == 200
-        for token in ("opt-ref_band", "opt-aper_radii", "opt-max_num_stars",
+        for token in ("opt-ref_band", "opt-ref_select", "opt-ref_select_top_k",
+                      "opt-aper_radii", "opt-max_num_stars",
                       "opt-use_barycorrpy", "Pipeline options"):
             assert token in r.text
 
@@ -1397,6 +1643,7 @@ class TestRoutes:
         assert r.status_code == 200
         assert "dummy_muscat3_250717.csv" in r.text
         assert "Created:" in r.text
+        assert "MuscatRouteState.rememberTransitFit" in r.text
 
     def test_transit_fit_sinistro_site_mode_chips(self, client, tmp_path, mocker):
         import os
@@ -1492,7 +1739,7 @@ class TestRoutes:
         r = client.get("/transit-fit/query-archive", params={"target": "TOI' OR '1'='1", "source": "toi"})
         assert r.status_code == 200
         assert seen_queries
-        assert "TOI'' OR ''1''=''1" in seen_queries[1]
+        assert "TOI'' OR ''1''=''1" in seen_queries[0]
 
     def test_transit_fit_query_archive_hip_target(self, client, mocker):
         hip_data = b'[{"pl_name": "HIP 67522 b", "hostname": "HIP 67522", "hip_name": "HIP 67522", "st_teff": 5675.0, "st_tefferr1": 75.0, "st_tefferr2": -75.0, "st_logg": 4.0, "st_loggerr1": null, "st_loggerr2": null, "st_met": 0.0, "st_meterr1": null, "st_meterr2": null, "pl_orbper": 6.9594731, "pl_orbpererr1": 2.2e-06, "pl_orbpererr2": -2.2e-06, "pl_tranmid": 2458604.02376, "pl_tranmiderr1": 0.00033, "pl_tranmiderr2": -0.00032, "pl_trandur": 4.85, "pl_trandurerr1": 1.13, "pl_trandurerr2": -0.36, "pl_ratror": 0.06644, "pl_ratrorerr1": 0.0015, "pl_ratrorerr2": -0.0014, "pl_imppar": 0.03, "pl_impparerr1": 0.19, "pl_impparerr2": -0.22, "st_teff_reflink": "", "pl_orbper_reflink": ""}]'
@@ -1597,7 +1844,9 @@ class TestRoutes:
                 "started_at": 1645833500.0,
             }
         ]
-        monkeypatch.setattr("muscat_db.web.get_persisted_jobs", lambda: mock_jobs)
+        # The Jobs page reads through the job-store seam (audit C2), which routes
+        # to muscat_db.database.get_persisted_jobs.
+        monkeypatch.setattr("muscat_db.database.get_persisted_jobs", lambda: mock_jobs)
         monkeypatch.setattr("muscat_db.photometry.sync_jobs", lambda: None)
         monkeypatch.setattr("muscat_db.transit_fit.sync_jobs", lambda: None)
     
@@ -1633,7 +1882,8 @@ class TestRoutes:
         r = client.get("/api/ephemeris/target-info")
         assert r.status_code == 422
         
-        # Test fallback for a dummy target
+        # Test no-match behavior for a dummy target. Missing ephemerides should
+        # stay empty; the scheduler must not silently use placeholder values.
         r2 = client.get("/api/ephemeris/target-info?target=test_star")
         assert r2.status_code == 200
         res = r2.json()
@@ -1644,9 +1894,10 @@ class TestRoutes:
         assert "toi_ephemeris" in res
         assert "datasets" in res
         assert res["coordinates"] is None
-        assert res["reference_ephemeris"] == {"b": {"t0": 2450000.0, "period": 1.0}}
-        assert res["nasa_ephemeris"] == {"b": {"t0": 2450000.0, "period": 1.0}}
-        assert res["toi_ephemeris"] == {"b": {"t0": 2450000.0, "period": 1.0}}
+        assert res["planets"] == []
+        assert res["reference_ephemeris"] == {}
+        assert res["nasa_ephemeris"] == {}
+        assert res["toi_ephemeris"] == {}
 
         # Test local confirmed planet query (TOI-1136)
         r3 = client.get("/api/ephemeris/target-info?target=TOI-1136")

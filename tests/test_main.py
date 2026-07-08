@@ -239,7 +239,6 @@ class TestScanner:
 
     def test_scan_missing_dates(self, tmp_obslog, tmp_data):
         from muscat_db.scanner import scan_missing_dates
-        inst = INSTRUMENTS["muscat"]
         obsdate = tmp_data
         # Create data dirs for two dates
         for d in ["260101", "260102"]:
@@ -493,6 +492,68 @@ class TestDatabase:
         finally:
             os.unlink(db_path)
 
+    def test_remove_sqlite_tmp_clears_wal_sidecars(self):
+        # A failed WAL-mode build must not leak <tmp>-wal / -shm sidecars.
+        from muscat_db.database import _remove_sqlite_tmp
+        with tempfile.TemporaryDirectory() as d:
+            base = os.path.join(d, "muscat.db.tmp")
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                with open(base + suffix, "w") as f:
+                    f.write("x")
+            _remove_sqlite_tmp(base)
+            for suffix in ("", "-wal", "-shm", "-journal"):
+                assert not os.path.exists(base + suffix)
+            # Idempotent: removing again when nothing exists is a no-op.
+            _remove_sqlite_tmp(base)
+
+    def test_build_db_preserves_app_owned_tables(self, tmp_obslog):
+        # A rebuild must not wipe user notes / overrides / exposure calibration /
+        # saved ephemeris views (regression: build_db previously only preserved
+        # jobs + ephemeris_views, so the nightly cron erased notes on every run).
+        from muscat_db.database import (
+            build_db, get_conn, set_note, set_identified,
+        )
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            build_db(db_path)
+            # Seed app-owned data. set_note/set_identified take an explicit path;
+            # exposure_coeffs and ephemeris_views are seeded directly (their
+            # helpers target the env-configured DB, not this temp one).
+            set_note(db_path, "TIC 12345", "keep me across rebuilds")
+            set_identified(db_path, "TIC 12345", 0)
+            with get_conn(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO exposure_coeffs (instrument, band, focus_mm, coef, fwhm_pix, n_frames)"
+                    " VALUES ('muscat3','g',0.0,1.5,2.5,10)"
+                )
+                conn.execute(
+                    "INSERT INTO ephemeris_views (slug, state_hash, state_json, targets_json)"
+                    " VALUES ('slug123','hash123','{}','[\"TIC 12345\"]')"
+                )
+                conn.commit()
+
+            # Rebuild from the same obslog CSVs.
+            build_db(db_path)
+
+            with get_conn(db_path) as conn:
+                note = conn.execute(
+                    "SELECT note FROM target_notes WHERE object = 'TIC 12345'"
+                ).fetchone()
+                override = conn.execute(
+                    "SELECT is_identified FROM target_overrides WHERE object = 'TIC 12345'"
+                ).fetchone()
+                coeff = conn.execute(
+                    "SELECT coef FROM exposure_coeffs WHERE instrument='muscat3' AND band='g'"
+                ).fetchone()
+                views = conn.execute("SELECT COUNT(*) FROM ephemeris_views").fetchone()[0]
+            assert note is not None and note[0] == "keep me across rebuilds"
+            assert override is not None and override[0] == 0
+            assert coeff is not None and coeff[0] == 1.5
+            assert views == 1
+        finally:
+            os.unlink(db_path)
+
     def test_build_db_skips_noncanonical_obslog_dirs(self, tmp_obslog):
         from muscat_db.database import build_db, get_dates
         junk_dir = f"{tmp_obslog}/muscat/csv_old_220914"
@@ -730,7 +791,13 @@ class TestCLI:
         from typer.testing import CliRunner
         from muscat_db.cli import app
         runner = CliRunner()
-        return runner.invoke(app, [*args])
+        # Disable rich's ANSI colouring and force a wide, non-wrapping layout so
+        # help-text substring assertions stay stable across typer/rich versions.
+        # rich injects colour codes *inside* option tokens (e.g. "--port"), which
+        # otherwise breaks a plain `"--port" in r.output` check.
+        return runner.invoke(
+            app, [*args], env={"NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "200"}
+        )
 
     def test_help(self):
         r = self._invoke("--help")

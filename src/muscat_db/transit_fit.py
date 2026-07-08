@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import datetime
 import json
+import logging
 import math
 import os
 import pathlib
@@ -17,19 +18,22 @@ import subprocess
 import tempfile
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import IO
 import yaml
 
+from muscat_db import jobs, database
+from muscat_db.job_store import get_job_store
 from muscat_db import __meta__, __muscatdb_version__, __version__
 from muscat_db.instruments import INSTRUMENTS
 from muscat_db.photometry import (
-    output_base, valid_date, _conda_env_python, _tail, _to_float,
+    output_base, valid_date, _conda_env_python, _tail, _to_float, _get_error_desc,
     SINISTRO_SITES, SINISTRO_MODES,
 )
 from muscat_db.cache import register_cache
 
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent.resolve()
+logger = logging.getLogger(__name__)
 
 _TIMER_VERSION: str | None = None
 _TIMER_VERSION_LOCK = threading.Lock()
@@ -68,7 +72,7 @@ def _write_log_banner(logf: IO, cmd: list[str], options: dict | None = None) -> 
     now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     logf.write(f"{separator}\n")
     logf.write(f"muscat-db v{__version__}  |  timer-fit v{_timer_version()}  |  {now_utc}\n")
-    logf.write(f"command: transit-fit\n")
+    logf.write("command: transit-fit\n")
     logf.write(f"{separator}\n\n")
     logf.write(f"$ {shlex.join(cmd)}\n\n")
 
@@ -111,64 +115,13 @@ def fit_output_dir(inst: str, date: str, target: str, run_id: str | None = None)
     return path
 
 
-def _target_dir_name(target: str) -> str:
-    target_dir = (target or "").replace(" ", "")
-    if (
-        not target_dir
-        or ".." in target_dir
-        or "/" in target_dir
-        or "\\" in target_dir
-        or target_dir in {".", ".."}
-    ):
-        raise ValueError("invalid target")
-    return target_dir
-
-
-def _run_dir_name(run_id: str) -> str:
-    """Validate a run-id used as a single path segment (same rules as target)."""
-    rid = (run_id or "").strip()
-    if (
-        not rid
-        or ".." in rid
-        or "/" in rid
-        or "\\" in rid
-        or rid in {".", ".."}
-    ):
-        raise ValueError("invalid run id")
-    return rid
-
-
-_RUN_NAME_MAX = 40
-_RUN_SLUG_RE = re.compile(r"[^a-z0-9]+")
-
-
-def slugify_run_name(run_name: str | None) -> str:
-    """Slug a user run label: lowercase, non-alphanumeric -> ``_``, trimmed,
-    length-capped. Blank input -> ``default``. Never contains ``-`` so it stays
-    unambiguous under the ``-`` run-id join."""
-    s = _RUN_SLUG_RE.sub("_", (run_name or "").strip().lower()).strip("_")
-    return s[:_RUN_NAME_MAX].strip("_") or "default"
-
-
-def build_run_id(site: str | None, mode: str | None, run_name: str | None) -> str:
-    """Compose a run id from optional site, optional mode, and a run-name slug.
-
-    Components are joined by ``-`` (the components themselves only ever contain
-    ``_``, so ``-`` keeps the id readable and splittable). ``site``/``mode`` are
-    blank for non-sinistro or when undetermined; ``mixed`` when the selected
-    lightcurves span more than one value (mixing is allowed). Sinistro's
-    ``central_2k_2x2`` readout mode is the default and is omitted; non-default
-    modes such as ``full_frame`` remain explicit.
-    """
-    mode_part = (mode or "").strip().lower()
-    if mode_part == "central_2k_2x2":
-        mode_part = ""
-    parts = [p for p in (
-        (site or "").strip().lower(),
-        mode_part,
-        slugify_run_name(run_name),
-    ) if p]
-    return "-".join(parts)
+# Run-id / path-segment helpers and the run-id join live in muscat_db.jobs so
+# photometry and transit-fit share one implementation (audit C1). Re-exported
+# here under their historical names for callers and tests.
+_target_dir_name = jobs.target_dir_name
+_run_dir_name = jobs.run_dir_name
+slugify_run_name = jobs.slugify_run_name
+build_run_id = jobs.build_run_id
 
 
 def log_path(inst: str, date: str, target: str, run_id: str = "") -> pathlib.Path | None:
@@ -180,36 +133,38 @@ def log_path(inst: str, date: str, target: str, run_id: str = "") -> pathlib.Pat
     return p if p.is_file() else None
 
 
-@dataclass
-class TransitFitJob:
-    key: str
-    inst: str
-    date: str
-    target: str
-    cmd: list[str]
-    proc: subprocess.Popen
-    logf: IO
-    log_path: pathlib.Path
-    started_at: float = field(default_factory=time.time)
-    state: str = "running"      # running | done | error | cancelled
-    returncode: int | None = None
-    cancelled: bool = False
-    elapsed: int | None = None
-    run_type: str = "full"      # "test" | "full"
-    run_id: str = ""            # site-mode-runname slug; "" == legacy single-dir run
-    site: str = ""
-    mode: str = ""
-    run_name: str = ""
-
+# The in-memory job record and the finalizing state machine are shared with
+# photometry via muscat_db.jobs (audit C1). ``TransitFitJob`` keeps its name.
+TransitFitJob = jobs.PipelineJob
 
 _FIT_JOBS: dict[str, TransitFitJob] = {}
 _FIT_LOCK = threading.Lock()
 _MAX_FULL_JOBS = 1
 
+# Finalizing grace-window settings (env-tunable), mirroring photometry so the
+# transit-fit live log keeps streaming the worker output timer emits after the
+# tracked parent exits, instead of freezing at parent-exit (audit C1). timer has
+# no partial-failure concept, so a zero exit is always ``done``.
+_FINALIZE_GRACE_S = int(os.environ.get("MUSCAT_FIT_FINALIZE_GRACE_S", 8))
+_FINALIZE_GRACE_TERMINAL_S = int(os.environ.get("MUSCAT_FIT_FINALIZE_GRACE_TERMINAL_S", 2))
+# Result line timer logs once a fit has completed; remaining writes are teardown.
+_TERMINAL_LOG_MARKERS = ("Timer-fit completed successfully",)
+
+
+def _finalize_config() -> jobs.FinalizeConfig:
+    """Build the finalizing config from the current module-level settings (per
+    call, so the env-tunable values stay overridable at runtime)."""
+    return jobs.FinalizeConfig(
+        grace_s=_FINALIZE_GRACE_S,
+        grace_terminal_s=_FINALIZE_GRACE_TERMINAL_S,
+        terminal_markers=_TERMINAL_LOG_MARKERS,
+        partial_failure_marker=None,
+    )
+
 
 def _count_running_full() -> int:
     """Number of currently-running full (non-test) transit fit jobs."""
-    return sum(1 for j in _FIT_JOBS.values() if j.run_type == "full" and j.proc.poll() is None)
+    return jobs.count_running_full(_FIT_JOBS)
 
 
 def fit_job_key(inst: str, date: str, target: str, run_id: str = "") -> str:
@@ -412,7 +367,7 @@ def get_target_parameters(target_name: str) -> dict:
                         except ValueError: pass
                     break
     except Exception:
-        pass
+        logger.debug("failed to read default target parameters for %s", target_name, exc_info=True)
 
     return params
 
@@ -875,15 +830,22 @@ def _write_fit_inputs(
     fit_data["plot_midtransit"] = options.get("plot_midtransit") == "true"
     fit_data["plot_ingress_egress"] = options.get("plot_ingress_egress") == "true"
 
-    # Sampler options (timer defaults: tune/draws 2000, chains/cores 2).
+    # Sampler options (timer defaults: tune/draws 2000, chains/cores 2). Full
+    # runs default to 4 chains on 4 cores so all chains sample in parallel
+    # (a lone core-24 server has ample headroom, and only one full fit runs
+    # at a time — see _MAX_FULL_JOBS) for a more reliable r_hat convergence
+    # check; test runs ignore both values entirely since timer's --test_run
+    # path forces chains=1/cores=2 (a quick sanity check gains nothing from
+    # multiple chains) regardless of what's written to fit.yaml.
     fit_data["tune"] = _int_opt("tune", 2000)
     fit_data["draws"] = _int_opt("draws", 2000)
-    fit_data["chains"] = _int_opt("chains", 2)
-    fit_data["cores"] = _int_opt("cores", 2)
+    fit_data["chains"] = _int_opt("chains", 4)
+    fit_data["cores"] = _int_opt("cores", 4)
 
     # Model options (timer defaults: include_mean and use_custom_optimizer on).
     fit_data["include_mean"] = _bool_opt("include_mean", default=True)
     fit_data["use_custom_optimizer"] = _bool_opt("use_custom_optimizer", default=True)
+    fit_data["secondary_eclipse"] = _bool_opt("secondary_eclipse", default=False)
     fit_data["fit_basis"] = str(options.get("fit_basis") or "duration").strip().lower()
 
     # Gaussian-process noise model. Only emit the ``gp`` block when enabled:
@@ -1216,6 +1178,7 @@ def start_fit(
     options: dict,
     test_run: bool = False,
     selected_csvs: list[str] | None = None,
+    user_name: str | None = None,
 ) -> dict:
     """Prepare inputs and launch a transit fit using the timer-fit script.
 
@@ -1286,6 +1249,37 @@ def start_fit(
                 "error": "fit results exist; choose 'New Fit' (start fresh) or 'Continue Sampling'",
             }
 
+    key = fit_job_key(inst, date, target, run_id)
+    params_json = json.dumps(
+        {"test_run": test_run, "options": options, "selected_csvs": selected_csvs,
+         "run_id": run_id, "site": site, "mode": mode, "run_name": run_name},
+        separators=(",", ":"),
+    )
+
+    with _FIT_LOCK:
+        existing = _FIT_JOBS.get(key)
+
+        if existing is not None and existing.proc.poll() is None:
+            return {"ok": True, "key": key, "already_running": True, "run_id": run_id}
+
+        at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
+
+        # Queue full jobs when at capacity
+        if at_capacity:
+            try:
+                get_job_store().enqueue(
+                    type_="transit_fit",
+                    inst=inst, date=date, target=target, run_id=run_id,
+                    started_at=time.time(),
+                    run_type=run_type,
+                    params=params_json,
+                    run_name=run_name,
+                    user_name=user_name,
+                )
+            except Exception:
+                return {"ok": False, "error": "database not writable"}
+            return {"ok": True, "key": key, "queued": True, "run_id": run_id}
+
     # Working directory
     rdir.mkdir(parents=True, exist_ok=True)
 
@@ -1301,39 +1295,6 @@ def start_fit(
 
     # Clear cached outputs so the next page load reads fresh results from disk.
     _fit_outputs_cache.clear()
-
-    key = fit_job_key(inst, date, target, run_id)
-    params_json = json.dumps(
-        {"test_run": test_run, "options": options, "selected_csvs": selected_csvs,
-         "run_id": run_id, "site": site, "mode": mode, "run_name": run_name},
-        separators=(",", ":"),
-    )
-
-    with _FIT_LOCK:
-        existing = _FIT_JOBS.get(key)
-        # For full fits at capacity, allow queuing even if a job with the same key exists
-        at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
-
-        if existing is not None and existing.proc.poll() is None and not at_capacity:
-            return {"ok": True, "key": key, "already_running": True, "run_id": run_id}
-
-        # Queue full jobs when at capacity
-        if at_capacity:
-            from muscat_db.database import save_job
-            try:
-                save_job(
-                    type_="transit_fit",
-                    inst=inst, date=date, target=target, run_id=run_id,
-                    state="pending",
-                    returncode=None, elapsed=0,
-                    started_at=time.time(),
-                    run_type=run_type,
-                    params=params_json,
-                    run_name=run_name,
-                )
-            except Exception:
-                return {"ok": False, "error": "database not writable"}
-            return {"ok": True, "key": key, "queued": True, "run_id": run_id}
 
     # Launch process
     cmd = [*_timer_prefix(), "-v", str(rdir)]
@@ -1357,7 +1318,7 @@ def start_fit(
             with open(rdir / "timer-fit.pid", "w") as pidf:
                 pidf.write(str(proc.pid))
         except Exception:
-            pass
+            logger.debug("failed to write timer-fit.pid in %s", rdir, exc_info=True)
     except (FileNotFoundError, OSError) as exc:
         logf.write(f"\nfailed to launch fitting: {exc}\n")
         logf.close()
@@ -1370,8 +1331,7 @@ def start_fit(
             run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name,
         )
         # Record new job in the database
-        from muscat_db.database import save_job
-        save_job(
+        get_job_store().save(
             type_="transit_fit",
             inst=inst,
             date=date,
@@ -1384,6 +1344,7 @@ def start_fit(
             run_type=run_type,
             params=params_json,
             run_name=run_name,
+            user_name=user_name,
         )
 
     return {"ok": True, "key": key, "run_id": run_id}
@@ -1396,13 +1357,12 @@ def _pending_status(inst: str, date: str, target: str, run_id: str = "") -> dict
     in the DB as ``pending`` but not added to ``_FIT_JOBS``; surface that here so the
     transit fitting page can show a "queued" state instead of silently resetting.
     """
-    from muscat_db.database import get_persisted_jobs
     try:
         db_key = f"transit_fit:{fit_job_key(inst, date, target, run_id)}"
     except ValueError:
         return None
     try:
-        for entry in get_persisted_jobs():
+        for entry in get_job_store().all():
             if (
                 entry["key"] == db_key
                 and entry["type"] == "transit_fit"
@@ -1416,7 +1376,7 @@ def _pending_status(inst: str, date: str, target: str, run_id: str = "") -> dict
                     "elapsed": round(time.time() - started),
                 }
     except Exception:
-        pass
+        logger.debug("failed to read pending transit-fit status for %s/%s/%s/%s", inst, date, target, run_id, exc_info=True)
     return None
 
 
@@ -1426,13 +1386,12 @@ def _running_status(inst: str, date: str, target: str, run_id: str = "") -> dict
     A full run launched while the single full-job slot is occupied is recorded
     in the DB as ``running``; surface that here if the process is active but not in ``_FIT_JOBS``.
     """
-    from muscat_db.database import get_persisted_jobs
     try:
         db_key = f"transit_fit:{fit_job_key(inst, date, target, run_id)}"
     except ValueError:
         return None
     try:
-        for entry in get_persisted_jobs():
+        for entry in get_job_store().all():
             if (
                 entry["key"] == db_key
                 and entry["type"] == "transit_fit"
@@ -1451,19 +1410,18 @@ def _running_status(inst: str, date: str, target: str, run_id: str = "") -> dict
                     "elapsed": round(time.time() - started),
                 }
     except Exception:
-        pass
+        logger.debug("failed to read running transit-fit status for %s/%s/%s/%s", inst, date, target, run_id, exc_info=True)
     return None
 
 
 def _persisted_status(inst: str, date: str, target: str, run_id: str = "") -> dict | None:
     """Return a terminal-state status dict from the DB for a job no longer in ``_FIT_JOBS``."""
-    from muscat_db.database import get_persisted_jobs
     try:
         db_key = f"transit_fit:{fit_job_key(inst, date, target, run_id)}"
     except ValueError:
         return None
     try:
-        for entry in get_persisted_jobs():  # newest-first; one row per key
+        for entry in get_job_store().all():  # newest-first; one row per key
             if entry["key"] != db_key or entry["type"] != "transit_fit":
                 continue
             state = entry["state"]
@@ -1483,7 +1441,7 @@ def _persisted_status(inst: str, date: str, target: str, run_id: str = "") -> di
                 "elapsed": round(entry.get("elapsed") or 0),
             }
     except Exception:
-        pass
+        logger.debug("failed to read persisted transit-fit status for %s/%s/%s/%s", inst, date, target, run_id, exc_info=True)
     return None
 
 
@@ -1516,23 +1474,16 @@ def job_status(inst: str, date: str, target: str, run_id: str = "") -> dict:
                 pass
             return {"state": "none", "log": "", "returncode": None, "elapsed": 0}
         
-        rc = job.proc.poll()
-        if rc is None:
-            state = "cancelling" if job.cancelled else "running"
-        else:
-            if job.cancelled:
-                state = "cancelled"
-            else:
-                state = "done" if rc == 0 else "error"
-            if job.state in ("running",):
-                job.state = state
-                job.returncode = rc
-                job.elapsed = round(time.time() - job.started_at)
-                try: job.logf.close()
-                except OSError: pass
+        state, rc, is_terminal = jobs.resolve_job_state(job, _finalize_config())
+        if is_terminal and job.state == "running":
+            job.state = state
+            job.returncode = rc
+            job.elapsed = round(time.time() - job.started_at)
+            try: job.logf.close()
+            except OSError: pass
         log_path = job.log_path
         elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
-        
+
     return {
         "state": state,
         "returncode": rc,
@@ -1542,17 +1493,8 @@ def job_status(inst: str, date: str, target: str, run_id: str = "") -> dict:
     }
 
 
-def _kill_after(proc: subprocess.Popen, grace: float = 6.0) -> None:
-    try:
-        proc.wait(timeout=grace)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except OSError:
-        try: proc.kill()
-        except OSError: pass
+# Process-group kill helper lives in the shared runner (audit C1).
+_kill_after = jobs.kill_after
 
 
 def delete_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
@@ -1604,19 +1546,10 @@ def delete_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
                 except OSError:
                     pass
 
-    from muscat_db.database import db_path, clear_all_caches
-    import sqlite3
-    try:
-        conn = sqlite3.connect(db_path())
-        db_key = f"transit_fit:{inst}/{date}/{_target_dir_name(target)}"
-        if run_id:
-            db_key = f"{db_key}/{_run_dir_name(run_id)}"
-        conn.execute("DELETE FROM jobs WHERE key = ?", (db_key,))
-        conn.commit()
-        conn.close()
-        clear_all_caches()
-    except Exception:
-        pass
+    db_key = f"transit_fit:{inst}/{date}/{_target_dir_name(target)}"
+    if run_id:
+        db_key = f"{db_key}/{_run_dir_name(run_id)}"
+    get_job_store().delete(db_key)
 
     job_key = f"{inst}/{date}/{_target_dir_name(target)}"
     if run_id:
@@ -1635,16 +1568,15 @@ def cancel_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
         key = fit_job_key(inst, date, target, run_id)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
+    store = get_job_store()
     with _FIT_LOCK:
-        from muscat_db.database import save_job, get_persisted_jobs
         job = _FIT_JOBS.get(key)
         if job is None:
             # May be a pending job (in DB but not yet launched)
-            db_jobs = get_persisted_jobs()
             db_key = f"transit_fit:{key}"
-            found = [j for j in db_jobs if j["key"] == db_key]
+            found = [j for j in store.all() if j["key"] == db_key]
             if found and found[0]["state"] == "pending":
-                save_job(
+                store.save(
                     type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id,
                     state="cancelled", returncode=-1, elapsed=0,
                     started_at=found[0]["started_at"],
@@ -1658,7 +1590,7 @@ def cancel_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
         job.cancelled = True
         proc = job.proc
         # Immediately record cancellation in the database
-        save_job(
+        store.save(
             type_="transit_fit",
             inst=inst,
             date=date,
@@ -1682,49 +1614,54 @@ def cancel_fit(inst: str, date: str, target: str, run_id: str = "") -> dict:
     return {"ok": True, "key": key}
 
 
-def get_all_jobs() -> list[dict]:
-    """Retrieve all background fitting jobs."""
-    with _FIT_LOCK:
-        res = []
-        for key, job in _FIT_JOBS.items():
-            rc = job.proc.poll()
-            if rc is None:
-                state = "cancelling" if job.cancelled else "running"
-            else:
-                if job.cancelled:
-                    state = "cancelled"
-                else:
-                    state = "done" if rc == 0 else "error"
-                if job.state in ("running",):
-                    job.state = state
-                    job.returncode = rc
-                    job.elapsed = round(time.time() - job.started_at)
-                    try: job.logf.close()
-                    except OSError: pass
-            
-            elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
-            res.append({
-                "key": job.key,
-                "inst": job.inst,
-                "date": job.date,
-                "target": job.target,
-                "type": "transit_fit",
-                "state": state,
-                "returncode": rc,
-                "elapsed": round(elapsed),
-                "started_at": job.started_at,
-                "run_id": job.run_id,
-                "run_name": job.run_name,
-            })
-        return sorted(res, key=lambda j: j["started_at"], reverse=True)
-
-
 _fit_outputs_cache = register_cache(ttl=300.0)
 
 
-@_fit_outputs_cache
+def has_fit_outputs(inst: str, date: str, target: str) -> bool:
+    """True when *any* transit-fit run (legacy or named) has produced outputs.
+
+    Fits are written to either the legacy ``{target}/out/`` directory or a
+    per-run ``{target}/{run_id}/out/`` subdirectory. Checking only the legacy
+    layout via ``get_fit_outputs(run_id=None)`` misses every modern run and made
+    the Targets/target pages report Fit status ``none`` for run-scoped fits.
+    Delegates to :func:`list_fit_runs`, which enumerates both layouts and only
+    counts runs that actually hold outputs.
+    """
+    return bool(list_fit_runs(inst, date, target))
+
+
 def get_fit_outputs(inst: str, date: str, target: str, run_id: str | None = None) -> dict:
-    """Check and retrieve output files, plots, and summary values from completed run."""
+    """Check and retrieve output files, plots, and summary values from a completed run.
+
+    The run directory's (and its ``out/`` subdir's) mtime is folded into the
+    cache key so the result auto-invalidates the moment fit outputs are written
+    or removed — mirroring :func:`photometry.get_photometry_status` — instead of
+    lingering for up to the cache TTL after a job finishes. This keeps the
+    Targets and Transit-fit pages' Fit status live and lets
+    :func:`database.refresh_target_status` persist an accurate ``fit_status``.
+    """
+    try:
+        rdir = fit_output_dir(inst, date, target, run_id or None)
+    except ValueError:
+        # No resolvable run dir (bad run_id / target): key on a stable sentinel;
+        # the inner worker re-raises→handles the ValueError and returns "empty".
+        return _get_fit_outputs_mtime(inst, date, target, run_id, -1.0)
+
+    mtime = 0.0
+    for d in (rdir, rdir / "out"):
+        try:
+            mtime = max(mtime, d.stat().st_mtime)
+        except OSError:
+            pass
+    return _get_fit_outputs_mtime(inst, date, target, run_id, mtime)
+
+
+@_fit_outputs_cache
+def _get_fit_outputs_mtime(
+    inst: str, date: str, target: str, run_id: str | None, _cache_mtime: float
+) -> dict:
+    """Inner cached worker. ``_cache_mtime`` participates only in the cache key
+    (see :func:`get_fit_outputs`) and is otherwise unused."""
     outputs = {
         "has_any": False,
         "plots": [],
@@ -1811,7 +1748,7 @@ def get_fit_outputs(inst: str, date: str, target: str, run_id: str | None = None
                 }
                 outputs["has_any"] = True
         except Exception:
-            pass
+            logger.debug("failed to read timer summary preview from %s", out_dir / "summary.csv", exc_info=True)
 
     return outputs
 
@@ -1921,7 +1858,7 @@ def _detect_run_type(rdir: pathlib.Path) -> str:
             if "run_type" in meta and meta["run_type"]:
                 return str(meta["run_type"])
     except Exception:
-        pass
+        logger.debug("failed to detect run_type for %s from meta.yaml", rdir, exc_info=True)
 
     # 2. Try reading timer-fit.log to see if "--test_run" was used
     try:
@@ -1935,7 +1872,7 @@ def _detect_run_type(rdir: pathlib.Path) -> str:
                     if line.startswith("$ ") and "--test_run" in line:
                         return "test"
     except Exception:
-        pass
+        logger.debug("failed to detect run_type for %s from timer-fit.log", rdir, exc_info=True)
 
     return "full"
 
@@ -2018,36 +1955,36 @@ def _detect_process_running(rdir: pathlib.Path) -> bool:
                 pid = int(f.read().strip())
             return _is_pid_running(pid)
         except Exception:
-            pass
+            logger.debug("failed to read timer-fit.pid in %s", rdir, exc_info=True)
     return False
 
 
 def sync_jobs() -> None:
-    from muscat_db.database import save_job, get_persisted_jobs
+    store = get_job_store()
     with _FIT_LOCK:
-        db_jobs = get_persisted_jobs()
+        db_jobs = store.all()
         running_keys = {j["key"] for j in db_jobs if j["state"] == "running" and j["type"] == "transit_fit"}
         db_by_key = {j["key"]: j for j in db_jobs}
 
         for key, job in _FIT_JOBS.items():
             db_key = f"transit_fit:{fit_job_key(job.inst, job.date, job.target, job.run_id)}"
-            rc = job.proc.poll()
-            if rc is None:
-                state = "cancelling" if job.cancelled else "running"
-            else:
-                if job.cancelled:
-                    state = "cancelled"
-                else:
-                    state = "done" if rc == 0 else "error"
-                if job.state in ("running",):
-                    job.state = state
-                    job.returncode = rc
-                    job.elapsed = round(time.time() - job.started_at)
-                    try:
-                        job.logf.close()
-                    except OSError:
-                        pass
-            
+            state, rc, is_terminal = jobs.resolve_job_state(job, _finalize_config())
+            if is_terminal and job.state == "running":
+                job.state = state
+                job.returncode = rc
+                job.elapsed = round(time.time() - job.started_at)
+                try:
+                    job.logf.close()
+                except OSError:
+                    pass
+
+            # 'finalizing' is a live-view-only state; the DB tracks only
+            # running/terminal, so persist a finalizing job as still running.
+            # This keeps the Jobs page (which reads state from the DB) consistent
+            # with the transit-fit page until the log truly goes quiescent.
+            persist_state = "running" if state == "finalizing" else state
+            persist_rc = None if state == "finalizing" else rc
+
             # Only persist when the row actually changed. A steadily-running job
             # whose DB row already says "running" needs no rewrite; elapsed is
             # computed live in the web layer, so we no longer write every 2s poll
@@ -2065,33 +2002,38 @@ def sync_jobs() -> None:
                 elapsed = round(time.time() - job.started_at)  # Calculate for running jobs
             unchanged = (
                 existing is not None
-                and existing.get("state") == state
-                and existing.get("returncode") == rc
+                and existing.get("state") == persist_state
+                and existing.get("returncode") == persist_rc
             )
             running_keys.discard(db_key)
             if unchanged:
                 continue
 
             error_desc = ""
-            if state == "error":
-                from muscat_db.photometry import _get_error_desc
+            if persist_state == "error":
                 error_desc = _get_error_desc(job.log_path)
-            elif state == "cancelled":
+            elif persist_state == "cancelled":
                 error_desc = "Cancelled by user"
 
-            save_job(
+            store.save(
                 type_="transit_fit",
                 inst=job.inst,
                 date=job.date,
                 target=job.target,
                 run_id=job.run_id,
-                state=state,
-                returncode=rc,
+                state=persist_state,
+                returncode=persist_rc,
                 elapsed=round(elapsed),
                 started_at=job.started_at,
                 error_desc=error_desc,
                 run_name=job.run_name,
             )
+
+            # A terminal transition may have produced new fit outputs; refresh the
+            # target's persisted Phot/Fit status so the Targets page reflects it
+            # on the next refresh instead of waiting for the daily build_db cron.
+            if persist_state in ("done", "error", "cancelled"):
+                database.refresh_target_status(job.target)
 
         for db_key in running_keys:
             # Read identity from the DB row's columns (robust to run_id in the key).
@@ -2116,10 +2058,10 @@ def sync_jobs() -> None:
                             if "Timer-fit completed successfully" in log_content:
                                 completed_ok = True
             except Exception:
-                pass
+                logger.debug("failed to inspect orphan fit completion for %s", rdir, exc_info=True)
                 
             if completed_ok:
-                save_job(
+                store.save(
                     type_="transit_fit",
                     inst=inst,
                     date=date,
@@ -2131,11 +2073,12 @@ def sync_jobs() -> None:
                     started_at=row["started_at"],
                     error_desc=""
                 )
+                database.refresh_target_status(target)
             elif rdir is not None and _detect_process_running(rdir):
                 # Process is still running on the system, leave state as "running"
                 continue
             else:
-                save_job(
+                store.save(
                     type_="transit_fit",
                     inst=inst,
                     date=date,
@@ -2147,12 +2090,11 @@ def sync_jobs() -> None:
                     started_at=row["started_at"],
                     error_desc="Process lost (server restart)"
                 )
+                database.refresh_target_status(target)
 
         # Launch pending full jobs if capacity allows
         if _count_running_full() < _MAX_FULL_JOBS:
-            db_jobs = get_persisted_jobs()
-            pending = [j for j in db_jobs if j["state"] == "pending" and j["type"] == "transit_fit"]
-            pending.sort(key=lambda j: j["started_at"])
+            pending = store.pending("transit_fit")
             for entry in pending:
                 if _count_running_full() >= _MAX_FULL_JOBS:
                     break
@@ -2165,7 +2107,7 @@ def sync_jobs() -> None:
                 except ValueError:
                     mem_key = None
                 if mem_key is not None and mem_key in _FIT_JOBS:
-                    save_job(type_="transit_fit", inst=entry["inst"], date=entry["date"], target=entry["target"], run_id=entry_run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_name=entry.get("run_name", ""))
+                    store.save(type_="transit_fit", inst=entry["inst"], date=entry["date"], target=entry["target"], run_id=entry_run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_name=entry.get("run_name", ""))
                     continue
                 try:
                     p = json.loads(entry.get("params") or "{}")
@@ -2184,7 +2126,7 @@ def sync_jobs() -> None:
                     key = fit_job_key(inst, date, target, run_id)
                     rdir = fit_output_dir(inst, date, target, run_id or None)
                 except ValueError:
-                    save_job(
+                    store.save(
                         type_="transit_fit",
                         inst=inst,
                         date=date,
@@ -2222,20 +2164,21 @@ def sync_jobs() -> None:
                         with open(rdir / "timer-fit.pid", "w") as pidf:
                             pidf.write(str(proc.pid))
                     except Exception:
-                        pass
+                        logger.debug("failed to write timer-fit.pid for queued run %s", rdir, exc_info=True)
                 except (FileNotFoundError, OSError) as exc:
                     try: logf.close()
                     except OSError: pass
-                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_name=run_name)
+                    store.save(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_name=run_name)
                     continue
                 run_type = "test" if test_run else "full"
                 _FIT_JOBS[key] = TransitFitJob(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=log_path, run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name)
                 try:
-                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="running", returncode=None, elapsed=0, started_at=_FIT_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""), run_name=run_name)
+                    store.save(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="running", returncode=None, elapsed=0, started_at=_FIT_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""), run_name=run_name)
                 except Exception:
+                    logger.debug("failed to persist queued transit-fit launch for %s", run_id, exc_info=True)
                     try: proc.terminate()
                     except OSError: pass
                     try: logf.close()
                     except OSError: pass
                     _FIT_JOBS.pop(key, None)
-                    save_job(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Database error", run_name=run_name)
+                    store.save(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Database error", run_name=run_name)

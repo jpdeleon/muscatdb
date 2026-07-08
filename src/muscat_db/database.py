@@ -4,15 +4,22 @@ import csv
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import datetime
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+from cryptography.fernet import Fernet, InvalidToken
 
 from muscat_db.instruments import INSTRUMENTS, OBSLOG_BASE
 from muscat_db.cache import clear_all_caches
 from muscat_db.coord import CoordRepr, unpack as _unpack_coord
+
+logger = logging.getLogger(__name__)
 
 
 def format_elapsed(seconds: int) -> str:
@@ -90,7 +97,9 @@ CREATE TABLE IF NOT EXISTS targets (
     declination   TEXT,
     airmass_min   REAL,
     airmass_max   REAL,
-    is_identified INTEGER NOT NULL DEFAULT 1
+    is_identified INTEGER NOT NULL DEFAULT 1,
+    phot_status   TEXT NOT NULL DEFAULT 'none',
+    fit_status    TEXT NOT NULL DEFAULT 'none'
 );
 
 CREATE TABLE IF NOT EXISTS target_notes (
@@ -121,6 +130,16 @@ CREATE TABLE IF NOT EXISTS jobs (
     run_id       TEXT NOT NULL DEFAULT '',
     run_name     TEXT NOT NULL DEFAULT '',
     user_name    TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    username      TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL DEFAULT '',
+    display_name  TEXT NOT NULL DEFAULT '',
+    is_admin      INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_login    TEXT,
+    settings      TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS db_meta (
@@ -338,7 +357,45 @@ def _target_rows(conn: sqlite3.Connection, objects: set[str] | None = None) -> l
            GROUP BY object""",
         params,
     )
-    return [(*r[:8], *_unpack_coord(r[8]), r[9], r[10], r[11]) for r in cur.fetchall()]
+
+    result = []
+    for r in cur.fetchall():
+        base_row = (*r[:8], *_unpack_coord(r[8]), r[9], r[10], r[11])
+        phot_status, fit_status = _aggregate_target_status(r[0], r[5])
+        result.append((*base_row, phot_status, fit_status))
+
+    return result
+
+
+def _aggregate_target_status(obj: str, inst_dates_str: str) -> tuple[str, str]:
+    """Aggregate (phot_status, fit_status) across all of a target's observation
+    dates.
+
+    A target is observed on many (instrument, date) pairs; its status is the
+    strongest reduction found on *any* of them — ``"full"`` if any date has a
+    full photometry reduction / fit output, else ``"test"`` (phot only), else
+    ``"none"``. This is the single source of truth shared by the daily build
+    (:func:`_target_rows`) and the per-job live refresh
+    (:func:`refresh_target_status`), so both agree on what a status means.
+    """
+    from muscat_db import photometry as phot
+    from muscat_db import transit_fit as fit_mod
+
+    date_to_inst = {d: i for d, i in _parse_inst_dates(inst_dates_str).items() if _is_obsdate(d)}
+
+    phot_status = "none"
+    fit_status = "none"
+    for d, inst in date_to_inst.items():
+        status = phot.get_photometry_status(inst, d, obj)
+        if status == "full":
+            phot_status = "full"
+        elif status == "test" and phot_status != "full":
+            phot_status = "test"
+
+        if fit_mod.has_fit_outputs(inst, d, obj):
+            fit_status = "full"
+
+    return phot_status, fit_status
 
 
 def _replace_target_rows(conn: sqlite3.Connection, objects: set[str]) -> None:
@@ -351,9 +408,76 @@ def _replace_target_rows(conn: sqlite3.Connection, objects: set[str]) -> None:
             """INSERT INTO targets
                (object, n_dates, n_frames, instruments, dates, inst_dates,
                 filters, total_exptime, ra, declination, airmass_min, airmass_max,
-                is_identified)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                is_identified, phot_status, fit_status)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             rows,
+        )
+
+
+def _remove_sqlite_tmp(path: str) -> None:
+    """Remove a SQLite file and its WAL/SHM/journal sidecars, ignoring absent
+    ones. A WAL-mode build writes ``<path>-wal`` / ``<path>-shm`` next to the
+    main file, so removing only the main file (the previous cleanup) leaked a
+    multi-GB WAL on every failed build and could leave a stale sidecar that
+    corrupts the next build.
+    """
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        try:
+            os.remove(path + suffix)
+        except OSError:
+            pass
+
+
+def _set_temp_store_dir(conn: sqlite3.Connection, db_file: str) -> None:
+    """Direct SQLite's on-disk scratch files (sort / GROUP BY spills) to the
+    database's own directory instead of the default ``/tmp``.
+
+    The build spills the large ``summaries`` GROUP BY to a temp file; on a host
+    whose root volume (holding ``/tmp``) is small or full, that aborts the build
+    with "database or disk is full" even though the DB's own volume has ample
+    space. The bundled SQLite ignores the ``SQLITE_TMPDIR`` env var, so use the
+    per-connection ``temp_store_directory`` pragma (deprecated but honored),
+    pointing scratch at *db_file*'s directory. Single quotes are escaped for the
+    inlined literal because PRAGMA does not accept bound parameters.
+    """
+    tmp_dir = os.path.dirname(os.path.abspath(db_file)) or "."
+    conn.execute("PRAGMA temp_store_directory = '%s'" % tmp_dir.replace("'", "''"))
+
+
+# Tables owned by the app rather than derived from the obslog CSVs. build_db
+# rebuilds the observation tables (frames/summaries/targets) from scratch, so
+# these must be copied across the atomic swap or the daily cron silently wipes
+# user notes, manual identification overrides, exposure calibration coefficients,
+# job history, and saved ephemeris views on every successful build.
+_APP_OWNED_TABLES = (
+    "jobs",
+    "users",
+    "ephemeris_views",
+    "target_notes",
+    "target_overrides",
+    "exposure_coeffs",
+)
+
+
+def _restore_table(conn: sqlite3.Connection, table: str, rows: list[dict]) -> None:
+    """Re-insert preserved app-owned rows into the freshly rebuilt database.
+
+    Copies whatever columns each row carries (``INSERT OR REPLACE``), intersected
+    with the columns the new table actually has, so nothing is silently dropped
+    and a schema that has gained/lost columns since the row was written still
+    round-trips. *table* is a trusted module constant, never user input.
+    """
+    if not rows:
+        return
+    valid_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for row in rows:
+        cols = [c for c in row.keys() if c in valid_cols]
+        if not cols:
+            continue
+        placeholders = ",".join("?" for _ in cols)
+        conn.execute(
+            f"INSERT OR REPLACE INTO {table} ({','.join(cols)}) VALUES ({placeholders})",
+            tuple(row[c] for c in cols),
         )
 
 
@@ -368,20 +492,28 @@ def build_db(db_path: str, progress=None) -> int:
     """
     tmp_path = db_path + ".tmp"
 
-    # Preserve app-owned tables from the existing database so they survive the
-    # temp-file rebuild of observation-derived tables.
-    preserved_jobs: list[dict] = []
-    preserved_ephemeris_views: list[dict] = []
+    # A previously crashed build can leave <tmp>-wal / <tmp>-shm next to the
+    # (already-removed) main tmp file. If SQLite replays that stale WAL against
+    # the fresh tmp DB the build aborts with a malformed-image error, so clear
+    # any leftover sidecars before opening the new connection.
+    _remove_sqlite_tmp(tmp_path)
+
+    # Preserve every app-owned table (user notes, manual identification
+    # overrides, exposure calibration, job history, saved ephemeris views) from
+    # the existing database so the temp-file rebuild of the observation-derived
+    # tables doesn't wipe them. Rows are copied verbatim (all columns) so nothing
+    # is silently dropped; missing tables/columns are tolerated for older DBs.
+    preserved: dict[str, list[dict]] = {t: [] for t in _APP_OWNED_TABLES}
     if os.path.exists(db_path):
         try:
-            old_conn = sqlite3.connect(db_path)
-            old_conn.row_factory = sqlite3.Row
-            old_conn.executescript(SCHEMA)
-            rows = old_conn.execute("SELECT * FROM jobs").fetchall()
-            preserved_jobs = [dict(r) for r in rows]
-            rows = old_conn.execute("SELECT * FROM ephemeris_views").fetchall()
-            preserved_ephemeris_views = [dict(r) for r in rows]
-            old_conn.close()
+            with get_conn(db_path, row_factory=sqlite3.Row) as old_conn:
+                old_conn.executescript(SCHEMA)
+                for table in _APP_OWNED_TABLES:
+                    try:
+                        rows = old_conn.execute(f"SELECT * FROM {table}").fetchall()
+                        preserved[table] = [dict(r) for r in rows]
+                    except sqlite3.OperationalError:
+                        pass
         except sqlite3.OperationalError:
             pass
 
@@ -396,6 +528,8 @@ def build_db(db_path: str, progress=None) -> int:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=OFF;")
         conn.execute("PRAGMA cache_size=100000;")
+        # Keep GROUP BY / sort spills on the DB's own (roomy) volume, not /tmp.
+        _set_temp_store_dir(conn, tmp_path)
         conn.executescript("DROP TABLE IF EXISTS frames; DROP TABLE IF EXISTS summaries; DROP TABLE IF EXISTS targets;")
         conn.executescript(SCHEMA)
         conn.execute("DROP INDEX IF EXISTS idx_frames_inst_date;")
@@ -403,9 +537,8 @@ def build_db(db_path: str, progress=None) -> int:
         conn.execute("DROP INDEX IF EXISTS idx_summaries_inst_date;")
 
         # Phase 2: ingest frames.
-        ingest_task = None
         if progress is not None:
-            ingest_task = progress.add_task(
+            progress.add_task(
                 "[cyan]Ingesting CSVs[/]", total=len(csv_jobs), filename="",
             )
 
@@ -446,55 +579,16 @@ def build_db(db_path: str, progress=None) -> int:
             (datetime.datetime.now().isoformat(),)
         )
 
-        # Restore preserved jobs so build-db doesn't wipe job history.
-        for job in preserved_jobs:
-            conn.execute(
-                """INSERT OR REPLACE INTO jobs
-                   (key, type, instrument, obsdate, target, state, returncode,
-                    elapsed, started_at, error_desc, run_type, params, run_id, run_name)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    job.get("key", ""),
-                    job.get("type", ""),
-                    job.get("instrument", ""),
-                    job.get("obsdate", ""),
-                    job.get("target", ""),
-                    job.get("state", ""),
-                    job.get("returncode"),
-                    job.get("elapsed", 0),
-                    job.get("started_at", 0.0),
-                    job.get("error_desc", ""),
-                    job.get("run_type", ""),
-                    job.get("params", ""),
-                    job.get("run_id", ""),
-                    job.get("run_name", ""),
-                ),
-            )
-
-        # Restore saved ephemeris view URLs so build-db doesn't wipe shareable
-        # reproducibility state.
-        for view in preserved_ephemeris_views:
-            conn.execute(
-                """INSERT OR REPLACE INTO ephemeris_views
-                   (slug, state_hash, state_json, targets_json, created_at, updated_at)
-                   VALUES (?,?,?,?,?,?)""",
-                (
-                    view.get("slug", ""),
-                    view.get("state_hash", ""),
-                    view.get("state_json", "{}"),
-                    view.get("targets_json", "[]"),
-                    view.get("created_at") or datetime.datetime.now().isoformat(),
-                    view.get("updated_at") or datetime.datetime.now().isoformat(),
-                ),
-            )
+        # Restore every preserved app-owned table verbatim so build-db never
+        # wipes user notes, identification overrides, exposure calibration, job
+        # history, or saved ephemeris views.
+        for table in _APP_OWNED_TABLES:
+            _restore_table(conn, table, preserved.get(table) or [])
 
         conn.commit()
         conn.close()
     except BaseException:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+        _remove_sqlite_tmp(tmp_path)
         raise
 
     os.replace(tmp_path, db_path)
@@ -517,8 +611,8 @@ def _populate_targets(conn: sqlite3.Connection) -> None:
             """INSERT INTO targets
                (object, n_dates, n_frames, instruments, dates, inst_dates,
                 filters, total_exptime, ra, declination, airmass_min, airmass_max,
-                is_identified)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                is_identified, phot_status, fit_status)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             rows,
         )
 
@@ -535,6 +629,8 @@ def ingest_date(db_path: str, instrument: str, obsdate: str, progress=None) -> i
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=OFF;")
         conn.execute("PRAGMA cache_size=100000;")
+        # Keep GROUP BY / sort spills on the DB's own (roomy) volume, not /tmp.
+        _set_temp_store_dir(conn, db_path)
         conn.executescript(SCHEMA)
 
         old_objects = {
@@ -594,11 +690,9 @@ def _safe_float(v: str) -> float | None:
 
 
 def get_instruments(db_path: str) -> list[dict]:
-    conn = sqlite3.connect(db_path)
-    cur = conn.execute("SELECT DISTINCT instrument FROM summaries ORDER BY instrument")
-    result = [{"name": r[0]} for r in cur.fetchall()]
-    conn.close()
-    return result
+    with get_conn(db_path) as conn:
+        cur = conn.execute("SELECT DISTINCT instrument FROM summaries ORDER BY instrument")
+        return [{"name": r[0]} for r in cur.fetchall()]
 
 
 def get_instruments_summary(db_path: str, min_frames: int = 1000) -> list[dict]:
@@ -606,7 +700,11 @@ def get_instruments_summary(db_path: str, min_frames: int = 1000) -> list[dict]:
 
     Filters science targets to only count those with at least min_frames frames.
     """
-    conn = sqlite3.connect(db_path)
+    with get_conn(db_path) as conn:
+        return _instruments_summary(conn, min_frames)
+
+
+def _instruments_summary(conn: sqlite3.Connection, min_frames: int) -> list[dict]:
     # Get total dates and frames per instrument
     base_stats = conn.execute(
         """SELECT instrument, COUNT(DISTINCT obsdate), SUM(nframes)
@@ -636,9 +734,7 @@ def get_instruments_summary(db_path: str, min_frames: int = 1000) -> list[dict]:
         (min_frames,)
     ).fetchall()
     target_map = {r[0]: r[1] for r in target_stats}
-    
-    conn.close()
-    
+
     # Ensure all instruments from INSTRUMENTS or base_stats are returned
     names = sorted(list(set(INSTRUMENTS) | set(stats_map.keys())))
     return [
@@ -656,38 +752,33 @@ def get_dates(db_path: str, instrument: str) -> list[dict]:
     """Return one row per obsdate. Only YYMMDD-formatted dates are returned;
     legacy/test directories like ``200722_2`` or ``csv_old_220914`` are skipped.
     """
-    conn = sqlite3.connect(db_path)
     # Read from the pre-aggregated `summaries` table rather than `frames`: it is
     # ~1000x smaller per instrument and SUM(nframes) reproduces COUNT(*) over
     # frames exactly, turning a multi-second scan into a sub-second query.
-    cur = conn.execute(
-        """SELECT obsdate, COUNT(DISTINCT ccd), SUM(nframes)
-           FROM summaries
-           WHERE instrument = ?
-             AND length(obsdate) = 6
-             AND obsdate GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]'
-           GROUP BY obsdate ORDER BY obsdate DESC""",
-        (instrument,),
-    )
-    result = [{"obsdate": r[0], "nccd": r[1], "nframes": r[2]} for r in cur.fetchall()]
-    conn.close()
-    return result
+    with get_conn(db_path) as conn:
+        cur = conn.execute(
+            """SELECT obsdate, COUNT(DISTINCT ccd), SUM(nframes)
+               FROM summaries
+               WHERE instrument = ?
+                 AND length(obsdate) = 6
+                 AND obsdate GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]'
+               GROUP BY obsdate ORDER BY obsdate DESC""",
+            (instrument,),
+        )
+        return [{"obsdate": r[0], "nccd": r[1], "nframes": r[2]} for r in cur.fetchall()]
 
 
 def get_summaries(db_path: str, instrument: str, obsdate: str) -> list[dict]:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.execute(
-        """SELECT ccd, object, exptime, read_mode,
-                  frame_start, frame_end, ut_start, ut_end, nframes
-           FROM summaries
-           WHERE instrument = ? AND obsdate = ?
-           ORDER BY ccd, object, ut_start""",
-        (instrument, obsdate),
-    )
-    result = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    return result
+    with get_conn(db_path, row_factory=sqlite3.Row) as conn:
+        cur = conn.execute(
+            """SELECT ccd, object, exptime, read_mode,
+                      frame_start, frame_end, ut_start, ut_end, nframes
+               FROM summaries
+               WHERE instrument = ? AND obsdate = ?
+               ORDER BY ccd, object, ut_start""",
+            (instrument, obsdate),
+        )
+        return [dict(r) for r in cur.fetchall()]
 
 
 def get_objects(db_path: str, instrument: str, obsdate: str) -> list[str]:
@@ -696,25 +787,23 @@ def get_objects(db_path: str, instrument: str, obsdate: str) -> list[str]:
     Reuses the same calibration/junk exclusions as the materialized targets
     table so the photometry picker only offers genuine science targets.
     """
-    conn = sqlite3.connect(db_path)
-    cur = conn.execute(
-        """SELECT DISTINCT object FROM summaries
-           WHERE instrument = ? AND obsdate = ?
-             AND object IS NOT NULL AND TRIM(object) <> ''
-             AND LOWER(TRIM(object)) NOT IN ({exact})
-             AND LOWER(TRIM(object)) NOT LIKE '%flat%'
-             AND LOWER(TRIM(object)) NOT LIKE 'dark%'
-             AND LOWER(TRIM(object)) NOT LIKE 'bias%'
-             AND LOWER(TRIM(object)) NOT LIKE '%test%'
-             AND TRIM(object) NOT GLOB '*:*:*'
-           ORDER BY object COLLATE NOCASE""".format(
-            exact=", ".join(f"'{s}'" for s in _TARGET_EXCLUDE_EXACT),
-        ),
-        (instrument, obsdate),
-    )
-    result = [r[0] for r in cur.fetchall()]
-    conn.close()
-    return result
+    with get_conn(db_path) as conn:
+        cur = conn.execute(
+            """SELECT DISTINCT object FROM summaries
+               WHERE instrument = ? AND obsdate = ?
+                 AND object IS NOT NULL AND TRIM(object) <> ''
+                 AND LOWER(TRIM(object)) NOT IN ({exact})
+                 AND LOWER(TRIM(object)) NOT LIKE '%flat%'
+                 AND LOWER(TRIM(object)) NOT LIKE 'dark%'
+                 AND LOWER(TRIM(object)) NOT LIKE 'bias%'
+                 AND LOWER(TRIM(object)) NOT LIKE '%test%'
+                 AND TRIM(object) NOT GLOB '*:*:*'
+               ORDER BY object COLLATE NOCASE""".format(
+                exact=", ".join(f"'{s}'" for s in _TARGET_EXCLUDE_EXACT),
+            ),
+            (instrument, obsdate),
+        )
+        return [r[0] for r in cur.fetchall()]
 
 
 _YYMMDD = re.compile(r"\d{6}")
@@ -732,38 +821,27 @@ def _is_obsdate(token: str) -> bool:
 
 def get_targets(db_path: str) -> list[dict]:
     """Return the per-target summary materialized at build_db time."""
-    conn = sqlite3.connect(db_path)
-    conn.executescript(SCHEMA)  # ensure target_notes exists on first read
+    with get_conn(db_path) as conn:
+        conn.executescript(SCHEMA)  # ensure target_notes exists on first read
+        return _targets_from_conn(conn)
+
+
+def _targets_from_conn(conn: sqlite3.Connection) -> list[dict]:
     cur = conn.execute(
         """SELECT t.object, t.n_dates, t.n_frames, t.instruments, t.dates, t.filters,
                   t.total_exptime, t.ra, t.declination, t.airmass_min, t.airmass_max,
-                  t.is_identified, COALESCE(n.note, ''), COALESCE(t.inst_dates, '')
+                  t.is_identified, COALESCE(n.note, ''), COALESCE(t.inst_dates, ''),
+                  COALESCE(t.phot_status, 'none'), COALESCE(t.fit_status, 'none')
            FROM targets t
            LEFT JOIN target_notes n ON n.object = t.object
            ORDER BY t.object COLLATE NOCASE"""
     )
     result = []
-    from muscat_db import photometry as phot
     for r in cur.fetchall():
-        # Keep only canonical YYMMDD obsdates; drop junk like '240129.org'.
         dates = sorted(d for d in set((r[4] or "").split(",")) if _is_obsdate(d)) if r[4] else []
         filters = sorted(f for f in set((r[5] or "").split(",")) if f) if r[5] else []
         total_s = r[6] or 0.0
         date_to_inst = {d: i for d, i in _parse_inst_dates(r[13]).items() if _is_obsdate(d)}
-        
-        phot_status = "none"
-        fit_status = "none"
-        from muscat_db import transit_fit as fit_mod
-        for d, inst in date_to_inst.items():
-            status = phot.get_photometry_status(inst, d, r[0])
-            if status == "full":
-                phot_status = "full"
-            elif status == "test" and phot_status != "full":
-                phot_status = "test"
-                
-            fit_out = fit_mod.get_fit_outputs(inst, d, r[0])
-            if fit_out.get("has_any"):
-                fit_status = "full"
 
         result.append({
             "object": r[0],
@@ -781,10 +859,9 @@ def get_targets(db_path: str) -> list[dict]:
             "note": r[12] or "",
             "date_to_inst": date_to_inst,
             "filter_chips": _normalize_filters(filters),
-            "phot": phot_status,
-            "fit": fit_status,
+            "phot": r[14],
+            "fit": r[15],
         })
-    conn.close()
     return result
 
 
@@ -801,19 +878,23 @@ def _normalize_filters(filters: list[str]) -> list[dict]:
 
     g/gp -> 'g' (blue), r/rp/R -> 'r' (green), i/ip/I -> 'i' (yellow),
     z/zs/z_s/zp -> 'z' (red). Any *_narrow suffix renders as a darker chip
-    of the same color and keeps the suffix in the label. Anything else falls
-    through to the neutral 'other' colour with the original label.
-    Deduplicates so a target with both 'g' and 'gp' shows a single 'g' chip.
+    of the same color and keeps the suffix in the label. 'Na_D' (sodium
+    doublet) is also flagged narrow, matching the narrowband detection used
+    elsewhere (see is_narrowband in web.py), even though it has no _narrow
+    suffix. Anything else falls through to the neutral 'other' colour with
+    the original label. Deduplicates so a target with both 'g' and 'gp'
+    shows a single 'g' chip.
     """
     chips: list[dict] = []
     seen: set[tuple[str, str, bool]] = set()
     for f in filters or []:
         if not f:
             continue
-        narrow = f.endswith("_narrow")
-        base = f[:-7] if narrow else f
+        has_narrow_suffix = f.endswith("_narrow")
+        base = f[:-7] if has_narrow_suffix else f
+        narrow = has_narrow_suffix or base.lower() == "na_d"
         color = _FILTER_COLOR_ALIAS.get(base) or _FILTER_COLOR_ALIAS.get(base.lower(), "other")
-        label = (color if color != "other" else base) + ("_narrow" if narrow else "")
+        label = (color if color != "other" else base) + ("_narrow" if has_narrow_suffix else "")
         key = (label, color, narrow)
         if key in seen:
             continue
@@ -842,74 +923,223 @@ def _parse_inst_dates(s: str) -> dict[str, str]:
 
 def set_note(db_path: str, obj: str, note: str) -> None:
     """Upsert a per-target note. Empty/whitespace `note` deletes the row."""
-    conn = sqlite3.connect(db_path, timeout=30)
-    conn.executescript(SCHEMA)
     note = (note or "").strip()
-    if not note:
-        conn.execute("DELETE FROM target_notes WHERE object = ?", (obj,))
-    else:
-        conn.execute(
-            """INSERT INTO target_notes(object, note, updated_at)
-               VALUES (?, ?, CURRENT_TIMESTAMP)
-               ON CONFLICT(object) DO UPDATE
-                 SET note = excluded.note, updated_at = CURRENT_TIMESTAMP""",
-            (obj, note),
-        )
-    conn.commit()
-    conn.close()
+    with get_conn(db_path) as conn:
+        conn.executescript(SCHEMA)
+        if not note:
+            conn.execute("DELETE FROM target_notes WHERE object = ?", (obj,))
+        else:
+            conn.execute(
+                """INSERT INTO target_notes(object, note, updated_at)
+                   VALUES (?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(object) DO UPDATE
+                     SET note = excluded.note, updated_at = CURRENT_TIMESTAMP""",
+                (obj, note),
+            )
+        conn.commit()
     clear_all_caches()
 
 
 def delete_note(db_path: str, obj: str) -> None:
-    conn = sqlite3.connect(db_path, timeout=30)
-    conn.executescript(SCHEMA)
-    conn.execute("DELETE FROM target_notes WHERE object = ?", (obj,))
-    conn.commit()
-    conn.close()
+    with get_conn(db_path) as conn:
+        conn.executescript(SCHEMA)
+        conn.execute("DELETE FROM target_notes WHERE object = ?", (obj,))
+        conn.commit()
     clear_all_caches()
 
 
 def set_identified(db_path: str, obj: str, is_identified: int) -> None:
-    conn = sqlite3.connect(db_path, timeout=30)
-    conn.executescript(SCHEMA)
-    conn.execute(
-        """INSERT INTO target_overrides(object, is_identified, updated_at)
-           VALUES (?, ?, CURRENT_TIMESTAMP)
-           ON CONFLICT(object) DO UPDATE
-             SET is_identified = excluded.is_identified, updated_at = CURRENT_TIMESTAMP""",
-        (obj, is_identified),
-    )
-    conn.commit()
-    conn.close()
+    with get_conn(db_path) as conn:
+        conn.executescript(SCHEMA)
+        conn.execute(
+            """INSERT INTO target_overrides(object, is_identified, updated_at)
+               VALUES (?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(object) DO UPDATE
+                 SET is_identified = excluded.is_identified, updated_at = CURRENT_TIMESTAMP""",
+            (obj, is_identified),
+        )
+        conn.commit()
     clear_all_caches()
 
 
 def get_identified_overrides(db_path: str) -> dict[str, bool]:
-    conn = sqlite3.connect(db_path)
-    conn.executescript(SCHEMA)
-    cur = conn.execute("SELECT object, is_identified FROM target_overrides")
-    result = {row[0]: bool(row[1]) for row in cur.fetchall()}
-    conn.close()
-    return result
+    with get_conn(db_path) as conn:
+        conn.executescript(SCHEMA)
+        cur = conn.execute("SELECT object, is_identified FROM target_overrides")
+        return {row[0]: bool(row[1]) for row in cur.fetchall()}
 
 
 def get_frames(db_path: str, instrument: str, obsdate: str, ccd: int) -> list[dict]:
-    conn = sqlite3.connect(db_path)
-    cur = conn.execute(
-        """SELECT * FROM frames
-           WHERE instrument = ? AND obsdate = ? AND ccd = ?
-           ORDER BY filename""",
-        (instrument, obsdate, ccd),
-    )
-    columns = [d[0] for d in cur.description]
-    result = [dict(zip(columns, r)) for r in cur.fetchall()]
-    conn.close()
-    return result
+    with get_conn(db_path) as conn:
+        cur = conn.execute(
+            """SELECT * FROM frames
+               WHERE instrument = ? AND obsdate = ? AND ccd = ?
+               ORDER BY filename""",
+            (instrument, obsdate, ccd),
+        )
+        columns = [d[0] for d in cur.description]
+        return [dict(zip(columns, r)) for r in cur.fetchall()]
 
 
 def db_path() -> str:
     import pathlib
     return str(pathlib.Path(os.environ.get("MUSCAT_DB_PATH", "muscat.db")).resolve())
+
+
+@contextmanager
+def get_conn(
+    path: str | None = None,
+    *,
+    timeout: float = 30.0,
+    row_factory=None,
+) -> Iterator[sqlite3.Connection]:
+    """Single entry point for SQLite connections.
+
+    Guarantees the connection is closed even if the body raises — the previous
+    open-coded ``connect(...) ... close()`` helpers leaked the handle on any
+    exception between the two — and standardizes the busy ``timeout`` (default
+    30s) so writers don't fail fast under WAL contention. Schema-ensure and
+    migration calls stay at the call site because they vary per table.
+    """
+    if path is None:
+        path = db_path()
+    conn = sqlite3.connect(path, timeout=timeout)
+    try:
+        if row_factory is not None:
+            conn.row_factory = row_factory
+        yield conn
+    finally:
+        conn.close()
+
+
+class UserSettingsError(RuntimeError):
+    """Raised when per-user settings cannot be read or written safely."""
+
+
+def _settings_fernet() -> Fernet:
+    secret = os.environ.get("MUSCAT_DB_SECRET", "").strip()
+    if not secret:
+        raise UserSettingsError("MUSCAT_DB_SECRET is required to encrypt per-user tokens")
+    key = base64.urlsafe_b64encode(
+        hashlib.sha256(("muscat-db-user-settings:" + secret).encode("utf-8")).digest()
+    )
+    return Fernet(key)
+
+
+def _encrypt_token(token: str) -> str:
+    return _settings_fernet().encrypt(token.encode("utf-8")).decode("ascii")
+
+
+def _decrypt_token(ciphertext: str) -> str:
+    try:
+        return _settings_fernet().decrypt(ciphertext.encode("ascii")).decode("utf-8")
+    except (InvalidToken, UnicodeError) as exc:
+        raise UserSettingsError("stored token cannot be decrypted with MUSCAT_DB_SECRET") from exc
+
+
+def _ensure_users_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA)
+
+
+def _clean_username(username: str | None) -> str:
+    username = (username or "").strip()
+    if not username:
+        raise UserSettingsError("username is required")
+    return username
+
+
+def ensure_user(username: str | None, *, display_name: str | None = None) -> None:
+    username = _clean_username(username)
+    display_name = (display_name or username).strip() or username
+    with get_conn() as conn:
+        _ensure_users_schema(conn)
+        conn.execute(
+            "INSERT OR IGNORE INTO users (username, display_name) VALUES (?, ?)",
+            (username, display_name),
+        )
+        conn.commit()
+
+
+def get_user_settings(username: str | None) -> dict:
+    username = _clean_username(username)
+    with get_conn(row_factory=sqlite3.Row) as conn:
+        _ensure_users_schema(conn)
+        row = conn.execute("SELECT settings FROM users WHERE username = ?", (username,)).fetchone()
+    if row is None:
+        return {}
+    try:
+        settings = json.loads(row["settings"] or "{}")
+    except (TypeError, json.JSONDecodeError):
+        settings = {}
+    return settings if isinstance(settings, dict) else {}
+
+
+def update_user_settings(username: str | None, updates: dict, *, remove: list[str] | None = None) -> dict:
+    username = _clean_username(username)
+    ensure_user(username)
+    settings = get_user_settings(username)
+    for key in remove or []:
+        settings.pop(key, None)
+    settings.update(updates)
+    payload = json.dumps(settings, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    with get_conn() as conn:
+        _ensure_users_schema(conn)
+        conn.execute(
+            "UPDATE users SET settings = ? WHERE username = ?",
+            (payload, username),
+        )
+        conn.commit()
+    return settings
+
+
+def set_user_lco_token(username: str | None, token: str | None) -> None:
+    token = (token or "").strip()
+    if not token:
+        update_user_settings(username, {}, remove=["lco_token_enc"])
+        return
+    update_user_settings(username, {"lco_token_enc": _encrypt_token(token)})
+
+
+def get_user_lco_token(username: str | None) -> str | None:
+    if not (username or "").strip():
+        return None
+    settings = get_user_settings(username)
+    ciphertext = settings.get("lco_token_enc")
+    if not ciphertext:
+        return None
+    return _decrypt_token(str(ciphertext))
+
+
+def user_lco_token_configured(username: str | None) -> bool:
+    try:
+        return get_user_lco_token(username) is not None
+    except UserSettingsError:
+        return False
+
+
+def set_user_ads_token(username: str | None, token: str | None) -> None:
+    token = (token or "").strip()
+    if not token:
+        update_user_settings(username, {}, remove=["ads_token_enc"])
+        return
+    update_user_settings(username, {"ads_token_enc": _encrypt_token(token)})
+
+
+def get_user_ads_token(username: str | None) -> str | None:
+    if not (username or "").strip():
+        return None
+    settings = get_user_settings(username)
+    ciphertext = settings.get("ads_token_enc")
+    if not ciphertext:
+        return None
+    return _decrypt_token(str(ciphertext))
+
+
+def user_ads_token_configured(username: str | None) -> bool:
+    try:
+        return get_user_ads_token(username) is not None
+    except UserSettingsError:
+        return False
 
 
 def _ensure_jobs_schema(conn: sqlite3.Connection) -> None:
@@ -998,49 +1228,48 @@ def save_job(
     if user_name is None:
         user_name = getpass.getuser()
     path = db_path()
-    conn = sqlite3.connect(path, timeout=30)
-    _ensure_jobs_migrated(conn, path)
     # Run-scoped key so distinct runs of the same target are separate job rows;
     # an empty run_id reproduces the legacy key.
     key = f"{type_}:{inst}/{date}/{target.replace(' ', '')}"
     if run_id:
         key = f"{key}/{run_id}"
-    conn.execute(
-        """INSERT INTO jobs(key, type, instrument, obsdate, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id, run_name, user_name)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(key) DO UPDATE SET
-             state      = excluded.state,
-             returncode = excluded.returncode,
-             elapsed    = excluded.elapsed,
-             error_desc = excluded.error_desc,
-             run_type   = CASE WHEN excluded.run_type != '' THEN excluded.run_type ELSE run_type END,
-             params     = CASE WHEN excluded.params != '' THEN excluded.params ELSE params END,
-             run_id     = excluded.run_id,
-             run_name   = CASE WHEN excluded.run_name != '' THEN excluded.run_name ELSE run_name END,
-             user_name  = CASE WHEN excluded.user_name != '' THEN excluded.user_name ELSE user_name END""",
-        (key, type_, inst, date, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id, run_name, user_name)
-    )
-    conn.commit()
-    conn.close()
+    with get_conn(path) as conn:
+        _ensure_jobs_migrated(conn, path)
+        conn.execute(
+            """INSERT INTO jobs(key, type, instrument, obsdate, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id, run_name, user_name)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(key) DO UPDATE SET
+                 state      = excluded.state,
+                 returncode = excluded.returncode,
+                 elapsed    = excluded.elapsed,
+                 started_at = excluded.started_at,
+                 error_desc = excluded.error_desc,
+                 run_type   = CASE WHEN excluded.run_type != '' THEN excluded.run_type ELSE run_type END,
+                 params     = CASE WHEN excluded.params != '' THEN excluded.params ELSE params END,
+                 run_id     = excluded.run_id,
+                 run_name   = CASE WHEN excluded.run_name != '' THEN excluded.run_name ELSE run_name END,
+                 user_name  = CASE WHEN excluded.user_name != '' THEN excluded.user_name ELSE user_name END""",
+            (key, type_, inst, date, target, state, returncode, elapsed, started_at, error_desc, run_type, params, run_id, run_name, user_name)
+        )
+        conn.commit()
     clear_all_caches()
 
 
 def get_persisted_jobs() -> list[dict]:
     path = db_path()
-    conn = sqlite3.connect(path)
-    _ensure_jobs_migrated(conn, path)
-    cur = conn.execute("SELECT * FROM jobs ORDER BY started_at DESC")
-    columns = [d[0] for d in cur.description]
-    result = []
-    for r in cur.fetchall():
-        d = dict(zip(columns, r))
-        d["inst"] = d["instrument"]
-        d["date"] = d["obsdate"]
-        if not str(d.get("run_name") or "").strip():
-            d["run_name"] = str(d.get("run_id") or "").strip()
-        result.append(d)
-    conn.close()
-    return result
+    with get_conn(path) as conn:
+        _ensure_jobs_migrated(conn, path)
+        cur = conn.execute("SELECT * FROM jobs ORDER BY started_at DESC")
+        columns = [d[0] for d in cur.description]
+        result = []
+        for r in cur.fetchall():
+            d = dict(zip(columns, r))
+            d["inst"] = d["instrument"]
+            d["date"] = d["obsdate"]
+            if not str(d.get("run_name") or "").strip():
+                d["run_name"] = str(d.get("run_id") or "").strip()
+            result.append(d)
+        return result
 
 
 def save_ephemeris_view(state: dict) -> dict:
@@ -1052,31 +1281,28 @@ def save_ephemeris_view(state: dict) -> dict:
         targets = []
     targets_json = _canonical_json([str(t) for t in targets])
 
-    conn = sqlite3.connect(path, timeout=30)
-    conn.executescript(SCHEMA)
-    conn.execute(
-        """INSERT INTO ephemeris_views
-           (slug, state_hash, state_json, targets_json, created_at, updated_at)
-           VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-           ON CONFLICT(slug) DO UPDATE SET
-             updated_at = CURRENT_TIMESTAMP""",
-        (slug, state_hash, state_json, targets_json),
-    )
-    conn.commit()
-    conn.close()
+    with get_conn(path) as conn:
+        conn.executescript(SCHEMA)
+        conn.execute(
+            """INSERT INTO ephemeris_views
+               (slug, state_hash, state_json, targets_json, created_at, updated_at)
+               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+               ON CONFLICT(slug) DO UPDATE SET
+                 updated_at = CURRENT_TIMESTAMP""",
+            (slug, state_hash, state_json, targets_json),
+        )
+        conn.commit()
     return {"slug": slug, "state_hash": state_hash}
 
 
 def get_ephemeris_view(slug: str) -> dict | None:
     path = db_path()
-    conn = sqlite3.connect(path)
-    conn.executescript(SCHEMA)
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        "SELECT slug, state_hash, state_json, targets_json, created_at, updated_at FROM ephemeris_views WHERE slug = ?",
-        (slug,),
-    ).fetchone()
-    conn.close()
+    with get_conn(path, row_factory=sqlite3.Row) as conn:
+        conn.executescript(SCHEMA)
+        row = conn.execute(
+            "SELECT slug, state_hash, state_json, targets_json, created_at, updated_at FROM ephemeris_views WHERE slug = ?",
+            (slug,),
+        ).fetchone()
     if row is None:
         return None
     state = json.loads(row["state_json"])
@@ -1092,10 +1318,10 @@ def get_ephemeris_view(slug: str) -> dict | None:
 def get_last_build_date(db_path: str) -> str:
     """Get the date when muscat-db build was run, or the date when the database file was generated."""
     try:
-        conn = sqlite3.connect(db_path)
-        cur = conn.execute("SELECT value FROM db_meta WHERE key = 'last_build_at'")
-        row = cur.fetchone()
-        conn.close()
+        with get_conn(db_path) as conn:
+            row = conn.execute(
+                "SELECT value FROM db_meta WHERE key = 'last_build_at'"
+            ).fetchone()
         if row:
             return row[0][:10]
     except sqlite3.Error:
@@ -1106,3 +1332,36 @@ def get_last_build_date(db_path: str) -> str:
         return datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
     except OSError:
         return datetime.date.today().strftime("%Y-%m-%d")
+
+
+def refresh_target_status(obj: str) -> None:
+    """Recompute and persist a single target's phot_status/fit_status immediately.
+
+    Called by photometry.py / transit_fit.py after a job reaches a terminal state
+    so the Targets page reflects new outputs without waiting for the daily
+    ``build_db`` cron. Aggregates across *all* of the target's observation dates
+    (via :func:`_aggregate_target_status`), so a reduction finishing on one date
+    never clobbers a "full" status earned on another.
+
+    Best-effort: a failed refresh (e.g. read-only DB, unknown target) is logged
+    but never propagated, so it cannot break the surrounding job sync.
+    """
+    try:
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(inst_dates, '') FROM targets WHERE object = ?",
+                (obj,),
+            ).fetchone()
+            if row is None:
+                # No target row yet (e.g. unidentified object, or built after the
+                # last daily run). Nothing to update until the next build_db.
+                return
+            phot_status, fit_status = _aggregate_target_status(obj, row[0])
+            conn.execute(
+                "UPDATE targets SET phot_status = ?, fit_status = ? WHERE object = ?",
+                (phot_status, fit_status, obj),
+            )
+            conn.commit()
+        clear_all_caches()
+    except sqlite3.Error:
+        logger.debug("failed to refresh target status for %s", obj, exc_info=True)

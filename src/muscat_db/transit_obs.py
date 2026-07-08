@@ -1,9 +1,16 @@
 """Transit observability across the LCO network (self-contained, astropy-only).
 
 Given a target and a list of predicted transit windows, classify each transit as
-``full`` / ``partial`` / ``none`` from the relevant LCO sites, and produce the
-time-series a frontend needs to draw a visibility plot (target + moon altitude,
-twilight, the airmass limit, and the shaded transit interval).
+``full`` / ``split_gap`` / ``split_overlap`` / ``partial`` / ``none`` from the
+relevant LCO sites, and produce the time-series a frontend needs to draw a
+visibility plot (target + moon altitude, twilight, the airmass limit, and the
+shaded transit interval). ``split_gap``/``split_overlap`` mean no single site
+covers the whole transit, but two sites in relay (one covering ingress through
+a handoff, the other the handoff through egress) do -- ``split_gap`` when a
+real gap remains near the handoff, ``split_overlap`` when the two sites' own
+coverage meets or overlaps with no gap. ``partial`` is reserved for the
+single-site case: only one site sees any part of the transit, and it's
+incomplete (only ingress or only egress, say), with no second site to help.
 
 No new dependency: astropy is already required. The LCO site coordinates are
 frozen below (resolved once from astropy's site registry, sourced against
@@ -14,6 +21,7 @@ time. The NASA TransitView tool is deliberately *not* used here.
 from __future__ import annotations
 
 import datetime
+import itertools
 import math
 
 # Frozen LCO site coordinates (lat_deg, lon_deg, height_m). 2 m values match
@@ -150,6 +158,34 @@ def _observable_mask(target, location, times, alt_min, sun_alt_max, moon_sep_min
             np.asarray(sun_alt), np.asarray(moon_sep))
 
 
+def _jd_to_iso_z(jd: float) -> str:
+    """Format a JD as an ISO-8601 UTC string with a ``Z`` suffix (matches the
+    ``mid``/``start``/``end`` formatting already used by ``lco.generate_windows``)."""
+    from astropy.time import Time
+
+    return Time(jd, format="jd", scale="utc").isot + "Z"
+
+
+def _site_coverage_span(mask, offsets, start_jd: float, end_jd: float):
+    """First/last ``True`` sample of a per-window boolean mask, as JD, plus
+    whether the ``True`` run is contiguous (``fragmented=False``) or has gaps
+    of its own (e.g. a moon-separation dip splitting one site's own coverage
+    into two runs). Assumes ``mask`` has at least one ``True`` (only called for
+    sites already known to have some coverage).
+    """
+    import numpy as np
+
+    idx = np.flatnonzero(mask)
+    first_idx, last_idx = int(idx[0]), int(idx[-1])
+    fragmented = (last_idx - first_idx + 1) != idx.size
+    span = end_jd - start_jd
+    return (
+        start_jd + span * offsets[first_idx],
+        start_jd + span * offsets[last_idx],
+        fragmented,
+    )
+
+
 def classify_transits(
     ra_deg: float,
     dec_deg: float,
@@ -161,19 +197,45 @@ def classify_transits(
     moon_sep_min: float = 30.0,
     include_padding: bool = False,
     sites: list[str] | None = None,
+    pad_before_min: float = 0.0,
+    pad_after_min: float = 0.0,
 ) -> list[dict]:
-    """Classify each window's transit as full / partial / none across a set of
-    LCO sites. The sites are resolved by :func:`resolve_site_list`: an explicit
-    ``sites`` list takes priority, else the instrument ``kind``'s sites, else the
-    full LCO network. Returns a list aligned with ``windows``; each entry is
-    ``{"rating", "sites", "best_site"}`` where ``sites`` lists sites with at
-    least partial coverage and ``best_site`` is a full site if any, else the
-    most-covered partial site.
+    """Classify each window's transit as full / split_gap / split_overlap /
+    partial / none across a set of LCO sites. The sites are resolved by
+    :func:`resolve_site_list`: an explicit ``sites`` list takes priority, else
+    the instrument ``kind``'s sites, else the full LCO network. Returns a list
+    aligned with ``windows``; each entry is at least ``{"rating", "sites",
+    "best_site"}`` where ``sites`` lists sites with at least partial coverage
+    and ``best_site`` is a full site if any, else the most-covered site.
+
+    - ``full``: one site alone covers the whole transit (``frac >= 0.999``).
+    - ``partial``: exactly one site has any coverage at all, and it's
+      incomplete -- only ingress or only egress (or some other sliver) can be
+      observed, with no second site to fill in the rest.
+    - ``split_gap`` / ``split_overlap``: two or more sites each have some
+      coverage. The best pair (highest combined coverage) is always resolved
+      to one of these two ratings -- there is no "still partial" outcome once
+      2+ sites have any coverage. ``split_gap`` means a real gap remains near
+      the handoff (``split_gap_min`` minutes uncovered by either site);
+      ``split_overlap`` means the pair's coverage meets or overlaps with no
+      gap (``split_overlap_min`` minutes covered by both). Both also carry
+      ``split_sites`` (``[early, late]``, chronological) and ``split_windows``
+      (each site's own observable start/end + a ``fragmented`` flag).
+    - ``none``: no site observes any part of the transit.
+
+    When ``include_padding=True`` and ``pad_before_min``/``pad_after_min`` are
+    given, split entries also get ``ingress_bracket_ok`` / ``egress_bracket_ok``:
+    whether the *early* site's own coverage extends at least ``pad_before_min``
+    minutes past ingress (not just up to it), and the *late* site's coverage
+    extends at least ``pad_after_min`` minutes before egress. This catches a
+    handoff landing right on a contact point, leaving one leg with no
+    single-site baseline immediately around its own transit contact.
 
     By default the observability check spans only the transit itself
     (``mid ± duration/2``); the padded ``start``/``end`` are used purely for the
     table/plot span. Set ``include_padding=True`` to require the padded baseline
-    (``start``..``end``) to be observable too, which makes ``full`` stricter.
+    (``start``..``end``) to be observable too, which makes ``full``/``split_*``
+    stricter.
     """
     import numpy as np
     import astropy.units as u
@@ -197,6 +259,7 @@ def classify_transits(
     # the observability test.
     starts = []
     ends = []
+    mids = []  # bare-transit midpoint JD per window, for the ingress/egress bracket check
     for w in windows:
         if include_padding and "start" in w and "end" in w:
             starts.append(Time(_parse_iso_utc(w["start"])).jd)
@@ -210,6 +273,7 @@ def classify_transits(
             ends.append(Time(_parse_iso_utc(w["end"])).jd)
         else:
             raise TransitObsError("window needs 'mid' or 'start'/'end'", 400)
+        mids.append(Time(_parse_iso_utc(w["mid"])).jd if "mid" in w else None)
     starts = np.asarray(starts)
     ends = np.asarray(ends)
 
@@ -219,30 +283,110 @@ def classify_transits(
     all_jd = (starts[:, None] + (ends[:, None] - starts[:, None]) * offsets[None, :]).ravel()
     grid = Time(all_jd, format="jd", scale="utc")
 
-    # site -> per-transit observable fraction
+    # site -> per-transit observable mask (per window, per sample) and fraction
+    mask2d = {}
     frac = {}
     for site in site_list:
         mask, *_ = _observable_mask(
             target, _earth_location(site), grid, alt_min, sun_alt_max, moon_sep_min
         )
-        frac[site] = mask.reshape(len(windows), n_samp).mean(axis=1)
+        mask2d[site] = mask.reshape(len(windows), n_samp)
+        frac[site] = mask2d[site].mean(axis=1)
 
     results = []
     for i in range(len(windows)):
         full_sites = [s for s in site_list if frac[s][i] >= 0.999]
         partial_sites = [s for s in site_list if 0.0 < frac[s][i] < 0.999]
+
         if full_sites:
-            rating, best = "full", full_sites[0]
-        elif partial_sites:
-            rating = "partial"
-            best = max(partial_sites, key=lambda s: frac[s][i])
+            # A single site already covers the whole transit: this is always
+            # preferred over a two-site relay, so no pair search is needed.
+            results.append({
+                "rating": "full",
+                "sites": full_sites + partial_sites,
+                "best_site": full_sites[0],
+            })
+            continue
+
+        if len(partial_sites) < 2:
+            # At most one site sees anything at all: no second site exists to
+            # relay with, so this is genuinely "partial" (or "none").
+            best = partial_sites[0] if partial_sites else None
+            rating = "partial" if best else "none"
+            results.append({"rating": rating, "sites": partial_sites, "best_site": best})
+            continue
+
+        # 2+ sites each have some coverage: always resolve to a two-site relay
+        # -- there is no ambiguous "still partial" outcome here. Whether it's
+        # actually useful is communicated by split_gap_min/split_overlap_min,
+        # not by falling back to a vaguer "partial" label.
+        best_pair = None
+        best_union_frac = -1.0
+        for s1, s2 in itertools.combinations(partial_sites, 2):
+            union_frac = float((mask2d[s1][i] | mask2d[s2][i]).mean())
+            if union_frac > best_union_frac:
+                best_union_frac = union_frac
+                best_pair = (s1, s2)
+        s1, s2 = best_pair
+        m1, m2 = mask2d[s1][i], mask2d[s2][i]
+        span1 = _site_coverage_span(m1, offsets, starts[i], ends[i])
+        span2 = _site_coverage_span(m2, offsets, starts[i], ends[i])
+        if span1[0] <= span2[0]:
+            early, early_span, late, late_span = s1, span1, s2, span2
         else:
-            rating, best = "none", None
-        results.append({
+            early, early_span, late, late_span = s2, span2, s1, span1
+        span_min = (ends[i] - starts[i]) * 24.0 * 60.0
+        overlap_min = float((m1 & m2).mean()) * span_min
+        gap_min = max(0.0, (1.0 - best_union_frac) * span_min)
+        rating = "split_gap" if gap_min > 1e-6 else "split_overlap"
+
+        entry = {
             "rating": rating,
-            "sites": full_sites + partial_sites,
-            "best_site": best,
-        })
+            "sites": partial_sites,
+            "best_site": max(partial_sites, key=lambda s: frac[s][i]),
+            "split_sites": [early, late],
+            "split_windows": [
+                {
+                    "site": early,
+                    "start": _jd_to_iso_z(early_span[0]),
+                    "end": _jd_to_iso_z(early_span[1]),
+                    "fragmented": early_span[2],
+                },
+                {
+                    "site": late,
+                    "start": _jd_to_iso_z(late_span[0]),
+                    "end": _jd_to_iso_z(late_span[1]),
+                    "fragmented": late_span[2],
+                },
+            ],
+            "split_gap_min": round(gap_min, 1),
+            "split_overlap_min": round(overlap_min, 1),
+        }
+
+        # Ingress/egress "bracket" check: does the early site's own coverage
+        # still extend pad_before_min *past* ingress (not just up to it), and
+        # does the late site's coverage extend pad_after_min *before* egress?
+        # Only meaningful when the padded baseline is actually part of the
+        # observability test (include_padding) and a pad value was given --
+        # otherwise the bracket falls outside the sampled grid entirely.
+        if include_padding and mids[i] is not None:
+            ingress_jd = mids[i] - half
+            egress_jd = mids[i] + half
+            tol = (_CLASSIFY_STEP_MIN / 2.0) / 1440.0  # half a sampling step, in days
+            if pad_before_min:
+                pad_before_days = pad_before_min / 1440.0
+                entry["ingress_bracket_ok"] = bool(
+                    early_span[0] <= ingress_jd - pad_before_days + tol
+                    and early_span[1] >= ingress_jd + pad_before_days - tol
+                )
+            if pad_after_min:
+                pad_after_days = pad_after_min / 1440.0
+                entry["egress_bracket_ok"] = bool(
+                    late_span[0] <= egress_jd - pad_after_days + tol
+                    and late_span[1] >= egress_jd + pad_after_days - tol
+                )
+
+        results.append(entry)
     return results
 
 

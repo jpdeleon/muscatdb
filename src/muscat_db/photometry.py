@@ -37,11 +37,11 @@ import sqlite3
 import subprocess
 import threading
 import time
-from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
 
+from muscat_db import jobs, database
+from muscat_db.job_store import get_job_store
 from muscat_db.instruments import INSTRUMENTS
 from muscat_db.cache import register_cache
 from muscat_db.band_utils import DEFAULT_BANDS, NARROW_BANDS, _FILTER_BAND_ALIAS, bands_from_filters  # noqa: F401
@@ -70,7 +70,10 @@ RUN_DEFAULTS: dict = {
     "run_name": "default",
     "bands": DEFAULT_BANDS,
     "ref_band": "",            # "" -> per-band self-reference (pipeline default)
-    "refid": "",               # "" -> pipeline default (0 / middle frame)
+    "refid": "",               # "" -> pipeline default (0 / middle frame, or the
+                               # quality pre-check's pick when ref_select=quality)
+    "ref_select": "position",  # position (default, unchanged legacy behavior) | quality
+    "ref_select_top_k": 5,     # candidates pixel-validated in Tier 2 when ref_select=quality
     "aper_radii": "",          # "MIN,MAX,DR"; "" -> Gaia heuristic
     "annulus": "",             # "RIN,ROUT"; required with aper_radii
     "aper_unit": "pix",        # pix | fwhm (only applies with aper_radii)
@@ -140,8 +143,6 @@ _MODULE = "prose.scripts.run_photometry"
 _DATE_RE = re.compile(r"^\d{6}$")
 # A served filename is a single path segment of safe characters only.
 _NAME_RE = re.compile(r"^[A-Za-z0-9._+:\-]+$")
-_RUN_NAME_MAX = 40
-_RUN_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 # Summary (multi-band) plot suffixes -> short key used by the template.
 _SUMMARY_SUFFIX = {
@@ -262,45 +263,24 @@ def results_dir(inst: str, date: str) -> Path:
     return output_base() / inst / date
 
 
-def _target_dir_name(target: str) -> str:
-    name = (target or "").replace(" ", "")
-    if not name or ".." in name or "/" in name or "\\" in name:
-        raise ValueError("invalid target")
-    return name
-
-
-def _run_dir_name(run_id: str) -> str:
-    rid = (run_id or "").strip()
-    if not rid or ".." in rid or "/" in rid or "\\" in rid or rid in {".", ".."}:
-        raise ValueError("invalid run id")
-    return rid
-
-
-def slugify_run_name(run_name: str | None) -> str:
-    """Slug a user run label. Blank input maps to ``default``."""
-    s = _RUN_SLUG_RE.sub("_", (run_name or "").strip().lower()).strip("_")
-    return s[:_RUN_NAME_MAX].strip("_") or "default"
+# Run-id / path-segment helpers live in muscat_db.jobs so photometry and
+# transit-fit share one implementation (audit C1). Re-exported here under their
+# historical names for callers and tests.
+_target_dir_name = jobs.target_dir_name
+_run_dir_name = jobs.run_dir_name
+slugify_run_name = jobs.slugify_run_name
 
 
 def build_run_id(inst: str, site: str | None, mode: str | None, run_name: str | None) -> str:
-    """Compose a photometry run id using the transit-fit convention.
+    """Compose a photometry run id using the shared run-id convention.
 
-    Non-sinistro runs are identified by the run-name slug only. Sinistro runs
-    include site and only non-default readout mode: ``central_2k_2x2`` is
-    omitted, while ``full_frame`` remains explicit.
+    Non-sinistro runs are identified by the run-name slug only, so site/mode are
+    forced blank; sinistro runs include site and only the non-default readout
+    mode. See :func:`muscat_db.jobs.build_run_id` for the canonical join rules.
     """
-    slug = slugify_run_name(run_name)
     if inst != "sinistro":
-        return slug
-    mode_part = (mode or "").strip().lower()
-    if mode_part == "central_2k_2x2":
-        mode_part = ""
-    parts = [
-        (site or "").strip().lower(),
-        mode_part,
-        slug,
-    ]
-    return "-".join(p for p in parts if p)
+        return jobs.build_run_id("", "", run_name)
+    return jobs.build_run_id(site, mode, run_name)
 
 
 def run_output_dir(inst: str, date: str, target: str, run_id: str | None = None) -> Path:
@@ -397,7 +377,8 @@ def list_outputs(
     (band->{ref,apertures,alignment,gif,csv}), ``npz``, ``log`` (newest),
     ``has_any``, ``sites``/``modes`` (distinct sinistro sites/readout modes
     present, for the filter chips), ``site``/``mode`` (the ones actually shown),
-    and ``ref_header`` (the reference-frame header sidecar, site/mode-scoped).
+    ``ref_header`` (the reference-frame header sidecar, site/mode-scoped), and
+    ``ref_selection`` (the ``--ref_select quality`` audit report, if present).
     Only filenames are returned; serve them via the file route.
 
     A single sinistro date+target can hold products from more than one LCO site
@@ -427,6 +408,7 @@ def list_outputs(
         "modes": [],
         "mode": None,
         "ref_header": None,
+        "ref_selection": None,
     }
     try:
         rdir = run_output_dir(inst, date, target, run_id)
@@ -565,6 +547,12 @@ def list_outputs(
                     out["_ref_header_mtime"] = mtime
                 out["has_any"] = True
                 continue
+            if rest == "_ref_selection.txt":
+                if out["ref_selection"] is None or mtime > out.get("_ref_selection_mtime", 0):
+                    out["ref_selection"] = name
+                    out["_ref_selection_mtime"] = mtime
+                out["has_any"] = True
+                continue
             key = _SUMMARY_SUFFIX.get(rest)
             if key is not None:
                 item = {
@@ -605,13 +593,14 @@ def list_outputs(
             out["has_any"] = True
 
     if inst in ("muscat", "muscat2"):
-        try:
-            cal_dir = Path(str(raw_data_dir(inst, date)) + "_calibrated")
-            for p in sorted(cal_dir.glob("master_*.png")):
-                if p.is_file():
-                    out["masters"].append(p.name)
-        except OSError:
-            pass
+        for base_dir in (results_dir(inst, date), raw_data_dir(inst, date)):
+            try:
+                cal_dir = Path(str(base_dir) + "_calibrated")
+                for p in sorted(cal_dir.glob("master_*.png")):
+                    if p.is_file() and p.name not in out["masters"]:
+                        out["masters"].append(p.name)
+            except OSError:
+                pass
 
     if logs:
         out["log"] = max(logs, key=lambda p: p.stat().st_mtime).name
@@ -643,6 +632,7 @@ def list_outputs(
             d.pop("_mtime", None)
     out.pop("_npz_mtime", None)
     out.pop("_ref_header_mtime", None)
+    out.pop("_ref_selection_mtime", None)
     ordered = {b: out["bands"][b] for b in DEFAULT_BANDS if b in out["bands"]}
     for b, v in out["bands"].items():
         ordered.setdefault(b, v)
@@ -784,16 +774,18 @@ def safe_artifact_path(inst: str, date: str, name: str) -> Path | None:
     if Path(name).suffix.lower() not in ALLOWED_EXTS:
         return None
 
-    # For muscat/muscat2 master images, they live in <raw_data_dir>_calibrated
+    # For muscat/muscat2 master images, they live in <results_dir>_calibrated or <raw_data_dir>_calibrated
     if inst in ("muscat", "muscat2") and name.startswith("master_") and name.endswith(".png"):
-        raw_dir = raw_data_dir(inst, date)
-        cal_dir = Path(str(raw_dir) + "_calibrated").resolve()
-        candidate = (cal_dir / name).resolve()
-        try:
-            candidate.relative_to(cal_dir)
-        except ValueError:
-            return None
-        return candidate if candidate.is_file() else None
+        for base_dir in (results_dir(inst, date), raw_data_dir(inst, date)):
+            cal_dir = Path(str(base_dir) + "_calibrated").resolve()
+            candidate = (cal_dir / name).resolve()
+            try:
+                candidate.relative_to(cal_dir)
+                if candidate.is_file():
+                    return candidate
+            except ValueError:
+                pass
+        return None
 
     base = output_base().resolve()
     candidate = (base / inst / date / name).resolve()
@@ -828,38 +820,84 @@ _phot_status_cache = register_cache(ttl=300.0)
 
 
 def get_photometry_status(inst: str, date: str, target: str) -> str:
-    """Determine the status of photometry for a target: none, test, or full.
+    """Determine the strongest photometry status across all of a target's runs:
+    ``none``, ``test``, or ``full``.
 
-    Uses the results-directory mtime as the cache key so the result is
-    automatically invalidated whenever files are created or removed there,
-    while still benefiting from the global ``clear_all_caches()`` call that
-    fires after every ``build-db`` run.
+    Reductions land either in the legacy ``{inst}/{date}/`` directory or in a
+    per-run ``{inst}/{date}/_runs/{target}/{run_id}/`` subdirectory. The status
+    is aggregated over *every* run (via :func:`list_photometry_runs`) so a modern
+    run-scoped reduction is not missed — checking only the legacy dir made the
+    Targets/target pages report ``none`` for run-scoped photometry.
+
+    The combined mtime of the legacy dir and the target's ``_runs`` subtree is
+    the cache key, so the result auto-invalidates whenever any run's products are
+    created or removed, on top of the global ``clear_all_caches()`` fired after
+    every ``build-db`` run.
     """
-    rdir = results_dir(inst, date)
-    try:
-        mtime = rdir.stat().st_mtime
-    except OSError:
-        return "none"
+    return _get_status_mtime(inst, date, target, _photometry_status_mtime(inst, date, target))
 
-    return _get_status_mtime(inst, date, target, mtime)
+
+def _photometry_status_mtime(inst: str, date: str, target: str) -> float:
+    """Max mtime across the legacy results dir and the target's ``_runs`` subtree
+    (one level deep), so the status cache busts when any run writes or removes
+    products under ``_runs/{target}/{run_id}/``."""
+    mtime = 0.0
+    base = results_dir(inst, date)
+    try:
+        mtime = max(mtime, base.stat().st_mtime)
+    except OSError:
+        pass
+    try:
+        runs_root = base / _RUNS_DIR_NAME / _target_dir_name(target)
+    except ValueError:
+        return mtime
+    try:
+        mtime = max(mtime, runs_root.stat().st_mtime)
+        for d in runs_root.iterdir():
+            try:
+                mtime = max(mtime, d.stat().st_mtime)
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return mtime
 
 
 @_phot_status_cache
 def _get_status_mtime(inst: str, date: str, target: str, mtime: float) -> str:
     """Inner cached worker keyed on (inst, date, target, mtime)."""
-    rdir = results_dir(inst, date)
-    return _calculate_photometry_status(inst, date, target, rdir)
+    return _aggregate_photometry_status(inst, date, target)
 
 
-def _calculate_photometry_status(inst: str, date: str, target: str, rdir: Path) -> str:
-    out = list_outputs(inst, date, target)
-    if not out.get("has_any"):
+def _aggregate_photometry_status(inst: str, date: str, target: str) -> str:
+    """Strongest status over all of a target's runs: ``full`` if any run has a
+    full reduction, else ``test`` if any run has products, else ``none``."""
+    runs, run_outputs = list_photometry_runs(inst, date, target)
+    best = "none"
+    for run in runs:
+        key = None if run.is_legacy else run.run_id
+        outputs = run_outputs.get(key)
+        if not outputs or not outputs.get("has_any"):
+            continue
+        rdir = run_output_dir(inst, date, target, key)
+        status = _calculate_photometry_status(target, rdir, outputs)
+        if status == "full":
+            return "full"
+        if status == "test":
+            best = "test"
+    return best
+
+
+def _calculate_photometry_status(target: str, rdir: Path, outputs: dict) -> str:
+    """Classify one run's products as ``full``/``test``/``none`` from its
+    ``list_outputs`` result (``outputs``) and its output directory (``rdir``)."""
+    if not outputs.get("has_any"):
         return "none"
 
     # Fallback/Optimization: Check CSV files. If any CSV has more than 15 lines, it is a full run.
     csv_found = False
     max_rows = 0
-    for band_data in out.get("bands", {}).values():
+    for band_data in outputs.get("bands", {}).values():
         csv_info = band_data.get("csv")
         if csv_info:
             csv_path = rdir / csv_info["file"]
@@ -871,7 +909,7 @@ def _calculate_photometry_status(inst: str, date: str, target: str, rdir: Path) 
                         if row_count > max_rows:
                             max_rows = row_count
                 except Exception:
-                    pass
+                    logger.debug("failed to count photometry CSV rows in %s", csv_path, exc_info=True)
     if csv_found and max_rows > 15:
         return "full"
 
@@ -894,7 +932,7 @@ def _calculate_photometry_status(inst: str, date: str, target: str, rdir: Path) 
                     has_full_log = True
                     break
         except Exception:
-            pass
+            logger.debug("failed to read photometry log %s while determining status", lf, exc_info=True)
 
     if has_target_log:
         return "full" if has_full_log else "test"
@@ -949,7 +987,7 @@ def normalize_run_options(raw: dict | None) -> dict:
     if "bands" in raw:  # present-but-empty must surface as an error, not default
         o["bands"] = [str(b).strip() for b in (bands or []) if str(b).strip()]
 
-    for key in ("run_name", "ref_band", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "avoid_nearby_star_mode", "avoid_nearby_star", "target_coord", "wcs_method", "calib_dir", "site", "mode", "cmap", "nan_imputation_method"):
+    for key in ("run_name", "ref_band", "ref_select", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "avoid_nearby_star_mode", "avoid_nearby_star", "target_coord", "wcs_method", "calib_dir", "site", "mode", "cmap", "nan_imputation_method"):
         if raw.get(key) is not None:
             o[key] = str(raw[key]).strip()
 
@@ -958,7 +996,7 @@ def normalize_run_options(raw: dict | None) -> dict:
             val = str(raw.get(key, "")).strip()
             o[key] = "" if val == "" else (_to_int(val) if _to_int(val) is not None else "")
 
-    for key in ("test_run_frames", "max_num_stars", "cutout_size", "gif_stride", "min_star_area", "edge_margin"):
+    for key in ("test_run_frames", "max_num_stars", "cutout_size", "gif_stride", "min_star_area", "edge_margin", "ref_select_top_k"):
         if str(raw.get(key, "")).strip() != "":
             iv = _to_int(raw[key])
             if iv is not None:
@@ -1006,6 +1044,11 @@ def validate_run_options(o: dict, inst: str | None = None) -> str | None:
         return "reference band must be one of the selected bands"
     if (o.get("avoid_comparison_ids") or "").strip() and not (o.get("ref_band") or "").strip():
         return "avoid comparison IDs requires a reference band"
+    if o.get("ref_select", "position") not in ("position", "quality"):
+        return "reference selection must be 'position' or 'quality'"
+    top_k = o.get("ref_select_top_k")
+    if top_k not in (None, "") and int(top_k) < 1:
+        return "quality candidates (top-K) must be >= 1"
     if o.get("avoid_nearby_star_mode") not in ("off", "auto", "custom"):
         return "avoid nearby stars mode must be one of off, auto, or custom"
     if o.get("avoid_nearby_star_mode") == "custom":
@@ -1078,6 +1121,11 @@ def build_command(
         args += ["--ref_band", o["ref_band"]]
     if o.get("refid") not in (None, ""):
         args += ["--refid", str(o["refid"])]
+    if o.get("ref_select") == "quality":
+        args += ["--ref_select", "quality"]
+        top_k = o.get("ref_select_top_k")
+        if top_k not in (None, "") and int(top_k) != RUN_DEFAULTS["ref_select_top_k"]:
+            args += ["--ref_select_top_k", str(top_k)]
 
     ar = (o.get("aper_radii") or "").replace(" ", "")
     an = (o.get("annulus") or "").replace(" ", "")
@@ -1189,32 +1237,15 @@ def command_str(
 
 # --------------------------- background job runner ---------------------------
 
-
-@dataclass
-class Job:
-    key: str
-    inst: str
-    date: str
-    target: str
-    cmd: list[str]
-    proc: subprocess.Popen
-    logf: IO
-    log_path: Path
-    started_at: float = field(default_factory=time.time)
-    state: str = "running"  # running | done | error | cancelled
-    returncode: int | None = None
-    cancelled: bool = False
-    elapsed: int | None = None
-    run_type: str = "full"  # "test" | "full"
-    run_id: str = ""
-    site: str = ""
-    mode: str = ""
-    run_name: str = ""
-
+# The in-memory job record and the finalizing state machine are shared with
+# transit-fit via muscat_db.jobs (audit C1). ``Job`` keeps its historical name.
+Job = jobs.PipelineJob
 
 _JOBS: dict[str, Job] = {}
 _LOCK = threading.Lock()
 _MAX_FULL_JOBS = 1
+_PROSE_PRODUCT_SUFFIXES = {".csv", ".npz", ".png", ".gif"}
+_TARGET_PRODUCT_SUFFIXES = _PROSE_PRODUCT_SUFFIXES | {".txt"}
 
 # Watchdog limits for hung reductions. A healthy run writes to its log
 # continuously, so a long silence means it has stalled; the absolute cap is a
@@ -1225,7 +1256,7 @@ _MAX_RUNTIME_S = int(os.environ.get("MUSCAT_PHOT_MAX_RUNTIME_S", 3 * 60 * 60))
 
 def _count_running_full() -> int:
     """Number of currently-running full (non-test) photometry jobs."""
-    return sum(1 for j in _JOBS.values() if j.run_type == "full" and j.proc.poll() is None)
+    return jobs.count_running_full(_JOBS)
 
 
 def job_key(inst: str, date: str, target: str, run_id: str = "") -> str:
@@ -1248,18 +1279,79 @@ def log_path(inst: str, date: str, target: str, run_id: str = "") -> Path | None
     return p if p.is_file() else None
 
 
-def _full_reduction_exists(
+def _target_product_paths(rdir: Path, inst: str, target: str) -> list[Path]:
+    """Target-scoped prose products in a shared legacy date directory."""
+    t = target.replace(" ", "")
+    prefix = f"{t}_{inst}_"
+    try:
+        return [
+            p for p in rdir.iterdir()
+            if p.is_file()
+            and p.name.startswith(prefix)
+            and p.suffix.lower() in _TARGET_PRODUCT_SUFFIXES
+        ]
+    except OSError:
+        return []
+
+
+def _reduction_products_exist(
     inst: str,
     date: str,
     target: str,
     run_id: str,
 ) -> bool:
-    """Check if a full reduction already exists for the given run_id."""
+    """Check if prose products already exist for the given run."""
     try:
         rdir = run_output_dir(inst, date, target, run_id)
     except ValueError:
         return False
-    return rdir.is_dir()
+    if not rdir.is_dir():
+        return False
+    if run_id:
+        try:
+            return any(
+                p.is_file() and p.suffix.lower() in _PROSE_PRODUCT_SUFFIXES
+                for p in rdir.iterdir()
+            )
+        except OSError:
+            return False
+    return any(p.suffix.lower() in _PROSE_PRODUCT_SUFFIXES for p in _target_product_paths(rdir, inst, target))
+
+
+def _delete_reduction_files(inst: str, date: str, target: str, run_id: str = "") -> tuple[bool, int, str | None]:
+    """Delete on-disk products for one photometry run without touching job state."""
+    try:
+        rdir = run_output_dir(inst, date, target, run_id or None)
+    except ValueError as exc:
+        return False, 0, str(exc)
+    if not rdir.is_dir():
+        return True, 0, None
+
+    removed = 0
+    if run_id:
+        try:
+            for p in rdir.rglob("*"):
+                if p.is_file():
+                    removed += 1
+            shutil.rmtree(rdir)
+        except OSError as exc:
+            return False, removed, f"failed to delete run: {exc}"
+        return True, removed, None
+
+    for p in _target_product_paths(rdir, inst, target):
+        try:
+            p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    web_log = _run_log_path(rdir, inst, date, target, run_id)
+    if web_log.is_file():
+        try:
+            web_log.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return True, removed, None
 
 
 def start_run(
@@ -1268,6 +1360,7 @@ def start_run(
     target: str,
     options: dict | None = None,
     test_run: bool = True,
+    user_name: str | None = None,
 ) -> dict:
     """Launch a reduction in the background. Returns ``{ok, key}`` or
     ``{ok: False, error}``. A run already in flight for the same key is reused.
@@ -1295,18 +1388,15 @@ def start_run(
 
     with _LOCK:
         existing = _JOBS.get(key)
-        # For full runs at capacity, allow queuing even if a job with the same key exists
-        # (the existing job will be reused if still running; if not, a new one will be queued)
-        at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
         overwrite = opts.get("overwrite", True)
-        logger.info(f"start_run: {inst}/{date}/{target} run_id={run_id} overwrite={overwrite} existing={existing is not None} at_capacity={at_capacity}")
+        logger.info(f"start_run: {inst}/{date}/{target} run_id={run_id} overwrite={overwrite} existing={existing is not None}")
 
-        if existing is not None and existing.proc.poll() is None and not at_capacity:
-            # If overwrite is True, cancel the existing job and start a new one
+        if existing is not None and existing.proc.poll() is None:
             if overwrite:
                 logger.info(f"start_run: cancelling existing job for {key} (overwrite=True)")
                 try:
-                    existing.proc.terminate()
+                    existing.cancelled = True
+                    jobs.terminate_pg(existing.proc)
                     if existing.logf:
                         try:
                             existing.logf.close()
@@ -1319,28 +1409,27 @@ def start_run(
                 logger.info(f"start_run: reusing existing job for {key} (overwrite=False)")
                 return {"ok": True, "key": key, "already_running": True, "run_id": run_id}
 
-        if run_type == "full":
-            if _full_reduction_exists(inst, date, target, run_id) and not overwrite:
-                logger.info(f"start_run: refusing to overwrite existing full reduction for {key} (overwrite=False)")
-                return {
-                    "ok": False,
-                    "error": "full reduction already exists for this target; enable 'Overwrite existing products' to replace",
-                }
+        at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
+
+        if _reduction_products_exist(inst, date, target, run_id) and not overwrite:
+            logger.info(f"start_run: refusing to overwrite existing reduction for {key} (overwrite=False)")
+            return {
+                "ok": False,
+                "error": "reduction products already exist for this target; enable 'Overwrite existing products' to replace",
+            }
 
         # Queue full jobs when at capacity
         if at_capacity:
-            from muscat_db.database import save_job
             try:
-                save_job(
+                get_job_store().enqueue(
                     type_="photometry",
                     inst=inst, date=date, target=target,
-                    state="pending",
-                    returncode=None, elapsed=0,
                     started_at=time.time(),
                     run_type=run_type,
                     params=json.dumps({"test_run": test_run, "options": opts, "run_id": run_id, "site": site, "mode": mode, "run_name": run_name}, separators=(",", ":")),
                     run_id=run_id,
                     run_name=run_name,
+                    user_name=user_name,
                 )
             except sqlite3.OperationalError as exc:
                 return {"ok": False, "error": f"database not writable: {exc}"}
@@ -1350,19 +1439,13 @@ def start_run(
             rdir = run_output_dir(inst, date, target, run_id)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
+        if overwrite:
+            ok, removed, delete_error = _delete_reduction_files(inst, date, target, run_id)
+            if not ok:
+                return {"ok": False, "error": delete_error or "failed to delete previous reduction products"}
+            if removed:
+                logger.info(f"start_run: deleted {removed} previous product(s) for {key} before overwrite run")
         rdir.mkdir(parents=True, exist_ok=True)
-
-        # Clean up old product files before re-running with potentially different bands.
-        # Without this, re-running with fewer bands leaves stale product files from the
-        # previous run (e.g., zs-band products when re-running with only gp/rp/ip).
-        t = target.replace(" ", "")
-        stem = f"{t}_{inst}"
-        for p in list(rdir.glob("*.png")) + list(rdir.glob("*.gif")) + list(rdir.glob("*.csv")):
-            if p.is_file() and p.name.startswith(stem):
-                try:
-                    p.unlink()
-                except OSError:
-                    pass
 
         _write_run_meta(rdir, inst=inst, date=date, target=target, run_id=run_id, site=site, mode=mode, run_name=run_name, run_type=run_type)
         cmd = build_command(inst, date, target, opts, test_run=test_run, run_id=run_id)
@@ -1393,9 +1476,8 @@ def start_run(
             run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name,
         )
         # Record new job in the database
-        from muscat_db.database import save_job
         try:
-                save_job(
+                get_job_store().save(
                 type_="photometry",
                 inst=inst,
                 date=date,
@@ -1408,6 +1490,7 @@ def start_run(
                 params=json.dumps({"test_run": test_run, "options": opts, "run_id": run_id, "site": site, "mode": mode, "run_name": run_name}, separators=(",", ":")),
                 run_id=run_id,
                 run_name=run_name,
+                user_name=user_name,
             )
         except sqlite3.OperationalError as exc:
             # DB write failed (e.g. read-only database). Roll back the launched
@@ -1425,35 +1508,8 @@ def start_run(
     return {"ok": True, "key": key, "run_id": run_id}
 
 
-def _tail(path: Path, n: int = 200) -> str:
-    if not path.is_file():
-        return ""
-    try:
-        with open(path, errors="replace") as f:
-            return "".join(deque(f, maxlen=n))
-    except OSError:
-        return ""
-
-
-def _log_has_partial_failure(path: Path | None) -> bool:
-    if path is None or not path.is_file():
-        return False
-    return "photometry PARTIAL FAILURE" in _tail(path, n=1000)
-
-
-def _terminal_job_state(
-    returncode: int,
-    cancelled: bool,
-    log_path_: Path | None,
-) -> str:
-    """Map process completion to state, treating logged partial runs as errors."""
-    if cancelled:
-        return "cancelled"
-    if returncode != 0:
-        return "error"
-    if _log_has_partial_failure(log_path_):
-        return "error"
-    return "done"
+# Re-exported from the shared runner so transit-fit keeps importing it unchanged.
+_tail = jobs.tail
 
 
 # The pipeline is launched with start_new_session=True and prose spawns
@@ -1483,55 +1539,55 @@ _TERMINAL_LOG_MARKERS = (
     "photometry PARTIAL FAILURE",
     "photometry FAILED",
 )
+_PARTIAL_FAILURE_MARKER = "photometry PARTIAL FAILURE"
+# prose logs this only after every band's outputs are written, so it is a
+# reliable proxy for "the reduction finished successfully" even when the tracked
+# parent was lost/killed (server --reload, watchdog) before muscat-db saw it exit.
+_SUCCESS_MARKER = "photometry SUCCEEDED"
+
+
+def _finalize_config() -> jobs.FinalizeConfig:
+    """Build the finalizing config from the current module-level, env-tunable
+    settings. Built per call (not cached) so tests/operators can monkeypatch
+    ``_FINALIZE_GRACE_S`` etc. at runtime and have it take effect immediately."""
+    return jobs.FinalizeConfig(
+        grace_s=_FINALIZE_GRACE_S,
+        grace_terminal_s=_FINALIZE_GRACE_TERMINAL_S,
+        terminal_markers=_TERMINAL_LOG_MARKERS,
+        partial_failure_marker=_PARTIAL_FAILURE_MARKER,
+        success_marker=_SUCCESS_MARKER,
+    )
+
+
+# Thin wrappers binding the photometry finalize config; the shared logic lives
+# in muscat_db.jobs (audit C1). Kept as module functions so existing call sites
+# and tests that reference these names keep working.
+def _log_has_partial_failure(path: Path | None) -> bool:
+    return jobs.log_has_partial_failure(path, _finalize_config())
+
+
+def _terminal_job_state(returncode: int, cancelled: bool, log_path_: Path | None) -> str:
+    return jobs.terminal_job_state(returncode, cancelled, log_path_, _finalize_config())
 
 
 def _log_has_terminal_marker(path: Path | None) -> bool:
-    """True once prose has logged a final result line. After this, remaining log
-    writes are worker teardown, so the finalize window can be shortened."""
-    if path is None or not path.is_file():
-        return False
-    tail = _tail(path, n=1000)
-    return any(marker in tail for marker in _TERMINAL_LOG_MARKERS)
+    return jobs.log_has_terminal_marker(path, _finalize_config())
+
+
+def _log_has_success(path: Path | None) -> bool:
+    return jobs.log_has_success(path, _finalize_config())
 
 
 def _finalize_grace_s(log_path_: Path | None) -> int:
-    """Effective finalize quiescence window for a log: the short terminal window
-    once a result line is logged, else the conservative default. The ``min``
-    guards against a default set below the terminal window — there is never a
-    reason to wait longer after the result line than before it."""
-    if _log_has_terminal_marker(log_path_):
-        return min(_FINALIZE_GRACE_TERMINAL_S, _FINALIZE_GRACE_S)
-    return _FINALIZE_GRACE_S
+    return jobs.finalize_grace_s(log_path_, _finalize_config())
 
 
 def _log_quiescent(log_path_: Path, now: float) -> bool:
-    """True when the log has not been written for at least the finalize grace
-    window. The window shrinks once prose logs a terminal result line (trailing
-    output by then is just worker teardown). A missing/unreadable log means
-    nothing more is coming, so it counts as quiescent; each append by a
-    still-running worker refreshes the mtime and keeps the job finalizing."""
-    try:
-        mtime = log_path_.stat().st_mtime
-    except OSError:
-        return True
-    return (now - mtime) >= _finalize_grace_s(log_path_)
+    return jobs.log_quiescent(log_path_, now, _finalize_config())
 
 
 def _resolve_job_state(job: "Job", now: float | None = None) -> tuple[str, int | None, bool]:
-    """Resolve a tracked job's live state as ``(state, returncode, is_terminal)``.
-
-    While the parent process runs the job is ``running``/``cancelling``. Once it
-    exits, a non-cancelled job is reported as ``finalizing`` (non-terminal) until
-    its log goes quiescent, so the live view keeps streaming the output workers
-    emit after parent-exit. A cancelled job goes terminal immediately to keep the
-    Cancel flow responsive.
-    """
-    rc = job.proc.poll()
-    if rc is None:
-        return ("cancelling" if job.cancelled else "running"), None, False
-    if not job.cancelled and not _log_quiescent(job.log_path, now if now is not None else time.time()):
-        return "finalizing", rc, False
-    return _terminal_job_state(rc, job.cancelled, job.log_path), rc, True
+    return jobs.resolve_job_state(job, _finalize_config(), now)
 
 
 def _pending_status(inst: str, date: str, target: str, run_id: str = "") -> dict | None:
@@ -1541,11 +1597,9 @@ def _pending_status(inst: str, date: str, target: str, run_id: str = "") -> dict
     in the DB as ``pending`` but not added to ``_JOBS``; surface that here so the
     photometry page can show a "queued" state instead of silently resetting.
     """
-    from muscat_db.database import get_persisted_jobs
-
     db_key = f"photometry:{job_key(inst, date, target, run_id)}"
     try:
-        for entry in get_persisted_jobs():
+        for entry in get_job_store().all():
             if (
                 entry["key"] == db_key
                 and entry["type"] == "photometry"
@@ -1559,7 +1613,7 @@ def _pending_status(inst: str, date: str, target: str, run_id: str = "") -> dict
                     "elapsed": round(time.time() - started),
                 }
     except Exception:
-        pass
+        logger.debug("failed to read pending photometry status for %s/%s/%s/%s", inst, date, target, run_id, exc_info=True)
     return None
 
 
@@ -1574,11 +1628,9 @@ def _persisted_status(inst: str, date: str, target: str, run_id: str = "") -> di
     failure. Surface the persisted outcome (plus its log tail and error
     description) so the final state is never lost.
     """
-    from muscat_db.database import get_persisted_jobs
-
     db_key = f"photometry:{job_key(inst, date, target, run_id)}"
     try:
-        for entry in get_persisted_jobs():  # newest-first; one row per key
+        for entry in get_job_store().all():  # newest-first; one row per key
             if entry["key"] != db_key or entry["type"] != "photometry":
                 continue
             state = entry["state"]
@@ -1598,7 +1650,7 @@ def _persisted_status(inst: str, date: str, target: str, run_id: str = "") -> di
                 "error_desc": error_desc,
             }
     except Exception:
-        pass
+        logger.debug("failed to read persisted photometry status for %s/%s/%s/%s", inst, date, target, run_id, exc_info=True)
     return None
 
 
@@ -1645,62 +1697,9 @@ def job_status(inst: str, date: str, target: str, run_id: str = "") -> dict:
     }
 
 
-def get_all_jobs() -> list[dict]:
-    """Retrieve all background jobs, polling/updating their state."""
-    with _LOCK:
-        res = []
-        for key, job in _JOBS.items():
-            state, rc, is_terminal = _resolve_job_state(job)
-            if is_terminal and job.state == "running":
-                job.state = state
-                job.returncode = rc
-                job.elapsed = round(time.time() - job.started_at)
-                try:
-                    job.logf.close()
-                except OSError:
-                    pass
-
-            elapsed = job.elapsed if job.state not in ("running", "cancelling") and job.elapsed is not None else round(time.time() - job.started_at)
-            res.append({
-                "key": job.key,
-                "inst": job.inst,
-                "date": job.date,
-                "target": job.target,
-                "run_id": job.run_id,
-                "state": state,
-                "returncode": rc,
-                "elapsed": round(elapsed),
-                "started_at": job.started_at,
-            })
-        return sorted(res, key=lambda j: j["started_at"], reverse=True)
-
-
-def _kill_after(proc: subprocess.Popen, grace: float = 6.0) -> None:
-    """Escalate to SIGKILL on the process group if SIGTERM was ignored."""
-    try:
-        proc.wait(timeout=grace)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        try:
-            proc.kill()
-        except OSError:
-            pass
-
-
-def _terminate_pg(proc: subprocess.Popen) -> None:
-    """SIGTERM a job's whole process group, escalating to SIGKILL in the background."""
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except (ProcessLookupError, PermissionError, OSError):
-        try:
-            proc.terminate()
-        except OSError:
-            pass
-    threading.Thread(target=_kill_after, args=(proc,), daemon=True).start()
+# Process-group kill helpers live in the shared runner (audit C1).
+_kill_after = jobs.kill_after
+_terminate_pg = jobs.terminate_pg
 
 
 def _watchdog_breach(job: "Job", now: float) -> str | None:
@@ -1724,49 +1723,10 @@ def delete_reduction(inst: str, date: str, target: str, run_id: str = "") -> dic
     the web-run log. Also clears the persisted job record so the Jobs page
     no longer shows a stale entry. Never touches other targets.
     """
-    try:
-        rdir = run_output_dir(inst, date, target, run_id or None)
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
-    if not rdir.is_dir():
-        return {"ok": True, "count": 0}
-    t = target.replace(" ", "")
-    stem = f"{t}_{inst}"
-    web_log = _run_log_path(rdir, inst, date, target, run_id)
-    removed = 0
-    if run_id:
-        try:
-            for p in rdir.rglob("*"):
-                if p.is_file():
-                    removed += 1
-            shutil.rmtree(rdir)
-        except OSError as exc:
-            return {"ok": False, "error": f"failed to delete run: {exc}"}
-    else:
-        for p in list(rdir.iterdir()):
-            if not p.is_file():
-                continue
-            if p.name.startswith(stem):
-                try:
-                    p.unlink()
-                    removed += 1
-                except OSError:
-                    pass
-        if web_log.is_file():
-            try:
-                web_log.unlink()
-                removed += 1
-            except OSError:
-                pass
-    from muscat_db.database import db_path, clear_all_caches
-    try:
-        conn = sqlite3.connect(db_path())
-        conn.execute("DELETE FROM jobs WHERE key = ?", (f"photometry:{job_key(inst, date, target, run_id)}",))
-        conn.commit()
-        conn.close()
-        clear_all_caches()
-    except Exception:
-        pass
+    ok, removed, error = _delete_reduction_files(inst, date, target, run_id)
+    if not ok:
+        return {"ok": False, "error": error or "failed to delete reduction"}
+    get_job_store().delete(f"photometry:{job_key(inst, date, target, run_id)}")
     try:
         del _JOBS[job_key(inst, date, target, run_id)]
     except KeyError:
@@ -1778,16 +1738,15 @@ def cancel_run(inst: str, date: str, target: str, run_id: str = "") -> dict:
     """Cancel a running or pending reduction. Sends SIGTERM to the job's process group
     and escalates to SIGKILL after a short grace period."""
     key = job_key(inst, date, target, run_id)
+    store = get_job_store()
     with _LOCK:
-        from muscat_db.database import save_job, get_persisted_jobs
         job = _JOBS.get(key)
         if job is None:
             # May be a pending job (in DB but not yet launched)
-            db_jobs = get_persisted_jobs()
             db_key = f"photometry:{key}"
-            found = [j for j in db_jobs if j["key"] == db_key]
+            found = [j for j in store.all() if j["key"] == db_key]
             if found and found[0]["state"] == "pending":
-                save_job(
+                store.save(
                     type_="photometry", inst=inst, date=date, target=target,
                     state="cancelled", returncode=-1, elapsed=0,
                     started_at=found[0]["started_at"],
@@ -1800,9 +1759,9 @@ def cancel_run(inst: str, date: str, target: str, run_id: str = "") -> dict:
             return {"ok": True, "already_finished": True}
         job.cancelled = True
         proc = job.proc
-        
+
         # Immediately record cancellation in the database
-        save_job(
+        store.save(
             type_="photometry",
             inst=inst,
             date=date,
@@ -1849,7 +1808,7 @@ def _get_error_desc(log_path: Path) -> str:
 
 
 def sync_jobs() -> None:
-    from muscat_db.database import save_job, get_persisted_jobs
+    store = get_job_store()
     with _LOCK:
         # Watchdog: kill runs that have hung (no log output, or past the absolute
         # cap) and record them as errors. This frees the single full-job slot so the
@@ -1867,7 +1826,7 @@ def sync_jobs() -> None:
                 job.logf.close()
             except OSError:
                 pass
-            save_job(
+            store.save(
                 type_="photometry", inst=job.inst, date=job.date, target=job.target,
                 state="error", returncode=-1,
                 elapsed=round(now - job.started_at), started_at=job.started_at,
@@ -1876,7 +1835,7 @@ def sync_jobs() -> None:
             )
             _JOBS.pop(key, None)
 
-        db_jobs = get_persisted_jobs()
+        db_jobs = store.all()
         for entry in db_jobs:
             if entry["type"] != "photometry" or entry["state"] != "done":
                 continue
@@ -1884,7 +1843,7 @@ def sync_jobs() -> None:
             entry_log_path = log_path(entry["inst"], entry["date"], entry["target"], entry_run_id)
             if not _log_has_partial_failure(entry_log_path):
                 continue
-            save_job(
+            store.save(
                 type_="photometry",
                 inst=entry["inst"],
                 date=entry["date"],
@@ -1949,7 +1908,7 @@ def sync_jobs() -> None:
             elif persist_state == "cancelled":
                 error_desc = "Cancelled by user"
 
-            save_job(
+            store.save(
                 type_="photometry",
                 inst=job.inst,
                 date=job.date,
@@ -1961,7 +1920,13 @@ def sync_jobs() -> None:
                 error_desc=error_desc,
                 run_id=job.run_id,
             )
-            
+
+            # A terminal transition may have produced new outputs; refresh the
+            # target's persisted Phot/Fit status so the Targets page reflects it
+            # on the next refresh instead of waiting for the daily build_db cron.
+            if persist_state in ("done", "error", "cancelled"):
+                database.refresh_target_status(job.target)
+
         for db_key in running_keys:
             _, rest = db_key.split(":", 1)
             parts = rest.split("/")
@@ -1976,24 +1941,32 @@ def sync_jobs() -> None:
                     started_at = j["started_at"]
                     elapsed = j["elapsed"]
                     break
-            save_job(
+            # The tracked parent is gone (server --reload / restart lost _JOBS),
+            # but prose's detached workers run independently and may well have
+            # finished. Trust the log's success marker over the lost parent so a
+            # completed reduction is not falsely reported as "exited with code -1".
+            lp = log_path(inst, date, target, run_id)
+            if _log_has_success(lp) and not _log_has_partial_failure(lp):
+                lost_state, lost_rc, lost_desc = "done", 0, ""
+            else:
+                lost_state, lost_rc, lost_desc = "error", -1, "Process lost (server restart)"
+            store.save(
                 type_="photometry",
                 inst=inst,
                 date=date,
                 target=target,
-                state="error",
-                returncode=-1,
+                state=lost_state,
+                returncode=lost_rc,
                 elapsed=elapsed,
                 started_at=started_at,
-                error_desc="Process lost (server restart)",
+                error_desc=lost_desc,
                 run_id=run_id,
             )
+            database.refresh_target_status(target)
 
         # Launch pending full jobs if capacity allows
         if _count_running_full() < _MAX_FULL_JOBS:
-            db_jobs = get_persisted_jobs()
-            pending = [j for j in db_jobs if j["state"] == "pending" and j["type"] == "photometry"]
-            pending.sort(key=lambda j: j["started_at"])
+            pending = store.pending("photometry")
             for entry in pending:
                 if _count_running_full() >= _MAX_FULL_JOBS:
                     break
@@ -2002,7 +1975,7 @@ def sync_jobs() -> None:
                 # in-memory job key (unprefixed) to detect a job that is already
                 # running and must not be relaunched from its stale pending row.
                 if job_key(entry["inst"], entry["date"], entry["target"], run_id) in _JOBS:
-                    save_job(type_="photometry", inst=entry["inst"], date=entry["date"], target=entry["target"], state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_id=run_id, run_name=entry.get("run_name", ""))
+                    store.save(type_="photometry", inst=entry["inst"], date=entry["date"], target=entry["target"], state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_id=run_id, run_name=entry.get("run_name", ""))
                     continue
                 try:
                     p = json.loads(entry.get("params") or "{}")
@@ -2020,7 +1993,7 @@ def sync_jobs() -> None:
                 try:
                     rdir = run_output_dir(inst, date, target, run_id)
                 except ValueError as exc:
-                    save_job(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=str(exc), run_id=run_id, run_name=run_name)
+                    store.save(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=str(exc), run_id=run_id, run_name=run_name)
                     continue
                 rdir.mkdir(parents=True, exist_ok=True)
                 run_type = "test" if test_run else "full"
@@ -2035,15 +2008,15 @@ def sync_jobs() -> None:
                 except (FileNotFoundError, OSError) as exc:
                     try: logf.close()
                     except OSError: pass
-                    save_job(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_id=run_id, run_name=run_name)
+                    store.save(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_id=run_id, run_name=run_name)
                     continue
                 _JOBS[key] = Job(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=pending_log_path, run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name)
                 try:
-                    save_job(type_="photometry", inst=inst, date=date, target=target, state="running", returncode=None, elapsed=0, started_at=_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""), run_id=run_id, run_name=run_name)
+                    store.save(type_="photometry", inst=inst, date=date, target=target, state="running", returncode=None, elapsed=0, started_at=_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""), run_id=run_id, run_name=run_name)
                 except sqlite3.OperationalError as exc:
                     try: proc.terminate()
                     except OSError: pass
                     try: logf.close()
                     except OSError: pass
                     _JOBS.pop(key, None)
-                    save_job(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Database not writable: {exc}", run_id=run_id, run_name=run_name)
+                    store.save(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Database not writable: {exc}", run_id=run_id, run_name=run_name)

@@ -17,7 +17,6 @@ safe to collect anywhere, and only do real work on the production host.
 from __future__ import annotations
 
 import time
-from pathlib import Path
 
 import pytest
 

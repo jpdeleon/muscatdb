@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Settings - MuSCAT-db{% endblock %}
+{% block content %}
+<style>
+  .settings-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1rem;
+  }
+  .settings-section h3 {
+    margin-bottom: 0.8rem;
+    font-size: 0.95rem;
+    color: var(--text);
+  }
+  .settings-actions {
+    display: flex;
+    gap: 0.6rem;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .settings-note {
+    color: var(--text-dim);
+    font-size: 0.78rem;
+    margin-top: 0.65rem;
+  }
+</style>
+<h1>Settings</h1>
+
+<div class="settings-section">
+  <h3>LCO API Token</h3>
+  <div class="opt-grid">
+    <div class="opt">
+      <label for="lco-token">Token</label>
+      <input id="lco-token" type="password" autocomplete="off" spellcheck="false" placeholder="Paste token from LCO profile">
+      <span class="hint">Get a token from <a href="https://observe.lco.global/accounts/profile" target="_blank" rel="noopener">observe.lco.global/accounts/profile</a>.</span>
+    </div>
+  </div>
+  <div class="settings-actions">
+    <button class="btn primary" type="button" id="save-lco-token">Save token</button>
+    <button class="btn" type="button" id="clear-lco-token">Clear user token</button>
+    <span class="lco-msg" id="lco-token-msg"></span>
+  </div>
+  <p class="settings-note" id="lco-token-status">Checking token status...</p>
+</div>
+
+<div class="settings-section">
+  <h3>ADS API Token</h3>
+  <div class="opt-grid">
+    <div class="opt">
+      <label for="ads-token">Token</label>
+      <input id="ads-token" type="password" autocomplete="off" spellcheck="false" placeholder="Paste token from ADS settings">
+      <span class="hint">Get a token from <a href="https://ui.adsabs.harvard.edu/user/settings/token" target="_blank" rel="noopener">ui.adsabs.harvard.edu/user/settings/token</a>.</span>
+    </div>
+  </div>
+  <div class="settings-actions">
+    <button class="btn primary" type="button" id="save-ads-token">Save token</button>
+    <button class="btn" type="button" id="clear-ads-token">Clear user token</button>
+    <span class="lco-msg" id="ads-token-msg"></span>
+  </div>
+  <p class="settings-note" id="ads-token-status">Checking token status...</p>
+</div>
+
+<script>
+(function () {
+  function setupTokenSettings(prefix, label) {
+  var tokenInput = document.getElementById(prefix + '-token');
+  var saveBtn = document.getElementById('save-' + prefix + '-token');
+  var clearBtn = document.getElementById('clear-' + prefix + '-token');
+  var msg = document.getElementById(prefix + '-token-msg');
+  var status = document.getElementById(prefix + '-token-status');
+  var statusUrl = '/api/settings/' + prefix + '-token-status';
+  var saveUrl = '/api/settings/' + prefix + '-token';
+
+  function setMsg(text, kind) {
+    msg.textContent = text || '';
+    msg.className = 'lco-msg' + (kind ? ' ' + kind : '');
+  }
+
+  function loadStatus() {
+    fetch(statusUrl)
+      .then(function (r) { return r.json().then(function (d) { d._status = r.status; return d; }); })
+      .then(function (d) {
+        if (!d.ok) {
+          status.textContent = d.detail || d.error || 'Token status unavailable.';
+          return;
+        }
+        var parts = [];
+        parts.push('User: ' + d.user);
+        parts.push('user token: ' + (d.user_token_configured ? 'saved' : 'not saved'));
+        parts.push('global fallback: ' + (d.global_token_configured ? 'available' : 'unset'));
+        parts.push('encryption secret: ' + (d.secret_configured ? 'set' : 'unset'));
+        status.textContent = parts.join(' | ');
+      })
+      .catch(function (err) {
+        status.textContent = 'Token status unavailable: ' + err;
+      });
+  }
+
+  function saveToken(token) {
+    setMsg('Saving...', '');
+    fetch(saveUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: token })
+    })
+      .then(function (r) { return r.json().then(function (d) { d._status = r.status; return d; }); })
+      .then(function (d) {
+        if (!d.ok) throw new Error(d.detail || d.error || 'save failed');
+        tokenInput.value = '';
+        setMsg(d.user_token_configured ? 'Saved.' : 'Cleared.', 'ok');
+        loadStatus();
+      })
+      .catch(function (err) {
+        setMsg(String(err.message || err), 'err');
+        loadStatus();
+      });
+  }
+
+  saveBtn.addEventListener('click', function () {
+    var token = tokenInput.value.trim();
+    if (!token) {
+      setMsg('Paste a ' + label + ' token before saving.', 'err');
+      return;
+    }
+    saveToken(token);
+  });
+  clearBtn.addEventListener('click', function () { saveToken(''); });
+  loadStatus();
+  }
+
+  setupTokenSettings('lco', 'LCO');
+  setupTokenSettings('ads', 'ADS');
+})();
+</script>
+{% endblock %}

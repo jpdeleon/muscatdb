@@ -12,13 +12,9 @@ Calibration formula (empirical, following peak_count_estimator):
 
 from __future__ import annotations
 
-import os
 import math
 import time
 import sqlite3
-import json
-import urllib.request
-import urllib.parse
 import pathlib
 import logging
 import threading
@@ -26,7 +22,6 @@ import threading
 import numpy as np
 from astropy.io import fits
 from astropy.coordinates import SkyCoord
-from astropy.wcs import WCS
 import astropy.units as u
 from concurrent.futures import ThreadPoolExecutor, as_completed
 try:
@@ -36,9 +31,8 @@ except ImportError:
     _Vizier = None  # type: ignore
     _HAS_ASTROQUERY = False
 
-from muscat_db.instruments import INSTRUMENTS, get_instrument
+from muscat_db.instruments import INSTRUMENTS
 from muscat_db.database import db_path, SCHEMA
-from muscat_db.photometry import raw_data_dir, valid_date
 
 logger = logging.getLogger(__name__)
 
@@ -714,9 +708,6 @@ def calibrate_instrument(
         # FWHM ~ 2.355 * pixel_scale * sqrt(1 / (2*pi*peak_fraction))
         # peak_fraction = peak_ADU * gain * exptime_sec / total_electrons_estimate
         # For a rough FWHM estimate, use peak/total ratio
-        params = INSTRUMENT_PARAMS.get(instrument, {})
-        gain_val = params.get("gain", 1.0)
-        total_e = peak_adu * gain_val / exptime  # per second
         # A star of mag 0 gives ~10^10 ph/s/m² in V
         # For a rough estimate, just store the measured peak
         fwhm_pix = 3.0  # placeholder; FWHM needs centroid measurement
@@ -727,7 +718,6 @@ def calibrate_instrument(
 
     for (band, focus_bin), coefs in agg.items():
         coef_mean = float(np.mean(coefs))
-        coef_std = float(np.std(coefs)) if len(coefs) > 1 else 0.0
         n = len(coefs)
         avg_fwhm = float(np.mean(fwhm_data.get((band, focus_bin), [3.0])))
         save_coeff(instrument, band, focus_bin, coef_mean, avg_fwhm, n)

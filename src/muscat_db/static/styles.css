@@ -49,6 +49,23 @@ h2 { font-size: 1.15rem; font-weight: 500; margin-bottom: 1rem; color: var(--tex
 .mono { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.8rem; }
 .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
 
+/* ---------- Messages ---------- */
+.lco-msg {
+  font-size: 0.82rem;
+  margin-top: 0.5rem;
+  min-height: 1em;
+  color: var(--text-dim);
+}
+.lco-msg.err { color: var(--red); }
+.lco-msg.ok { color: var(--green); }
+.lco-msg a {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.lco-msg a:hover { color: var(--accent); }
+
 /* ---------- Navigation ---------- */
 nav {
   position: sticky;
@@ -74,13 +91,10 @@ nav .spacer { flex: 1; }
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 1.25rem;
-  transition: border-color 0.15s, transform 0.15s;
 }
-.card:hover { border-color: var(--accent); transform: translateY(-2px); }
 .card a { color: var(--text); text-decoration: none; }
 .card .name  { font-size: 1.1rem; font-weight: 600; }
 .card .meta  { font-size: 0.85rem; color: var(--text-dim); margin-top: 0.35rem; }
-.card .count { font-size: 0.85rem; color: var(--accent2); margin-top: 0.35rem; }
 
 /* ---------- Tables ---------- */
 table {
@@ -179,6 +193,11 @@ tr.filter-row th input::placeholder { color: var(--text-dim); font-style: italic
 .badge-filter-i.narrow { background: #d6bf86; color: #3b2a0a; }
 .badge-filter-z.narrow { background: #d6a8a8; color: #4a1818; }
 .badge-filter-other { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+/* Narrow-band filter chips stack one per line so a target with many narrow
+   bands (g_narrow, i_narrow, z_narrow, Na_D, ...) doesn't force the Filters
+   column wide; broad-band chips above stay inline. width:fit-content keeps the
+   colour fill only as wide as the label text instead of the whole column. */
+.filter-narrow-line { display: block; width: fit-content; margin-top: 2px; }
 [data-theme="dark"] .badge-filter-g        { background: #2a3f6b; color: #c9d4ee; }
 [data-theme="dark"] .badge-filter-r        { background: #2b4a3a; color: #c4e0cf; }
 [data-theme="dark"] .badge-filter-i        { background: #5a4520; color: #ecd9a8; }
@@ -666,6 +685,30 @@ th.drag-over-right {
 
 .job-actions { white-space: nowrap; }
 
+.jobs-table[data-job-type="lco_archive_download"] {
+  min-width: 980px;
+}
+.jobs-table[data-job-type="lco_archive_download"] .lco-actions-head,
+.jobs-table[data-job-type="lco_archive_download"] .lco-actions-cell {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: var(--surface);
+  box-shadow: 1px 0 0 var(--border);
+  min-width: 168px;
+  max-width: 184px;
+}
+.jobs-table[data-job-type="lco_archive_download"] .lco-actions-head {
+  background: var(--surface2);
+  z-index: 4;
+}
+.jobs-table[data-job-type="lco_archive_download"] .lco-actions-cell {
+  white-space: normal;
+}
+.jobs-table[data-job-type="lco_archive_download"] .lco-actions-cell .btn {
+  margin: 0.1rem 0.15rem 0.1rem 0;
+}
+
 .log-row td { padding: 0; background: var(--surface); }
 .log-row pre.log-content {
   margin: 0; padding: 1rem;
@@ -699,6 +742,9 @@ th.drag-over-right {
 #delete-confirm-overlay.visible {
   display: flex;
 }
+#message-modal[data-mode="message"] #message-modal-cancel {
+  display: none !important;
+}
 .modal-box {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -708,8 +754,38 @@ th.drag-over-right {
   width: 90%;
   box-shadow: 0 8px 32px rgba(0,0,0,0.3);
 }
+#message-modal[data-kind="success"] .modal-box {
+  border-color: var(--green);
+}
+#message-modal[data-kind="error"] .modal-box {
+  border-color: var(--red);
+}
+#message-modal[data-kind="notice"] .modal-box {
+  border-color: var(--blue);
+}
+.modal-title {
+  margin-bottom: 0.75rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+#message-modal[data-kind="success"] .modal-title { color: var(--green); }
+#message-modal[data-kind="error"] .modal-title { color: var(--red); }
+#message-modal[data-kind="notice"] .modal-title { color: var(--blue); }
+.modal-text {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  margin-bottom: 1.5rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.modal-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
 
 /* ---------- LCO Schedule page ---------- */
 .muscat-only { display: none; }
 .sinistro-only { display: none; }
-

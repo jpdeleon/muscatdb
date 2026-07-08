@@ -33,7 +33,6 @@ import argparse
 import re
 import sqlite3
 import sys
-from collections import defaultdict
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent

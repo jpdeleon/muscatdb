@@ -15,6 +15,11 @@ class _RunningProcess:
         return None
 
 
+class _NoQueueStore:
+    def enqueue(self, **_kwargs):
+        pytest.fail("same-key running fit must be reused, not queued")
+
+
 @pytest.mark.parametrize("overwrite", ["false", "true"])
 def test_start_fit_delegates_overwrite_to_timer_without_deleting_outputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overwrite: str
@@ -51,3 +56,47 @@ def test_start_fit_delegates_overwrite_to_timer_without_deleting_outputs(
         for job in fit._FIT_JOBS.values():
             job.logf.close()
 
+
+def test_start_fit_reuses_same_key_running_job_before_capacity_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source_csv = tmp_path / "Target_muscat3_gp_250101.csv"
+    source_csv.write_text("time,flux\n")
+    run_dir = tmp_path / "fit-run"
+    log_path = tmp_path / "running.log"
+    logf = log_path.open("w")
+
+    run_id = fit.build_run_id("", "", "")
+    key = fit.fit_job_key("muscat3", "250101", "Target", run_id)
+    monkeypatch.setattr(fit, "fit_output_dir", lambda *_args: run_dir)
+    monkeypatch.setattr(fit, "get_csv_lightcurves", lambda *_args: [source_csv])
+    monkeypatch.setattr(fit, "_count_running_full", lambda: 1)
+    monkeypatch.setattr(fit, "get_job_store", lambda: _NoQueueStore())
+    monkeypatch.setattr(fit, "_FIT_JOBS", {
+        key: fit.TransitFitJob(
+            key=key,
+            inst="muscat3",
+            date="250101",
+            target="Target",
+            cmd=["timer-fit"],
+            proc=_RunningProcess(),
+            logf=logf,
+            log_path=log_path,
+            run_type="full",
+            run_id=run_id,
+            run_name="default",
+        )
+    })
+
+    try:
+        result = fit.start_fit("muscat3", "250101", "Target", {}, test_run=False)
+        assert result == {
+            "ok": True,
+            "key": key,
+            "already_running": True,
+            "run_id": run_id,
+        }
+        assert not run_dir.exists()
+    finally:
+        logf.close()
+        fit._FIT_JOBS.clear()
