@@ -210,6 +210,8 @@
         <li><a href="#fov-card" class="toc-link">FOV Optimizer</a></li>
         <li><a href="#lco-schedule-card" class="toc-link">LCO Schedule</a></li>
         <li><a href="#lco-archive-card" class="toc-link">LCO Archive</a></li>
+        <li><a href="#exposure-calc-card" class="toc-link">Exposure Calculator</a></li>
+        <li><a href="#catalog-browsers-card" class="toc-link">Catalog Browsers</a></li>
         <li><a href="#auth-card" class="toc-link">Multi-User Auth</a></li>
         <li><a href="#schema-card" class="toc-link">Database Schema</a></li>
         <li><a href="#execution-details" class="toc-link">Pipeline Features</a></li>
@@ -613,6 +615,86 @@ graph TD
     %% Final status
     P --> R["Download Complete\nFiles ready in muscat-db data tree"]:::default
           </pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="exposure-calc-card">
+      <div class="card-header-toggle" onclick="toggleCard('exposure-calc-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Exposure Calculator &amp; Coefficient Calibration
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Calculate recommended exposure times or expected signal-to-noise ratios (S/N) and manage instrument sensitivity coefficients.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    A["Target Parameters\n(Vmag, Filter/Band, Focus mm)"]:::default --> B["Calculation Mode"]:::default
+    B -->|Time-to-S/N| C["Estimate Exposure Time\n(Computes time needed to hit target S/N)"]:::pipeline
+    B -->|S/N-at-Time| D["Estimate Expected S/N\n(Computes S/N for a given exposure time)"]:::pipeline
+    
+    C --> E["Full-Well & Saturation Check\n(Alerts user if exposure time risks saturation)"]:::default
+    D --> E
+    
+    F["Calibration Data\n(Standard stars & target observations)"]:::default --> G["Fit Coefficients Job\n(/exposure/calibrate)"]:::pipeline
+    G --> H["exposure_coeffs Table\n(Update instrument band coefficients in DB)"]:::db
+    H -->|Provides sensitivity parameters| C
+    H -->|Provides sensitivity parameters| D
+          </pre>
+        </div>
+        <div style="margin-top: 1.5rem;">
+          <p>
+            The Exposure Calculator helps observers optimize their sequences to maximize the S/N ratio of their photometry while keeping the peak pixel values safely below full-well saturation.
+          </p>
+          <ul>
+            <li><strong>Sensitivity Coefficients:</strong> The calculator relies on empirical coefficients (fitted per instrument, band, and focus) to model the stellar flux. These coefficients can be periodically calibrated using historical photometry of standard stars.</li>
+            <li><strong>Safety Limits:</strong> The tool checks the full-well limits of each CCD (e.g., 99,000e⁻ for MuSCAT3/4) and warns the user if their settings risk non-linear detector response or saturation.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="catalog-browsers-card">
+      <div class="card-header-toggle" onclick="toggleCard('catalog-browsers-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Interactive Catalog Browsers (TOI &amp; NExScI)
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Explore TESS Objects of Interest and the NASA Exoplanet Archive database with interactive charts and Boyle+2026 rotation catalogs.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    A["Catalog Files\n(TOIs.csv & nexsci_pscomppars.csv)"]:::default --> B["Interactive Plotly Plots\n(Configurable X/Y axes & color dimensions)"]:::pipeline
+    C["Boyle+2026 Catalog\n(TIC ID matching)"]:::default -->|Left-join rotation stats| D["TOI Table Browse\n(Includes period Prot, RUWE, binarity)"]:::default
+    
+    E["SQLite muscat.db\n(targets table)"]:::db -->|Query presence| F["Highlight Targets\n(Targets in DB are drawn as stars ★)"]:::pipeline
+    F --> B
+    D --> G["Filter Chips & Search\n(Save filter state to URL hash fragment)"]:::default
+    B --> H["CSV Export & Navigation\n(Links to LCO Scheduler or Exoplanet Archive)"]:::default
+          </pre>
+        </div>
+        <div style="margin-top: 1.5rem;">
+          <p>
+            The catalog browsers allow users to filter targets based on planet size, orbital period, transit depth, host star characteristics, and rotation periods.
+          </p>
+          <ul>
+            <li><strong>Fast Rotators:</strong> Using rotation periods from the Boyle+2026 catalog, users can isolate fast-rotating hosts (P<sub>rot</sub> &lt; 10 d) which exhibit higher stellar activity.</li>
+            <li><strong>Database Integration:</strong> Known targets already inside the <code>muscat-db</code> are highlighted differently so users can quickly see which exoplanets have local observation logs.</li>
+          </ul>
         </div>
       </div>
     </div>
@@ -1609,6 +1691,50 @@ erDiagram
           </div>
           <div class="faq-answer">
             <p>The <code>/toi</code> page left-joins the Boyle+2026 stellar-rotation catalog (<code>final_catalog.feather</code>, matched by TIC ID) onto the TOI table, adding rotation period (P<sub>rot</sub> ± uncertainty), RUWE, contaminant/sector stats, and binarity flag columns. The <strong>Fast rotator (P<sub>rot</sub> &lt; 10 d)</strong> chip in the Rotation chip group filters to TOI hosts with a measured period below 10 days — fast-rotating host stars are more likely to show spot-crossing anomalies and higher photometric variability during a transit, which is useful context before scheduling. A dynamic note near the chip reports how many of the currently filtered targets have a measured P<sub>rot</sub>, with a link to the source paper (arXiv:2603.05586).</p>
+          </div>
+        </div>
+
+        <!-- ==================== Exposure Calculator ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Exposure Calculator</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the Exposure Calculator determine S/N and exposure times?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The exposure calculator fits empirical coefficients (using <code>muscat-db build-db</code> or calibration runs) to predict how many stellar photoelectrons will hit the CCD per second for a star of a given magnitude. It then applies standard CCD noise models (Poisson noise of the source, sky background noise, dark current, and read noise) to compute either the exposure time to reach a target S/N or the estimated S/N for a specified exposure time. Key parameters include the instrument aperture, focus offset, and filter transmission band.</p>
+          </div>
+        </div>
+
+        <!-- ==================== Catalog Browsers ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Catalog Browsers</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How are local observations linked to catalog rows?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The catalog browsers query the SQLite database's <code>targets</code> table on load to compile a list of all objects that have already been ingested into <code>muscat-db</code>. In the Plotly scatter plots, these matched targets are rendered as prominent ★ star markers instead of standard circular dots. In the searchable tables, clicking these rows opens the local target details page, while unmatched catalog rows link out directly to their NASA Exoplanet Archive overview page.</p>
+          </div>
+        </div>
+
+        <!-- ==================== API & Documentation ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">API &amp; Documentation</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>Where can I find the interactive API documentation?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>FastAPI automatically generates interactive API documentation for all JSON endpoints:</p>
+            <ul>
+              <li><strong>Swagger UI</strong> — Available at <a href="/docs" target="_blank"><code>/docs</code></a>. This interface allows you to interactively test endpoints directly from the browser.</li>
+              <li><strong>ReDoc</strong> — Available at <a href="/redoc" target="_blank"><code>/redoc</code></a>. This provides a clean, read-only layout of the API specifications.</li>
+            </ul>
+            <p>Additionally, modern documentation engines like <strong>Scalar</strong> can be served side-by-side or mounted to override <code>/docs</code> by returning a custom <code>HTMLResponse</code> that fetches the Scalar web components from its official CDN pointing to the <code>/openapi.json</code> schema.</p>
           </div>
         </div>
 
