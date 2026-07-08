@@ -403,10 +403,13 @@ def test_target_detail_stores_last_viewed_target(mock_db, monkeypatch):
 
 
 def test_target_detail_has_lco_schedule_and_archive_buttons(mock_db, monkeypatch):
+    from muscat_db import web
+    web._index_cache.clear()
     monkeypatch.setattr(
         "muscat_db.web._get_datasets_for_normalized_target",
         lambda _db, norm_name: ([], "2026-07-01"),
     )
+    monkeypatch.setattr(web, "_target_tic_id", lambda target_name, datasets=None: "12345")
 
     response = TestClient(app).get("/target?name=V1298Tau_b")
 
@@ -416,6 +419,21 @@ def test_target_detail_has_lco_schedule_and_archive_buttons(mock_db, monkeypatch
     assert "Search LCO archive" in html
     assert 'href="/lco/schedule?target=V1298TAU"' in html
     assert 'href="/lco/archive?target=V1298TAU"' in html
+    assert (
+        '<a href="https://exoplanetarchive.ipac.caltech.edu/overview/V1298TAU" '
+        'target="_blank" rel="noopener">https://exoplanetarchive.ipac.caltech.edu/overview/V1298TAU</a>'
+    ) in html
+    assert (
+        '<a href="https://exofop.ipac.caltech.edu/tess/target.php?id=12345" '
+        'target="_blank" rel="noopener">https://exofop.ipac.caltech.edu/tess/target.php?id=12345</a>'
+    ) in html
+    assert (
+        '<a href="https://tess.cuikaiming.com/12345" '
+        'target="_blank" rel="noopener">https://tess.cuikaiming.com/12345</a>'
+    ) in html
+    assert ">NASA Archive</a>" not in html
+    assert ">ExoFOP-TESS</a>" not in html
+    assert ">TESS Viewer</a>" not in html
 
 
 def test_target_detail_harps_panel_is_lazy_loaded(mock_db, monkeypatch):

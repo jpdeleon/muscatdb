@@ -368,19 +368,22 @@ def target_page(name: str = ""):
     else:
         # Single target view - normalize the input name
         norm_name = _normalize_target_name(name)
-        key = (tpl_mtime, _db_mtime(db), norm_name)
+        key = (tpl_mtime, _db_mtime(db), _catalog_source_cache_key(), _HARPS_MATCH_ARCSEC, norm_name)
         cache_key = f"target:{norm_name}"
         cached = _index_cache.get(cache_key)
         if cached is not None and cached[0] == key:
             return HTMLResponse(cached[1])
 
         datasets, last_updated = _get_datasets_for_normalized_target(db, norm_name)
+        target_tic_id = _target_tic_id(norm_name, datasets)
 
         html = jinja.get_template("target.html").render(
             target_name=norm_name,
             datasets=datasets,
             last_updated=last_updated,
             harps_match_arcsec=_HARPS_MATCH_ARCSEC,
+            target_tic_id=target_tic_id,
+            exofop_target_id=target_tic_id or norm_name,
         )
 
         _index_cache[cache_key] = (key, html)
@@ -861,6 +864,62 @@ def _target_lookup_aliases(name: str) -> set[str]:
     if m:
         aliases.add(f"TOI{int(m.group(1))}")
     return aliases
+
+
+def _target_tic_id(target_name: str, datasets: list[dict] | None = None) -> str:
+    """Return a TIC identifier for target-page external links when available."""
+    names = [target_name]
+    names.extend(str(ds.get("object") or "") for ds in (datasets or []))
+    for name in names:
+        m = re.search(r"TIC[\s_-]*0*(\d+)", str(name or ""), flags=re.IGNORECASE)
+        if m:
+            return m.group(1)
+
+    aliases: set[str] = set()
+    for name in names:
+        aliases.update(_target_lookup_aliases(name))
+    if not aliases:
+        return ""
+
+    try:
+        cat = _load_toi_catalog()["data"]
+        n = len(cat.get("toi", []))
+        for i in range(n):
+            toi = str((cat.get("toi") or [""])[i] or "").strip()
+            name = str((cat.get("name") or [""])[i] or "")
+            row_aliases = _target_lookup_aliases(name)
+            if toi:
+                toi_num = _toi_float(toi)
+                if toi_num is not None:
+                    row_aliases.add(f"TOI{int(toi_num)}")
+                row_aliases.add(_normalize_target_name(f"TOI-{toi}"))
+            if not (aliases & row_aliases):
+                continue
+            tic = str((cat.get("tic") or [""])[i] or "")
+            digits = re.sub(r"\D", "", tic)
+            if digits:
+                return digits
+    except Exception:
+        logger.warning("failed to resolve TIC ID from TOI catalog for %s", target_name, exc_info=True)
+
+    try:
+        cat = _load_nexsci_catalog()["data"]
+        n = len(cat.get("name", []))
+        for i in range(n):
+            row_aliases = (
+                _target_lookup_aliases((cat.get("name") or [""])[i])
+                | _target_lookup_aliases((cat.get("host") or [""])[i])
+            )
+            if not (aliases & row_aliases):
+                continue
+            tic = str((cat.get("tic") or [""])[i] or "")
+            digits = re.sub(r"\D", "", tic)
+            if digits:
+                return digits
+    except Exception:
+        logger.warning("failed to resolve TIC ID from NExScI catalog for %s", target_name, exc_info=True)
+
+    return ""
 
 
 def _target_catalog_coord_candidates(normalized_name: str) -> list[tuple[float, float]]:

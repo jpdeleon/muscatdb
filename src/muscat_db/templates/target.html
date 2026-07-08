@@ -5,6 +5,13 @@
 {% if target_name %}
   {# Single target view #}
   <h1>Target: {{ target_name }}</h1>
+  <div class="hint" style="display: flex; gap: 1rem; margin: -0.5rem 0 1rem 0; line-height: 1.6; word-break: break-all;">
+    <a href="https://exoplanetarchive.ipac.caltech.edu/overview/{{ target_name | urlencode }}" target="_blank" rel="noopener">NASA Archive</a>
+    <a href="https://exofop.ipac.caltech.edu/tess/target.php?id={{ exofop_target_id | urlencode }}" target="_blank" rel="noopener">ExoFOP-TESS</a>
+    {% if target_tic_id %}
+        <a href="https://tess.cuikaiming.com/{{ target_tic_id | urlencode }}" target="_blank" rel="noopener">TESS Viewer</a>
+    {% endif %}
+</div>
   <script>
     if (window.MuscatRouteState) {
       window.MuscatRouteState.rememberTarget({{ target_name | tojson }});
@@ -16,7 +23,7 @@
   </p>
 
   <details class="adv" open id="datasets-details">
-    <summary>Dataset Observations ({{ datasets|length if datasets else 0 }})</summary>
+    <summary>Photometric Observations ({{ datasets|length if datasets else 0 }})</summary>
     <div style="margin-top: 0.5rem;">
       <div class="search-bar">
         <input id="dataset-search" type="text" placeholder="Search by date or instrument…" autocomplete="off">
