@@ -1117,6 +1117,31 @@ def user_lco_token_configured(username: str | None) -> bool:
         return False
 
 
+def set_user_ads_token(username: str | None, token: str | None) -> None:
+    token = (token or "").strip()
+    if not token:
+        update_user_settings(username, {}, remove=["ads_token_enc"])
+        return
+    update_user_settings(username, {"ads_token_enc": _encrypt_token(token)})
+
+
+def get_user_ads_token(username: str | None) -> str | None:
+    if not (username or "").strip():
+        return None
+    settings = get_user_settings(username)
+    ciphertext = settings.get("ads_token_enc")
+    if not ciphertext:
+        return None
+    return _decrypt_token(str(ciphertext))
+
+
+def user_ads_token_configured(username: str | None) -> bool:
+    try:
+        return get_user_ads_token(username) is not None
+    except UserSettingsError:
+        return False
+
+
 def _ensure_jobs_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     # Migrations for databases created before these columns existed.

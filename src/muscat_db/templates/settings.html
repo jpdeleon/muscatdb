@@ -45,13 +45,33 @@
   <p class="settings-note" id="lco-token-status">Checking token status...</p>
 </div>
 
+<div class="settings-section">
+  <h3>ADS API Token</h3>
+  <div class="opt-grid">
+    <div class="opt">
+      <label for="ads-token">Token</label>
+      <input id="ads-token" type="password" autocomplete="off" spellcheck="false" placeholder="Paste token from ADS settings">
+      <span class="hint">Get a token from <a href="https://ui.adsabs.harvard.edu/user/settings/token" target="_blank" rel="noopener">ui.adsabs.harvard.edu/user/settings/token</a>.</span>
+    </div>
+  </div>
+  <div class="settings-actions">
+    <button class="btn primary" type="button" id="save-ads-token">Save token</button>
+    <button class="btn" type="button" id="clear-ads-token">Clear user token</button>
+    <span class="lco-msg" id="ads-token-msg"></span>
+  </div>
+  <p class="settings-note" id="ads-token-status">Checking token status...</p>
+</div>
+
 <script>
 (function () {
-  var tokenInput = document.getElementById('lco-token');
-  var saveBtn = document.getElementById('save-lco-token');
-  var clearBtn = document.getElementById('clear-lco-token');
-  var msg = document.getElementById('lco-token-msg');
-  var status = document.getElementById('lco-token-status');
+  function setupTokenSettings(prefix, label) {
+  var tokenInput = document.getElementById(prefix + '-token');
+  var saveBtn = document.getElementById('save-' + prefix + '-token');
+  var clearBtn = document.getElementById('clear-' + prefix + '-token');
+  var msg = document.getElementById(prefix + '-token-msg');
+  var status = document.getElementById(prefix + '-token-status');
+  var statusUrl = '/api/settings/' + prefix + '-token-status';
+  var saveUrl = '/api/settings/' + prefix + '-token';
 
   function setMsg(text, kind) {
     msg.textContent = text || '';
@@ -59,7 +79,7 @@
   }
 
   function loadStatus() {
-    fetch('/api/settings/lco-token-status')
+    fetch(statusUrl)
       .then(function (r) { return r.json().then(function (d) { d._status = r.status; return d; }); })
       .then(function (d) {
         if (!d.ok) {
@@ -80,7 +100,7 @@
 
   function saveToken(token) {
     setMsg('Saving...', '');
-    fetch('/api/settings/lco-token', {
+    fetch(saveUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: token })
@@ -101,13 +121,17 @@
   saveBtn.addEventListener('click', function () {
     var token = tokenInput.value.trim();
     if (!token) {
-      setMsg('Paste a token before saving.', 'err');
+      setMsg('Paste a ' + label + ' token before saving.', 'err');
       return;
     }
     saveToken(token);
   });
   clearBtn.addEventListener('click', function () { saveToken(''); });
   loadStatus();
+  }
+
+  setupTokenSettings('lco', 'LCO');
+  setupTokenSettings('ads', 'ADS');
 })();
 </script>
 {% endblock %}

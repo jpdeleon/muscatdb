@@ -188,8 +188,9 @@
       <span>
         <a href="/{{ sel_inst }}/{{ sel_date }}" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">Show Obslog</a>
         {% if obs_type %}
-          <span style="font-size: 0.85rem; color: var(--text-dim); font-weight: normal; margin-left: 0.35rem;">{{ obs_type }}</span>
+        <span style="font-size: 0.85rem; color: var(--text-dim); font-weight: normal; margin-left: 0.35rem;">{{ obs_type }}</span>
         {% endif %}
+        <a href="/fov?inst={{ sel_inst | urlencode }}&target={{ sel_target | urlencode }}" target="_blank" rel="noopener" style="color: inherit; text-decoration: underline; text-underline-offset: 2px; margin-left: 0.75rem;">Show FOV</a>
       </span>
       {% if wiki_url %}<a href="{{ wiki_url }}" target="_blank" rel="noopener" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">MuSCAT2 wiki ↗</a>{% endif %}
     </h2>

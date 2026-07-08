@@ -791,7 +791,13 @@ class TestCLI:
         from typer.testing import CliRunner
         from muscat_db.cli import app
         runner = CliRunner()
-        return runner.invoke(app, [*args])
+        # Disable rich's ANSI colouring and force a wide, non-wrapping layout so
+        # help-text substring assertions stay stable across typer/rich versions.
+        # rich injects colour codes *inside* option tokens (e.g. "--port"), which
+        # otherwise breaks a plain `"--port" in r.output` check.
+        return runner.invoke(
+            app, [*args], env={"NO_COLOR": "1", "TERM": "dumb", "COLUMNS": "200"}
+        )
 
     def test_help(self):
         r = self._invoke("--help")
