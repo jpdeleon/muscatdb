@@ -6,10 +6,10 @@
   {# Single target view #}
   <h1>Target: {{ target_name }}</h1>
   <div class="hint" style="display: flex; gap: 1rem; margin: -0.5rem 0 1rem 0; line-height: 1.6; word-break: break-all;">
-    <a href="https://exoplanetarchive.ipac.caltech.edu/overview/{{ target_name | urlencode }}" target="_blank" rel="noopener">NASA Archive</a>
-    <a href="https://exofop.ipac.caltech.edu/tess/target.php?id={{ exofop_target_id | urlencode }}" target="_blank" rel="noopener">ExoFOP-TESS</a>
+    <a href="https://exoplanetarchive.ipac.caltech.edu/overview/{{ target_name | urlencode }}" target="_blank" rel="noopener">NASA Archive ↗</a>
+    <a href="https://exofop.ipac.caltech.edu/tess/target.php?id={{ exofop_target_id | urlencode }}" target="_blank" rel="noopener">ExoFOP-TESS ↗</a>
     {% if target_tic_id %}
-        <a href="https://tess.cuikaiming.com/{{ target_tic_id | urlencode }}" target="_blank" rel="noopener">TESS Viewer</a>
+        <a href="https://tess.cuikaiming.com/{{ target_tic_id | urlencode }}" target="_blank" rel="noopener">TESS Viewer ↗</a>
     {% endif %}
 </div>
   <script>
@@ -388,7 +388,7 @@
         <span class="pill" style="display: inline-flex; align-items: center; gap: 0.35rem;">
           <span class="dot" id="ads-cfg-token" style="width: 9px; height: 9px; border-radius: 50%; background: var(--text-dim); display: inline-block;"></span> ADS API token
         </span>
-        <span class="lco-note" style="margin: 0; font-size: 0.78rem; color: var(--text-dim);">Set up ADS API access from <a href="https://ui.adsabs.harvard.edu/user/settings/token" target="_blank" rel="noopener">your ADS token settings</a>, then set the token as <code>ADS_API_TOKEN</code> on the server.</span>
+        <span class="lco-note" style="margin: 0; font-size: 0.78rem; color: var(--text-dim);">Set up ADS API access from <a href="https://ui.adsabs.harvard.edu/user/settings/token" target="_blank" rel="noopener">your ADS token settings</a>, then save your token in <a href="/settings">Settings</a>.</span>
       </div>
       <div class="search-bar" style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; width: 100%;">
         <input id="ads-query-input" type="text" placeholder="Search papers on ADS…" value="{{ target_name }}" style="flex: 1;" autocomplete="off">
@@ -443,7 +443,7 @@
               return res.json().then(err => {
                 let msg = err.error || 'Request failed';
                 if (err.token_missing) {
-                  msg = 'ADS API token is not configured. Please set <code>ADS_API_TOKEN</code> or <code>ADS_DEV_KEY</code> in your <code>.env</code> file.';
+                  msg = 'ADS API token is not configured. Save your token in <a href="/settings">Settings</a>.';
                 }
                 throw new Error(msg);
               });

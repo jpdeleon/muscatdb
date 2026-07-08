@@ -54,7 +54,9 @@ from muscat_db.database import (
     save_ephemeris_view,
     get_ephemeris_view,
     get_last_build_date,
+    get_user_ads_token,
     get_user_lco_token,
+    set_user_ads_token,
     set_user_lco_token,
     _normalize_filters,
 )
@@ -1092,6 +1094,8 @@ _BOYLE_COLUMNS: list[tuple[str, str]] = [
 ]
 
 _boyle_cache: dict = {}
+_TOI_CONFIRMED_PERIOD_REL_TOL = float(os.environ.get("MUSCAT_TOI_CONFIRMED_PERIOD_REL_TOL", "0.01"))
+_TOI_CONFIRMED_PERIOD_ABS_TOL_D = float(os.environ.get("MUSCAT_TOI_CONFIRMED_PERIOD_ABS_TOL_D", "0.001"))
 
 
 def _load_boyle_catalog() -> tuple[dict[str, list], dict[int, int]]:
@@ -1158,6 +1162,79 @@ def _merge_boyle_columns(cat_data: dict) -> tuple[dict[str, list], int]:
         for key, _ in _BOYLE_COLUMNS:
             merged[key][i] = cols[key][j]
     return merged, n_matched
+
+
+def _periods_match(a: float | None, b: float | None) -> bool:
+    if a is None or b is None or a <= 0 or b <= 0:
+        return False
+    tol = max(_TOI_CONFIRMED_PERIOD_ABS_TOL_D, _TOI_CONFIRMED_PERIOD_REL_TOL * max(abs(a), abs(b)))
+    return abs(a - b) <= tol
+
+
+def _nasa_confirmed_toi_membership(cat_data: dict) -> tuple[list[int], list[str], int]:
+    """Mark TOI rows that appear in the NASA confirmed-planet catalog.
+
+    The TOI disposition remains the raw TFOPWG value. This overlay uses
+    PSCompPars/NExScI as the confirmed-planet source and matches planet-level
+    rows by TIC ID plus period. Exact normalized planet-name matches are kept as
+    a fallback for rows where a confirmed planet carries a TOI-like name.
+    """
+    n = len(cat_data.get("toi", []))
+    confirmed = [0] * n
+    planet_names = [""] * n
+    try:
+        nx = _load_nexsci_catalog()["data"]
+    except Exception:
+        logger.warning("failed to read NExScI catalog for TOI confirmation overlay", exc_info=True)
+        return confirmed, planet_names, 0
+
+    by_tic: dict[int, list[tuple[float | None, str]]] = {}
+    by_name: dict[str, str] = {}
+    nx_names = nx.get("name", [])
+    nx_periods = nx.get("period", [])
+    nx_tics = nx.get("tic", [])
+    for i, name in enumerate(nx_names):
+        planet_name = str(name or "").strip()
+        if planet_name:
+            by_name.setdefault(_normalize_target_name(planet_name), planet_name)
+        tic_digits = re.sub(r"\D", "", str(nx_tics[i] if i < len(nx_tics) else "") or "")
+        if not tic_digits:
+            continue
+        period = nx_periods[i] if i < len(nx_periods) else None
+        by_tic.setdefault(int(tic_digits), []).append((period, planet_name))
+
+    n_matched = 0
+    tois = cat_data.get("toi", [])
+    names = cat_data.get("name", [])
+    tics = cat_data.get("tic", [])
+    periods = cat_data.get("period", [])
+    for i in range(n):
+        match_name = ""
+        row_names = []
+        if i < len(names) and names[i]:
+            row_names.append(str(names[i]))
+        if i < len(tois) and tois[i]:
+            row_names.append(f"TOI-{tois[i]}")
+        for row_name in row_names:
+            match_name = by_name.get(_normalize_target_name(row_name), "")
+            if match_name:
+                break
+
+        if not match_name:
+            tic_digits = re.sub(r"\D", "", str(tics[i] if i < len(tics) else "") or "")
+            period = periods[i] if i < len(periods) else None
+            if tic_digits:
+                for nx_period, nx_name in by_tic.get(int(tic_digits), []):
+                    if _periods_match(period, nx_period):
+                        match_name = nx_name
+                        break
+
+        if match_name:
+            confirmed[i] = 1
+            planet_names[i] = match_name
+            n_matched += 1
+
+    return confirmed, planet_names, n_matched
 
 
 _toi_db_cache: dict = {}
@@ -1232,11 +1309,14 @@ def toi_page():
     indb, tname = _toi_db_membership(cat["data"], _db_path())
     boyle, n_boyle = _merge_boyle_columns(cat["data"])
     harps, n_harps = _harps_coord_membership(cat["data"])
+    nasa_confirmed, nasa_planet_name, n_nasa_confirmed = _nasa_confirmed_toi_membership(cat["data"])
     payload = dict(cat["data"])
     payload.update(boyle)
     payload["indb"] = indb
     payload["tname"] = tname
     payload["has_harps_rv"] = harps
+    payload["nasa_confirmed"] = nasa_confirmed
+    payload["nasa_planet_name"] = nasa_planet_name
     return _render(
         "toi.html",
         toi_json=json.dumps(payload, separators=(",", ":"), allow_nan=False),
@@ -1244,6 +1324,7 @@ def toi_page():
         n_indb=sum(indb),
         n_boyle=n_boyle,
         n_harps=n_harps,
+        n_nasa_confirmed=n_nasa_confirmed,
         toi_updated=cat["updated"],
     )
 
@@ -2759,7 +2840,7 @@ def _settings_auth_error() -> JSONResponse:
         {
             "ok": False,
             "error": "login required",
-            "detail": "Per-user LCO tokens require nginx authentication.",
+            "detail": "Per-user settings require nginx authentication.",
         },
         status_code=401,
     )
@@ -2827,6 +2908,47 @@ def api_settings_lco_token(request: Request, payload: dict = Body(...)):
     except UserSettingsError as exc:
         return JSONResponse(
             {"ok": False, "error": "could not save LCO token", "detail": str(exc)},
+            status_code=503,
+        )
+    return JSONResponse({"ok": True, "user_token_configured": bool(token)})
+
+
+@app.get("/api/settings/ads-token-status", response_class=JSONResponse)
+def api_settings_ads_token_status(request: Request):
+    user = _request_user(request)
+    if not user:
+        return _settings_auth_error()
+    try:
+        user_token_configured = get_user_ads_token(user) is not None
+    except UserSettingsError as exc:
+        return JSONResponse(
+            {"ok": False, "error": "stored ADS token cannot be read", "detail": str(exc)},
+            status_code=503,
+        )
+    return JSONResponse(
+        {
+            "ok": True,
+            "user": user,
+            "user_token_configured": user_token_configured,
+            "global_token_configured": bool(_global_ads_token()),
+            "secret_configured": bool(os.environ.get("MUSCAT_DB_SECRET")),
+        }
+    )
+
+
+@app.post("/api/settings/ads-token", response_class=JSONResponse)
+def api_settings_ads_token(request: Request, payload: dict = Body(...)):
+    if not _is_same_origin(request):
+        return _csrf_error()
+    user = _request_user(request)
+    if not user:
+        return _settings_auth_error()
+    token = str(payload.get("token") or "").strip()
+    try:
+        set_user_ads_token(user, token)
+    except UserSettingsError as exc:
+        return JSONResponse(
+            {"ok": False, "error": "could not save ADS token", "detail": str(exc)},
             status_code=503,
         )
     return JSONResponse({"ok": True, "user_token_configured": bool(token)})
@@ -4005,20 +4127,45 @@ def _get_run_fitted_params(inst: str, date: str, target: str, run_id: str | None
     return fitted
 
 
+def _global_ads_token() -> str:
+    return (
+        os.environ.get("ADS_API_TOKEN")
+        or os.environ.get("ADS_DEV_KEY")
+        or os.environ.get("ADS_TOKEN")
+        or ""
+    ).strip()
+
+
+def _ads_token_for_request(request: Request | None) -> tuple[str, str | None]:
+    user = _request_user(request) if request is not None else None
+    if user:
+        try:
+            token = get_user_ads_token(user)
+        except UserSettingsError:
+            token = None
+        if token:
+            return token, "user"
+    token = _global_ads_token()
+    return (token, "global") if token else ("", None)
+
+
 @app.get("/api/ads/config", response_class=JSONResponse)
-def api_ads_config():
+def api_ads_config(request: Request):
     """Report whether the ADS API token is configured. No secrets."""
-    import os
-    token = os.environ.get("ADS_API_TOKEN") or os.environ.get("ADS_DEV_KEY") or os.environ.get("ADS_TOKEN")
+    token, source = _ads_token_for_request(request)
+    user = _request_user(request)
     return JSONResponse({
         "ok": True,
-        "token_configured": token is not None and token.strip() != ""
+        "token_configured": bool(token),
+        "token_source": source,
+        "user_token_configured": source == "user",
+        "global_token_configured": bool(_global_ads_token()),
+        "user": user,
     })
 
 
 @app.get("/api/target/publications", response_class=JSONResponse)
-def api_target_publications(q: str):
-    import os
+def api_target_publications(request: Request, q: str):
     import urllib.request
     import urllib.parse
     import json
@@ -4027,11 +4174,11 @@ def api_target_publications(q: str):
     if not q:
         return JSONResponse({"ok": False, "error": "Query parameter q is required"}, status_code=400)
         
-    token = os.environ.get("ADS_API_TOKEN") or os.environ.get("ADS_DEV_KEY") or os.environ.get("ADS_TOKEN")
+    token, _source = _ads_token_for_request(request)
     if not token:
         return JSONResponse({
             "ok": False,
-            "error": "ADS_API_TOKEN is not configured. Please add it to your .env file.",
+            "error": "ADS API token is not configured. Save your token in Settings.",
             "token_missing": True
         }, status_code=400)
         

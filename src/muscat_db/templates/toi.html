@@ -26,6 +26,7 @@
   · <strong>{{ '{:,}'.format(n_indb) }}</strong> in muscat-db (★ markers, click a point to open its target page)
   · <strong>{{ '{:,}'.format(n_boyle) }}</strong> with Boyle2026 rotation data (RUWE, P<sub>rot</sub>, binarity flags)
   · <strong>{{ '{:,}'.format(n_harps) }}</strong> with HARPS RVBank data
+  · <strong>{{ '{:,}'.format(n_nasa_confirmed) }}</strong> confirmed in NASA PSCompPars
   {% if toi_updated %}· catalog last updated {{ toi_updated }}{% endif %}.
 </p>
 
@@ -63,6 +64,7 @@
   <span class="badge instrument-badge toi-chip" data-group="disp" data-key="FP"  title="False Positive">FP</span>
   <span class="badge instrument-badge toi-chip" data-group="disp" data-key="FA"  title="False Alarm">FA</span>
   <span class="badge instrument-badge toi-chip" data-group="disp" data-key="__blank__" title="No TFOPWG disposition">Unset</span>
+  <span class="badge instrument-badge toi-chip" data-group="nasa" data-key="1" title="Only TOIs matched to the NASA confirmed-planet composite catalog by TIC ID and period">NASA confirmed</span>
 </div>
 <div class="chip-bar">
   <span class="chip-label">Multiplicity:</span>
@@ -143,6 +145,8 @@
     { key: 'tic',      label: 'TIC ID',      type: 'text' },
     { key: 'name',     label: 'Planet Name', type: 'text' },
     { key: 'disp',     label: 'Disp',        type: 'text' },
+    { key: 'nasa_confirmed', label: 'NASA Confirmed', type: 'num' },
+    { key: 'nasa_planet_name', label: 'NASA Planet', type: 'text' },
     { key: 'period',   label: 'Period (d)',  type: 'num', plot: 'Period (days)',        err: 'period_err' },
     { key: 'duration', label: 'Dur (h)',     type: 'num', plot: 'Duration (hours)',     err: 'duration_err' },
     { key: 'depth',    label: 'Depth (ppm)', type: 'num', plot: 'Depth (ppm)',          err: 'depth_err' },
@@ -358,6 +362,7 @@
   const selectedRot = new Set();           // 'fast' = P_rot < 10 d (Boyle+2026)
   const selectedIndb = new Set();          // '1' = only targets present in muscat-db
   const selectedHarps = new Set();         // '1' = coordinate match in HARPS RVBank
+  const selectedNasa = new Set();          // '1' = matched to NASA confirmed-planet catalog
   let sortState = { key: null, dir: 0 };   // dir: 1 asc, -1 desc
 
   function buildColPredicates() {
@@ -384,6 +389,7 @@
     const useRot = selectedRot.size > 0;
     const useIndb = selectedIndb.size > 0;
     const useHarps = selectedHarps.size > 0;
+    const useNasa = selectedNasa.size > 0;
     const out = [];
     for (let i = 0; i < N; i++) {
       if (q) {
@@ -415,6 +421,7 @@
       }
       if (useIndb && !TOI.indb[i]) continue;
       if (useHarps && !TOI.has_harps_rv[i]) continue;
+      if (useNasa && !TOI.nasa_confirmed[i]) continue;
       out.push(i);
     }
     if (sortState.key) applySort(out);
@@ -461,6 +468,17 @@
             encodeURIComponent(tic) + '" target="_blank" rel="noopener">' + esc(label) + '</a></td>';
         }
         return '<td>' + esc(label) + '</td>';
+      }
+      if (c.key === 'disp') {
+        const raw = v || '—';
+        let html = '<td>' + esc(raw);
+        if ((raw || '').toUpperCase() === 'PC' && TOI.nasa_confirmed[i]) {
+          html += ' <span class="badge instrument-badge" title="Matched to NASA PSCompPars confirmed planet catalog">NASA confirmed</span>';
+        }
+        return html + '</td>';
+      }
+      if (c.key === 'nasa_confirmed') {
+        return '<td>' + (v ? 'yes' : '—') + '</td>';
       }
       if (c.type === 'num') return '<td class="num">' + fmtNum(v) + '</td>';
       return '<td>' + esc(v || '—') + '</td>';
@@ -865,6 +883,7 @@
     if (state.rot && state.rot.length) parts.push('rot=' + state.rot.join(','));
     if (state.indb && state.indb.length) parts.push('indb=' + state.indb.join(','));
     if (state.harps && state.harps.length) parts.push('harps=' + state.harps.join(','));
+    if (state.nasa && state.nasa.length) parts.push('nasa=' + state.nasa.join(','));
     if (state.sort && state.sort.key) parts.push('sort=' + state.sort.key + ':' + state.sort.dir);
     if (state.plot) {
       if (state.plot.x) parts.push('x=' + state.plot.x);
@@ -893,7 +912,7 @@
     const state = {};
     const params = new URLSearchParams(hash);
     if (params.has('q')) searchEl.value = decodeURIComponent(params.get('q'));
-    ['planet', 'star', 'disp', 'multi', 'rot', 'indb', 'harps'].forEach(k => {
+    ['planet', 'star', 'disp', 'multi', 'rot', 'indb', 'harps', 'nasa'].forEach(k => {
       if (params.has(k)) state[k] = params.get(k).split(',');
     });
     if (params.has('sort')) {
@@ -932,6 +951,7 @@
       rot: Array.from(selectedRot),
       indb: Array.from(selectedIndb),
       harps: Array.from(selectedHarps),
+      nasa: Array.from(selectedNasa),
       sort: sortState,
       plot: { x: selX.value, y: selY.value, color: selColor.value,
               logx: logXEl.checked, logy: logYEl.checked,
@@ -968,6 +988,7 @@
     (s.rot || []).forEach(k => selectedRot.add(k));
     (s.indb || []).forEach(k => selectedIndb.add(k));
     (s.harps || []).forEach(k => selectedHarps.add(k));
+    (s.nasa || []).forEach(k => selectedNasa.add(k));
     chips.forEach(ch => {
       if (setForGroup(ch.dataset.group).has(keyForChip(ch))) ch.classList.add('active');
     });
@@ -1019,7 +1040,7 @@
     if (!clearEl) return;
     const hasSearch = !!searchEl.value.trim();
     const hasColFilters = colInputs.some(inp => !!inp.value.trim());
-    const hasChips = selectedPlanet.size > 0 || selectedStar.size > 0 || selectedDisp.size > 0 || selectedMulti.size > 0 || selectedRot.size > 0 || selectedIndb.size > 0 || selectedHarps.size > 0;
+    const hasChips = selectedPlanet.size > 0 || selectedStar.size > 0 || selectedDisp.size > 0 || selectedMulti.size > 0 || selectedRot.size > 0 || selectedIndb.size > 0 || selectedHarps.size > 0 || selectedNasa.size > 0;
     clearEl.style.display = (hasSearch || hasColFilters || hasChips) ? 'inline-flex' : 'none';
   }
 
@@ -1034,6 +1055,7 @@
       selectedRot.clear();
       selectedIndb.clear();
       selectedHarps.clear();
+      selectedNasa.clear();
       chips.forEach(ch => ch.classList.remove('active'));
       apply();
     });
@@ -1067,7 +1089,7 @@
   searchEl.addEventListener('input', applySoon);
   colInputs.forEach(inp => inp.addEventListener('input', applySoon));
   function setForGroup(group) {
-    return group === 'planet' ? selectedPlanet : group === 'star' ? selectedStar : group === 'multi' ? selectedMulti : group === 'rot' ? selectedRot : group === 'indb' ? selectedIndb : group === 'harps' ? selectedHarps : selectedDisp;
+    return group === 'planet' ? selectedPlanet : group === 'star' ? selectedStar : group === 'multi' ? selectedMulti : group === 'rot' ? selectedRot : group === 'indb' ? selectedIndb : group === 'harps' ? selectedHarps : group === 'nasa' ? selectedNasa : selectedDisp;
   }
   function keyForChip(ch) {
     // The "Unset" disposition chip uses a sentinel so the attribute is non-empty.

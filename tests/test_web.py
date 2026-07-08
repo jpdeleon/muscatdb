@@ -421,19 +421,18 @@ def test_target_detail_has_lco_schedule_and_archive_buttons(mock_db, monkeypatch
     assert 'href="/lco/archive?target=V1298TAU"' in html
     assert (
         '<a href="https://exoplanetarchive.ipac.caltech.edu/overview/V1298TAU" '
-        'target="_blank" rel="noopener">https://exoplanetarchive.ipac.caltech.edu/overview/V1298TAU</a>'
+        'target="_blank" rel="noopener">NASA Archive</a>'
     ) in html
     assert (
         '<a href="https://exofop.ipac.caltech.edu/tess/target.php?id=12345" '
-        'target="_blank" rel="noopener">https://exofop.ipac.caltech.edu/tess/target.php?id=12345</a>'
+        'target="_blank" rel="noopener">ExoFOP-TESS</a>'
     ) in html
     assert (
         '<a href="https://tess.cuikaiming.com/12345" '
-        'target="_blank" rel="noopener">https://tess.cuikaiming.com/12345</a>'
+        'target="_blank" rel="noopener">TESS Viewer</a>'
     ) in html
-    assert ">NASA Archive</a>" not in html
-    assert ">ExoFOP-TESS</a>" not in html
-    assert ">TESS Viewer</a>" not in html
+    assert 'then save your token in <a href="/settings">Settings</a>.' in html
+    assert "then set the token as" not in html
 
 
 def test_target_detail_harps_panel_is_lazy_loaded(mock_db, monkeypatch):
@@ -709,6 +708,41 @@ def test_lco_settings_save_and_status_are_per_nginx_user(mock_db, monkeypatch):
     assert config["token_configured"] is True
     assert config["token_source"] == "user"
     assert "alice-token" not in str(config)
+
+
+def test_ads_settings_save_status_and_config_are_per_nginx_user(mock_db, monkeypatch):
+    monkeypatch.setenv("MUSCAT_DB_SECRET", "settings-secret")
+    monkeypatch.delenv("ADS_API_TOKEN", raising=False)
+    monkeypatch.delenv("ADS_DEV_KEY", raising=False)
+    monkeypatch.delenv("ADS_TOKEN", raising=False)
+    client = TestClient(app, client=("127.0.0.1", 12345))
+    headers = {"X-Forwarded-User": "alice"}
+    post_headers = {**headers, "Origin": "http://testserver"}
+
+    page = client.get("/settings")
+    assert page.status_code == 200
+    assert 'id="ads-token"' in page.text
+    assert 'id="save-ads-token"' in page.text
+    assert "setupTokenSettings('ads', 'ADS')" in page.text
+
+    missing = client.get("/api/settings/ads-token-status")
+    assert missing.status_code == 401
+
+    saved = client.post("/api/settings/ads-token", headers=post_headers, json={"token": "alice-ads-token"})
+    assert saved.status_code == 200
+    assert saved.json()["user_token_configured"] is True
+    assert "alice-ads-token" not in saved.text
+
+    status = client.get("/api/settings/ads-token-status", headers=headers).json()
+    assert status["ok"] is True
+    assert status["user"] == "alice"
+    assert status["user_token_configured"] is True
+    assert status["global_token_configured"] is False
+
+    config = client.get("/api/ads/config", headers=headers).json()
+    assert config["token_configured"] is True
+    assert config["token_source"] == "user"
+    assert "alice-ads-token" not in str(config)
 
 
 def test_lco_token_save_rejects_cross_origin_request(mock_db, monkeypatch):
@@ -1506,6 +1540,37 @@ def test_harps_target_lookup_uses_toi_catalog_coords_after_db_miss(monkeypatch):
     assert (120.593607, 3.337163) in captured["coords"]
 
 
+def test_nasa_confirmed_toi_membership_matches_tic_and_period(monkeypatch):
+    from muscat_db import web
+
+    monkeypatch.setattr(web, "_TOI_CONFIRMED_PERIOD_REL_TOL", 0.01)
+    monkeypatch.setattr(web, "_TOI_CONFIRMED_PERIOD_ABS_TOL_D", 0.001)
+    monkeypatch.setattr(
+        web,
+        "_load_nexsci_catalog",
+        lambda: {
+            "data": {
+                "name": ["TOI-100 b", "TOI-200 b"],
+                "tic": ["TIC 12345", "TIC 12345"],
+                "period": [10.001, 30.0],
+            },
+            "n": 2,
+            "updated": "2026-07-01",
+        },
+    )
+
+    confirmed, planet_names, n = web._nasa_confirmed_toi_membership({
+        "toi": ["100.01", "101.01"],
+        "tic": ["12345", "12345"],
+        "name": ["TOI-100.01", "TOI-101.01"],
+        "period": [10.0, 20.0],
+    })
+
+    assert confirmed == [1, 0]
+    assert planet_names == ["TOI-100 b", ""]
+    assert n == 1
+
+
 def test_toi_page_includes_boyle_payload(monkeypatch):
     from muscat_db import web
     cols = {k: [None] for k, _ in web._BOYLE_COLUMNS}
@@ -1514,6 +1579,19 @@ def test_toi_page_includes_boyle_payload(monkeypatch):
     cols["sector_periods"] = ["2.19,2.19"]
     monkeypatch.setattr(web, "_load_boyle_catalog", lambda: (cols, {50365310: 0}))
     monkeypatch.setattr(web, "_load_harps_coords", lambda: ([(10.0, -20.0)], "2026-07-08"))
+    monkeypatch.setattr(
+        web,
+        "_load_nexsci_catalog",
+        lambda: {
+            "data": {
+                "name": ["TOI-100 b"],
+                "tic": ["TIC 50365310"],
+                "period": [1.0001],
+            },
+            "n": 1,
+            "updated": "2026-07-01",
+        },
+    )
     monkeypatch.setattr(web, "_load_toi_catalog", lambda: {
         "data": {
             "toi": ["100.01"], "tic": ["50365310"], "name": [""], "disp": ["PC"],
@@ -1544,6 +1622,11 @@ def test_toi_page_includes_boyle_payload(monkeypatch):
     assert '"has_harps_rv":[1]' in r.text
     assert 'data-group="harps"' in r.text
     assert 'has HARPS RV' in r.text
+    # NASA confirmed-planet overlay from the local PSCompPars/NExScI catalog.
+    assert '"nasa_confirmed":[1]' in r.text
+    assert '"nasa_planet_name":["TOI-100 b"]' in r.text
+    assert 'data-group="nasa"' in r.text
+    assert 'NASA confirmed' in r.text
 
 
 def _nexsci_cat_data(names, hosts, tics):
@@ -1621,6 +1704,42 @@ def test_nexsci_db_membership_matches_tic_and_host(mock_db):
     # row0 matched by TIC, row1 by normalized host name, row2 not in DB.
     assert indb == [1, 1, 0]
     assert tname == ["TIC12345", "TOI2000", ""]
+
+
+def test_photometry_page_links_to_fov_after_obslog(mock_db, monkeypatch, tmp_path):
+    from muscat_db import web
+
+    empty_outputs = {
+        "has_any": False,
+        "summary": {},
+        "summary_items": [],
+        "bands": {},
+        "sites": [],
+        "modes": [],
+        "masters": [],
+        "npz": None,
+        "log": None,
+        "ref_header": None,
+        "ref_selection": None,
+        "site": "",
+        "mode": "",
+    }
+    monkeypatch.setattr(web.phot, "list_photometry_runs", lambda inst, date, target: ([], {}))
+    monkeypatch.setattr(web.phot, "list_outputs", lambda *args, **kwargs: empty_outputs)
+    monkeypatch.setattr(web.phot, "command_str", lambda inst, date, target, test_run=False: "run photometry")
+    monkeypatch.setattr(web.phot, "raw_data_dir", lambda inst, date: tmp_path)
+
+    r = TestClient(app).get("/photometry?inst=muscat3&date=260101&target=TOI-488.01")
+
+    assert r.status_code == 200
+    html = r.text
+    obslog_i = html.index("Show Obslog")
+    fov_i = html.index("Show FOV")
+    assert obslog_i < fov_i
+    assert (
+        'href="/fov?inst=muscat3&target=TOI-488.01" '
+        'target="_blank" rel="noopener"'
+    ) in html
 
 
 def test_photometry_download_all_endpoints(mock_db, monkeypatch, tmp_path):
@@ -1767,6 +1886,30 @@ def test_api_target_publications_success(monkeypatch, mocker):
     assert data["papers"][0]["title"] == ["A Great Paper"]
     assert data["papers"][0]["author"] == ["Astronomer, A."]
 
+
+def test_api_target_publications_uses_saved_ads_token(mock_db, monkeypatch, mocker):
+    monkeypatch.setenv("MUSCAT_DB_SECRET", "settings-secret")
+    monkeypatch.delenv("ADS_API_TOKEN", raising=False)
+    monkeypatch.delenv("ADS_DEV_KEY", raising=False)
+    monkeypatch.delenv("ADS_TOKEN", raising=False)
+    client = TestClient(app, client=("127.0.0.1", 12345))
+    headers = {"X-Forwarded-User": "alice"}
+    post_headers = {**headers, "Origin": "http://testserver"}
+
+    saved = client.post("/api/settings/ads-token", headers=post_headers, json={"token": "alice-ads-token"})
+    assert saved.status_code == 200
+
+    mock_response = mocker.MagicMock()
+    mock_response.__enter__.return_value = mock_response
+    mock_response.read.return_value = b'{"response": {"docs": []}}'
+    mock_urlopen = mocker.patch("urllib.request.urlopen", return_value=mock_response)
+
+    r = client.get("/api/target/publications", headers=headers, params={"q": "WASP-12"})
+
+    assert r.status_code == 200
+    called_req = mock_urlopen.call_args[0][0]
+    assert called_req.headers["Authorization"] == "Bearer alice-ads-token"
+    assert "alice-ads-token" not in r.text
 
 
 def test_api_target_publications_empty_query():
