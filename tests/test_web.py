@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import os
 import sqlite3
 import tempfile
 import getpass
+import zipfile
 import pytest
 from fastapi.testclient import TestClient
 
@@ -414,6 +416,98 @@ def test_target_detail_has_lco_schedule_and_archive_buttons(mock_db, monkeypatch
     assert "Search LCO archive" in html
     assert 'href="/lco/schedule?target=V1298TAU"' in html
     assert 'href="/lco/archive?target=V1298TAU"' in html
+
+
+def test_target_detail_harps_panel_is_lazy_loaded(mock_db, monkeypatch):
+    from muscat_db import web
+    web._index_cache.clear()
+    monkeypatch.setattr(web, "_HARPS_MATCH_ARCSEC", 5.0)
+    monkeypatch.setattr(
+        web,
+        "_get_datasets_for_normalized_target",
+        lambda _db, norm_name: ([
+            {
+                "object": "HD 209458",
+                "date": "260101",
+                "instrument": "muscat3",
+                "filters": ["gp"],
+                "filter_chips": [{"label": "gp", "color": "g", "narrow": False}],
+                "airmass_min": 1.1,
+                "airmass_max": 1.3,
+                "n_frames": 10,
+                "ra": "22:03:10.772",
+                "dec": "+18:53:03.55",
+                "phot": "none",
+                "fit": "none",
+                "note": "",
+            }
+        ], "2026-07-01"),
+    )
+
+    def fail_if_called(datasets, target_name=None):
+        raise AssertionError("HARPS rows should not be loaded during target page render")
+
+    monkeypatch.setattr(web, "_harps_data_for_target", fail_if_called)
+
+    r = TestClient(app).get("/target?name=HD209458")
+    assert r.status_code == 200
+    assert "HARPS RVBank Data" in r.text
+    assert "/api/target/harps-rv?name=" in r.text
+    assert "Open this section to load coordinate-matched HARPS RVBank rows." in r.text
+    assert "Match tolerance: 5 arcsec." in r.text
+    assert "2451000.123456" not in r.text
+
+
+def test_target_harps_rv_api_returns_table_payload(mock_db, monkeypatch):
+    from muscat_db import web
+    monkeypatch.setattr(web, "_HARPS_MATCH_ARCSEC", 5.0)
+    monkeypatch.setattr(
+        web,
+        "_get_datasets_for_normalized_target",
+        lambda _db, norm_name: ([
+            {
+                "object": "HD 209458",
+                "date": "260101",
+                "instrument": "muscat3",
+                "filters": ["gp"],
+                "filter_chips": [{"label": "gp", "color": "g", "narrow": False}],
+                "airmass_min": 1.1,
+                "airmass_max": 1.3,
+                "n_frames": 10,
+                "ra": "22:03:10.772",
+                "dec": "+18:53:03.55",
+                "phot": "none",
+                "fit": "none",
+                "note": "",
+            }
+        ], "2026-07-01"),
+    )
+    monkeypatch.setattr(
+        web,
+        "_harps_data_for_target",
+        lambda datasets, target_name=None: {
+            "columns": ["target", "BJD", "RV_mlc_nzp"],
+            "rows": [{"target": "HD209458", "BJD": "2451000.123456", "RV_mlc_nzp": "-2.5"}],
+            "total_rows": 1,
+            "display_rows": 1,
+            "truncated": False,
+            "matched_targets": [{"target": "HD209458", "ra": 330.794883, "dec": 18.884319}],
+            "source_kind": "local",
+            "source": "data/HARPS_RVBank_ver02.csv.zip",
+            "error": "",
+        },
+    )
+
+    r = TestClient(app).get("/api/target/harps-rv?name=HD209458")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["target"] == "HD209458"
+    assert data["match_arcsec"] == 5.0
+    assert data["has_data"] is True
+    assert data["harps_rv"]["total_rows"] == 1
+    assert data["harps_rv"]["rows"][0]["BJD"] == "2451000.123456"
+    assert data["harps_rv"]["source"] == "data/HARPS_RVBank_ver02.csv.zip"
 
 
 def test_ephemeris_targets_are_normalized_unique_names(mock_db):
@@ -1263,6 +1357,137 @@ def test_merge_boyle_columns_degrades_without_catalog(monkeypatch, tmp_path):
     assert merged["sectors"] == ["", ""]
 
 
+def test_harps_coord_membership_matches_by_coordinate(monkeypatch):
+    from muscat_db import web
+    monkeypatch.setattr(web, "_HARPS_MATCH_ARCSEC", 5.0)
+    monkeypatch.setattr(web, "_load_harps_coords", lambda: ([(10.0, -20.0)], "2026-07-08"))
+    flags, n = web._harps_coord_membership({
+        "ra": [10.0, 10.01, None],
+        "dec": [-20.0, -20.0, -20.0],
+    })
+    assert flags == [1, 0, 0]
+    assert n == 1
+
+
+def test_harps_rvbank_rows_read_from_local_zip(monkeypatch, tmp_path):
+    from muscat_db import web
+    csv_text = (
+        "target,ra,dec,BJD,RV_mlc_nzp\n"
+        "HD209458,330.794883,18.884319,2451000.123456789,-2.5000001\n"
+        "Other,10.0,-20.0,2451001.0,7.0\n"
+    )
+    zip_path = tmp_path / "HARPS_RVBank_ver02.csv.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("HARPS_RVBank_ver02.csv", csv_text)
+
+    monkeypatch.setattr(web, "_HARPS_RVBANK_PATH", tmp_path / "missing.csv")
+    monkeypatch.setattr(web, "_HARPS_RVBANK_ZIP_PATH", zip_path)
+    monkeypatch.setattr(web, "_HARPS_TARGETS_PATH", tmp_path / "missing_targets.csv")
+    web._harps_cache.clear()
+
+    res = web._query_harps_rvbank_rows(
+        coords=[],
+        matching_targets=[{"target": "HD209458", "ra": 330.794883, "dec": 18.884319, "n_rv": 1}],
+        max_rows=10,
+    )
+    assert res["source_kind"] == "local"
+    assert res["total_rows"] == 1
+    assert res["columns"] == ["target", "ra", "dec", "BJD", "RV_mlc_nzp"]
+    assert res["rows"][0]["BJD"] == "2451000.123457"
+    assert res["rows"][0]["RV_mlc_nzp"] == "-2.5"
+
+
+def test_harps_rvbank_rows_fall_back_to_online_stream(monkeypatch, tmp_path):
+    from muscat_db import web
+
+    class FakeResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.close()
+
+    csv_text = (
+        "target,ra,dec,BJD,RV_mlc_nzp\n"
+        "HD209458,330.794883,18.884319,2451000.5,-3.25\n"
+    )
+    monkeypatch.setattr(web, "_HARPS_RVBANK_PATH", tmp_path / "missing.csv")
+    monkeypatch.setattr(web, "_HARPS_RVBANK_ZIP_PATH", tmp_path / "missing.csv.zip")
+    monkeypatch.setattr(web, "_HARPS_TARGETS_PATH", tmp_path / "missing_targets.csv")
+    monkeypatch.setattr(web, "_HARPS_RVBANK_URL", "https://example.invalid/HARPS_RVBank_ver02.csv")
+    monkeypatch.setattr(web, "urlopen", lambda req, timeout: FakeResponse(csv_text.encode("utf-8")))
+    web._harps_cache.clear()
+
+    res = web._query_harps_rvbank_rows(
+        coords=[(330.794883, 18.884319)],
+        matching_targets=[],
+        max_rows=10,
+    )
+    assert res["source_kind"] == "online"
+    assert res["source"] == "https://example.invalid/HARPS_RVBank_ver02.csv"
+    assert res["total_rows"] == 1
+    assert res["rows"][0]["target"] == "HD209458"
+    assert res["rows"][0]["RV_mlc_nzp"] == "-3.25"
+
+
+def test_harps_target_lookup_uses_toi_catalog_coords_after_db_miss(monkeypatch):
+    from muscat_db import web
+
+    monkeypatch.setattr(web, "_HARPS_MATCH_ARCSEC", 5.0)
+    monkeypatch.setattr(
+        web,
+        "_load_harps_targets",
+        lambda: ([{"target": "GJ3473", "ra": 120.592808, "dec": 3.33695, "n_rv": 32}], "2026-07-08"),
+    )
+    monkeypatch.setattr(
+        web,
+        "_load_toi_catalog",
+        lambda: {
+            "data": {
+                "toi": ["488.01"],
+                "tic": ["452866790"],
+                "name": ["TOI-488.01"],
+                "ra": [120.593607],
+                "dec": [3.337163],
+            },
+            "n": 1,
+            "updated": "2026-07-01",
+        },
+    )
+    monkeypatch.setattr(
+        web,
+        "_load_nexsci_catalog",
+        lambda: {"data": _nexsci_cat_data([], [], []), "n": 0, "updated": "2026-07-01"},
+    )
+    captured = {}
+
+    def fake_query(coords, matches, max_rows=None):
+        captured["coords"] = coords
+        captured["matches"] = matches
+        return {
+            "columns": ["target"],
+            "rows": [{"target": "GJ3473"}],
+            "total_rows": 1,
+            "display_rows": 1,
+            "truncated": False,
+            "matched_targets": matches,
+            "source_kind": "local",
+            "source": "fake",
+            "error": "",
+        }
+
+    monkeypatch.setattr(web, "_query_harps_rvbank_rows", fake_query)
+
+    result = web._harps_data_for_target(
+        [{"ra": "8:03:21", "dec": "+3:20:46"}],
+        "TOI00488",
+    )
+
+    assert result["total_rows"] == 1
+    assert captured["matches"][0]["target"] == "GJ3473"
+    assert (120.593607, 3.337163) in captured["coords"]
+
+
 def test_toi_page_includes_boyle_payload(monkeypatch):
     from muscat_db import web
     cols = {k: [None] for k, _ in web._BOYLE_COLUMNS}
@@ -1270,6 +1495,7 @@ def test_toi_page_includes_boyle_payload(monkeypatch):
     cols["sectors"] = ["38,65"]
     cols["sector_periods"] = ["2.19,2.19"]
     monkeypatch.setattr(web, "_load_boyle_catalog", lambda: (cols, {50365310: 0}))
+    monkeypatch.setattr(web, "_load_harps_coords", lambda: ([(10.0, -20.0)], "2026-07-08"))
     monkeypatch.setattr(web, "_load_toi_catalog", lambda: {
         "data": {
             "toi": ["100.01"], "tic": ["50365310"], "name": [""], "disp": ["PC"],
@@ -1296,6 +1522,10 @@ def test_toi_page_includes_boyle_payload(monkeypatch):
     assert "arxiv.org/abs/2603.05586" in r.text
     # "In muscat-db" membership filter chip.
     assert 'data-group="indb"' in r.text
+    # HARPS RVBank coordinate match payload and filter chip.
+    assert '"has_harps_rv":[1]' in r.text
+    assert 'data-group="harps"' in r.text
+    assert 'has HARPS RV' in r.text
 
 
 def _nexsci_cat_data(names, hosts, tics):
@@ -1326,6 +1556,9 @@ def test_nexsci_page_renders_with_payload_and_archive_link(mock_db, monkeypatch)
     data["method"] = ["Transit", "Radial Velocity"]
     data["radius"] = [2.5, 11.0]
     data["period"] = [3.1, 400.0]
+    data["ra"] = [20.0, 30.0]
+    data["dec"] = [-10.0, -5.0]
+    monkeypatch.setattr(web, "_load_harps_coords", lambda: ([(20.0, -10.0)], "2026-07-08"))
     monkeypatch.setattr(
         web, "_load_nexsci_catalog", lambda: {"data": data, "n": 2, "updated": "2026-07-05"}
     )
@@ -1335,6 +1568,9 @@ def test_nexsci_page_renders_with_payload_and_archive_link(mock_db, monkeypatch)
     assert '"name":["TOI-2000 b","Kepler-999 b"]' in r.text
     # Empty targets table -> nothing is in muscat-db.
     assert '"indb":[0,0]' in r.text
+    assert '"has_harps_rv":[1,0]' in r.text
+    assert 'data-key="harps"' in r.text
+    assert 'has HARPS RV' in r.text
     # Archive-overview fallback URL prefix is present in the page JS.
     assert "exoplanetarchive.ipac.caltech.edu/overview/" in r.text
     # Nav link renders beside TOI.

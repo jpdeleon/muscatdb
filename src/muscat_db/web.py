@@ -17,14 +17,16 @@ _DB_LOCK = threading.Lock()
 
 import csv
 import io
+import zipfile
+from contextlib import asynccontextmanager, contextmanager
 from urllib.parse import urlsplit
+from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
-from contextlib import asynccontextmanager
 
 from muscat_db import photometry as phot
 from muscat_db import exposure as exp_calc
@@ -342,6 +344,8 @@ def _get_datasets_for_normalized_target(db: str, normalized_name: str) -> tuple[
                 "airmass_min": stats.get("airmass_min", target["airmass_min"]),
                 "airmass_max": stats.get("airmass_max", target["airmass_max"]),
                 "n_frames": stats.get("n_frames", target["n_frames"]),
+                "ra": target["ra"],
+                "dec": target["declination"],
                 "phot": phot_status,
                 "fit": fit_status,
                 "note": target["note"],
@@ -376,6 +380,7 @@ def target_page(name: str = ""):
             target_name=norm_name,
             datasets=datasets,
             last_updated=last_updated,
+            harps_match_arcsec=_HARPS_MATCH_ARCSEC,
         )
 
         _index_cache[cache_key] = (key, html)
@@ -462,12 +467,517 @@ def _toi_float(v) -> float | None:
     return x
 
 
+_HARPS_TARGETS_PATH = pathlib.Path(os.environ.get(
+    "MUSCAT_HARPS_TARGETS_CSV",
+    str(HERE.parent.parent / "data" / "HARPS_RVBank_targets.csv"),
+))
+_HARPS_RVBANK_PATH = pathlib.Path(os.environ.get(
+    "MUSCAT_HARPS_RVBANK_CSV",
+    str(HERE.parent.parent / "data" / "HARPS_RVBank_ver02.csv"),
+))
+_HARPS_RVBANK_ZIP_PATH = pathlib.Path(os.environ.get(
+    "MUSCAT_HARPS_RVBANK_ZIP",
+    str(HERE.parent.parent / "data" / "HARPS_RVBank_ver02.csv.zip"),
+))
+_HARPS_RVBANK_URL = os.environ.get(
+    "MUSCAT_HARPS_RVBANK_URL",
+    "https://raw.githubusercontent.com/3fon3fonov/HARPS_RVBank/master/HARPS_RVBank_ver02.csv",
+)
+_HARPS_MATCH_ARCSEC = float(os.environ.get("MUSCAT_HARPS_MATCH_ARCSEC", "5.0"))
+_HARPS_TARGET_TABLE_MAX_ROWS = int(os.environ.get("MUSCAT_HARPS_TARGET_TABLE_MAX_ROWS", "2000"))
+_HARPS_ONLINE_TIMEOUT_S = float(os.environ.get("MUSCAT_HARPS_ONLINE_TIMEOUT_S", "60"))
+_HARPS_BUCKET_DEG = 0.05
+_harps_cache: dict = {}
+
+
+def _coord_deg(value, *, is_ra: bool) -> float | None:
+    """Parse decimal degrees or sexagesimal coordinates into degrees."""
+    x = _toi_float(value)
+    if x is not None:
+        return x % 360.0 if is_ra else x
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or ":" not in s:
+        return None
+    sign = 1.0
+    if not is_ra and s[0] in "+-":
+        sign = -1.0 if s[0] == "-" else 1.0
+        s = s[1:]
+    parts = s.split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        a, b, c = int(parts[0]), int(parts[1]), float(parts[2])
+    except ValueError:
+        return None
+    if b < 0 or b >= 60 or c < 0 or c >= 60:
+        return None
+    deg = a + b / 60.0 + c / 3600.0
+    if is_ra:
+        return (deg * 15.0) % 360.0
+    return sign * deg
+
+
+def _angular_sep_arcsec(ra1: float, dec1: float, ra2: float, dec2: float) -> float:
+    r1, d1, r2, d2 = map(math.radians, (ra1, dec1, ra2, dec2))
+    sd = math.sin((d2 - d1) / 2.0)
+    sr = math.sin((r2 - r1) / 2.0)
+    a = sd * sd + math.cos(d1) * math.cos(d2) * sr * sr
+    a = min(1.0, max(0.0, a))
+    return math.degrees(2.0 * math.asin(math.sqrt(a))) * 3600.0
+
+
+def _load_harps_coords() -> tuple[list[tuple[float, float]], str]:
+    """Load unique HARPS RVBank target coordinates.
+
+    Prefer the compact per-target CSV produced from the RVBank, but accept the
+    full observation-level RVBank CSV as a fallback. Both expose ``ra`` and
+    ``dec`` columns in degrees; the HTML table uses sexagesimal coordinates, so
+    the parser also accepts that form for hand-built target lists.
+    """
+    if _HARPS_TARGETS_PATH.is_file():
+        path = _HARPS_TARGETS_PATH
+    elif _HARPS_RVBANK_PATH.is_file():
+        path = _HARPS_RVBANK_PATH
+    else:
+        path = _HARPS_RVBANK_ZIP_PATH
+    empty: tuple[list[tuple[float, float]], str] = ([], "")
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        return empty
+
+    cached = _harps_cache.get("coords")
+    cache_key = (str(path), mtime)
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
+
+    seen: set[tuple[float, float]] = set()
+    coords: list[tuple[float, float]] = []
+    try:
+        with _open_harps_csv_path(path) as f:
+            reader = csv.DictReader(f)
+            col_map = {h.strip().lower(): h for h in (reader.fieldnames or [])}
+            ra_col = col_map.get("ra")
+            dec_col = col_map.get("dec")
+            if not ra_col or not dec_col:
+                logger.warning("HARPS RVBank catalog %s lacks ra/dec columns", path)
+                return empty
+            for row in reader:
+                ra = _coord_deg(row.get(ra_col), is_ra=True)
+                dec = _coord_deg(row.get(dec_col), is_ra=False)
+                if ra is None or dec is None or not (-90.0 <= dec <= 90.0):
+                    continue
+                key = (round(ra, 8), round(dec, 8))
+                if key in seen:
+                    continue
+                seen.add(key)
+                coords.append((ra, dec))
+    except Exception:
+        logger.warning("failed to read HARPS RVBank catalog %s", path, exc_info=True)
+        return empty
+
+    result = (coords, datetime.date.fromtimestamp(mtime / 1e9).isoformat())
+    _harps_cache["coords"] = (cache_key, result)
+    return result
+
+
+def _harps_source_cache_key() -> tuple:
+    """Cache component for HARPS data used by rendered target/catalog pages."""
+    parts = [_HARPS_MATCH_ARCSEC]
+    for path in (_HARPS_TARGETS_PATH, _HARPS_RVBANK_PATH, _HARPS_RVBANK_ZIP_PATH):
+        try:
+            st = path.stat()
+        except OSError:
+            parts.append((str(path), None))
+        else:
+            parts.append((str(path), st.st_mtime_ns, st.st_size))
+    return tuple(parts)
+
+
+_TOI_CATALOG_PATH = HERE.parent.parent / "data" / "TOIs.csv"
+_NEXSCI_CATALOG_PATH = HERE.parent.parent / "data" / "nexsci_pscomppars.csv"
+
+
+def _path_cache_part(path: pathlib.Path) -> tuple:
+    try:
+        st = path.stat()
+    except OSError:
+        return (str(path), None)
+    return (str(path), st.st_mtime_ns, st.st_size)
+
+
+def _catalog_source_cache_key() -> tuple:
+    """Cache component for target-page catalog-coordinate fallbacks."""
+    return (_path_cache_part(_TOI_CATALOG_PATH), _path_cache_part(_NEXSCI_CATALOG_PATH))
+
+
+def _load_harps_targets() -> tuple[list[dict], str]:
+    """Load unique HARPS targets with coordinates and optional RV counts."""
+    path = _HARPS_TARGETS_PATH
+    if not path.is_file():
+        path = _HARPS_RVBANK_PATH if _HARPS_RVBANK_PATH.is_file() else _HARPS_RVBANK_ZIP_PATH
+    empty: tuple[list[dict], str] = ([], "")
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        return empty
+
+    cache_key = ("targets", str(path), mtime)
+    cached = _harps_cache.get("targets")
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
+
+    targets: dict[tuple[str, float, float], dict] = {}
+    try:
+        with _open_harps_csv_path(path) as f:
+            reader = csv.DictReader(f)
+            col_map = {h.strip().lower(): h for h in (reader.fieldnames or [])}
+            target_col = col_map.get("target")
+            ra_col = col_map.get("ra")
+            dec_col = col_map.get("dec")
+            n_col = col_map.get("n_rv")
+            if not target_col or not ra_col or not dec_col:
+                logger.warning("HARPS target catalog %s lacks target/ra/dec columns", path)
+                return empty
+            for row in reader:
+                target = (row.get(target_col) or "").strip()
+                ra = _coord_deg(row.get(ra_col), is_ra=True)
+                dec = _coord_deg(row.get(dec_col), is_ra=False)
+                if not target or ra is None or dec is None or not (-90.0 <= dec <= 90.0):
+                    continue
+                key = (target, round(ra, 8), round(dec, 8))
+                entry = targets.setdefault(key, {"target": target, "ra": ra, "dec": dec, "n_rv": 0})
+                if n_col:
+                    try:
+                        entry["n_rv"] = max(entry["n_rv"], int(float(row.get(n_col) or 0)))
+                    except ValueError:
+                        pass
+                else:
+                    entry["n_rv"] += 1
+    except Exception:
+        logger.warning("failed to read HARPS target catalog %s", path, exc_info=True)
+        return empty
+
+    result = (list(targets.values()), datetime.date.fromtimestamp(mtime / 1e9).isoformat())
+    _harps_cache["targets"] = (cache_key, result)
+    return result
+
+
+@contextmanager
+def _open_harps_csv_path(path: pathlib.Path):
+    if path.suffix.lower() == ".zip":
+        with zipfile.ZipFile(path) as zf:
+            names = [n for n in zf.namelist() if n.lower().endswith(".csv")]
+            if not names:
+                raise FileNotFoundError(f"{path} contains no CSV file")
+            with zf.open(names[0]) as raw:
+                with io.TextIOWrapper(raw, encoding="utf-8", newline="") as text:
+                    yield text
+    else:
+        with open(path, encoding="utf-8", newline="") as f:
+            yield f
+
+
+@contextmanager
+def _open_harps_rvbank_csv():
+    if _HARPS_RVBANK_PATH.is_file():
+        with _open_harps_csv_path(_HARPS_RVBANK_PATH) as f:
+            yield ("local", str(_HARPS_RVBANK_PATH), f)
+        return
+    if _HARPS_RVBANK_ZIP_PATH.is_file():
+        with _open_harps_csv_path(_HARPS_RVBANK_ZIP_PATH) as f:
+            yield ("local", str(_HARPS_RVBANK_ZIP_PATH), f)
+        return
+
+    req = UrlRequest(_HARPS_RVBANK_URL, headers={"User-Agent": "muscat-db/harps-rvbank"})
+    with urlopen(req, timeout=_HARPS_ONLINE_TIMEOUT_S) as raw:
+        with io.TextIOWrapper(raw, encoding="utf-8", newline="") as text:
+            yield ("online", _HARPS_RVBANK_URL, text)
+
+
+def _harps_coord_membership(cat_data: dict) -> tuple[list[int], int]:
+    """Return 0/1 flags for catalog rows positionally matched to HARPS RVBank."""
+    harps_coords, _updated = _load_harps_coords()
+    n = len(cat_data.get("ra") or [])
+    out = [0] * n
+    if not harps_coords:
+        return out, 0
+
+    tol = max(0.0, _HARPS_MATCH_ARCSEC)
+    if tol <= 0:
+        return out, 0
+    bucket = max(_HARPS_BUCKET_DEG, tol / 3600.0)
+    ra_bins = max(1, int(math.ceil(360.0 / bucket)))
+    index: dict[tuple[int, int], list[tuple[float, float]]] = {}
+    for ra, dec in harps_coords:
+        rb = int((ra % 360.0) / bucket) % ra_bins
+        db = int((dec + 90.0) / bucket)
+        index.setdefault((rb, db), []).append((ra, dec))
+
+    ras, decs = cat_data.get("ra") or [], cat_data.get("dec") or []
+    matched = 0
+    for i, (ra, dec) in enumerate(zip(ras, decs)):
+        if ra is None or dec is None:
+            continue
+        rb = int((ra % 360.0) / bucket) % ra_bins
+        db = int((dec + 90.0) / bucket)
+        hit = False
+        for dra in (-1, 0, 1):
+            for ddec in (-1, 0, 1):
+                for hra, hdec in index.get(((rb + dra) % ra_bins, db + ddec), ()):
+                    if _angular_sep_arcsec(float(ra), float(dec), hra, hdec) <= tol:
+                        hit = True
+                        break
+                if hit:
+                    break
+            if hit:
+                break
+        if hit:
+            out[i] = 1
+            matched += 1
+    return out, matched
+
+
+def _matching_harps_targets(coords: list[tuple[float, float]]) -> list[dict]:
+    if not coords:
+        return []
+    harps_targets, _updated = _load_harps_targets()
+    if not harps_targets:
+        return []
+    tol = max(0.0, _HARPS_MATCH_ARCSEC)
+    matches = []
+    seen = set()
+    for entry in harps_targets:
+        for ra, dec in coords:
+            if _angular_sep_arcsec(ra, dec, entry["ra"], entry["dec"]) <= tol:
+                key = (entry["target"], round(entry["ra"], 8), round(entry["dec"], 8))
+                if key not in seen:
+                    seen.add(key)
+                    matches.append(entry)
+                break
+    return sorted(matches, key=lambda r: (r["target"].lower(), r["ra"], r["dec"]))
+
+
+def _format_harps_cell(value: str | None) -> str:
+    s = (value or "").strip()
+    x = _toi_float(s)
+    if x is None:
+        return s
+    return f"{x:.6f}".rstrip("0").rstrip(".")
+
+
+def _row_matches_harps_query(
+    row: dict,
+    target_col: str,
+    ra_col: str,
+    dec_col: str,
+    target_names: set[str],
+    coords: list[tuple[float, float]],
+) -> bool:
+    if target_names and (row.get(target_col) or "").strip() in target_names:
+        return True
+    if not coords:
+        return False
+    ra = _coord_deg(row.get(ra_col), is_ra=True)
+    dec = _coord_deg(row.get(dec_col), is_ra=False)
+    if ra is None or dec is None:
+        return False
+    tol = max(0.0, _HARPS_MATCH_ARCSEC)
+    return any(_angular_sep_arcsec(ra, dec, cra, cdec) <= tol for cra, cdec in coords)
+
+
+def _query_harps_rvbank_rows(
+    coords: list[tuple[float, float]],
+    matching_targets: list[dict],
+    max_rows: int | None = None,
+) -> dict:
+    """Return HARPS RVBank rows for matched target coordinates.
+
+    Local CSV/ZIP is used first. If unavailable, the GitHub-hosted raw CSV is
+    streamed and filtered online. ``total_rows`` is counted even when display
+    rows are capped.
+    """
+    if max_rows is None:
+        max_rows = _HARPS_TARGET_TABLE_MAX_ROWS
+    target_names = {(m.get("target") or "").strip() for m in matching_targets if m.get("target")}
+    cache_key = (
+        "rows",
+        tuple(sorted(target_names)),
+        tuple((round(ra, 8), round(dec, 8)) for ra, dec in coords),
+        max_rows,
+        _harps_source_cache_key(),
+    )
+    cached = _harps_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    columns: list[str] = []
+    rows: list[dict] = []
+    total = 0
+    source_kind = ""
+    source_label = ""
+    error = ""
+    try:
+        with _open_harps_rvbank_csv() as (source_kind, source_label, f):
+            reader = csv.DictReader(f)
+            columns = [c.strip() for c in (reader.fieldnames or []) if c is not None]
+            col_map = {h.strip().lower(): h for h in (reader.fieldnames or [])}
+            target_col = col_map.get("target")
+            ra_col = col_map.get("ra")
+            dec_col = col_map.get("dec")
+            if not target_col or not ra_col or not dec_col:
+                raise ValueError("HARPS RVBank CSV lacks target/ra/dec columns")
+            for row in reader:
+                if not _row_matches_harps_query(row, target_col, ra_col, dec_col, target_names, coords):
+                    continue
+                total += 1
+                if len(rows) < max_rows:
+                    rows.append({c: _format_harps_cell(row.get(c)) for c in columns})
+    except Exception as exc:
+        logger.warning("failed to query HARPS RVBank rows", exc_info=True)
+        error = str(exc)
+
+    result = {
+        "columns": columns,
+        "rows": rows,
+        "total_rows": total,
+        "display_rows": len(rows),
+        "truncated": total > len(rows),
+        "matched_targets": matching_targets,
+        "source_kind": source_kind,
+        "source": source_label,
+        "error": error,
+    }
+    _harps_cache[cache_key] = result
+    return result
+
+
+def _target_lookup_aliases(name: str) -> set[str]:
+    norm = _normalize_target_name(str(name or ""))
+    aliases = {norm} if norm else set()
+    m = re.fullmatch(r"TOI0*(\d+)(?:\.\d+)?", norm)
+    if m:
+        aliases.add(f"TOI{int(m.group(1))}")
+    return aliases
+
+
+def _target_catalog_coord_candidates(normalized_name: str) -> list[tuple[float, float]]:
+    """Return TOI/NExScI catalog coordinates for a normalized target name.
+
+    The target database can contain historical or header-derived coordinates.
+    Catalog pages already use current catalog RA/Dec for HARPS matching, so the
+    target page uses the same coordinates as a fallback when DB coordinates do
+    not find a HARPS match.
+    """
+    aliases = _target_lookup_aliases(normalized_name)
+    coords: list[tuple[float, float]] = []
+    seen: set[tuple[float, float]] = set()
+
+    def add_coord(ra_value, dec_value) -> None:
+        ra = _coord_deg(ra_value, is_ra=True)
+        dec = _coord_deg(dec_value, is_ra=False)
+        if ra is None or dec is None or not (-90.0 <= dec <= 90.0):
+            return
+        key = (round(ra, 8), round(dec, 8))
+        if key in seen:
+            return
+        seen.add(key)
+        coords.append((ra, dec))
+
+    def row_matches_toi_catalog(cat_data: dict, i: int) -> bool:
+        toi = str((cat_data.get("toi") or [""])[i] or "").strip()
+        if toi:
+            toi_num = _toi_float(toi)
+            if toi_num is not None and f"TOI{int(toi_num)}" in aliases:
+                return True
+            if _normalize_target_name(f"TOI-{toi}") in aliases:
+                return True
+        name = str((cat_data.get("name") or [""])[i] or "")
+        return bool(_target_lookup_aliases(name) & aliases)
+
+    try:
+        cat = _load_toi_catalog()["data"]
+        n = len(cat.get("toi", []))
+        for i in range(n):
+            if row_matches_toi_catalog(cat, i):
+                add_coord(cat.get("ra", [None] * n)[i], cat.get("dec", [None] * n)[i])
+    except Exception:
+        logger.warning("failed to read TOI catalog coordinates for %s", normalized_name, exc_info=True)
+
+    try:
+        cat = _load_nexsci_catalog()["data"]
+        n = len(cat.get("name", []))
+        for i in range(n):
+            name_aliases = _target_lookup_aliases((cat.get("name") or [""])[i])
+            host_aliases = _target_lookup_aliases((cat.get("host") or [""])[i])
+            if aliases & (name_aliases | host_aliases):
+                add_coord(cat.get("ra", [None] * n)[i], cat.get("dec", [None] * n)[i])
+    except Exception:
+        logger.warning("failed to read NExScI catalog coordinates for %s", normalized_name, exc_info=True)
+
+    return coords
+
+
+def _harps_data_for_target(datasets: list[dict], target_name: str | None = None) -> dict:
+    coords = []
+    seen = set()
+    def add_coord(ra_value, dec_value) -> None:
+        ra = _coord_deg(ra_value, is_ra=True)
+        dec = _coord_deg(dec_value, is_ra=False)
+        if ra is None or dec is None:
+            return
+        key = (round(ra, 8), round(dec, 8))
+        if key in seen:
+            return
+        seen.add(key)
+        coords.append((ra, dec))
+
+    for ds in datasets:
+        add_coord(ds.get("ra"), ds.get("dec"))
+    matches = _matching_harps_targets(coords)
+    if target_name and not matches:
+        for ra, dec in _target_catalog_coord_candidates(target_name):
+            add_coord(ra, dec)
+        matches = _matching_harps_targets(coords)
+    if not matches and not coords:
+        return {
+            "columns": [],
+            "rows": [],
+            "total_rows": 0,
+            "display_rows": 0,
+            "truncated": False,
+            "matched_targets": [],
+            "source_kind": "",
+            "source": "",
+            "error": "",
+        }
+    return _query_harps_rvbank_rows(coords, matches)
+
+
+@app.get("/api/target/harps-rv", response_class=JSONResponse)
+def api_target_harps_rv(name: str = ""):
+    norm_name = _normalize_target_name(name)
+    if not norm_name:
+        return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
+    datasets, _last_updated = _get_datasets_for_normalized_target(_db_path(), norm_name)
+    harps_rv = _harps_data_for_target(datasets, norm_name)
+    return JSONResponse({
+        "ok": True,
+        "target": norm_name,
+        "match_arcsec": _HARPS_MATCH_ARCSEC,
+        "has_data": bool(harps_rv.get("total_rows")),
+        "harps_rv": harps_rv,
+    })
+
+
 def _load_toi_catalog() -> dict:
     """Read ``data/TOIs.csv`` into column-oriented arrays for the /toi page.
     All rows (every TFOPWG disposition, including FP/FA) are included so the
     candidate-type chips can filter them client-side. Cached by file mtime so
     the 8k-row CSV is parsed at most once per update."""
-    path = HERE.parent.parent / "data" / "TOIs.csv"
+    path = _TOI_CATALOG_PATH
     empty = {"data": {k: [] for _, k, _ in _TOI_COLUMNS}, "n": 0, "updated": ""}
     try:
         mtime = path.stat().st_mtime_ns
@@ -662,16 +1172,19 @@ def toi_page():
     cat = _load_toi_catalog()
     indb, tname = _toi_db_membership(cat["data"], _db_path())
     boyle, n_boyle = _merge_boyle_columns(cat["data"])
+    harps, n_harps = _harps_coord_membership(cat["data"])
     payload = dict(cat["data"])
     payload.update(boyle)
     payload["indb"] = indb
     payload["tname"] = tname
+    payload["has_harps_rv"] = harps
     return _render(
         "toi.html",
         toi_json=json.dumps(payload, separators=(",", ":"), allow_nan=False),
         n_rows=cat["n"],
         n_indb=sum(indb),
         n_boyle=n_boyle,
+        n_harps=n_harps,
         toi_updated=cat["updated"],
     )
 
@@ -738,7 +1251,7 @@ def _load_nexsci_catalog() -> dict:
     arrays for the /nexsci page. Cached by file mtime so the ~4.6k-row CSV is
     parsed at most once per update; degrades to empty when the (git-ignored)
     file is absent."""
-    path = HERE.parent.parent / "data" / "nexsci_pscomppars.csv"
+    path = _NEXSCI_CATALOG_PATH
     empty = {"data": {k: [] for _, k, _ in _NEXSCI_COLUMNS}, "n": 0, "updated": ""}
     try:
         mtime = path.stat().st_mtime_ns
@@ -812,14 +1325,17 @@ def _nexsci_db_membership(cat_data: dict, db: str) -> tuple[list[int], list[str]
 def nexsci_page():
     cat = _load_nexsci_catalog()
     indb, tname = _nexsci_db_membership(cat["data"], _db_path())
+    harps, n_harps = _harps_coord_membership(cat["data"])
     payload = dict(cat["data"])
     payload["indb"] = indb
     payload["tname"] = tname
+    payload["has_harps_rv"] = harps
     return _render(
         "nexsci.html",
         nexsci_json=json.dumps(payload, separators=(",", ":"), allow_nan=False),
         n_rows=cat["n"],
         n_indb=sum(indb),
+        n_harps=n_harps,
         nexsci_updated=cat["updated"],
     )
 

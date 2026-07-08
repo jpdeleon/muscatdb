@@ -219,6 +219,161 @@
     </div>
   </details>
 
+  <details class="adv" id="harps-rv-details" style="margin-top: 1rem;">
+    <summary><span id="harps-rv-summary">HARPS RVBank Data</span></summary>
+    <div style="margin-top: 0.5rem;">
+      <p class="hint" id="harps-rv-status" style="margin-top: 0;">Open this section to load coordinate-matched HARPS RVBank rows. Match tolerance: {{ '%.6g'|format(harps_match_arcsec) }} arcsec.</p>
+      <div id="harps-rv-content">
+      </div>
+    </div>
+  </details>
+
+  <script>
+    (function() {
+      const details = document.getElementById('harps-rv-details');
+      const summary = document.getElementById('harps-rv-summary');
+      const status = document.getElementById('harps-rv-status');
+      const content = document.getElementById('harps-rv-content');
+      const targetName = {{ target_name | tojson }};
+      const defaultMatchArcsec = Number({{ harps_match_arcsec | tojson }});
+      let loaded = false;
+      let loading = false;
+
+      function countLabel(n) {
+        return Number(n || 0).toLocaleString();
+      }
+
+      function arcsecLabel(value) {
+        const n = Number(value);
+        if (!isFinite(n)) return '';
+        return Number(n.toPrecision(6)).toString();
+      }
+
+      function clearNode(node) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+      }
+
+      function appendText(parent, text) {
+        parent.appendChild(document.createTextNode(text));
+      }
+
+      function renderMeta(rv, matchArcsec) {
+        const meta = document.createElement('p');
+        meta.className = 'hint';
+        meta.style.marginTop = '0';
+        const tolLabel = arcsecLabel(matchArcsec);
+        const matches = rv.matched_targets || [];
+        if (matches.length) {
+          appendText(meta, 'Matched ');
+          matches.forEach((match, idx) => {
+            if (idx) appendText(meta, ' ');
+            const badge = document.createElement('span');
+            badge.className = 'badge instrument-badge';
+            badge.title = 'RA ' + Number(match.ra).toFixed(6) + ', Dec ' + Number(match.dec).toFixed(6);
+            badge.textContent = match.target || '';
+            meta.appendChild(badge);
+          });
+          appendText(meta, ' by coordinate');
+          if (tolLabel) {
+            appendText(meta, ' within ' + tolLabel + ' arcsec');
+          }
+          appendText(meta, '. ');
+        }
+        if (rv.source_kind === 'local') {
+          appendText(meta, 'Source: local ');
+          const code = document.createElement('code');
+          code.textContent = rv.source || '';
+          meta.appendChild(code);
+          appendText(meta, '. ');
+        } else if (rv.source_kind === 'online') {
+          appendText(meta, 'Source: GitHub-hosted HARPS RVBank CSV. ');
+        }
+        if (rv.truncated) {
+          appendText(meta, 'Showing first ' + countLabel(rv.display_rows) + ' rows.');
+        }
+        content.appendChild(meta);
+      }
+
+      function renderTable(rv) {
+        const columns = rv.columns || [];
+        const rows = rv.rows || [];
+        const wrap = document.createElement('div');
+        wrap.className = 'csv-wrap';
+        const table = document.createElement('table');
+        table.id = 'harps-rv-table';
+        const thead = document.createElement('thead');
+        const headRow = document.createElement('tr');
+        columns.forEach(col => {
+          const th = document.createElement('th');
+          th.textContent = col;
+          headRow.appendChild(th);
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = document.createElement('tbody');
+        rows.forEach(row => {
+          const tr = document.createElement('tr');
+          columns.forEach(col => {
+            const td = document.createElement('td');
+            const value = row[col] || '';
+            if (/^-?\d/.test(value)) td.className = 'mono';
+            td.textContent = value;
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        content.appendChild(wrap);
+      }
+
+      function render(data) {
+        const rv = data.harps_rv || {};
+        const total = rv.total_rows || 0;
+        const matchArcsec = data.match_arcsec != null ? data.match_arcsec : defaultMatchArcsec;
+        clearNode(content);
+        if (!total) {
+          summary.textContent = 'HARPS RVBank Data';
+          const tolLabel = arcsecLabel(matchArcsec);
+          status.textContent = rv.error ? ('HARPS RVBank lookup failed: ' + rv.error) : 'No coordinate-matched HARPS RVBank rows found for this target' + (tolLabel ? ' within ' + tolLabel + ' arcsec.' : '.');
+          status.style.color = rv.error ? 'var(--red)' : 'var(--text-dim)';
+          return;
+        }
+        summary.textContent = 'HARPS RVBank Data (' + countLabel(total) + ' RV rows)';
+        status.textContent = '';
+        renderMeta(rv, matchArcsec);
+        renderTable(rv);
+      }
+
+      function loadHarps() {
+        if (loaded || loading) return;
+        loading = true;
+        status.textContent = 'Loading HARPS RVBank rows...';
+        status.style.color = 'var(--text-dim)';
+        fetch('/api/target/harps-rv?name=' + encodeURIComponent(targetName))
+          .then(res => res.json().then(data => ({ ok: res.ok, data: data })))
+          .then(result => {
+            if (!result.ok || !result.data.ok) {
+              throw new Error(result.data.error || 'Request failed');
+            }
+            render(result.data);
+            loaded = true;
+          })
+          .catch(err => {
+            status.textContent = 'HARPS RVBank lookup failed: ' + err.message;
+            status.style.color = 'var(--red)';
+          })
+          .finally(() => {
+            loading = false;
+          });
+      }
+
+      details.addEventListener('toggle', function() {
+        if (details.open) loadHarps();
+      });
+    })();
+  </script>
+
   <details class="adv" id="ads-details" style="margin-top: 1rem;">
     <summary>NASA ADS Publications</summary>
     <div style="margin-top: 0.5rem;">
