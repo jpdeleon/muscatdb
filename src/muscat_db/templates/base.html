@@ -10,6 +10,50 @@
 <script src="/static/js/storage.js"></script>
 <script src="/static/js/format.js"></script>
 <script src="/static/js/jobPolling.js"></script>
+<script>
+  // Global fetch-activity tracker. Installed in <head> so it wraps window.fetch
+  // before any page script runs, giving every page a consistent loading
+  // indicator while it queries data (FOV → Gaia, ephemeris datasets, LCO
+  // schedule, …). It counts in-flight *same-origin* /api/ requests only, so the
+  // background job/status pollers (which hit /jobs/status, not /api/) never
+  // flash the bar. The loading-bar controller below subscribes via onChange.
+  (function () {
+    var origFetch = window.fetch ? window.fetch.bind(window) : null;
+    if (!origFetch) return;
+    var active = 0;
+    var tracker = { active: 0, onChange: null };
+    function notify() {
+      tracker.active = active;
+      if (typeof tracker.onChange === 'function') {
+        try { tracker.onChange(active); } catch (e) { /* never let UI break fetch */ }
+      }
+    }
+    function begin() { active++; notify(); }
+    function end() { active = Math.max(0, active - 1); notify(); }
+    function shouldTrack(input) {
+      try {
+        var urlStr = (typeof input === 'string') ? input
+                   : (input && input.url) ? input.url : String(input);
+        var u = new URL(urlStr, window.location.href);
+        return u.origin === window.location.origin && u.pathname.indexOf('/api/') === 0;
+      } catch (e) { return false; }
+    }
+    window.fetch = function (input, init) {
+      if (!shouldTrack(input)) return origFetch(input, init);
+      begin();
+      var p;
+      try {
+        p = origFetch(input, init);
+      } catch (e) {
+        end();
+        throw e;
+      }
+      p.then(end, end);
+      return p;
+    };
+    window.MuscatFetchTracker = tracker;
+  })();
+</script>
 </head>
 <body>
 <div id="loading-bar" role="progressbar" aria-label="Loading"></div>
@@ -86,14 +130,17 @@
     const text   = document.getElementById('status-text');
     const table  = document.getElementById('targets-table');
 
-    // The bar is visible while EITHER the page is still loading OR a tracked
-    // background job is active; a running job keeps it up indefinitely (that
-    // label wins over the transient page-load label). It only slides away once
-    // both are false.
+    // The bar is visible while ANY of these is true: the page is still loading,
+    // a tracked background job is active, or a same-origin /api/ request is in
+    // flight. A running job keeps it up indefinitely (that label wins over the
+    // transient page-load / fetch labels). It only slides away once all three
+    // are false.
     let pageLoading = true;
     let pageLabel   = 'Loading…';
     let jobRunning  = false;
     let jobLabel    = '';
+    let fetchActive = false;
+    let fetchLabel  = 'Loading…';
     let hideTimer   = null;
 
     if (table) {
@@ -103,10 +150,10 @@
 
     function render() {
       if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
-      if (pageLoading || jobRunning) {
+      if (pageLoading || jobRunning || fetchActive) {
         bar.classList.remove('done');
         status.classList.add('visible');
-        text.textContent = jobRunning ? jobLabel : pageLabel;
+        text.textContent = jobRunning ? jobLabel : (pageLoading ? pageLabel : fetchLabel);
       } else {
         bar.classList.add('done');
         if (status.classList.contains('visible')) {
@@ -132,9 +179,23 @@
       jobLabel   = label || 'Running…';
       render();
     }
+    // Called by the global /api/ fetch tracker (installed in <head>). A generic
+    // label is used unless a page has set its own via showLoading.
+    function setFetch(active, label) {
+      fetchActive = !!active;
+      fetchLabel  = label || 'Loading…';
+      render();
+    }
     window.showLoading = showLoading;
     window.done = done;
-    window.MuscatLoadingBar = { showLoading: showLoading, done: done, setJob: setJob };
+    window.MuscatLoadingBar = { showLoading: showLoading, done: done, setJob: setJob, setFetch: setFetch };
+
+    // Subscribe to in-flight /api/ requests so every page shows the same
+    // loading indicator while fetching data, with no per-page wiring.
+    if (window.MuscatFetchTracker) {
+      window.MuscatFetchTracker.onChange = function (n) { setFetch(n > 0); };
+      setFetch(window.MuscatFetchTracker.active > 0);
+    }
 
     if (document.readyState === 'complete') {
       done();
