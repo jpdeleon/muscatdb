@@ -1,0 +1,46 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard — secrets not configured
+        if: ${{ secrets.DEPLOY_SSH_KEY == '' || secrets.DEPLOY_HOST == '' || secrets.DEPLOY_USER == '' }}
+        run: |
+          echo "::notice::DEPLOY_SSH_KEY, DEPLOY_HOST, or DEPLOY_USER not set — skipping deploy"
+          exit 0
+
+      - name: Install SSH key
+        if: ${{ secrets.DEPLOY_SSH_KEY != '' }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Pull and restart
+        if: ${{ secrets.DEPLOY_SSH_KEY != '' }}
+        run: |
+          ssh -i ~/.ssh/deploy_key "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" << 'EOF'
+            set -e
+            cd /raid_ut2/home/jerome/github/research/project/muscat-db
+            git fetch origin main
+            git reset --hard origin/main
+            uv sync --dev
+            tmux send-keys -t muscatdb-gui "" C-c || true
+            sleep 2
+            tmux send-keys -t muscatdb-gui "uv run uvicorn muscat_db.web:app --host 127.0.0.1 --port 8001 --reload" Enter || \
+              tmux new-session -d -s muscatdb-gui "uv run uvicorn muscat_db.web:app --host 127.0.0.1 --port 8001 --reload"
+          EOF
