@@ -60,55 +60,81 @@ INSTRUMENT_FOV_FILES: dict[str, str] = {
 _FALLBACK_HALF_ARCSEC: dict[str, float] = {}
 
 # Sinistro readout modes (half-width in arcsec).
-# full_frame: 4096 pix @ 0.389 "/pix = 26' on a side
 # central_2k_2x2: 1024 pix @ 0.778 "/pix = 13' on a side (2x2 binning of detector)
+# full_frame: 4096 pix @ 0.389 "/pix = 26' on a side
+# central_2k_2x2 is listed first so it becomes the default in the dropdown.
 SINISTRO_MODES: dict[str, float] = {
+    "central_2k_2x2": 0.778 * 1024 / 2.0,      # 13'x13'  ← default
     "full_frame": 0.389 * 4096 / 2.0,          # 26'x26'
-    "central_2k_2x2": 0.778 * 1024 / 2.0,      # 13'x13'
 }
 _FALLBACK_HALF_ARCSEC["sinistro"] = SINISTRO_MODES["central_2k_2x2"]  # default
 
-# Observatory locations (latitude in degrees). LCO sites where these instruments are deployed.
+# Observatory locations (latitude in degrees), taken from prose2/data/*.telescope latlong fields.
 OBSERVATORY_LOCATIONS: dict[str, float] = {
-    "muscat": -32.38,        # Sutherland, South Africa (CTIO/SAAO)
-    "muscat2": -32.38,       # Sutherland, South Africa
-    "muscat3": -32.38,       # Sutherland, South Africa (ogg - OGG 2m)
-    "muscat4": -30.24,       # Cerro Tololo, Chile (coj - COJ 2m)
-    "sinistro": -30.24,      # Multiple LCO 1m sites, using Cerro Tololo as reference
+    "muscat": 34.58,         # OAO, Okayama, Japan
+    "muscat2": 28.30,        # TCS, Teide, Tenerife (28.3005°N)
+    "muscat3": 20.72,        # FTN, Haleakala, Maui (20.71552°N)
+    "muscat4": -31.27,       # FTS, Siding Spring, Australia (-31.273333°)
+    # Sinistro has multiple sites — see SINISTRO_SITE_LATITUDES below.
 }
+
+# Sinistro is deployed across the full LCO 1m network.  Observability is
+# satisfied if the target is reachable from ANY of these sites.
+# Latitudes from astropy's EarthLocation registry (matching transit_obs.py).
+SINISTRO_SITE_LATITUDES: list[float] = [
+    30.67167,    # elp – McDonald Observatory, Texas (+30.67°N)
+    28.30000,    # tfn – Teide, Tenerife (+28.30°N)
+    20.71552,    # ogg – Haleakala, Maui (+20.72°N)  [also hosts MuSCAT3]
+    -30.16528,   # lsc – Cerro Tololo, Chile
+    -31.27336,   # coj – Siding Spring, Australia    [also hosts MuSCAT4]
+    -32.37582,   # cpt – Sutherland, South Africa
+]
 
 # Minimum altitude (degrees above horizon) for observable targets.
 MIN_ALTITUDE_DEG = 20.0
 
 
+def _dec_range_for_lat(obs_lat: float, min_altitude: float) -> tuple[float, float]:
+    """Return (min_dec, max_dec) reachable from a single-site latitude."""
+    max_zenith = 90.0 - min_altitude
+    return (obs_lat - max_zenith, min(90.0, obs_lat + max_zenith))
+
+
 def is_observable(dec: float, instrument: str, min_altitude: float = MIN_ALTITUDE_DEG) -> bool:
     """Check if a target (declination in degrees) is observable with an instrument.
 
-    Based on the observatory's latitude and a minimum altitude constraint.
-    Returns True if the target can reach min_altitude above the horizon at the site.
+    Based on the observatory latitude(s) and a minimum altitude constraint.
+    For single-site instruments the target must be reachable from that site.
+    For Sinistro (multi-site LCO 1m network) the target needs to be reachable
+    from at least one of the network's sites.
+
+    At transit (target on meridian): altitude = 90° − |obs_lat − dec|
+    Observable when: altitude ≥ min_altitude
+    → |obs_lat − dec| ≤ 90° − min_altitude
+    → obs_lat − (90° − min_altitude) ≤ dec ≤ obs_lat + (90° − min_altitude)
     """
+    if instrument == "sinistro":
+        return any(
+            lo <= dec <= hi
+            for lo, hi in (_dec_range_for_lat(lat, min_altitude) for lat in SINISTRO_SITE_LATITUDES)
+        )
     obs_lat = OBSERVATORY_LOCATIONS.get(instrument)
     if obs_lat is None:
         return True  # Unknown instrument, assume observable
-
-    # At transit (target on meridian), altitude = 90 - |obs_lat - dec|
-    # For observation, we need: altitude >= min_altitude
-    # So: 90 - |obs_lat - dec| >= min_altitude
-    # Therefore: |obs_lat - dec| <= 90 - min_altitude
-    # Which means: obs_lat - (90 - min_altitude) <= dec <= obs_lat + (90 - min_altitude)
-
-    max_zenith = 90.0 - min_altitude
-    min_observable_dec = obs_lat - max_zenith
-    max_observable_dec = obs_lat + max_zenith
-
-    return min_observable_dec <= dec <= max_observable_dec
+    lo, hi = _dec_range_for_lat(obs_lat, min_altitude)
+    return lo <= dec <= hi
 
 
 def get_observable_range(instrument: str, min_altitude: float = MIN_ALTITUDE_DEG) -> tuple[float, float]:
-    """Return (min_dec, max_dec) observable range for an instrument."""
+    """Return (min_dec, max_dec) observable range for an instrument.
+
+    For Sinistro this is the union across all LCO 1m sites.
+    """
+    if instrument == "sinistro":
+        ranges = [_dec_range_for_lat(lat, min_altitude) for lat in SINISTRO_SITE_LATITUDES]
+        return (min(lo for lo, _ in ranges), max(hi for _, hi in ranges))
     obs_lat = OBSERVATORY_LOCATIONS.get(instrument, 0.0)
-    max_zenith = 90.0 - min_altitude
-    return (obs_lat - max_zenith, obs_lat + max_zenith)
+    return _dec_range_for_lat(obs_lat, min_altitude)
 
 # --- Comparison-star scoring knobs -----------------------------------------
 # Magnitude offset (comp - target) where a comparison is "ideal". Slightly

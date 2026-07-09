@@ -42,6 +42,7 @@
 * all one-off scripts should live in $HOME/temp but useful scripts should be kept in repo
 * the server lives inside tmux session named muscatdb-gui
 *  The --reload flag only watches Python files, not Jinja2 templates. Remind the user if a restart is needed to see the HTML/JavaScript changes.
+If agent restarts the muscat-db by itself, make sure do it inside tmux session muscatdbgui
 
 ## optimization
 * consider CPU parallelization with a JIT compiler such as Numba, porting the inner loop into Cython, or implementing a CUDA GPU function with Numba or CuPy
