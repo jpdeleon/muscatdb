@@ -54,3 +54,6 @@ temp.txt
 # Local environment config (keep .env.example tracked)
 .env
 !.env.example
+
+# uv Python version pin (local preference)
+.python-version
