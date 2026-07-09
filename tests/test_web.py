@@ -1660,6 +1660,7 @@ def test_nexsci_page_renders_with_payload_and_archive_link(mock_db, monkeypatch)
     data["ra"] = [20.0, 30.0]
     data["dec"] = [-10.0, -5.0]
     monkeypatch.setattr(web, "_load_harps_coords", lambda: ([(20.0, -10.0)], "2026-07-08"))
+    monkeypatch.setattr(web, "_load_spectra_targets", lambda: {"TOI-2000 b"})
     monkeypatch.setattr(
         web, "_load_nexsci_catalog", lambda: {"data": data, "n": 2, "updated": "2026-07-05"}
     )
@@ -1670,8 +1671,11 @@ def test_nexsci_page_renders_with_payload_and_archive_link(mock_db, monkeypatch)
     # Empty targets table -> nothing is in muscat-db.
     assert '"indb":[0,0]' in r.text
     assert '"has_harps_rv":[1,0]' in r.text
+    assert '"has_spectra":[1,0]' in r.text
     assert 'data-key="harps"' in r.text
     assert 'has HARPS RV' in r.text
+    assert 'data-key="spectra"' in r.text
+    assert 'has time-series spectra' in r.text
     # Archive-overview fallback URL prefix is present in the page JS.
     assert "exoplanetarchive.ipac.caltech.edu/overview/" in r.text
     # Nav link renders beside TOI.

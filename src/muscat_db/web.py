@@ -626,6 +626,7 @@ def _harps_source_cache_key() -> tuple:
 _TOI_CATALOG_PATH = HERE.parent.parent / "data" / "TOIs.csv"
 _NEXSCI_CATALOG_PATH = HERE.parent.parent / "data" / "nexsci_pscomppars.csv"
 _JWST_TARGETS_PATH = HERE.parent.parent / "data" / "jwst_targets.csv"
+_SPECTRA_TARGETS_PATH = HERE.parent.parent / "data" / "spectra_targets.csv"
 
 
 def _path_cache_part(path: pathlib.Path) -> tuple:
@@ -638,7 +639,7 @@ def _path_cache_part(path: pathlib.Path) -> tuple:
 
 def _catalog_source_cache_key() -> tuple:
     """Cache component for target-page catalog-coordinate fallbacks."""
-    return (_path_cache_part(_TOI_CATALOG_PATH), _path_cache_part(_NEXSCI_CATALOG_PATH), _path_cache_part(_JWST_TARGETS_PATH))
+    return (_path_cache_part(_TOI_CATALOG_PATH), _path_cache_part(_NEXSCI_CATALOG_PATH), _path_cache_part(_JWST_TARGETS_PATH), _path_cache_part(_SPECTRA_TARGETS_PATH))
 
 
 def _load_harps_targets() -> tuple[list[dict], str]:
@@ -1380,6 +1381,43 @@ def _load_jwst_targets() -> set[str]:
     return _jwst_targets_cache
 
 
+_spectra_targets_cache: set[str] = set()
+
+
+def _load_spectra_targets() -> set[str]:
+    """Load unique spectra target names from data/spectra_targets.csv or fetch from TAP if missing."""
+    global _spectra_targets_cache
+    if _spectra_targets_cache:
+        return _spectra_targets_cache
+    path = _SPECTRA_TARGETS_PATH
+    if not path.is_file():
+        logger.info("data/spectra_targets.csv not found, downloading from NASA Exoplanet Archive...")
+        try:
+            import urllib.request
+            import urllib.parse
+            query = "SELECT distinct pl_name FROM spectra"
+            params = {"query": query, "format": "csv"}
+            url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?" + urllib.parse.urlencode(params)
+            req = urllib.request.Request(url, headers={"User-Agent": "MuSCAT-db/0.1.0"})
+            with urllib.request.urlopen(req, timeout=15.0) as response:
+                content = response.read().decode("utf-8")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(content)
+        except Exception as e:
+            logger.warning("failed to download spectra targets from TAP: %s", e)
+            return set()
+            
+    try:
+        with open(path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            _spectra_targets_cache = {row["pl_name"].strip() for row in reader if row.get("pl_name")}
+    except Exception:
+        logger.warning("failed to read spectra targets catalog %s", path, exc_info=True)
+        return set()
+    return _spectra_targets_cache
+
+
 _jwst_aliases_cache: set[str] = set()
 
 
@@ -1722,12 +1760,15 @@ def nexsci_page():
     harps, n_harps = _harps_coord_membership(cat["data"])
     jwst_targets = _load_jwst_targets()
     jwst = [1 if p in jwst_targets else 0 for p in cat["data"]["name"]]
+    spectra_targets = _load_spectra_targets()
+    spectra = [1 if p in spectra_targets else 0 for p in cat["data"]["name"]]
 
     payload = dict(cat["data"])
     payload["indb"] = indb
     payload["tname"] = tname
     payload["has_harps_rv"] = harps
     payload["has_jwst"] = jwst
+    payload["has_spectra"] = spectra
     return _render(
         "nexsci.html",
         nexsci_json=json.dumps(payload, separators=(",", ":"), allow_nan=False),
@@ -1735,6 +1776,7 @@ def nexsci_page():
         n_indb=sum(indb),
         n_harps=n_harps,
         n_jwst=sum(jwst),
+        n_spectra=sum(spectra),
         nexsci_updated=cat["updated"],
     )
 

@@ -42,4 +42,8 @@ download_csv \
   "SELECT distinct pl_name FROM nexolist WHERE facility='NASA 6.5m James Webb Space Telescope (JWST)'" \
   "jwst_targets" "jwst_targets.csv"
 
+download_csv \
+  "SELECT distinct pl_name FROM spectra" \
+  "spectra_targets" "spectra_targets.csv"
+
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Catalog download complete"
