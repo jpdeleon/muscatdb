@@ -179,20 +179,8 @@
         <span><span class="swatch" style="background:#45d6b5;"></span> Comparison stars (size ∝ usefulness)</span>
         <span><span class="swatch" style="background:#f5a623;"></span> Avoided stars (too bright)</span>
         <span><span class="swatch" style="background:#6c8cff; border-radius:2px;"></span> Optimized footprint</span>
-      </div>
-      <div class="fov-note">
-        Footprint size is read from <code>data/FOV_*.vot.xml</code>; the polygon shown
-        reflects the optimized pointing and position angle. Pan/zoom freely &mdash;
-        “Recenter view” returns to the optimized field.
-      </div>
-      <div class="fov-note">
-        <strong>Proper motion arrows</strong> (when enabled) point in each
-        star's direction of motion, colored by category (target vs.
-        comparison). Arrow length is exaggerated and scaled relative to the
-        fastest-moving star shown &mdash; only useful for comparing direction
-        and relative speed between stars, not the true angular scale. A
-        comparison star with an arrow parallel to, and about as long as, the
-        target's suggests a common proper-motion (co-moving) companion.
+        <span class="fov-pm-legend" style="display:none;"><span style="color:#ff5470; font-weight:bold; font-size:1.1rem; line-height:1; margin-right:0.15rem;">➔</span> Target proper motion</span>
+        <span class="fov-pm-legend" style="display:none;"><span style="color:#45d6b5; font-weight:bold; font-size:1.1rem; line-height:1; margin-right:0.15rem;">➔</span> Comparison proper motion</span>
       </div>
     </div>
   </div>
@@ -284,6 +272,20 @@
       are reported alongside the selected comparison stars (magnitude, color,
       separation, and weight) and the footprint polygon, which is overlaid on
       the Aladin sky view for a visual check before you commit to a pointing.
+    </p>
+    <p>
+      Footprint size is read from <code>data/FOV_*.vot.xml</code>; the polygon shown
+      reflects the optimized pointing and position angle. Pan/zoom freely &mdash;
+      “Recenter view” returns to the optimized field.
+    </p>
+    <p>
+      <strong>Proper motion arrows</strong> (when enabled) point in each
+      star's direction of motion, colored by category (target vs.
+      comparison). Arrow length is exaggerated and scaled relative to the
+      fastest-moving star shown &mdash; only useful for comparing direction
+      and relative speed between stars, not the true angular scale. A
+      comparison star with an arrow parallel to, and about as long as, the
+      target's suggests a common proper-motion (co-moving) companion.
     </p>
   </div>
 </details>
@@ -458,9 +460,17 @@
     return { base: [ra, dec], tip, head1, head2 };
   }
 
+  function syncPmLegend() {
+    const showPm = $('fov-show-pm').checked;
+    document.querySelectorAll('.fov-pm-legend').forEach((el) => {
+      el.style.display = showPm ? '' : 'none';
+    });
+  }
+
   function renderPmArrows(result) {
     if (!pmOverlay) return;
     pmOverlay.removeAll();
+    syncPmLegend();
     if (!result || !$('fov-show-pm').checked) return;
 
     const points = [];
@@ -849,7 +859,9 @@
   $('fov-show-pm').addEventListener('change', () => {
     try { localStorage.setItem(PM_STORE_KEY, $('fov-show-pm').checked ? '1' : '0'); } catch { /* ignore */ }
     renderPmArrows(lastResult);
+    syncPmLegend();
   });
+  syncPmLegend();
 })();
 </script>
 {% endblock %}

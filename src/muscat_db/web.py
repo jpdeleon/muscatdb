@@ -716,7 +716,7 @@ def _open_harps_rvbank_csv():
 
 
 def _harps_coord_membership(cat_data: dict) -> tuple[list[int], int]:
-    """Return 0/1 flags for catalog rows positionally matched to HARPS RVBank."""
+    """Return RV counts (or 0) for catalog rows positionally matched to HARPS RVBank."""
     harps_coords, _updated = _load_harps_coords()
     n = len(cat_data.get("ra") or [])
     out = [0] * n
@@ -728,11 +728,20 @@ def _harps_coord_membership(cat_data: dict) -> tuple[list[int], int]:
         return out, 0
     bucket = max(_HARPS_BUCKET_DEG, tol / 3600.0)
     ra_bins = max(1, int(math.ceil(360.0 / bucket)))
-    index: dict[tuple[int, int], list[tuple[float, float]]] = {}
+
+    # Attempt to load target-level counts to resolve coordinate-level RV counts.
+    harps_targets, _ = _load_harps_targets()
+    counts_map = {}
+    for t in harps_targets:
+        counts_map[(round(t["ra"], 8), round(t["dec"], 8))] = t.get("n_rv", 0)
+
+    index: dict[tuple[int, int], list[tuple[float, float, int]]] = {}
     for ra, dec in harps_coords:
+        key = (round(ra, 8), round(dec, 8))
+        n_rv = counts_map.get(key, 1)
         rb = int((ra % 360.0) / bucket) % ra_bins
         db = int((dec + 90.0) / bucket)
-        index.setdefault((rb, db), []).append((ra, dec))
+        index.setdefault((rb, db), []).append((ra, dec, n_rv))
 
     ras, decs = cat_data.get("ra") or [], cat_data.get("dec") or []
     matched = 0
@@ -741,19 +750,16 @@ def _harps_coord_membership(cat_data: dict) -> tuple[list[int], int]:
             continue
         rb = int((ra % 360.0) / bucket) % ra_bins
         db = int((dec + 90.0) / bucket)
+        hit_count = 0
         hit = False
         for dra in (-1, 0, 1):
             for ddec in (-1, 0, 1):
-                for hra, hdec in index.get(((rb + dra) % ra_bins, db + ddec), ()):
+                for hra, hdec, hn_rv in index.get(((rb + dra) % ra_bins, db + ddec), ()):
                     if _angular_sep_arcsec(float(ra), float(dec), hra, hdec) <= tol:
                         hit = True
-                        break
-                if hit:
-                    break
-            if hit:
-                break
+                        hit_count = max(hit_count, hn_rv)
         if hit:
-            out[i] = 1
+            out[i] = hit_count if hit_count > 0 else 1
             matched += 1
     return out, matched
 

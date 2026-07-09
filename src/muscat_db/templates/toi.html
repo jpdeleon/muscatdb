@@ -46,6 +46,7 @@
   <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Sub-Neptune">Sub-Neptune</span>
   <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Super-Earth">Super-Earth</span>
   <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Earth-size">Earth-size</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="depth>1ppt" title="Transit depth > 1 ppt (1,000 ppm)">depth &gt; 1ppt</span>
 </div>
 <div class="chip-bar">
   <span class="chip-label">Host star:</span>
@@ -54,6 +55,7 @@
   <span class="badge instrument-badge toi-chip" data-group="star" data-key="G">G type</span>
   <span class="badge instrument-badge toi-chip" data-group="star" data-key="F">F type</span>
   <span class="badge instrument-badge toi-chip" data-group="star" data-key="A+">A / hotter</span>
+  <span class="badge instrument-badge toi-chip" data-group="star" data-key="Tmag<=12" title="TESS magnitude ≤ 12">Tmag ≤ 12</span>
 </div>
 <div class="chip-bar">
   <span class="chip-label">Candidate type:</span>
@@ -64,7 +66,7 @@
   <span class="badge instrument-badge toi-chip" data-group="disp" data-key="FP"  title="False Positive">FP</span>
   <span class="badge instrument-badge toi-chip" data-group="disp" data-key="FA"  title="False Alarm">FA</span>
   <span class="badge instrument-badge toi-chip" data-group="disp" data-key="__blank__" title="No TFOPWG disposition">Unset</span>
-  <span class="badge instrument-badge toi-chip" data-group="nasa" data-key="1" title="Only TOIs matched to the NASA confirmed-planet composite catalog by TIC ID and period">NASA confirmed</span>
+  <span class="badge instrument-badge toi-chip" data-group="nasa" data-key="0" title="Only TOIs NOT matched to the NASA confirmed-planet composite catalog by TIC ID and period">not NASA confirmed</span>
 </div>
 <div class="chip-bar">
   <span class="chip-label">Multiplicity:</span>
@@ -362,7 +364,7 @@
   const selectedRot = new Set();           // 'fast' = P_rot < 10 d (Boyle+2026)
   const selectedIndb = new Set();          // '1' = only targets present in muscat-db
   const selectedHarps = new Set();         // '1' = coordinate match in HARPS RVBank
-  const selectedNasa = new Set();          // '1' = matched to NASA confirmed-planet catalog
+  const selectedNasa = new Set();          // '1' = matched to NASA confirmed-planet catalog, '0' = not matched
   let sortState = { key: null, dir: 0 };   // dir: 1 asc, -1 desc
 
   function buildColPredicates() {
@@ -405,10 +407,15 @@
         const tags = planetTags[i];
         let hit = false;
         for (let t = 0; t < tags.length; t++) { if (selectedPlanet.has(tags[t])) { hit = true; break; } }
+        const depthVal = TOI.depth[i];
+        if (selectedPlanet.has('depth>1ppt') && depthVal != null && depthVal > 1000) hit = true;
         if (!hit) continue;
       }
       if (useStar) {
-        if (!selectedStar.has(starClass[i])) continue;
+        let hit = selectedStar.has(starClass[i]);
+        const tmagVal = TOI.tmag[i];
+        if (selectedStar.has('Tmag<=12') && tmagVal != null && tmagVal <= 12) hit = true;
+        if (!hit) continue;
       }
       if (useDisp) {
         if (!selectedDisp.has((TOI.disp[i] || '').toUpperCase())) continue;
@@ -421,7 +428,10 @@
       }
       if (useIndb && !TOI.indb[i]) continue;
       if (useHarps && !TOI.has_harps_rv[i]) continue;
-      if (useNasa && !TOI.nasa_confirmed[i]) continue;
+      if (useNasa) {
+        if (selectedNasa.has('1') && !TOI.nasa_confirmed[i]) continue;
+        if (selectedNasa.has('0') && TOI.nasa_confirmed[i]) continue;
+      }
       out.push(i);
     }
     if (sortState.key) applySort(out);
@@ -479,6 +489,18 @@
       }
       if (c.key === 'nasa_confirmed') {
         return '<td>' + (v ? 'yes' : '—') + '</td>';
+      }
+      if (c.key === 'radius') {
+        const hasHarps = selectedHarps.has('1');
+        const harpsCount = TOI.has_harps_rv[i] || 0;
+        let titleAttr = '';
+        if (hasHarps && harpsCount > 0) {
+          titleAttr = ' title="HARPS RV: ' + harpsCount + ' datapoints"';
+        }
+        return '<td class="num"' + titleAttr + '>' + fmtNum(v) + '</td>';
+      }
+      if (c.key === 'has_harps_rv') {
+        return '<td class="num">' + (v ? fmtNum(v) : '—') + '</td>';
       }
       if (c.type === 'num') return '<td class="num">' + fmtNum(v) + '</td>';
       return '<td>' + esc(v || '—') + '</td>';
@@ -555,7 +577,16 @@
     const showErrX = errXEl.checked && !!xErrCol;
     const showErrY = errYEl.checked && !!yErrCol;
     const traceType = (showErrX || showErrY) ? 'scatter' : 'scattergl';
-    const hovertmpl = '%{text}<br>' + xlabel + ': %{x}<br>' + ylabel + ': %{y}<extra></extra>';
+    const showHarpsCount = selectedHarps.has('1');
+    let hovertmpl = '%{text}<br>' + xlabel + ': %{x}';
+    if (showHarpsCount && xk === 'radius') {
+      hovertmpl += '%{customdata[1]}';
+    }
+    hovertmpl += '<br>' + ylabel + ': %{y}';
+    if (showHarpsCount && yk === 'radius') {
+      hovertmpl += '%{customdata[1]}';
+    }
+    hovertmpl += '<extra></extra>';
 
     function usable(i) {
       const x = TOI[xk][i], y = TOI[yk][i];
@@ -575,7 +606,10 @@
 
     function push(a, i) {
       a.x.push(TOI[xk][i]); a.y.push(TOI[yk][i]); a.text.push(textOf(i));
-      a.sym.push(symOf(i)); a.sz.push(sizeOf(i)); a.cd.push(linkOf(i));
+      a.sym.push(symOf(i)); a.sz.push(sizeOf(i));
+      const harpsCount = TOI.has_harps_rv[i] || 0;
+      const harpsStr = (showHarpsCount && harpsCount > 0) ? ('<br>HARPS RV: ' + harpsCount + ' datapoints') : '';
+      a.cd.push([linkOf(i), harpsStr]);
       if (showErrX) a.ex.push(errX(i));
       if (showErrY) a.ey.push(errY(i));
     }
@@ -867,7 +901,8 @@
     plotClickBound = true;
     plotDiv.on('plotly_click', function (ev) {
       const pt = ev && ev.points && ev.points[0];
-      const name = pt && pt.customdata;
+      const cd = pt && pt.customdata;
+      const name = Array.isArray(cd) ? cd[0] : cd;
       if (name) window.open('/target?name=' + encodeURIComponent(name), '_blank', 'noopener');
     });
   }
