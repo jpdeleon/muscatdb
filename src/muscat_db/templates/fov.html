@@ -776,6 +776,7 @@
       saveToStorage();
       setMsg(`Resolved to RA ${data.ra}°, Dec ${data.dec}°`, 'ok');
       setTimeout(() => setMsg(''), 3000);
+      if (aladin) aladin.gotoRaDec(parseFloat(data.ra), parseFloat(data.dec));
     } catch (e) {
       setMsg('Request failed: ' + e, 'err');
     } finally {
