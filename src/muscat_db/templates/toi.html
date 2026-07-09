@@ -524,7 +524,9 @@
       const rawTic = TOI.tic[i] || TOI.name[i];
       if (rawTic != null) {
         const tic = String(rawTic);
-        if (tic && !exofopChecked.has(tic) && !TOI.nasa_confirmed[i]) {
+        const disp = (TOI.disp[i] || '').toUpperCase();
+        const isCandidate = (disp === 'PC' || disp === 'APC' || disp === '');
+        if (tic && !exofopChecked.has(tic) && !TOI.nasa_confirmed[i] && isCandidate) {
           ticsToCheck.push(tic);
           if (!ticToIndices[tic]) {
             ticToIndices[tic] = [];
