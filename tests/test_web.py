@@ -79,7 +79,7 @@ def test_jobs_status_response_counts_and_started_at(mock_db, monkeypatch):
     )
 
     client = TestClient(app)
-    response = client.get("/jobs/status")
+    response = client.get("/api/jobs/status")
     assert response.status_code == 200
     data = response.json()
     
@@ -132,7 +132,7 @@ def test_jobs_status_elapsed_uses_latest_rerun_started_at(mock_db, monkeypatch):
     monkeypatch.setattr("muscat_db.web._last_running", set())
     monkeypatch.setattr("muscat_db.web.time.time", lambda: 2030.0)
 
-    response = TestClient(app).get("/jobs/status")
+    response = TestClient(app).get("/api/jobs/status")
 
     assert response.status_code == 200
     data = response.json()
@@ -261,7 +261,7 @@ def test_jobs_status_includes_lco_archive_download(mock_db, monkeypatch):
             "error": None,
         }],
     )
-    data = TestClient(app).get("/jobs/status").json()
+    data = TestClient(app).get("/api/jobs/status").json()
     assert data["counts"]["running"] == 1
     assert data["running"][0]["key"] == "lco_archive_download:abc123"
     assert data["running"][0]["type"] == "lco_archive_download"
@@ -270,7 +270,7 @@ def test_jobs_status_includes_lco_archive_download(mock_db, monkeypatch):
     assert data["running"][0]["target"] == "WASP-12"
     assert data["running"][0]["run_name"] == "1119/2628 frames"
     assert data["running"][0]["details"] == "/data/MuSCAT3/260102"
-    active = TestClient(app).get("/jobs/status?active_only=1").json()["active"]
+    active = TestClient(app).get("/api/jobs/status?active_only=1").json()["active"]
     assert active == [{"key": "lco_archive_download:abc123", "state": "running"}]
 
 
@@ -298,7 +298,7 @@ def test_jobs_status_returns_terminal_lco_archive_even_if_baseline_missed(mock_d
         }],
     )
 
-    data = TestClient(app).get("/jobs/status").json()
+    data = TestClient(app).get("/api/jobs/status").json()
 
     finished = data["finished"]["lco_archive_download:abc123"]
     assert finished["key"] == "lco_archive_download:abc123"
@@ -322,7 +322,7 @@ def test_jobs_lco_archive_scan_endpoint(mock_db, monkeypatch):
         return {"total": 2, "per_ccd": {0: 2}}
 
     monkeypatch.setattr("muscat_db.scanner.scan_date", fake_scan)
-    r = TestClient(app).post("/jobs/lco-archive/scan", json={"inst": "muscat3", "date": "260102"})
+    r = TestClient(app).post("/api/jobs/lco-archive/scan", json={"inst": "muscat3", "date": "260102"})
     assert r.status_code == 200
     assert r.json()["command"] == "muscat-db scan muscat3 260102"
     assert called["args"] == ("muscat3", "260102")
@@ -336,7 +336,7 @@ def test_jobs_lco_archive_ingest_date_endpoint(mock_db, monkeypatch):
         return 2
 
     monkeypatch.setattr("muscat_db.database.ingest_date", fake_ingest)
-    r = TestClient(app).post("/jobs/lco-archive/ingest-date", json={"inst": "muscat3", "date": "260102"})
+    r = TestClient(app).post("/api/jobs/lco-archive/ingest-date", json={"inst": "muscat3", "date": "260102"})
     assert r.status_code == 200
     assert r.json()["command"] == "muscat-db ingest-date muscat3 260102"
     assert r.json()["count"] == 2
@@ -598,7 +598,7 @@ def test_jobs_rerun_restores_persisted_run_identity(mock_db, monkeypatch):
 
     monkeypatch.setattr("muscat_db.web.phot.start_run", fake_start_run)
 
-    response = TestClient(app).post("/jobs/rerun", json={"key": key})
+    response = TestClient(app).post("/api/jobs/rerun", json={"key": key})
 
     assert response.status_code == 200
     assert captured["options"]["bands"] == ["gp"]
@@ -1782,7 +1782,7 @@ def test_photometry_download_all_endpoints(mock_db, monkeypatch, tmp_path):
     client = TestClient(app)
 
     # 1. Test legacy download-all
-    r = client.get(f"/photometry/download-all/{inst}/{date}/{target}")
+    r = client.get(f"/api/photometry/download-all/{inst}/{date}/{target}")
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/zip"
 
@@ -1796,7 +1796,7 @@ def test_photometry_download_all_endpoints(mock_db, monkeypatch, tmp_path):
         assert "HAT-P-1_muscat3_gp_260101.csv" not in namelist
 
     # 2. Test named run download-all
-    r = client.get(f"/photometry/download-all/{inst}/{date}/{target}/run/{run_id}")
+    r = client.get(f"/api/photometry/download-all/{inst}/{date}/{target}/run/{run_id}")
     assert r.status_code == 200
     with zipfile.ZipFile(io.BytesIO(r.content)) as z:
         namelist = z.namelist()
@@ -1834,7 +1834,7 @@ def test_transit_fit_download_all_endpoints(mock_db, monkeypatch, tmp_path):
     client = TestClient(app)
 
     # 1. Test legacy transit-fit download-all
-    r = client.get(f"/transit-fit/download-all/{inst}/{date}/{target}")
+    r = client.get(f"/api/transit-fit/download-all/{inst}/{date}/{target}")
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/zip"
 
@@ -1849,7 +1849,7 @@ def test_transit_fit_download_all_endpoints(mock_db, monkeypatch, tmp_path):
         assert "run-abc/fit.yaml" not in namelist
 
     # 2. Test named run transit-fit download-all
-    r = client.get(f"/transit-fit/download-all/{inst}/{date}/{target}/run/run-abc")
+    r = client.get(f"/api/transit-fit/download-all/{inst}/{date}/{target}/run/run-abc")
     assert r.status_code == 200
     with zipfile.ZipFile(io.BytesIO(r.content)) as z:
         namelist = z.namelist()

@@ -1345,7 +1345,7 @@ erDiagram
             <span class="faq-icon">+</span>
           </div>
           <div class="faq-answer">
-            <p>Both the photometry and transit-fit result pages have a <strong>Download all output</strong> button. It calls a server-side endpoint (<code>/photometry/download-all/...</code> or <code>/transit-fit/download-all/...</code>) that zips every product file for that run into a single archive and streams it back — no need to download plots and CSVs one at a time. For run-scoped reductions the zip walks the run directory recursively; legacy (non run-scoped) reductions zip the top-level files plus the <code>out/</code> subdirectory. The temporary zip is written under the pipeline's tmpdir and deleted immediately after the response finishes streaming.</p>
+            <p>Both the photometry and transit-fit result pages have a <strong>Download all output</strong> button. It calls a server-side endpoint (<code>/api/photometry/download-all/...</code> or <code>/api/transit-fit/download-all/...</code>) that zips every product file for that run into a single archive and streams it back — no need to download plots and CSVs one at a time. For run-scoped reductions the zip walks the run directory recursively; legacy (non run-scoped) reductions zip the top-level files plus the <code>out/</code> subdirectory. The temporary zip is written under the pipeline's tmpdir and deleted immediately after the response finishes streaming.</p>
           </div>
         </div>
 

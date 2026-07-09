@@ -1299,14 +1299,14 @@ class TestRoutes:
         r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
         assert r.status_code == 200
         name = f"{TARGET}_{INST}_{DATE}_lightcurves.png"
-        assert f"/photometry/file/{INST}/{DATE}/{name}?v=" in r.text
+        assert f"/api/photometry/file/{INST}/{DATE}/{name}?v=" in r.text
 
     def test_photometry_page_versions_named_run_urls(self, client, prose_dir):
         _make_run_outputs(prose_dir, "default")
         r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}&run=default")
         assert r.status_code == 200
         name = f"{TARGET}_{INST}_{DATE}_lightcurves.png"
-        assert f"/photometry/file/{INST}/{DATE}/{TARGET}/run/default/{name}?v=" in r.text
+        assert f"/api/photometry/file/{INST}/{DATE}/{TARGET}/run/default/{name}?v=" in r.text
         assert "- default" in r.text
 
     def test_photometry_page_hides_other_runs_on_test_run(self, client, prose_dir):
@@ -1324,7 +1324,7 @@ class TestRoutes:
     def test_run_file_route_serves_named_run_artifact(self, client, prose_dir):
         _make_run_outputs(prose_dir, "default")
         name = f"{TARGET}_{INST}_{DATE}_lightcurves.png"
-        r = client.get(f"/photometry/file/{INST}/{DATE}/{TARGET}/run/default/{name}")
+        r = client.get(f"/api/photometry/file/{INST}/{DATE}/{TARGET}/run/default/{name}")
         assert r.status_code == 200
 
     def test_ref_header_link_and_inline_serving(self, client, prose_dir):
@@ -1335,7 +1335,7 @@ class TestRoutes:
         r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
         assert "view ref header" in r.text
         assert name in r.text
-        fr = client.get(f"/photometry/file/{INST}/{DATE}/{name}")
+        fr = client.get(f"/api/photometry/file/{INST}/{DATE}/{name}")
         assert fr.status_code == 200
         assert fr.headers["content-type"].startswith("text/plain")
         assert "attachment" not in (fr.headers.get("content-disposition") or "")
@@ -1348,7 +1348,7 @@ class TestRoutes:
 
     def test_file_route_serves_png(self, client):
         name = f"{TARGET}_{INST}_{DATE}_stacks.png"
-        r = client.get(f"/photometry/file/{INST}/{DATE}/{name}")
+        r = client.get(f"/api/photometry/file/{INST}/{DATE}/{name}")
         assert r.status_code == 200
         assert r.headers.get("cache-control") == "no-store, no-cache, must-revalidate, max-age=0"
 
@@ -1359,20 +1359,20 @@ class TestRoutes:
         mdir.mkdir(parents=True, exist_ok=True)
         (mdir / "master_bias.png").write_bytes(b"\x89PNG\r\n")
 
-        r = client.get(f"/photometry/file/muscat/{DATE}/master_bias.png")
+        r = client.get(f"/api/photometry/file/muscat/{DATE}/master_bias.png")
         assert r.status_code == 200
 
     def test_file_route_rejects_bad_ext(self, client):
-        r = client.get(f"/photometry/file/{INST}/{DATE}/evil.sh")
+        r = client.get(f"/api/photometry/file/{INST}/{DATE}/evil.sh")
         assert r.status_code == 404
 
     def test_status_route(self, client):
-        r = client.get(f"/photometry/status?inst={INST}&date=111111&target=Nobody")
+        r = client.get(f"/api/photometry/status?inst={INST}&date=111111&target=Nobody")
         assert r.status_code == 200
         assert r.json()["state"] == "none"
 
     def test_status_batch_route(self, client):
-        r = client.post("/photometry/status-batch", json={
+        r = client.post("/api/photometry/status-batch", json={
             "jobs": [
                 {"inst": INST, "date": "111111", "target": "Nobody", "run": ""},
                 {"inst": "muscat2", "date": "220521", "target": "TOI04030.01", "run": "default"},
@@ -1388,12 +1388,12 @@ class TestRoutes:
         assert data["jobs"][1]["inst"] == "muscat2"
 
     def test_status_batch_route_rejects_bad_input(self, client):
-        r = client.post("/photometry/status-batch", json={"jobs": "not_a_list"})
+        r = client.post("/api/photometry/status-batch", json={"jobs": "not_a_list"})
         assert r.status_code == 400
         assert "must be a list" in r.json()["error"]
 
     def test_status_batch_route_missing_fields(self, client):
-        r = client.post("/photometry/status-batch", json={
+        r = client.post("/api/photometry/status-batch", json={
             "jobs": [{"inst": INST}]
         })
         assert r.status_code == 200
@@ -1402,14 +1402,14 @@ class TestRoutes:
 
     def test_run_route_rejects_missing_raw(self, client, tmp_path, monkeypatch):
         # raw data dir for date 111111 won't exist
-        r = client.post("/photometry/run", json={
+        r = client.post("/api/photometry/run", json={
             "inst": INST, "date": "111111", "target": TARGET, "test_run": True,
         })
         assert r.status_code == 400
         assert r.json()["ok"] is False
 
     def test_command_route_echoes_options(self, client):
-        r = client.post("/photometry/command", json={
+        r = client.post("/api/photometry/command", json={
             "inst": INST, "date": DATE, "target": TARGET, "test_run": False,
             "options": {"bands": ["gp"], "use_barycorrpy": True, "max_num_stars": 7},
         })
@@ -1420,7 +1420,7 @@ class TestRoutes:
         assert "--max_num_stars 7" in body["command"]
 
     def test_command_route_echoes_ref_select_quality(self, client):
-        r = client.post("/photometry/command", json={
+        r = client.post("/api/photometry/command", json={
             "inst": INST, "date": DATE, "target": TARGET, "test_run": False,
             "options": {"bands": ["gp"], "ref_select": "quality", "ref_select_top_k": 3},
         })
@@ -1431,7 +1431,7 @@ class TestRoutes:
         assert "--ref_select_top_k 3" in body["command"]
 
     def test_command_route_reports_validation_error(self, client):
-        r = client.post("/photometry/command", json={
+        r = client.post("/api/photometry/command", json={
             "inst": INST, "date": DATE, "target": TARGET,
             "options": {"aper_radii": "10,20,2"},  # missing annulus
         })
@@ -1496,7 +1496,7 @@ class TestRoutes:
         # Two sites + no site chosen -> the run is refused (400) so prose never
         # silently merges frames from different telescopes.
         self._insert_two_sites(tmp_path)
-        r = client.post("/photometry/run", json={
+        r = client.post("/api/photometry/run", json={
             "inst": "sinistro", "date": "250710", "target": "HIP67522",
             "test_run": True, "options": {"bands": ["gp"]},
         })
@@ -1508,14 +1508,14 @@ class TestRoutes:
         # until a site is selected, then clears.
         self._insert_two_sites(tmp_path)
         body = {"inst": "sinistro", "date": "250710", "target": "HIP67522", "test_run": False}
-        r = client.post("/photometry/command", json={**body, "options": {"bands": ["gp"]}})
+        r = client.post("/api/photometry/command", json={**body, "options": {"bands": ["gp"]}})
         assert "select a site" in (r.json()["error"] or "").lower()
-        r = client.post("/photometry/command", json={**body, "options": {"bands": ["gp"], "site": "lsc"}})
+        r = client.post("/api/photometry/command", json={**body, "options": {"bands": ["gp"], "site": "lsc"}})
         assert r.json()["error"] is None
 
     def test_sinistro_command_blocks_multiband_reference_band_even_with_site(self, client, tmp_path):
         self._insert_two_sites(tmp_path)
-        r = client.post("/photometry/command", json={
+        r = client.post("/api/photometry/command", json={
             "inst": "sinistro", "date": "250710", "target": "HIP67522",
             "test_run": False,
             "options": {"bands": ["gp", "rp"], "site": "lsc", "ref_band": "gp"},
@@ -1524,7 +1524,7 @@ class TestRoutes:
 
     def test_sinistro_command_allows_single_band_ref_and_avoid_ids(self, client, tmp_path):
         self._insert_two_sites(tmp_path)
-        r = client.post("/photometry/command", json={
+        r = client.post("/api/photometry/command", json={
             "inst": "sinistro", "date": "250710", "target": "HIP67522",
             "test_run": False,
             "options": {"bands": ["gp"], "site": "lsc", "ref_band": "gp", "avoid_comparison_ids": "5,7"},
@@ -1544,7 +1544,7 @@ class TestRoutes:
         )
         conn.commit()
         conn.close()
-        r = client.post("/photometry/command", json={
+        r = client.post("/api/photometry/command", json={
             "inst": "sinistro", "date": "250710", "target": "HIP67522",
             "test_run": False, "options": {"bands": ["gp"]},
         })
@@ -1559,7 +1559,7 @@ class TestRoutes:
         assert "▶ Run Full Reduction (all frames)" in html
 
     def test_cancel_route_no_job(self, client):
-        r = client.post("/photometry/cancel", json={
+        r = client.post("/api/photometry/cancel", json={
             "inst": INST, "date": "222222", "target": "Nobody",
         })
         assert r.status_code == 400
@@ -1687,11 +1687,11 @@ class TestRoutes:
         assert "HIP67522_sinistro_cpt_gp_250710.csv" not in r2.text
 
     def test_transit_fit_file_rejects_bad_target(self, client):
-        r = client.get("/transit-fit/file/muscat3/250717/evil..target/timer-fit.log")
+        r = client.get("/api/transit-fit/file/muscat3/250717/evil..target/timer-fit.log")
         assert r.status_code == 400
 
     def test_transit_fit_log_rejects_bad_target(self, client):
-        r = client.get("/jobs/log/transit_fit/muscat3/250717/evil..target")
+        r = client.get("/api/jobs/log/transit_fit/muscat3/250717/evil..target")
         assert r.status_code == 404
 
     def test_transit_fit_query_archive_success(self, client, mocker):
@@ -1700,7 +1700,7 @@ class TestRoutes:
         mock_response.read.return_value = b'[{"pl_name": "WASP-104 b", "st_teff": 5475.0, "st_tefferr1": 127.0, "st_tefferr2": -127.0}]'
         mocker.patch("urllib.request.urlopen", return_value=mock_response)
         
-        r = client.get("/transit-fit/query-archive?target=WASP-104")
+        r = client.get("/api/transit-fit/query-archive?target=WASP-104")
         assert r.status_code == 200
         data = r.json()
         assert data["ok"] is True
@@ -1721,7 +1721,7 @@ class TestRoutes:
 
         mocker.patch("urllib.request.urlopen", side_effect=side_effect)
 
-        r = client.get("/transit-fit/query-archive", params={"target": "WASP-104' OR 'x'='x"})
+        r = client.get("/api/transit-fit/query-archive", params={"target": "WASP-104' OR 'x'='x"})
         assert r.status_code == 200
         assert seen_queries
         assert "WASP-104'' OR ''x''=''x" in seen_queries[0]
@@ -1740,7 +1740,7 @@ class TestRoutes:
 
         mocker.patch("urllib.request.urlopen", side_effect=side_effect)
 
-        r = client.get("/transit-fit/query-archive", params={"target": "TOI' OR '1'='1", "source": "toi"})
+        r = client.get("/api/transit-fit/query-archive", params={"target": "TOI' OR '1'='1", "source": "toi"})
         assert r.status_code == 200
         assert seen_queries
         assert "TOI'' OR ''1''=''1" in seen_queries[0]
@@ -1765,7 +1765,7 @@ class TestRoutes:
 
         mocker.patch("urllib.request.urlopen", side_effect=side_effect)
 
-        r = client.get("/transit-fit/query-archive?target=HIP67522")
+        r = client.get("/api/transit-fit/query-archive?target=HIP67522")
         assert r.status_code == 200
         data = r.json()
         assert data["ok"] is True
@@ -1782,7 +1782,7 @@ class TestRoutes:
 
     def test_transit_fit_query_archive_local_csv(self, client, catalog):
         # 1. Test local NASA Exoplanet Archive CSV query
-        r = client.get("/transit-fit/query-archive?target=HIP67522")
+        r = client.get("/api/transit-fit/query-archive?target=HIP67522")
         assert r.status_code == 200
         data = r.json()
         assert data["ok"] is True
@@ -1792,7 +1792,7 @@ class TestRoutes:
         assert data["params"]["st_ref"] != ""
 
         # 2. Test local TOI Catalog CSV query
-        r2 = client.get("/transit-fit/query-archive?target=TOI-101.01&source=toi")
+        r2 = client.get("/api/transit-fit/query-archive?target=TOI-101.01&source=toi")
         assert r2.status_code == 200
         data2 = r2.json()
         assert data2["ok"] is True
@@ -1803,20 +1803,20 @@ class TestRoutes:
     def test_transit_fit_query_archive_toi_zero_padding(self, client):
         """Test that TOI queries handle zero-padding correctly (toi02688.01 != toi00688.01)."""
         # Query with zero-padded format should find TOI-101.01 (not any substring match)
-        r = client.get("/transit-fit/query-archive?target=toi0101.01&source=toi")
+        r = client.get("/api/transit-fit/query-archive?target=toi0101.01&source=toi")
         assert r.status_code == 200
         data = r.json()
         assert data["ok"] is True
         assert "TOI-101.01" in data["pl_name"]
 
         # Also test with different padding styles
-        r2 = client.get("/transit-fit/query-archive?target=TOI-101.01&source=toi")
+        r2 = client.get("/api/transit-fit/query-archive?target=TOI-101.01&source=toi")
         assert r2.status_code == 200
         data2 = r2.json()
         assert data2["ok"] is True
         assert data2["pl_name"] == data["pl_name"]  # Should get same result
 
-        r3 = client.get("/transit-fit/query-archive?target=toi101.01&source=toi")
+        r3 = client.get("/api/transit-fit/query-archive?target=toi101.01&source=toi")
         assert r3.status_code == 200
         data3 = r3.json()
         assert data3["ok"] is True
