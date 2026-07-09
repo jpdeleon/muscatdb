@@ -4,6 +4,18 @@ MuSCAT observation log pipeline — scan FITS files, build a fast SQLite databas
 
 Converted from the original Perl scripts (`mkobslog*.pl`, `auto_mkobslog.pl`, `show_obslog_summary.pl`) into a single Python project with a modern backend + frontend.
 
+## Pipeline engines
+
+muscat-db orchestrates three external packages, each in its own conda environment.
+It stores their inputs, launches them as background jobs, and renders their outputs;
+the science lives in the packages themselves.
+
+| Stage | Engine | Sampler | Outputs |
+|---|---|---|---|
+| Photometry | [`prose2`](https://github.com/jpdeleon/prose2) | — | Lightcurve CSVs, diagnostics |
+| Transit fitting | [`timer`](https://github.com/john-livingston/timer) | PyMC (NUTS) | Posteriors, corner/trace/fit plots |
+| TTV fitting | [`harmonic`](https://github.com/john-livingston/harmonic) | emcee | Posteriors, corner/trace/fit plots |
+
 ## Requirements
 
 - Python ≥ 3.12
@@ -65,6 +77,44 @@ If `nova` is selected without the key set, calibration fails fast with a message
 pointing you to `--wcs_method twirl`. BANZAI-reduced **muscat3 / muscat4 /
 sinistro** already carry WCS in their headers and skip solving entirely, so the
 API key is irrelevant for those instruments.
+
+### TTV Fitting (harmonic)
+
+Transit timing variation fits run on the **Ephemeris** page (`/ephemeris`), not on a
+page of their own: a TTV signal is only meaningful relative to a reference linear
+ephemeris, so the fit is the last step of the O-C workflow rather than a separate
+destination. The **Configure & Run TTV Fitting** panel appears once a target has
+transit times to fit; `/ttv-fit` redirects to `/ephemeris` for old bookmarks.
+
+The engine is the [`harmonic`](https://github.com/john-livingston/harmonic) package,
+which fits the multi-harmonic near-resonant TTV model of Lithwick, Xie & Wu (2012)
+with `emcee`. Transit centers come straight from the O-C plot above the panel, so the
+same dataset checkboxes and point exclusions that shape the linear fit also shape the
+TTV fit. muscat-db writes harmonic's two inputs into the run directory and invokes the
+CLI from the conda `harmonic` env:
+
+- `data.csv` — the transit times (`planet,epoch,tc,tc_unc`), with planet letters
+  remapped to the integer indices harmonic expects.
+- `config.ini` — an `[INIT]` section with the TTV amplitude, super-period, and phase
+  reference (`a_bc`, `a_cb`, `per_bc`, `t_bc`) for each adjacent pair, plus optional
+  `[T14]` (transit durations) and `[OUTER]` (non-transiting outer planet) sections.
+
+Sampler settings (walkers, steps, burn-in, thinning, processes, seed) and model options
+(stellar mass, non-transiting outer planet, per-pair phase offsets, overwrite) are
+exposed in the panel and map one-to-one onto harmonic's flags; the exact command is
+shown and copyable so a run can be reproduced in a terminal. Runs are launched in the
+background, tracked on the **Jobs** page, and stream their log live like photometry and
+transit-fit jobs.
+
+Results are keyed on **target alone** (not instrument/date, unlike photometry) and
+stored under `$MUSCAT_TTV_DIR/<target>/_runs/<run_name>/` (default `$MUSCAT_TTV_DIR`
+is `~/ql/harmonic`), mirroring the photometry `_runs/` convention. Each run holds
+`samples.csv.gz` (the posterior), `harmonic.log`, `meta.yaml` (muscat-db and harmonic
+versions plus the full option set), the `data.csv`/`config.ini` inputs, and harmonic's
+plots (`corner.png`, `trace.png`, `fit.png`, `init.png`). Naming a run keeps it
+isolated; the page's run chips switch between stored runs, and **Delete Results** is
+scoped to the run currently on screen. A run directory without `samples.csv.gz` is
+treated as empty and hidden.
 
 ### LCO Scheduling, Archive Downloads, and FOV Optimization
 
@@ -206,16 +256,17 @@ muscat-db serve --port 8080  # custom port
 
 ## Web Frontend
 
-The navigation bar links the observation log, photometry, transit fitting, job
-history, exposure calculator, LCO scheduling/download, field-of-view optimizer,
-the TOI and NExScI catalog browsers, and pipeline guide. 
+The navigation bar links the observation log, photometry, transit fitting, ephemeris
+(O-C plots and TTV fitting), job history, exposure calculator, LCO scheduling/download,
+field-of-view optimizer, the TOI and NExScI catalog browsers, and pipeline guide.
 Observation-log navigation is **Logs** → **Dates** → **CCD summaries** → 
 **Per-frame table**.
 
 - **Transit Fitting Run Modes**: When launching transit fits, choose between a **New Fit** (start fresh, clobbering existing traces) or **Continue Sampling** (load the previous trace and append more MCMC draws, available if previous results exist). A **Secondary eclipse** checkbox fits an eclipse at orbital phase 0.5 instead of a primary transit.
-- **Download all output**: Photometry and transit-fit result pages offer a single button that zips every product file for that run (recursively, for run-scoped reductions) server-side and streams it back for download.
+- **Download all output**: Photometry, transit-fit, and TTV-fit result pages offer a single button that zips every product file for that run (recursively, for run-scoped reductions) server-side and streams it back for download.
 - **Field-of-View (FOV) Optimizer**: Accessible from the navbar or observation scheduler to plan pointing offsets and instrument position angle (PA) based on Gaia DR3 comparison star heuristics, with an optional bright-star avoidance constraint.
 - **Ephemeris O-C Export Headers**: Exported O-C ephemeris text starts with descriptive `#` comments specifying the BJD_TDB time standard and column formats (planet, epoch, tc, tc_unc) for easy external parsing. Each ephemeris field (RA/Dec, T0, period, duration) carries a provenance badge (NASA/TOI/AUTO/LINEAR/FIT/manual) and hand-entered values are preserved across a same-target re-fetch instead of being overwritten by a catalog miss.
+- **TTV Fitting**: The same page runs multi-harmonic TTV fits on the transit times behind the O-C plot via the `harmonic` package, with named runs, live logs, and per-run results (see [TTV Fitting](#ttv-fitting-harmonic) above).
 - **Catalog browsers (`/toi`, `/nexsci`)**: Interactive Plotly scatter plots of the TESS Objects of Interest (`data/TOIs.csv`) and the NASA Exoplanet Archive composite planet table (`data/nexsci_pscomppars.csv`), with configurable axes, filter chips (including a fast-rotator chip driven by the Boyle+2026 stellar-rotation catalog on `/toi`), a searchable table, CSV export, and bookmarkable filter state via the URL hash. Targets already in muscat-db are drawn as ★ stars. On the **NExScI** page, clicking a point opens that planet's muscat-db target page when the host is in the database, otherwise its [NASA Exoplanet Archive overview](https://exoplanetarchive.ipac.caltech.edu/overview/) page (using the archive's canonical host name, e.g. `TOI-2000`).
 - **NASA ADS publications panel**: The target page can search NASA ADS for papers matching the target name (requires `ADS_API_TOKEN`/`ADS_DEV_KEY` in `.env`) and lists matching bibcodes with links to the abstract.
 
@@ -229,17 +280,18 @@ The home page shows:
 - **Loading status bar** at the top of the page plus a bottom status line showing `Rendering N targets…` while the table lays out.
 - Inline SVG **favicon** (no extra HTTP request).
 
-Photometry and transit-fit runs execute in the background and remain recorded
-on the **Jobs** page. A photometry process that exits successfully but reports
+Photometry, transit-fit, and TTV-fit runs execute in the background and remain
+recorded on the **Jobs** page. A photometry process that exits successfully but reports
 `photometry PARTIAL FAILURE` is shown as failed, because one or more requested
 bands did not complete. Hiding a job is local to the browser; starting that job
 again makes its row visible.
 
 Photometry run logs are isolated by instrument, date, and target. Transit-fit
 outputs are stored under `$MUSCAT_TIMER_DIR/<instrument>/<date>/<target>/`
-(default `$MUSCAT_TIMER_DIR` is `/ut2/jerome/ql/timer`). Spaces are removed from
-the target directory name; empty names and names containing `..`, `/`, or `\`
-are rejected.
+(default `$MUSCAT_TIMER_DIR` is `/ut2/jerome/ql/timer`), and TTV-fit outputs under
+`$MUSCAT_TTV_DIR/<target>/_runs/<run_name>/` (default `~/ql/harmonic`). Spaces are
+removed from the target directory name; empty names and names containing `..`, `/`,
+or `\` are rejected.
 
 Calibration and engineering frames (`DARK*`, `FLAT*`, `BIAS*`, `MOVIE`, `FOCUS_ADJUST`, `FoV`, `Muscat commissioning *`, etc.) are excluded from the targets aggregation so the table only shows real science targets.
 

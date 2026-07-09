@@ -89,6 +89,19 @@
     margin-top: 0;
   }
 
+  /* Upstream repository link at the top of an engine's card */
+  .repo-link {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    margin: 0 0 1rem 0;
+  }
+  .repo-link a {
+    color: var(--accent);
+    text-decoration: none;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .repo-link a:hover { text-decoration: underline; }
+
   /* Table of Contents and Layout Grid */
   .workflow-layout {
     display: grid;
@@ -207,6 +220,7 @@
         <li><a href="#prose-card" class="toc-link">prose Photometry</a></li>
         <li><a href="#timer-card" class="toc-link">timer Transit Fitting</a></li>
         <li><a href="#ephemeris-card" class="toc-link">Ephemeris O-C Plotter</a></li>
+        <li><a href="#ttv-card" class="toc-link">harmonic TTV Fitting</a></li>
         <li><a href="#fov-card" class="toc-link">FOV Optimizer</a></li>
         <li><a href="#lco-schedule-card" class="toc-link">LCO Schedule</a></li>
         <li><a href="#lco-archive-card" class="toc-link">LCO Archive</a></li>
@@ -271,6 +285,11 @@ graph TD
     J -->|Transit centers Tc| L["Ephemeris O-C Analysis"]:::pipeline
     L -->|Interactive fit| M["O-C Plot & Ephemeris\n(saved views in DB)"]:::default
 
+    %% TTV Fit Stage
+    L -->|Transit times| R1["TTV Fit Job Queue"]:::pipeline
+    R1 -->|Runs harmonic emcee sampler| R2["Multi-Harmonic TTV Fit"]:::default
+    R2 -->|Posteriors & plots| R3["TTV Results\n($MUSCAT_TTV_DIR/target/_runs/run/)"]:::default
+
     %% Exposure Calculator & Targets API
     D -->|Exposure times| N["Exposure Calculator"]:::pipeline
     N -->|Calibration coefficients| C
@@ -292,9 +311,11 @@ graph TD
     %% Jobs monitoring & Results loop
     E -->|Track execution| K["Jobs Page\n(per-user attribution)"]:::default
     H -->|Track execution| K
+    R1 -->|Track execution| K
     G -->|Display preview & plots| D
     J -->|Display parameters & plots| D
     M -->|Inspect TTVs, update| D
+    R3 -->|Display posteriors & plots| D
     P -->|Track submission| K
     Q -->|Add to muscat-db| B
           </pre>
@@ -316,6 +337,9 @@ graph TD
       </div>
 
       <div class="card-body">
+        <p class="repo-link">
+          Repository: <a href="https://github.com/jpdeleon/prose2" target="_blank" rel="noopener noreferrer">github.com/jpdeleon/prose2</a>
+        </p>
         <div class="workflow-diagram-wrap">
           <pre class="mermaid" style="width: 100%; text-align: center;">
 graph TD
@@ -361,6 +385,9 @@ graph TD
       </div>
 
       <div class="card-body">
+        <p class="repo-link">
+          Repository: <a href="https://github.com/john-livingston/timer" target="_blank" rel="noopener noreferrer">github.com/john-livingston/timer</a>
+        </p>
         <div class="workflow-diagram-wrap">
           <pre class="mermaid" style="width: 100%; text-align: center;">
 graph TD
@@ -441,9 +468,70 @@ graph TD
     R --> S["Ephemeris Views Table\n(ephemeris_views DB)"]:::db
     S --> T["Shareable View Links\n/api/ephemeris/view/{slug}"]:::default
     T --> U["Resume Analysis\nRestore all settings & selections"]:::default
+
+    %% Handoff to TTV fitting
+    L --> V["TTV Fit Inputs\ndata.csv: planet, epoch, tc, tc_unc"]:::default
+    V --> W["harmonic TTV Fit\n(see next section)"]:::pipeline
           </pre>
         </div>
 
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="ttv-card">
+      <div class="card-header-toggle" onclick="toggleCard('ttv-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            harmonic TTV Fitting Workflow
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Multi-harmonic transit timing variation modeling run from the Ephemeris page, sampled with <code>emcee</code> in the <code>harmonic</code> engine.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <p class="repo-link">
+          Repository: <a href="https://github.com/john-livingston/harmonic" target="_blank" rel="noopener noreferrer">github.com/john-livingston/harmonic</a>
+        </p>
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% Inputs assembled on the ephemeris page
+    A["Transit Centers from O-C Plot\nTc, tc_unc, epoch per planet"]:::default --> B["Dataset Selection & Point Exclusions\n(shared with the linear fit)"]:::default
+    B --> C["Planet Letters to Indices\nb,c,d to 0,1,2"]:::default
+
+    %% Configuration
+    C --> D["data.csv\nplanet, epoch, tc, tc_unc"]:::default
+    E["Model Options\nstellar mass, non-transiting outer, phase offsets"]:::default --> F["config.ini"]:::default
+    G["INIT section, per adjacent pair\na_bc, a_cb, per_bc, t_bc"]:::default --> F
+    H["Optional sections\nT14 transit durations\nOUTER non-transiting planet"]:::default --> F
+
+    %% Validation & launch
+    D --> I["Validate Options & INI\n/api/ttv-fit/start"]:::pipeline
+    F --> I
+    I --> J["Write Run Directory\n$MUSCAT_TTV_DIR/target/_runs/run_name"]:::default
+    J --> K["Launch harmonic CLI\n(conda harmonic env, background job)"]:::pipeline
+
+    %% Sampling
+    K --> L["Multi-Harmonic TTV Model\nLithwick, Xie and Wu 2012 near-resonant formalism"]:::default
+    L --> M["MCMC Sampling\n(emcee: walkers, steps, burn-in, thinning)"]:::pipeline
+    M --> N["Live Log Streaming\nharmonic.log to run panel"]:::default
+
+    %% Outputs
+    M --> O["Posterior Samples\nsamples.csv.gz"]:::default
+    M --> P["Diagnostic Plots\ncorner.png, trace.png, fit.png, init.png"]:::default
+    J --> Q["Run Provenance\nmeta.yaml: muscat-db & harmonic versions, options"]:::default
+
+    %% Results loop
+    O --> R["TTV Fit Results Panel\nrun chips switch between stored runs"]:::default
+    P --> R
+    Q --> R
+    R --> S["Download All\nzipped run directory"]:::default
+    N --> T["Jobs Page\n(per-user attribution, cancel)"]:::db
+          </pre>
+        </div>
       </div>
     </div>
 
@@ -1548,6 +1636,62 @@ erDiagram
             <p>Both pipelines produce scientifically rigorous results; the choice depends on your data source and workflow integration needs.</p>
           </div>
         </div>
+
+        <!-- ==================== TTV Fitting ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">TTV Fitting</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>Where is the TTV fit page?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>There is no separate TTV page. TTV fitting lives on the <a href="/ephemeris">Ephemeris</a> page, in the <strong>Configure &amp; Run TTV Fitting</strong> section below the O-C plot. A TTV signal is only meaningful relative to a reference linear ephemeris, so the fit is the last step of the O-C workflow rather than its own destination. The old <code>/ttv-fit</code> URL redirects to <code>/ephemeris</code>.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the TTV fitting pipeline work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The <a href="https://github.com/john-livingston/harmonic" target="_blank" rel="noopener noreferrer">harmonic</a> engine fits the multi-harmonic near-resonant TTV model of Lithwick, Xie &amp; Wu (2012), sampled with <code>emcee</code>:</p>
+            <ol>
+              <li><strong>Input assembly</strong> — transit centers behind the O-C plot (<code>Tc</code>, <code>tc_unc</code>, epoch per planet) are written to <code>data.csv</code>, with planet letters remapped to the integer indices harmonic expects. The dataset checkboxes and point exclusions that shape the linear fit shape the TTV fit too.</li>
+              <li><strong>Configuration</strong> — <code>config.ini</code> carries an <code>[INIT]</code> section with the TTV amplitude, super-period, and phase reference (<code>a_bc</code>, <code>a_cb</code>, <code>per_bc</code>, <code>t_bc</code>) for each adjacent pair, plus optional <code>[T14]</code> (transit durations) and <code>[OUTER]</code> (non-transiting outer planet) sections.</li>
+              <li><strong>Launch</strong> — options and INI are validated, the run directory is written, and the harmonic CLI runs as a background job in the conda <code>harmonic</code> environment. The exact command is shown in the run panel so it can be reproduced in a terminal.</li>
+              <li><strong>Sampling</strong> — <code>emcee</code> runs with the configured walkers, steps, burn-in, thinning, processes, and seed, streaming <code>harmonic.log</code> live to the page.</li>
+              <li><strong>Outputs</strong> — posterior samples (<code>samples.csv.gz</code>), diagnostic plots (<code>corner.png</code>, <code>trace.png</code>, <code>fit.png</code>, <code>init.png</code>), and <code>meta.yaml</code> recording the muscat-db and harmonic versions plus the full option set.</li>
+            </ol>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>Where are TTV fit results stored, and how do named runs work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>TTV results are keyed on <strong>target alone</strong> — not instrument and date, unlike photometry — because a TTV fit spans every transit of that system regardless of which night or instrument produced each transit center. They live under <code>$MUSCAT_TTV_DIR/&lt;target&gt;/_runs/&lt;run_name&gt;/</code> (default <code>~/ql/harmonic</code>), mirroring the photometry <code>_runs/</code> convention.</p>
+            <p>Naming a run keeps it isolated, so you can compare, say, a two-planet fit against a fit with a non-transiting outer planet. The run chips above the results switch between stored runs, and <strong>Delete Results</strong> is scoped to the run currently on screen rather than the name typed in the box. A run directory without <code>samples.csv.gz</code> is treated as empty and hidden from the chip list.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What do the "non-transiting outer planet" and "phase offsets" options do?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <ul>
+              <li><strong>Non-transiting outer planet</strong> — adds an outer perturber that never transits, inferring its properties from the TTVs it induces on the transiting planets. Requires an <code>[OUTER]</code> section in the INI.</li>
+              <li><strong>Phase offsets</strong> — lets each planet pair take its own relative phase instead of the default shared anti-phase. The default assumes the two TTV sinusoids are exactly anti-correlated (180° apart), which the Lithwick, Xie &amp; Wu (2012) formalism gives in two limits: TTVs dominated by forced eccentricity, and TTVs dominated by free eccentricity. Between those limits the two contributions become comparable and, because the free-eccentricity term is complex, the pair's amplitudes rotate by different angles and the relative phase departs from 180°. Enable this when the system may sit in that intermediate regime.</li>
+            </ul>
+            <p>The <strong>stellar mass</strong> field feeds the mass and eccentricity constraints derived from the fitted TTV amplitudes.</p>
+          </div>
+        </div>
+
         <!-- ==================== Deployment & Multi-User ==================== -->
         <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Deployment &amp; Multi-User</h3>
 
@@ -1814,6 +1958,19 @@ erDiagram
 
   document.querySelectorAll('.workflow-card, #faq-card').forEach(card => {
     spyObserver.observe(card);
+  });
+</script>
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.workflow-toc .toc-link').forEach(link => {
+      link.addEventListener('click', function(e) {
+        const targetId = this.getAttribute('href').substring(1); // Remove '#'
+        const targetCard = document.getElementById(targetId);
+        if (targetCard && targetCard.classList.contains('collapsed')) {
+          toggleCard(targetId);
+        }
+      });
+    });
   });
 </script>
 {% endblock %}

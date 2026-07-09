@@ -7,9 +7,9 @@ submodules read ``os.environ``); this module documents the variables and reports
 their status. See ``.env.example`` at the repo root for an annotated template.
 
 Note: the env *getters* with their defaults live next to the code that uses them
-(``photometry.py``, ``database.py``, ``transit_fit.py``). This registry mirrors
-those names/defaults for documentation and the startup status report; it does not
-replace them.
+(``photometry.py``, ``database.py``, ``transit_fit.py``, ``ttv_fit.py``). This
+registry mirrors those names/defaults for documentation and the startup status
+report; it does not replace them.
 """
 
 from __future__ import annotations
@@ -39,12 +39,13 @@ ENV_VARS: tuple[EnvVar, ...] = (
         secret=True,
     ),
     EnvVar("MUSCAT_DATA_DIR", None, "Raw FITS data base directory"),
-    EnvVar("MUSCAT_OBSLOG_DIR", "/ut3/muscat/obslog", "Shared obslog CSV base (muscat-db + prose2)"),
+    EnvVar("MUSCAT_OBSLOG_DIR", "/ut2/muscat/obslog", "Shared obslog CSV base (muscat-db + prose2)"),
     EnvVar("MUSCAT_PROSE_DIR", "/ut2/jerome/ql/prose", "Pipeline output base directory"),
     EnvVar("MUSCAT_PROSE_PROJECT", "<repo>/../ext_tools/prose2", "prose2 repository path"),
     EnvVar("MUSCAT_PROSE_PYTHON", None, "Explicit prose interpreter (highest priority)"),
     EnvVar("MUSCAT_PROSE_CONDA_ENV", "prose", "Conda env supplying prose dependencies"),
     EnvVar("MUSCAT_TIMER_DIR", "/ut2/jerome/ql/timer", "timer package output directory"),
+    EnvVar("MUSCAT_TTV_DIR", "/ut2/jerome/ql/harmonic", "harmonic package output directory (TTV fits, keyed on target)"),
     EnvVar(
         "MUSCAT_TMPDIR",
         str(Path.home() / ".muscatdb" / "tmp"),
