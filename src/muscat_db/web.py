@@ -1349,6 +1349,28 @@ def toi_page():
     )
 
 
+_JWST_TARGETS_PATH = HERE.parent.parent / "data" / "jwst_targets.csv"
+_jwst_targets_cache: set[str] = set()
+
+
+def _load_jwst_targets() -> set[str]:
+    """Load unique JWST target names from data/jwst_targets.csv."""
+    global _jwst_targets_cache
+    if _jwst_targets_cache:
+        return _jwst_targets_cache
+    path = _JWST_TARGETS_PATH
+    if not path.is_file():
+        return set()
+    try:
+        with open(path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            _jwst_targets_cache = {row["pl_name"].strip() for row in reader if row.get("pl_name")}
+    except Exception:
+        logger.warning("failed to read JWST targets catalog %s", path, exc_info=True)
+        return set()
+    return _jwst_targets_cache
+
+
 # ── NASA Exoplanet Archive (NExScI) composite catalog ──────────────────────
 # Column map for the /nexsci page: (csv header, json key, kind). "s" keeps the
 # raw string, "f" parses a finite float (or null) via _toi_float. Header names
@@ -1361,6 +1383,7 @@ _NEXSCI_COLUMNS: list[tuple[str, str, str]] = [
     ("disc_facility", "facility", "s"),
     ("st_spectype", "spectype", "s"),
     ("disc_year", "year", "f"),
+    ("disc_pubdate", "pubdate", "s"),
     ("ra_x", "ra", "f"),
     ("dec_x", "dec", "f"),
     ("pl_orbper", "period", "f"),
@@ -1486,16 +1509,21 @@ def nexsci_page():
     cat = _load_nexsci_catalog()
     indb, tname = _nexsci_db_membership(cat["data"], _db_path())
     harps, n_harps = _harps_coord_membership(cat["data"])
+    jwst_targets = _load_jwst_targets()
+    jwst = [1 if p in jwst_targets else 0 for p in cat["data"]["name"]]
+
     payload = dict(cat["data"])
     payload["indb"] = indb
     payload["tname"] = tname
     payload["has_harps_rv"] = harps
+    payload["has_jwst"] = jwst
     return _render(
         "nexsci.html",
         nexsci_json=json.dumps(payload, separators=(",", ":"), allow_nan=False),
         n_rows=cat["n"],
         n_indb=sum(indb),
         n_harps=n_harps,
+        n_jwst=sum(jwst),
         nexsci_updated=cat["updated"],
     )
 
