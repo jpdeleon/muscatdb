@@ -1428,6 +1428,28 @@ _NEXSCI_COLUMNS: list[tuple[str, str, str]] = [
 _nexsci_cache: dict = {}
 
 
+_PUBDATES_PATH = HERE.parent.parent / "data" / "nexsci_pubdates.csv"
+_pubdates_cache: dict[str, str] = {}
+
+
+def _load_pubdates() -> dict[str, str]:
+    """Load latest publication dates mapping from data/nexsci_pubdates.csv."""
+    global _pubdates_cache
+    if _pubdates_cache:
+        return _pubdates_cache
+    path = _PUBDATES_PATH
+    if not path.is_file():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            _pubdates_cache = {row["pl_name"].strip(): (row.get("pl_pubdate") or "").strip() for row in reader if row.get("pl_name")}
+    except Exception:
+        logger.warning("failed to read latest publication dates catalog %s", path, exc_info=True)
+        return {}
+    return _pubdates_cache
+
+
 def _load_nexsci_catalog() -> dict:
     """Read ``data/nexsci_pscomppars.csv`` (NASA Exoplanet Archive Composite
     Planetary Systems — one row per confirmed planet) into column-oriented
@@ -1445,11 +1467,17 @@ def _load_nexsci_catalog() -> dict:
     if cached is not None and cached[0] == mtime:
         return cached[1]
 
+    pubdates = _load_pubdates()
+
     data: dict[str, list] = {key: [] for _, key, _ in _NEXSCI_COLUMNS}
     with open(path, encoding="utf-8") as f:
         for row in csv.DictReader(f):
             for header, key, kind in _NEXSCI_COLUMNS:
-                raw = row.get(header)
+                if key == "pubdate":
+                    pl_name = row.get("pl_name", "").strip()
+                    raw = pubdates.get(pl_name) or row.get(header)
+                else:
+                    raw = row.get(header)
                 data[key].append(_toi_float(raw) if kind == "f" else (raw or "").strip())
             # Fallback for transit radius ratio if empty
             if data["ratror"][-1] is None:
