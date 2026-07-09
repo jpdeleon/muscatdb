@@ -3252,21 +3252,28 @@ def api_fov_optimize(payload: dict = Body(...)):
     pa_step_deg = None if allow_rotation else 180.0
     sinistro_mode = payload.get("sinistro_mode")
 
-    result = fov_opt.optimize(
-        instrument=inst,
-        target=target,
-        ra=ra,
-        dec=dec,
-        margin_arcsec=margin,
-        comp_margin_arcsec=comp_margin,
-        mag_limit=mag_limit,
-        pa_step_deg=pa_step_deg,
-        sinistro_mode=sinistro_mode,
-        min_mag=min_mag,
-        max_mag=max_mag,
-        mag_delta=mag_delta,
-    )
-    return JSONResponse(result.to_dict(), status_code=200)
+    try:
+        result = fov_opt.optimize(
+            instrument=inst,
+            target=target,
+            ra=ra,
+            dec=dec,
+            margin_arcsec=margin,
+            comp_margin_arcsec=comp_margin,
+            mag_limit=mag_limit,
+            pa_step_deg=pa_step_deg,
+            sinistro_mode=sinistro_mode,
+            min_mag=min_mag,
+            max_mag=max_mag,
+            mag_delta=mag_delta,
+        )
+        return JSONResponse(result.to_dict(), status_code=200)
+    except Exception as exc:
+        logger.error("FOV optimization failed: %s", exc, exc_info=True)
+        return JSONResponse(
+            {"ok": False, "error": f"FOV optimization failed: {exc}"},
+            status_code=500,
+        )
 
 
 @fov_router.post("/resolve-target", response_class=JSONResponse)
@@ -3948,7 +3955,12 @@ def _query_target_planets_nasa(target: str) -> dict:
                     if (h_name and _normalize_target_name(h_name) == target_norm) or \
                        (p_name and _normalize_target_name(p_name) == target_norm) or \
                        (tic and _normalize_target_name(tic) == target_norm):
-                        pl_letter = row.get("pl_letter", "").strip().lower()
+                        pl_letter = (row.get("pl_letter") or "").strip().lower()
+                        if not pl_letter:
+                            pn = (row.get("pl_name") or "").strip()
+                            parts = pn.rsplit(None, 1)
+                            if len(parts) == 2 and len(parts[1]) == 1 and parts[1].isalpha():
+                                pl_letter = parts[1].lower()
                         t0 = row.get("pl_tranmid")
                         per = row.get("pl_orbper")
                         if pl_letter and t0 is not None and per is not None:
@@ -3996,7 +4008,12 @@ def _query_target_planets_nasa(target: str) -> dict:
                         if (h_name and _normalize_target_name(h_name) == target_norm) or \
                            (p_name and _normalize_target_name(p_name) == target_norm) or \
                            (tic and _normalize_target_name(tic) == target_norm):
-                            pl_letter = row.get("pl_letter", "").strip().lower()
+                            pl_letter = (row.get("pl_letter") or "").strip().lower()
+                            if not pl_letter:
+                                pn = (row.get("pl_name") or "").strip()
+                                parts = pn.rsplit(None, 1)
+                                if len(parts) == 2 and len(parts[1]) == 1 and parts[1].isalpha():
+                                    pl_letter = parts[1].lower()
                             t0 = row.get("pl_tranmid")
                             per = row.get("pl_orbper")
                             if pl_letter and t0 and per:
