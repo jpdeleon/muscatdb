@@ -175,6 +175,13 @@ CREATE TABLE IF NOT EXISTS ephemeris_views (
     created_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS exofop_cache (
+    tic_id                 TEXT PRIMARY KEY,
+    has_confirmed_planets  INTEGER NOT NULL,
+    confirmed_planets      TEXT NOT NULL DEFAULT '',
+    updated_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 

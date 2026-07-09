@@ -1989,3 +1989,56 @@ def test_api_target_spectra(mocker):
     assert data["spectra"]["rows"][0]["Bibcode"] == "2015ApJ...804...59D"
 
 
+def test_api_exofop_check_confirmed(monkeypatch, tmp_path):
+    # Use a temporary database path to avoid polluting the actual db
+    db_file = tmp_path / "test_muscat.db"
+    monkeypatch.setenv("MUSCAT_DB_PATH", str(db_file))
+
+    # Mock urllib.request.urlopen to simulate ExoFOP responses
+    url_calls = []
+
+    class MockResponse:
+        def __init__(self, data):
+            self.data = data
+        def read(self):
+            return self.data
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    def mock_urlopen(req, *args, **kwargs):
+        url = req.full_url if hasattr(req, "full_url") else req
+        url_calls.append(url)
+        if "79748331" in url:
+            # Confirmed target
+            return MockResponse(b'{"basic_info": {"confirmed_planets": "TOI-1064 b, TOI-1064 c"}}')
+        elif "25155310" in url:
+            # Unconfirmed target
+            return MockResponse(b'{"basic_info": {"confirmed_planets": ""}}')
+        else:
+            return MockResponse(b'{"basic_info": {}}')
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    from fastapi.testclient import TestClient
+    from muscat_db.web import app
+
+    client = TestClient(app)
+
+    # First call: should query ExoFOP
+    r = client.get("/api/exofop/check_confirmed?tics=79748331,25155310")
+    assert r.status_code == 200
+    assert r.json() == {"79748331": True, "25155310": False}
+    assert len(url_calls) == 2
+
+    # Second call: should use database cache and NOT query ExoFOP
+    url_calls.clear()
+    r2 = client.get("/api/exofop/check_confirmed?tics=79748331,25155310")
+    assert r2.status_code == 200
+    assert r2.json() == {"79748331": True, "25155310": False}
+    assert len(url_calls) == 0
+
+
+
