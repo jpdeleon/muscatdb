@@ -18,6 +18,9 @@
   --green: #16a085;
   --blue: #2980b9;
   --input-bg: #ffffff;
+  /* Filled call-to-action ("To Jobs"). Deliberately theme-independent: the
+     white-on-blue pairing is the same in light and dark. */
+  --btn-solid: #0056b3;
 }
 [data-theme="dark"] {
   --bg: #0f1117;
@@ -32,6 +35,7 @@
   --green: #6ee7b7;
   --blue: #6c8cff;
   --input-bg: #1a1d27;
+  --btn-solid: #0056b3;
 }
 
 /* ---------- Base elements ---------- */
@@ -391,6 +395,13 @@ tr.filter-row th input::placeholder { color: var(--text-dim); font-style: italic
 .btn:hover { border-color: var(--accent); color: var(--accent); }
 .btn:disabled { opacity: 0.5; cursor: default; }
 .btn.primary { border-color: var(--accent2); color: var(--accent2); }
+/* Filled variant used by every page-footer navigation link ("Back to Top",
+   "To Jobs", "To Photometry", …). Declared after .btn:hover so the fill and
+   white label survive hover, as the old inline styles did. */
+.btn.solid {
+  background: var(--btn-solid); border-color: var(--btn-solid); color: #fff;
+  border-radius: 4px; line-height: 1.2; padding: 0.5em 2em;
+}
 /* Compact variant for dense table-row actions. */
 .btn.sm { padding: 0.15rem 0.5rem; font-size: 0.75rem; border-radius: 4px; }
 /* Destructive variant. */
@@ -400,6 +411,33 @@ tr.filter-row th input::placeholder { color: var(--text-dim); font-style: italic
 /* ---------- Section headings ---------- */
 .phot-section { margin: 2rem 0 1rem; }
 .phot-section h2 { color: var(--text); margin-bottom: 0.75rem; }
+
+/* Inst/date/target picker card used by the transit-fit and ttv-fit pages. */
+.selector-group {
+  display: flex; gap: 1rem; align-items: center; margin-bottom: 2rem; flex-wrap: wrap;
+  background: var(--surface); border: 1px solid var(--border); padding: 1rem; border-radius: 8px;
+}
+.selector-group label { font-size: 0.85rem; color: var(--text-dim); display: flex; flex-direction: column; gap: 0.35rem; }
+.selector-group select {
+  background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 0.45rem 0.75rem; min-width: 160px; font-size: 0.9rem;
+}
+.selector-group select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Foldable section: a <details> whose <summary> carries the section <h2>. */
+.phot-fold > summary {
+  list-style: none; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 0.5rem;
+}
+.phot-fold > summary::-webkit-details-marker { display: none; }
+.phot-fold > summary::before {
+  content: '\25B8'; color: var(--text-dim); font-size: 0.9rem;
+  transition: transform 0.15s ease; flex-shrink: 0;
+}
+.phot-fold[open] > summary::before { transform: rotate(90deg); }
+.phot-fold > summary h2 { margin: 0; }
+/* Interactive controls in the summary (csv download links) must not toggle. */
+.phot-fold > summary a { cursor: pointer; }
 
 /* ---------- Options form ---------- */
 .opt-grid {
@@ -430,6 +468,28 @@ tr.filter-row th input::placeholder { color: var(--text-dim); font-style: italic
 }
 .opt-check-item input { cursor: pointer; }
 
+/* Heading that spans a full .opt-grid row. */
+.opt-section-title {
+  grid-column: 1 / -1; font-size: 0.85rem; font-weight: 600; color: var(--accent2);
+  margin-top: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem;
+}
+
+/* Collapsible option group inside an .opt-grid, collapsed by default. */
+.opt-collapse { grid-column: 1 / -1; margin-top: 1rem; }
+.opt-collapse > summary {
+  font-size: 0.85rem; font-weight: 600; color: var(--accent2);
+  border-bottom: 1px solid var(--border); padding-bottom: 0.25rem;
+  cursor: pointer; user-select: none; list-style: none;
+  display: flex; align-items: center; gap: 0.4rem;
+}
+.opt-collapse > summary::-webkit-details-marker { display: none; }
+.opt-collapse > summary::before {
+  content: '\25B8'; color: var(--text-dim); font-size: 0.8rem;
+  transition: transform 0.15s ease;
+}
+.opt-collapse[open] > summary::before { transform: rotate(90deg); }
+.opt-collapse > *:not(summary) { margin-top: 0.7rem; }
+
 /* ---------- Advanced disclosure ---------- */
 details.adv {
   background: var(--surface); border: 1px solid var(--border);
@@ -451,6 +511,49 @@ details.adv[open] > summary { color: var(--text); margin-bottom: 0.5rem; }
   font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
   white-space: pre-wrap; word-break: break-word;
 }
+.run-cmd { display: flex; gap: 0.5rem; align-items: stretch; margin-top: 1rem; width: 100%; }
+.run-cmd code {
+  flex: 1; text-align: left; background: var(--surface2);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.5rem 0.75rem; font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem; overflow-x: auto; white-space: pre;
+}
+
+/* ---------- Page-footer navigation ---------- */
+/* The row of .btn.solid links closing every page. Wraps on narrow viewports
+   rather than overflowing. */
+.page-nav {
+  display: flex; justify-content: center; align-items: center;
+  gap: 1rem; flex-wrap: wrap; margin: 2em 0;
+}
+
+/* ---------- Run/site selector chips ---------- */
+/* Used as <a> (server-rendered navigation) and as <button> (client-side
+   switching), so the font must be inherited rather than the UA button default. */
+.site-chips { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin: 0 0 0.75rem; }
+.site-chips .site-label { font-size: 0.8rem; color: var(--text-dim); }
+.site-chip {
+  background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 0.3rem 0.9rem; font-size: 0.85rem; cursor: pointer;
+  text-decoration: none; font-family: inherit;
+}
+.site-chip.active { border-color: var(--accent); color: var(--accent); }
+
+/* ---------- Result figure grid ---------- */
+/* Shared by the transit-fit, ttv-fit and ephemeris result sections. The
+   <figcaption class="cap"> is placed first so the label sits above the plot. */
+.fig-grid {
+  display: grid; gap: 1.5rem; grid-template-columns: repeat(auto-fill, minmax(480px, 1fr));
+  margin-top: 1rem;
+}
+@media (max-width: 600px) { .fig-grid { grid-template-columns: 1fr; } }
+.fig {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem;
+}
+.fig img { width: 100%; height: auto; border-radius: 6px; display: block; background: var(--input-bg); }
+.fig .cap { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-dim); }
 
 /* ---------- Misc shared ---------- */
 .dl-row { margin-top: 0.75rem; display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.85rem; }

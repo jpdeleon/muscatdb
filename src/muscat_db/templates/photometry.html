@@ -3,8 +3,9 @@
 {% block content %}
 <style>
   /* Page-specific styles only. Shared components (buttons, .opt* form fields,
-     details.adv, .run-panel, .phot-section, .help-tooltip, #run-log, .dl-row)
-     live in /static/styles.css. */
+     .opt-section-title, .opt-collapse, details.adv, .run-panel, .run-cmd,
+     .phot-section, .phot-fold, .selector-group, .help-tooltip, #run-log,
+     .dl-row) live in /static/styles.css. */
   .phot-selectors {
     display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap;
     margin-bottom: 1.5rem;
@@ -68,48 +69,11 @@
   .site-chip.active { border-color: var(--accent); color: var(--accent); }
   .band-panel { display: none; }
   .band-panel.active { display: block; }
-  /* Foldable output sections (Light curves & Covariates, Per-band products). */
-  .phot-fold > summary {
-    list-style: none; cursor: pointer; user-select: none;
-    display: flex; align-items: center; gap: 0.5rem;
-  }
-  .phot-fold > summary::-webkit-details-marker { display: none; }
-  .phot-fold > summary::before {
-    content: '\25B8'; color: var(--text-dim); font-size: 0.9rem;
-    transition: transform 0.15s ease; flex-shrink: 0;
-  }
-  .phot-fold[open] > summary::before { transform: rotate(90deg); }
-  .phot-fold > summary h2 { margin: 0; }
-  /* Interactive controls in the summary (csv download links) must not toggle. */
-  .phot-fold > summary a { cursor: pointer; }
   .warn { color: var(--red); font-size: 0.85rem; margin-top: 0.5rem; }
   .band-checks { display: flex; gap: 0.75rem; flex-wrap: wrap; }
   .band-checks label { display: flex; align-items: center; gap: 0.3rem; color: var(--text); font-size: 0.85rem; }
   .opt-span2 { grid-column: span 2; }
-  .run-cmd { display: flex; gap: 0.5rem; align-items: stretch; margin-top: 1rem; width: 100%; }
-  .run-cmd code {
-    flex: 1; text-align: left; background: var(--surface2);
-    border: 1px solid var(--border); border-radius: 6px;
-    padding: 0.5rem 0.75rem; font-family: 'JetBrains Mono', monospace;
-    font-size: 0.75rem; overflow-x: auto; white-space: pre;
-  }
   #opt-error { color: var(--red); font-size: 0.8rem; min-height: 1rem; }
-
-  /* Collapsible option groups (Sigma Clipping), collapsed by default. */
-  .opt-collapse { grid-column: 1 / -1; margin-top: 1rem; }
-  .opt-collapse > summary {
-    font-size: 0.85rem; font-weight: 600; color: var(--accent2);
-    border-bottom: 1px solid var(--border); padding-bottom: 0.25rem;
-    cursor: pointer; user-select: none; list-style: none;
-    display: flex; align-items: center; gap: 0.4rem;
-  }
-  .opt-collapse > summary::-webkit-details-marker { display: none; }
-  .opt-collapse > summary::before {
-    content: '\25B8'; color: var(--text-dim); font-size: 0.8rem;
-    transition: transform 0.15s ease;
-  }
-  .opt-collapse[open] > summary::before { transform: rotate(90deg); }
-  .opt-collapse > *:not(summary) { margin-top: 0.7rem; }
 </style>
 
 <h1>Photometry</h1>
@@ -1486,14 +1450,14 @@
   });
 })();
 </script>
-<div style="text-align:center; margin:2em 0; display: flex; justify-content: center; gap: 1rem; align-items: center;">
-  <a href="#" class="btn primary" style="text-decoration: none; display: inline-block; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">Back to Top</a>
+<div class="page-nav">
+  <a href="#" class="btn solid">Back to Top</a>
   {% if sel_target %}
-    <a href="/target?name={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To Target</a>
+    <a href="/target?name={{ sel_target | urlencode }}" class="btn solid">To Target</a>
   {% endif %}
-  <a href="/jobs" class="btn primary" style="text-decoration: none; display: inline-block; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To Jobs</a>
+  <a href="/jobs" class="btn solid">To Jobs</a>
   {% if sel_inst and sel_date and sel_target %}
-    <a href="/transit-fit?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To Transit Fit</a>
+    <a href="/transit-fit?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn solid">To Transit Fit</a>
   {% endif %}
 </div>
 {% endblock %}

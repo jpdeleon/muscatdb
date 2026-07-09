@@ -1,0 +1,767 @@
+{% extends "base.html" %}
+{% block title %}TTV Fit — MuSCAT-db{% endblock %}
+{% block content %}
+<style>
+  /* Page-specific styles only. Shared components (buttons, .opt* form fields,
+     .opt-section-title, .opt-collapse, details.adv, .run-panel, .run-cmd,
+     .phot-section, .phot-fold, .selector-group, .help-tooltip, #run-log,
+     .dl-row, .fig-grid, .fig) live in /static/styles.css. */
+  .transit-times-table { font-size: 0.85rem; border-collapse: collapse; width: 100%; }
+  .transit-times-table th { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); font-size: 0.8rem; color: var(--text-dim); }
+  .transit-times-table td { padding: 0.3rem 0.6rem; border-bottom: 1px solid var(--border); }
+  .transit-times-table .mono { font-family: 'JetBrains Mono', monospace; }
+  .pair-card {
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1rem; margin-top: 0.75rem;
+  }
+  .pair-card h4 { margin: 0 0 0.75rem; font-size: 0.9rem; color: var(--accent2); }
+</style>
+
+<h1>TTV Fit</h1>
+
+<div class="selector-group">
+  <label>
+    Instrument
+    <select id="sel-inst" name="inst">
+      <option value="">-- select --</option>
+      {% for name in instruments %}
+      <option value="{{ name }}" {% if name == sel_inst %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>
+    Date
+    <select id="sel-date" name="date" {% if not sel_inst %}disabled{% endif %}>
+      {% if not sel_inst %}
+      <option value="">-- select instrument first --</option>
+      {% else %}
+      <option value="">-- select date --</option>
+      {% for d in dates %}
+      <option value="{{ d }}" {% if d == sel_date %}selected{% endif %}>{{ d }}</option>
+      {% endfor %}
+      {% endif %}
+    </select>
+  </label>
+  <label>
+    Target
+    <select id="sel-target" name="target" {% if not sel_date %}disabled{% endif %}>
+      {% if not sel_date %}
+      <option value="">-- select date first --</option>
+      {% else %}
+      <option value="">-- select target --</option>
+      {% for t in targets %}
+      <option value="{{ t }}" {% if t == sel_target %}selected{% endif %}>{{ t }}</option>
+      {% endfor %}
+      {% endif %}
+    </select>
+  </label>
+</div>
+
+{% if not (sel_inst and sel_date and sel_target) %}
+<div style="background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 3rem; text-align: center; margin-top: 2rem;">
+  <h2 style="color: var(--text);">TTV Fitting Pipeline</h2>
+  <p style="color: var(--text-dim); max-width: 500px; margin: 0 auto; line-height: 1.6; font-size: 0.9rem;">
+    Select an instrument, date, and target above to configure and run a
+    multi-harmonic Transit Timing Variation (TTV) model fit using the
+    <strong>harmonic</strong> package.
+  </p>
+</div>
+{% else %}
+
+<!-- Transit Times Data Section -->
+<div class="phot-section" id="data-section">
+  <h2>Transit Time Data</h2>
+  <p style="font-size: 0.85rem; color: var(--text-dim); margin-bottom: 0.75rem;">
+    Import transit center times from the ephemeris page or enter them manually.
+  </p>
+  <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem;">
+    <button class="btn" type="button" id="import-ephem-btn">&#128230; Import from Ephemeris</button>
+    <span id="import-status" style="font-size: 0.85rem; color: var(--text-dim);"></span>
+  </div>
+  <div id="transit-times-container">
+    <p style="color: var(--text-dim); font-size: 0.85rem; font-style: italic;">No transit data loaded. Click "Import from Ephemeris" to load data.</p>
+  </div>
+</div>
+
+<!-- Results Section -->
+{% if outputs and outputs.has_any %}
+<div class="phot-section">
+  <h2>TTV Fit Results</h2>
+  <div class="fig-grid">
+    {% for p in outputs.plots %}
+    <figure class="fig">
+      <figcaption class="cap">
+        <span>{{ p.file | replace('.png', '') }} (Created: {{ p.created_at }})</span>
+      </figcaption>
+      <a href="/api/ttv-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/{{ p.file }}?v={{ p.version }}" target="_blank">
+        <img draggable="false" loading="lazy" src="/api/ttv-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/{{ p.file }}?v={{ p.version }}" alt="{{ p.file }}">
+      </a>
+    </figure>
+    {% endfor %}
+  </div>
+  <div class="dl-row">
+    {% if outputs.has_samples %}
+    <a href="/api/ttv-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/samples.csv.gz" download>&#128230; samples.csv.gz</a>
+    {% endif %}
+    {% if outputs.has_log %}
+    <a href="/api/ttv-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/harmonic.log" target="_blank">&#128196; harmonic.log</a>
+    {% endif %}
+    {% if outputs.has_data_csv %}
+    <a href="/api/ttv-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/data.csv" target="_blank">&#128200; data.csv</a>
+    {% endif %}
+    {% if outputs.has_config_ini %}
+    <a href="/api/ttv-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/config.ini" target="_blank">&#9881; config.ini</a>
+    {% endif %}
+    <a href="/api/ttv-fit/download-all/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}" download style="font-weight: 600; color: var(--accent2);">&#128230; Download all (.zip)</a>
+    {% for f in outputs.extra_files %}
+    <a href="/api/ttv-fit/file/{{ sel_inst }}/{{ sel_date }}/{{ sel_target }}/{{ f }}" download>&#11015; {{ f }}</a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<!-- Configure Panel -->
+<div class="phot-section run-panel">
+  <h2>Configure TTV Model</h2>
+
+  <!-- Planet Letters -->
+  <div class="opt-grid">
+    <div class="opt-section-title">Planets</div>
+    <div class="opt">
+      <label for="opt-planet_letters">Planet letters <span class="help-tooltip" title="Planet letter designations, e.g. bcd for three planets. Sorted alphabetically, mapped to internal indices 0,1,2.">?</span></label>
+      <input type="text" id="opt-planet_letters" value="{{ target_params.get('planet_letters', '') }}" placeholder="e.g. bcd">
+    </div>
+    <div class="opt">
+      <label for="opt-mstar">Stellar mass (M☉) <span class="help-tooltip" title="Host star mass in solar masses. Used for mass/eccentricity constraints from Lithwick+2012.">?</span></label>
+      <input type="number" id="opt-mstar" value="1.0" min="0.1" step="0.01">
+    </div>
+  </div>
+
+  <!-- Planet Pair Configuration -->
+  <div id="pairs-container">
+    <div class="opt-section-title" style="margin-top: 1.5rem;">Planet Pair Parameters <span class="help-tooltip" title="TTV amplitude, super-period, and phase reference for each adjacent planet pair.">?</span></div>
+    <div id="pair-cards">
+      <p style="color: var(--text-dim); font-size: 0.85rem; font-style: italic;">Enter planet letters above to configure pairs.</p>
+    </div>
+  </div>
+
+  <!-- Optional: Non-transiting outer / Phase offsets -->
+  <div class="opt-grid" style="margin-top: 1rem;">
+    <div class="opt-section-title">Model Options</div>
+    <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: center;">
+      <label style="display: flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; cursor: pointer;">
+        <input type="checkbox" id="opt-non_transiting_outer">
+        Non-transiting outer planet <span class="help-tooltip" title="Include a non-transiting outer planet. Requires [OUTER] section in INI below.">?</span>
+      </label>
+      <label style="display: flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; cursor: pointer;">
+        <input type="checkbox" id="opt-phase_offsets">
+        Phase offsets <span class="help-tooltip" title="Allow different phase offsets per planet pair instead of shared anti-phase.">?</span>
+      </label>
+      <label style="display: flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; cursor: pointer;">
+        <input type="checkbox" id="opt-clobber">
+        Overwrite <span class="help-tooltip" title="Overwrite previous results instead of reusing cached samples.">?</span>
+      </label>
+    </div>
+  </div>
+
+  <!-- INI Config Editor (Advanced) -->
+  <details class="opt-collapse" style="margin-top: 1rem;">
+    <summary style="font-size:0.85rem;font-weight:600;color:var(--accent2);cursor:pointer;user-select:none;border-bottom:1px solid var(--border);padding-bottom:0.25rem;">INI Configuration <span class="help-tooltip" title="Raw INI configuration passed to harmonic. Use the pair cards above to auto-generate, or edit directly.">?</span></summary>
+    <textarea id="opt-ini_content" rows="12" style="width: 100%; margin-top: 0.5rem; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; white-space: pre; tab-size: 2;"></textarea>
+    <p style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.25rem;">
+      Required [INIT] section: a_bc, a_cb, per_bc, t_bc for each adjacent pair.
+      Add [OUTER] for non-transiting outer, [T14] for transit durations (prediction).
+    </p>
+  </details>
+
+  <!-- MCMC Options -->
+  <details class="opt-collapse" style="margin-top: 1rem;">
+    <summary style="font-size:0.85rem;font-weight:600;color:var(--accent2);cursor:pointer;user-select:none;border-bottom:1px solid var(--border);padding-bottom:0.25rem;">MCMC Sampler Options</summary>
+    <div class="opt-grid" style="margin-top: 0.75rem;">
+      <div class="opt">
+        <label for="opt-walkers">Walkers <span class="help-tooltip" title="Number of MCMC walkers. Default 100.">?</span></label>
+        <input type="number" id="opt-walkers" value="100" min="4" step="10">
+      </div>
+      <div class="opt">
+        <label for="opt-steps">Steps <span class="help-tooltip" title="Number of MCMC steps. Default 2000.">?</span></label>
+        <input type="number" id="opt-steps" value="2000" min="10" step="100">
+      </div>
+      <div class="opt">
+        <label for="opt-burn">Burn-in <span class="help-tooltip" title="Burn-in steps discarded before sampling. Default 1000.">?</span></label>
+        <input type="number" id="opt-burn" value="1000" min="0" step="100">
+      </div>
+      <div class="opt">
+        <label for="opt-thin">Thinning <span class="help-tooltip" title="Thin every N steps. Default 10.">?</span></label>
+        <input type="number" id="opt-thin" value="10" min="1" step="1">
+      </div>
+      <div class="opt">
+        <label for="opt-nproc">Processes <span class="help-tooltip" title="Number of parallel processes. Default 10.">?</span></label>
+        <input type="number" id="opt-nproc" value="10" min="1" step="1">
+      </div>
+      <div class="opt">
+        <label for="opt-seed">Random seed <span class="help-tooltip" title="Random seed for reproducibility. Default 42.">?</span></label>
+        <input type="number" id="opt-seed" value="42" step="1">
+      </div>
+    </div>
+  </details>
+
+  <div id="opt-error" style="color: var(--red); font-size: 0.85rem; margin-top: 0.5rem;"></div>
+
+  <div class="run-actions">
+    <button class="btn primary" type="button" id="run-ttv-btn">&#9654; Run TTV Fit</button>
+    <button class="btn" type="button" id="cancel-btn" style="display:none;border-color:var(--red);color:var(--red);">&#9632; Cancel</button>
+    {% if outputs and outputs.has_any %}
+    <button class="btn" type="button" id="delete-btn" style="border-color:var(--red);color:var(--red);margin-left:auto;">&#128465; Delete Results</button>
+    {% endif %}
+    <span class="hint" style="color: var(--text-dim); font-size: 0.8rem;">
+      Runs harmonic TTV fitting on the loaded transit time data.
+    </span>
+  </div>
+
+  <pre id="run-log"></pre>
+</div>
+
+<div id="delete-confirm-overlay">
+  <div class="modal-box">
+    <p style="margin-bottom:0.75rem;font-size:0.95rem;font-weight:600;">Delete TTV fit results</p>
+    <p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:1.5rem;line-height:1.5;">Delete TTV fit results for <strong>{{ sel_target }}</strong> ({{ sel_inst }}/{{ sel_date }})? This cannot be undone.</p>
+    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+      <button class="btn" id="delete-cancel-btn">Cancel</button>
+      <button class="btn" id="delete-confirm-btn" style="border-color:var(--red);color:var(--red);">Delete</button>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  var inst   = {{ sel_inst|tojson }};
+  var date   = {{ sel_date|tojson }};
+  var target = {{ sel_target|tojson }};
+
+  var SEL_KEY = 'ttv:last';
+  var OPT_KEY = 'ttv:options:' + inst + ':' + date + ':' + target;
+  var JOB_KEY = 'ttv:job';
+  var LOG_KEY = 'ttv:log';
+
+  function logKey() { return LOG_KEY; }
+
+  // Restore last selection on bare visit
+  (function () {
+    if (inst || date || target || window.location.search) return;
+    var saved = MuscatStorage.getJSON(SEL_KEY, null);
+    if (saved && saved.inst) {
+      var qs = ['inst', 'date', 'target'].filter(function (k) { return saved[k]; })
+        .map(function (k) { return k + '=' + encodeURIComponent(saved[k]); }).join('&');
+      window.location.replace('/ttv-fit?' + qs);
+    }
+  })();
+  if (inst) {
+    MuscatStorage.setJSON(SEL_KEY, { inst: inst, date: date, target: target });
+  }
+  if (inst && date && target && window.MuscatRouteState) {
+    window.MuscatRouteState.rememberTTVFit({ inst: inst, date: date, target: target });
+    window.MuscatRouteState.applyNavbar();
+  }
+
+  // Cascading selectors
+  var selInst   = document.getElementById('sel-inst');
+  var selDate   = document.getElementById('sel-date');
+  var selTarget = document.getElementById('sel-target');
+  function go(params) {
+    if (typeof window.showLoading === 'function') window.showLoading('Loading\u2026');
+    var qs = Object.keys(params).filter(function (k) { return params[k]; })
+      .map(function (k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
+    window.location = '/ttv-fit' + (qs ? '?' + qs : '');
+  }
+  if (selInst)   selInst.addEventListener('change', function () { go({ inst: this.value }); });
+  if (selDate)   selDate.addEventListener('change', function () { go({ inst: selInst.value, date: this.value }); });
+  if (selTarget) selTarget.addEventListener('change', function () { go({ inst: selInst.value, date: selDate.value, target: this.value }); });
+
+  if (!inst || !date || !target) return;
+
+  var runBtn    = document.getElementById('run-ttv-btn');
+  var cancelBtn = document.getElementById('cancel-btn');
+  var logEl     = document.getElementById('run-log');
+  var errEl     = document.getElementById('opt-error');
+  var poller = window.MuscatJobPolling.createTimeoutPoller(poll);
+
+  function val(id) { var e = document.getElementById(id); return e ? e.value : ''; }
+  function chk(id) { var e = document.getElementById(id); return e ? e.checked : false; }
+
+  // --- Transit times data management ---
+  var transitData = [];
+  var planetLetters = '';
+
+  function getTransitDataFromTable() {
+    var data = [];
+    document.querySelectorAll('#transit-times-tbody tr').forEach(function (row) {
+      var cells = row.querySelectorAll('td');
+      if (cells.length >= 4) {
+        data.push({
+          planet: cells[0].textContent.trim(),
+          epoch: cells[1].textContent.trim(),
+          tc: cells[2].textContent.trim(),
+          tc_unc: cells[3].textContent.trim(),
+        });
+      }
+    });
+    return data;
+  }
+
+  function buildCSVContent(data) {
+    if (!data || data.length === 0) return '';
+    var lines = ['planet,epoch,tc,tc_unc'];
+    data.forEach(function (r) { lines.push(r.planet + ',' + r.epoch + ',' + r.tc + ',' + r.tc_unc); });
+    return lines.join('\n');
+  }
+
+  function getPlanetLettersFromData(data) {
+    var letters = new Set();
+    data.forEach(function (r) { letters.add(r.planet); });
+    return Array.from(letters).sort().join('');
+  }
+
+  function updatePlanetLetters() {
+    var lettersInput = document.getElementById('opt-planet_letters');
+    if (!lettersInput) return;
+    var detected = getPlanetLettersFromData(transitData);
+    if (detected && !lettersInput.value) {
+      lettersInput.value = detected;
+    }
+    planetLetters = lettersInput.value || detected;
+    rebuildPairCards();
+    rebuildINI();
+  }
+
+  function rebuildTransitTable(data) {
+    var container = document.getElementById('transit-times-container');
+    if (!container) return;
+    if (!data || data.length === 0) {
+      container.innerHTML = '<p style="color: var(--text-dim); font-size: 0.85rem; font-style: italic;">No transit data loaded.</p>';
+      return;
+    }
+    var grouped = {};
+    data.forEach(function (r) {
+      if (!grouped[r.planet]) grouped[r.planet] = [];
+      grouped[r.planet].push(r);
+    });
+    var html = '';
+    Object.keys(grouped).sort().forEach(function (pl) {
+      var rows = grouped[pl].sort(function (a, b) { return parseInt(a.epoch) - parseInt(b.epoch); });
+      html += '<h4 style="margin:1rem 0 0.5rem;font-size:0.9rem;color:var(--accent2);">Planet ' + pl + ' (' + rows.length + ' transits)</h4>';
+      html += '<div style="overflow-x:auto;"><table class="transit-times-table"><thead><tr><th>Planet</th><th>Epoch</th><th>tc (BJD)</th><th>tc_unc</th></tr></thead><tbody>';
+      rows.forEach(function (r) {
+        html += '<tr><td class="mono">' + r.planet + '</td><td class="mono">' + r.epoch + '</td><td class="mono">' + r.tc + '</td><td class="mono">' + r.tc_unc + '</td></tr>';
+      });
+      html += '</tbody></table></div>';
+    });
+    container.innerHTML = html;
+  }
+
+  // --- Import from Ephemeris ---
+  document.getElementById('import-ephem-btn').addEventListener('click', function () {
+    var btn = this; btn.disabled = true;
+    var status = document.getElementById('import-status');
+    status.textContent = 'Fetching ephemeris data\u2026';
+    // Fetch the ephemeris page data for this target
+    fetch('/api/ephemeris/targets').then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (!data.ok || !data.targets) throw new Error('No targets found');
+      if (data.targets.indexOf(target) === -1) throw new Error('Target not found in ephemeris database');
+      return fetch('/api/ephemeris/target-info?target=' + encodeURIComponent(target));
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (info) {
+      if (!info.ok || !info.planets || info.planets.length === 0) throw new Error('No planets found for target');
+      // For each planet, fetch the ephemeris fit data to get transit times
+      // We use the ephemeris calculate API with the existing timer-fit results
+      return fetch('/api/ephemeris/calculate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          target: target,
+          planets_ephem: info.planets,
+          datasets: [],
+        })
+      });
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (ephemData) {
+      if (!ephemData.ok) throw new Error(ephemData.error || 'Ephemeris calculation failed');
+      // Convert from ephemeris response format to transitData format
+      // tcs.txt format: planet letter, epoch, tc BJD, tc_unc days
+      var newData = [];
+      if (ephemData.results) {
+        Object.keys(ephemData.results).sort().forEach(function (pl) {
+          var result = ephemData.results[pl];
+          var points = (result.points || []).filter(function (p) { return p.checked; });
+          points
+            .slice()
+            .sort(function (a, b) { return a.epoch - b.epoch || a.bjd - b.bjd; })
+            .forEach(function (p) {
+              var unc = p.tc_unc !== undefined ? p.tc_unc : (p.oc_err_min || 0) / 1440.0;
+              newData.push({ planet: pl, epoch: String(p.epoch), tc: String(p.bjd), tc_unc: String(unc) });
+            });
+        });
+      }
+      if (newData.length === 0) throw new Error('No transit times found. Run a transit fit first.');
+      transitData = newData;
+      rebuildTransitTable(transitData);
+      updatePlanetLetters();
+      saveOptions();
+      status.textContent = 'Loaded ' + newData.length + ' transit times across ' + getPlanetLettersFromData(newData).length + ' planets.';
+    })
+    .catch(function (err) {
+      status.textContent = 'Error: ' + err.message;
+    })
+    .finally(function () { btn.disabled = false; });
+  });
+
+  // --- Planet Pair Cards ---
+  function rebuildPairCards() {
+    var container = document.getElementById('pair-cards');
+    if (!container) return;
+    var letters = document.getElementById('opt-planet_letters').value.trim().toLowerCase();
+    if (!letters || letters.length < 2) {
+      container.innerHTML = '<p style="color: var(--text-dim); font-size: 0.85rem; font-style: italic;">Need at least 2 planets for TTV pairs.</p>';
+      return;
+    }
+    var html = '';
+    for (var i = 0; i < letters.length - 1; i++) {
+      var pair = letters[i] + letters[i + 1];
+      html += '<div class="pair-card" data-pair="' + pair + '">';
+      html += '<h4>Pair ' + letters[i] + '\u2013' + letters[i + 1] + '</h4>';
+      html += '<div class="opt-grid">';
+      html += '<div class="opt"><label>a_' + pair + ' <span class="help-tooltip" title="TTV amplitude for the inner planet (days).">?</span></label><input type="text" class="pair-amp-inner" data-pair="' + pair + '" placeholder="0.02"></div>';
+      html += '<div class="opt"><label>a_' + letters[i + 1] + letters[i] + ' <span class="help-tooltip" title="TTV amplitude for the outer planet (days, sign = anti-phase).">?</span></label><input type="text" class="pair-amp-outer" data-pair="' + pair + '" placeholder="-0.002"></div>';
+      html += '<div class="opt"><label>per_' + pair + ' <span class="help-tooltip" title="TTV super-period (days).">?</span></label><input type="text" class="pair-per" data-pair="' + pair + '" placeholder="1000"></div>';
+      html += '<div class="opt"><label>t_' + pair + ' <span class="help-tooltip" title="TTV phase reference time (BJD).">?</span></label><input type="text" class="pair-t" data-pair="' + pair + '" placeholder="2455333"></div>';
+      html += '</div></div>';
+    }
+    container.innerHTML = html;
+    // Restore saved values
+    restorePairCards();
+  }
+
+  function collectPairValues() {
+    var init = {};
+    var hasOuter = document.getElementById('opt-non_transiting_outer')?.checked || false;
+    var outer = {};
+    var t14 = {};
+    document.querySelectorAll('.pair-card').forEach(function (card) {
+      var pair = card.dataset.pair;
+      var ai = card.querySelector('.pair-amp-inner');
+      var ao = card.querySelector('.pair-amp-outer');
+      var per = card.querySelector('.pair-per');
+      var t = card.querySelector('.pair-t');
+      if (ai && ai.value) init['a_' + pair] = ai.value;
+      if (ao && ao.value) init['a_' + pair[1] + pair[0]] = ao.value;
+      if (per && per.value) init['per_' + pair] = per.value;
+      if (t && t.value) init['t_' + pair] = t.value;
+      // T14: transit duration guess
+      if (per && per.value) {
+        var letters = document.getElementById('opt-planet_letters').value.trim().toLowerCase();
+        for (var j = 0; j < letters.length; j++) {
+          if (!t14[letters[j]]) t14[letters[j]] = '0.1';  // default 0.1 day
+        }
+      }
+    });
+    return { init: init, outer: outer, t14: t14 };
+  }
+
+  function rebuildINI() {
+    var textarea = document.getElementById('opt-ini_content');
+    if (!textarea) return;
+    var pairVals = collectPairValues();
+    var lines = ['[INIT]'];
+    Object.keys(pairVals.init).sort().forEach(function (k) {
+      lines.push(k + ' = ' + pairVals.init[k]);
+    });
+    if (Object.keys(pairVals.outer).length > 0) {
+      lines.push('');
+      lines.push('[OUTER]');
+      Object.keys(pairVals.outer).sort().forEach(function (k) {
+        lines.push(k + ' = ' + pairVals.outer[k]);
+      });
+    }
+    if (Object.keys(pairVals.t14).length > 0) {
+      lines.push('');
+      lines.push('[T14]');
+      Object.keys(pairVals.t14).sort().forEach(function (k) {
+        lines.push(k + ' = ' + pairVals.t14[k]);
+      });
+    }
+    textarea.value = lines.join('\n');
+    saveOptions();
+  }
+
+  function restorePairCards() {
+    var saved = MuscatStorage.getJSON(OPT_KEY, null);
+    if (!saved) return;
+    document.querySelectorAll('.pair-amp-inner').forEach(function (el) {
+      var pair = el.dataset.pair;
+      if (saved['a_' + pair]) el.value = saved['a_' + pair];
+    });
+    document.querySelectorAll('.pair-amp-outer').forEach(function (el) {
+      var pair = el.dataset.pair;
+      if (saved['a_' + pair[1] + pair[0]]) el.value = saved['a_' + pair[1] + pair[0]];
+    });
+    document.querySelectorAll('.pair-per').forEach(function (el) {
+      var pair = el.dataset.pair;
+      if (saved['per_' + pair]) el.value = saved['per_' + pair];
+    });
+    document.querySelectorAll('.pair-t').forEach(function (el) {
+      var pair = el.dataset.pair;
+      if (saved['t_' + pair]) el.value = saved['t_' + pair];
+    });
+  }
+
+  // Auto-rebuild INI when pair fields change
+  document.addEventListener('change', function (e) {
+    if (e.target.closest('.pair-card') || e.target.id === 'opt-planet_letters') {
+      rebuildINI();
+    }
+  });
+
+  // --- Options persistence ---
+  function collectOptions() {
+    var csvContent = buildCSVContent(getTransitDataFromTable());
+    var iniContent = document.getElementById('opt-ini_content')?.value || '';
+    var opts = {
+      csv_content: csvContent,
+      ini_content: iniContent,
+      planet_letters: val('opt-planet_letters'),
+      mstar: val('opt-mstar'),
+      walkers: val('opt-walkers'),
+      steps: val('opt-steps'),
+      burn: val('opt-burn'),
+      thin: val('opt-thin'),
+      nproc: val('opt-nproc'),
+      seed: val('opt-seed'),
+      non_transiting_outer: chk('opt-non_transiting_outer'),
+      phase_offsets: chk('opt-phase_offsets'),
+      clobber: chk('opt-clobber'),
+    };
+    return opts;
+  }
+
+  function saveOptions() {
+    MuscatStorage.setJSON(OPT_KEY, collectOptions());
+  }
+
+  function restoreOptions() {
+    var saved = MuscatStorage.getJSON(OPT_KEY, null);
+    if (!saved) return;
+    ['opt-planet_letters', 'opt-mstar', 'opt-walkers', 'opt-steps', 'opt-burn', 'opt-thin', 'opt-nproc', 'opt-seed'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el && saved[id.replace('opt-', '')] !== undefined) el.value = saved[id.replace('opt-', '')];
+    });
+    ['opt-non_transiting_outer', 'opt-phase_offsets', 'opt-clobber'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el && saved[id.replace('opt-', '')] !== undefined) el.checked = saved[id.replace('opt-', '')] === true;
+    });
+    if (saved.ini_content) {
+      var iniEl = document.getElementById('opt-ini_content');
+      if (iniEl) iniEl.value = saved.ini_content;
+    }
+  }
+
+  // --- Run / poll / cancel ---
+  function setRunning(on) {
+    if (runBtn) runBtn.disabled = on;
+    if (cancelBtn) cancelBtn.style.display = on ? '' : 'none';
+  }
+
+  function stopPolling() { poller.stop(); }
+
+  function schedulePoll(delayMs) { poller.schedule(delayMs); }
+
+  function saveJob() {
+    MuscatStorage.setJSON(JOB_KEY, { inst: inst, date: date, target: target });
+  }
+
+  function clearJob() { MuscatStorage.remove(JOB_KEY); }
+
+  function poll() {
+    var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
+    fetch('/api/ttv-fit/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
+      if (s.log) {
+        logEl.textContent = s.log;
+        logEl.scrollTop = logEl.scrollHeight;
+        MuscatStorage.set(logKey(), s.log);
+      }
+      if (s.state === 'running' || s.state === 'cancelling') {
+        setRunning(true);
+        schedulePoll(2000);
+      }
+      if (s.state === 'done') {
+        stopPolling(); clearJob();
+        logEl.textContent += '\n\n\u2713 done \u2014 reloading\u2026';
+        MuscatStorage.set(logKey(), logEl.textContent);
+        if (typeof window.showLoading === 'function') window.showLoading('Reloading\u2026');
+        setTimeout(function () { window.location.reload(); }, 1200);
+      } else if (s.state === 'error') {
+        stopPolling(); setRunning(false); clearJob();
+        logEl.textContent += '\n\n\u2717 fit run exited with code ' + s.returncode;
+        MuscatStorage.set(logKey(), logEl.textContent);
+      } else if (s.state === 'cancelled') {
+        stopPolling(); setRunning(false); clearJob();
+        logEl.textContent += '\n\n\u25a0 cancelled';
+        MuscatStorage.set(logKey(), logEl.textContent);
+      } else if (s.state === 'pending') {
+        setRunning(true);
+        if (!s.log) {
+          logEl.style.display = 'block';
+          logEl.textContent = '\u23f3 Queued \u2014 waiting for running fit to finish\u2026';
+        }
+        schedulePoll(7000);
+      } else if (s.state === 'none') {
+        stopPolling(); setRunning(false); clearJob();
+      }
+    }).catch(function () { schedulePoll(5000); });
+  }
+
+  // Save options on any change
+  function autoSave() {
+    document.addEventListener('change', function () {
+      setTimeout(saveOptions, 100);
+    });
+    document.addEventListener('input', function () {
+      setTimeout(saveOptions, 300);
+    });
+  }
+  autoSave();
+
+  // Launch
+  if (runBtn) runBtn.addEventListener('click', function () {
+    if (errEl) errEl.textContent = '';
+    // Validate
+    var csvContent = buildCSVContent(getTransitDataFromTable());
+    if (!csvContent) {
+      if (errEl) errEl.textContent = 'No transit time data. Import from Ephemeris first.';
+      return;
+    }
+    if (!val('opt-planet_letters')) {
+      if (errEl) errEl.textContent = 'Planet letters are required.';
+      return;
+    }
+
+    saveJob();
+    setRunning(true);
+    logEl.style.display = 'block';
+    logEl.textContent = 'Launching TTV fitting run\u2026';
+    MuscatStorage.remove(logKey());
+
+    fetch('/api/ttv-fit/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target, options: collectOptions() })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (!res.ok) {
+        clearJob();
+        setRunning(false);
+        logEl.style.display = 'block';
+        logEl.textContent = 'Error: ' + (res.error || 'failed to start');
+        MuscatStorage.set(logKey(), logEl.textContent);
+        return;
+      }
+      saveJob();
+      MuscatStorage.remove(logKey());
+      if (res.queued) {
+        logEl.textContent = '\u23f3 Queued \u2014 waiting for the running fit to finish\u2026';
+        MuscatStorage.set(logKey(), logEl.textContent);
+      }
+      stopPolling();
+      poll();
+      if (window.MuscatJobIndicator) window.MuscatJobIndicator.refresh();
+    }).catch(function (err) {
+      clearJob();
+      setRunning(false);
+      logEl.style.display = 'block';
+      logEl.textContent = 'Error: ' + err.message;
+      MuscatStorage.set(logKey(), logEl.textContent);
+    });
+  });
+
+  if (cancelBtn) cancelBtn.addEventListener('click', function () {
+    cancelBtn.disabled = true;
+    logEl.textContent += '\n\n\u25a0 cancelling\u2026';
+    MuscatStorage.set(logKey(), logEl.textContent);
+    fetch('/api/ttv-fit/cancel', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target })
+    }).then(function (r) { return r.json(); }).then(function () {
+      cancelBtn.disabled = false;
+      stopPolling(); poll();
+    }).catch(function () { cancelBtn.disabled = false; });
+  });
+
+  // Delete
+  var deleteBtn = document.getElementById('delete-btn');
+  var deleteOverlay = document.getElementById('delete-confirm-overlay');
+  var deleteConfirmBtn = document.getElementById('delete-confirm-btn');
+  if (deleteConfirmBtn) deleteConfirmBtn.addEventListener('click', function () {
+    deleteOverlay.classList.remove('visible');
+    deleteBtn.disabled = true;
+    deleteBtn.textContent = 'Deleting\u2026';
+    fetch('/api/ttv-fit/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (res.ok) {
+        if (typeof window.showLoading === 'function') window.showLoading('Reloading\u2026');
+        setTimeout(function () { window.location.reload(); }, 800);
+      } else {
+        window.showMessageModal('Error', 'Delete failed: ' + (res.error || 'unknown error'));
+        deleteBtn.disabled = false;
+        deleteBtn.textContent = '\uD83D\uDDD1 Delete Results';
+      }
+    }).catch(function (err) {
+      window.showMessageModal('Error', 'Delete failed: ' + err.message);
+      deleteBtn.disabled = false;
+      deleteBtn.textContent = '\uD83D\uDDD1 Delete Results';
+    });
+  });
+  var deleteCancelBtn = document.getElementById('delete-cancel-btn');
+  if (deleteCancelBtn) deleteCancelBtn.addEventListener('click', function () {
+    deleteOverlay.classList.remove('visible');
+  });
+  if (deleteBtn) deleteBtn.addEventListener('click', function () {
+    deleteOverlay.classList.add('visible');
+  });
+
+  // Check saved job on load
+  (function checkSavedJob() {
+    var saved = MuscatStorage.getJSON(JOB_KEY, null);
+    if (!saved || !saved.inst) return;
+    if (saved.inst === inst && saved.date === date && saved.target === target) {
+      var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
+      fetch('/api/ttv-fit/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
+        if (s.state === 'running' || s.state === 'cancelling' || s.state === 'pending') {
+          setRunning(true);
+          if (logEl) logEl.style.display = 'block';
+          stopPolling(); poll();
+        } else {
+          clearJob();
+        }
+      }).catch(function () { clearJob(); });
+    }
+  })();
+
+  // Restore saved options
+  restoreOptions();
+  if (document.getElementById('opt-planet_letters').value) {
+    rebuildPairCards();
+  }
+})();
+</script>
+<div class="page-nav">
+  <a href="/jobs" class="btn solid">To Jobs</a>
+  {% if sel_inst and sel_date and sel_target %}
+  <a href="/transit-fit?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn solid">To Transit Fit</a>
+  <a href="/ephemeris?target={{ sel_target | urlencode }}" class="btn solid">To Ephemeris</a>
+  {% endif %}
+</div>
+{% endblock %}
