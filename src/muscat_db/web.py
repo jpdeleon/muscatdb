@@ -19,7 +19,7 @@ import csv
 import io
 import zipfile
 from contextlib import asynccontextmanager, contextmanager
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import Body, FastAPI, HTTPException, Request
@@ -31,6 +31,7 @@ from jinja2 import Environment, FileSystemLoader
 from muscat_db import photometry as phot
 from muscat_db import exposure as exp_calc
 from muscat_db import transit_fit as fit
+from muscat_db import ttv_fit as ttv
 from muscat_db import lco
 from muscat_db import transit_obs
 from muscat_db import fov as fov_opt
@@ -108,6 +109,7 @@ from fastapi import APIRouter
 
 photometry_router = APIRouter(prefix="/api/photometry", tags=["photometry"])
 transit_fit_router = APIRouter(prefix="/api/transit-fit", tags=["transit-fit"])
+ttv_fit_router = APIRouter(prefix="/api/ttv-fit", tags=["ttv-fit"])
 exposure_router = APIRouter(prefix="/api/exposure", tags=["exposure"])
 jobs_router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 target_router = APIRouter(prefix="/api/targets", tags=["targets"])
@@ -163,6 +165,23 @@ jinja = Environment(
     autoescape=True,
 )
 jinja.globals["format_elapsed"] = format_elapsed
+
+
+def _static_url(name: str) -> str:
+    """URL for a bundled static asset, cache-busted by its mtime.
+
+    StaticFiles sends no Cache-Control, so browsers fall back to heuristic
+    freshness and can serve a stale styles.css long after it changed on disk.
+    The mtime query forces a new URL whenever the file is edited.
+    """
+    try:
+        stamp = int((STATIC_DIR / name).stat().st_mtime)
+    except OSError:
+        return f"/static/{name}"
+    return f"/static/{name}?v={stamp}"
+
+
+jinja.globals["static_url"] = _static_url
 
 
 def _adql_literal(value: str) -> str:
@@ -3291,6 +3310,16 @@ def ephemeris_page():
     return _render("ephemeris.html")
 
 
+@app.get("/ttv-fit")
+def ttv_fit_redirect(inst: str = "", date: str = "", target: str = ""):
+    """Redirect to ephemeris page (TTV fitting is now integrated there)."""
+    params = []
+    if target:
+        params.append(f"targets={quote(target)}")
+    qs = "&".join(params) if params else ""
+    return RedirectResponse(url=f"/ephemeris{'?' + qs if qs else ''}", status_code=302)
+
+
 @ephemeris_router.post("/view", response_class=JSONResponse)
 def api_ephemeris_view_save(payload: dict = Body(...)):
     state = payload.get("state") if isinstance(payload, dict) else None
@@ -5293,6 +5322,7 @@ def jobs_lco_archive_ingest_date(payload: dict = Body(...)):
 def jobs_page():
     phot.sync_jobs()
     fit.sync_jobs()
+    ttv.sync_jobs()
     all_jobs = _jobs_with_lco_archive_rows()
 
     # Discover fits completed on-disk outside the web UI.
@@ -5322,6 +5352,7 @@ _last_running: set[str] = set()
 def jobs_status(active_only: bool = False):
     phot.sync_jobs()
     fit.sync_jobs()
+    ttv.sync_jobs()
     all_jobs = _jobs_with_lco_archive_rows()
 
     if active_only:
@@ -5714,12 +5745,137 @@ def ccd_page(instrument: str, obsdate: str, ccd: int):
     return _render("ccd.html", instrument=instrument, obsdate=obsdate, ccd=ccd, frames=frames)
 
 
+# ── TTV Fit API ──────────────────────────────────────────────────────────────
+
+
+@ttv_fit_router.get("/outputs", response_class=JSONResponse)
+def ttv_fit_outputs(inst: str = "", date: str = "", target: str = "", run_name: str = ""):
+    if inst not in INSTRUMENTS:
+        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
+    if target:
+        target = target.strip()
+    outputs = ttv.get_ttv_outputs(inst, date, target, run_name)
+    return JSONResponse({"ok": True, "outputs": outputs})
+
+
+@ttv_fit_router.get("/runs", response_class=JSONResponse)
+def ttv_fit_runs(inst: str = "", date: str = "", target: str = ""):
+    if inst not in INSTRUMENTS:
+        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
+    if not target:
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    return JSONResponse({"ok": True, "runs": ttv.list_ttv_runs(inst, date, target.strip())})
+
+
+@ttv_fit_router.post("/start", response_class=JSONResponse)
+def api_start_ttv_fit(payload: dict = Body(...)):
+    inst = (payload.get("instrument") or "").strip()
+    date = (payload.get("date") or "").strip()
+    target = (payload.get("target") or "").strip()
+    user_name = (payload.get("user_name") or "").strip()
+    options = payload.get("options") or {}
+    if inst not in INSTRUMENTS:
+        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
+    if not date:
+        return JSONResponse({"ok": False, "error": "date is required"}, status_code=400)
+    if not target:
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    result = ttv.start_ttv_fit(inst, date, target, options, user_name)
+    return JSONResponse(result)
+
+
+@ttv_fit_router.post("/cancel", response_class=JSONResponse)
+def api_cancel_ttv_fit(payload: dict = Body(...)):
+    inst = (payload.get("instrument") or "").strip()
+    date = (payload.get("date") or "").strip()
+    target = (payload.get("target") or "").strip()
+    run_name = (payload.get("run_name") or "").strip()
+    if inst not in INSTRUMENTS:
+        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
+    res = ttv.cancel_ttv_fit(inst, date, target, run_name)
+    return JSONResponse(res)
+
+
+@ttv_fit_router.post("/delete", response_class=JSONResponse)
+def api_delete_ttv_fit(payload: dict = Body(...)):
+    inst = (payload.get("instrument") or "").strip()
+    date = (payload.get("date") or "").strip()
+    target = (payload.get("target") or "").strip()
+    run_name = (payload.get("run_name") or "").strip()
+    if inst not in INSTRUMENTS:
+        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
+    res = ttv.delete_ttv_fit(inst, date, target, run_name)
+    return JSONResponse(res)
+
+
+@ttv_fit_router.get("/status", response_class=JSONResponse)
+def ttv_fit_status(inst: str = "", date: str = "", target: str = "", run_name: str = ""):
+    if inst not in INSTRUMENTS:
+        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
+    if not target:
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    status = ttv.job_status(inst, date, target, run_name)
+    return JSONResponse(status)
+
+
+@ttv_fit_router.get("/output-file", response_class=FileResponse)
+def ttv_fit_output_file(inst: str = "", date: str = "", target: str = "", run_name: str = "", file: str = ""):
+    if inst not in INSTRUMENTS:
+        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
+    if not target:
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    output_dir = ttv.ttv_output_dir(inst, date, target, run_name)
+    filepath = output_dir / file
+    if not filepath.exists() or not filepath.is_file():
+        raise HTTPException(404, f"file not found: {file}")
+    return FileResponse(str(filepath))
+
+
+@ttv_fit_router.get("/download-all", response_class=FileResponse)
+def ttv_fit_download_all(inst: str = "", date: str = "", target: str = "", run_name: str = ""):
+    import io, zipfile
+
+    if inst not in INSTRUMENTS:
+        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
+    if not target:
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    output_dir = ttv.ttv_output_dir(inst, date, target, run_name)
+    if not output_dir.is_dir():
+        raise HTTPException(404, "output directory not found")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for fpath in sorted(output_dir.iterdir()):
+            if fpath.is_file() and not fpath.name.startswith("."):
+                zf.write(str(fpath), arcname=fpath.name)
+    buf.seek(0)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={target}_ttv_outputs.zip"},
+    )
+
+
+@ttv_fit_router.post("/command", response_class=JSONResponse)
+def api_ttv_fit_command(payload: dict = Body(...)):
+    inst = (payload.get("instrument") or "").strip()
+    date = (payload.get("date") or "").strip()
+    target = (payload.get("target") or "").strip()
+    options = payload.get("options") or {}
+    if inst not in INSTRUMENTS:
+        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
+    if not target:
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    cmd_str = ttv.get_ttv_command(inst, date, target, options)
+    return JSONResponse({"ok": True, "command": cmd_str})
+
+
 app.include_router(photometry_router)
 app.include_router(transit_fit_router)
 app.include_router(exposure_router)
 app.include_router(jobs_router)
 app.include_router(target_router)
 app.include_router(ephemeris_router)
+app.include_router(ttv_fit_router)
 app.include_router(fov_router)
 app.include_router(lco_router)
 app.include_router(settings_router)

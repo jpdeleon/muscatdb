@@ -10,6 +10,7 @@
 <div class="jobs-summary" id="type-summary">
   <span class="job-count" data-type="photometry" onclick="toggleType(this, 'photometry')">Photometry</span>
   <span class="job-count" data-type="transit_fit" onclick="toggleType(this, 'transit_fit')">Transit Fit</span>
+  <span class="job-count" data-type="ttv_fit" onclick="toggleType(this, 'ttv_fit')">TTV Fit</span>
   <span class="job-count" data-type="lco_archive_download" onclick="toggleType(this, 'lco_archive_download')">LCO Archive</span>
 </div>
 <div class="jobs-summary" id="inst-summary"></div>
@@ -21,6 +22,7 @@
     {% set link_url -%}
       {%- if j.type == 'photometry' -%}/photometry?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}{% if j.run_id %}&run={{ j.run_id }}{% endif %}
       {%- elif j.type == 'transit_fit' -%}/transit-fit?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}{% if j.run_id %}&run={{ j.run_id }}{% endif %}
+      {%- elif j.type == 'ttv_fit' -%}/ephemeris?targets={{ j.target | urlencode }}
       {%- else -%}/lco/archive
       {%- endif -%}
     {%- endset %}
@@ -49,9 +51,15 @@
       </td>
       {% endif %}
       <td><strong><a href="{{ link_url }}">{{ j.target }}</a></strong></td>
-      <td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ j.run_name or '' }}">{{ j.run_name or '—' }}</td>
+      <td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ j.run_name or '' }}">
+        {{ j.run_name or ('default' if j.type == 'ttv_fit' else '—') }}
+      </td>
       <td class="inst-cell"><span class="badge badge-blue">{{ j.inst }}</span></td>
+      {% if j.type != 'ttv_fit' %}
       <td class="mono">{{ j.date }}</td>
+      {% else %}
+      <td class="mono">—</td>
+      {% endif %}
       <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">{{ j.user_name or '—' }}</td>
       <td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">
         {% if j.started_at %}
@@ -124,7 +132,7 @@
       {% endif %}
     </tr>
     <tr class="log-row" style="display:none;">
-      <td colspan="10">
+      <td colspan="11">
         <pre class="log-content">Loading…</pre>
       </td>
     </tr>
@@ -199,6 +207,31 @@
   </table>
   </div>
 </details>
+
+<details class="adv job-section" id="ttv-fit-jobs-section" open data-job-section="ttv_fit" style="margin-top:1rem;">
+  <summary>TTV Fit Jobs</summary>
+  <div class="csv-wrap">
+  <table class="jobs-table" data-job-type="ttv_fit">
+    <thead>
+      <tr>
+        <th data-sort-attr="target" class="sortable">Target</th>
+        <th data-sort-attr="run_name" class="sortable">Run Name</th>
+        <th data-sort-attr="instrument" class="sortable">Instrument</th>
+        <th data-sort-attr="obsdate" class="sortable">Date Obs</th>
+        <th data-sort-attr="userName" class="sortable">User</th>
+        <th data-sort-attr="startedAt" data-sort-type="number" class="sortable">Date Run</th>
+        <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
+        <th data-sort-attr="state" class="sortable">Status</th>
+        <th>Details</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{ render_job_rows(jobs | selectattr('type', 'equalto', 'ttv_fit') | list) }}
+    </tbody>
+  </table>
+  </div>
+</details>
 {% endif %}
 
 <details class="adv job-section" id="lco-archive-jobs-section" open data-job-section="lco_archive_download" data-always-visible="1" style="margin-top:1rem;">
@@ -222,7 +255,7 @@
     <tbody>
       {{ render_job_rows(lco_archive_jobs) }}
       <tr class="empty-job-row" data-empty-for="lco_archive_download" {% if lco_archive_jobs %}style="display:none;"{% endif %}>
-        <td colspan="10" style="color:var(--text-dim);text-align:center;padding:1rem;">
+        <td colspan="11" style="color:var(--text-dim);text-align:center;padding:1rem;">
           No LCO archive downloads are currently tracked in this server process.
         </td>
       </tr>
@@ -395,7 +428,7 @@
     var logRow = document.createElement('tr');
     logRow.className = 'log-row';
     logRow.style.display = 'none';
-    logRow.innerHTML = '<td colspan="10"><pre class="log-content">Loading…</pre></td>';
+    logRow.innerHTML = '      <td colspan="11"><pre class="log-content">Loading…</pre></td>';
     tbody.insertBefore(logRow, empty || null);
     allRows.push(row);
     addInstFilterIfMissing(job.inst || '');
@@ -645,7 +678,7 @@
     var date   = btn.getAttribute('data-date');
     var target = btn.getAttribute('data-target');
     var runId  = btn.getAttribute('data-run') || '';
-    var url    = type === 'transit_fit' ? '/api/transit-fit/cancel' : '/api/photometry/cancel';
+    var url    = type === 'transit_fit' ? '/api/transit-fit/cancel' : (type === 'ttv_fit' ? '/api/ttv-fit/cancel' : '/api/photometry/cancel');
 
     btn.disabled = true;
     btn.innerText = 'Cancelling…';
@@ -819,7 +852,7 @@
             if (m) parts = m.map(function(x) { return x.replace(/'/g, ''); });
           }
           var type = rowType || parts[0] || '';
-          if (type !== 'transit_fit' && type !== 'lco_archive_download') type = 'photometry';
+          if (type !== 'transit_fit' && type !== 'ttv_fit' && type !== 'lco_archive_download') type = 'photometry';
           replaceActions(row, f.state, key, type, f.inst || parts[1] || '', f.date || parts[2] || '', f.target || parts[3] || '', parts[4] || '');
         }
 
@@ -856,7 +889,7 @@
                   if (m) parts = m.map(function(x) { return x.replace(/'/g, ''); });
                 }
                 var type = row.getAttribute('data-type') || parts[0] || '';
-                if (type !== 'transit_fit' && type !== 'lco_archive_download') type = 'photometry';
+                if (type !== 'transit_fit' && type !== 'ttv_fit' && type !== 'lco_archive_download') type = 'photometry';
                 replaceActions(row, rj.state, rj.key, type, parts[1] || '', parts[2] || '', parts[3] || '', parts[4] || '');
               }
             }
@@ -1001,7 +1034,7 @@
   });
   requestAnimationFrame(restoreSort);
 
-  ['photometry-jobs-section', 'transit-fit-jobs-section', 'lco-archive-jobs-section'].forEach(function(id) {
+  ['photometry-jobs-section', 'transit-fit-jobs-section', 'ttv-fit-jobs-section', 'lco-archive-jobs-section'].forEach(function(id) {
     var el = document.getElementById(id);
     if (!el) return;
     var key = 'jobs:details:' + id;

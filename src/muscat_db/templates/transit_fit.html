@@ -3,32 +3,9 @@
 {% block content %}
 <style>
   /* Page-specific styles only. Shared components (buttons, .opt* form fields,
-     details.adv, .run-panel, .phot-section, .help-tooltip, #run-log, .dl-row)
-     live in /static/styles.css. */
-  .selector-group {
-    display: flex; gap: 1rem; align-items: center; margin-bottom: 2rem; flex-wrap: wrap;
-    background: var(--surface); border: 1px solid var(--border); padding: 1rem; border-radius: 8px;
-  }
-  .selector-group label { font-size: 0.85rem; color: var(--text-dim); display: flex; flex-direction: column; gap: 0.35rem; }
-  .selector-group select {
-    background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
-    border-radius: 6px; padding: 0.45rem 0.75rem; min-width: 160px; font-size: 0.9rem;
-  }
-  .selector-group select:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  .fig-grid {
-    display: grid; gap: 1.5rem; grid-template-columns: repeat(auto-fill, minmax(480px, 1fr));
-    margin-top: 1rem;
-  }
-  @media (max-width: 600px) {
-    .fig-grid { grid-template-columns: 1fr; }
-  }
-  .fig {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
-    padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem;
-  }
-  .fig img { width: 100%; height: auto; border-radius: 6px; display: block; background: var(--input-bg); }
-  .fig .cap { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-dim); }
+     .opt-section-title, .opt-collapse, details.adv, .run-panel, .run-cmd,
+     .phot-section, .phot-fold, .selector-group, .help-tooltip, #run-log,
+     .dl-row, .fig-grid, .fig, .site-chip) live in /static/styles.css. */
   .result-collapse {
     margin-top: 1.25rem;
     border-top: 1px solid var(--border);
@@ -58,36 +35,6 @@
   /* Bottom-align checkboxes within the options grid (page-specific override). */
   .opt.check { margin-top: auto; }
 
-  .opt-section-title {
-    grid-column: 1 / -1; font-size: 0.85rem; font-weight: 600; color: var(--accent2);
-    margin-top: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem;
-  }
-
-  /* Collapsible option groups (Sampler / Detrending / GP), collapsed by default. */
-  .opt-collapse { grid-column: 1 / -1; margin-top: 1rem; }
-  .opt-collapse > summary {
-    font-size: 0.85rem; font-weight: 600; color: var(--accent2);
-    border-bottom: 1px solid var(--border); padding-bottom: 0.25rem;
-    cursor: pointer; user-select: none; list-style: none;
-    display: flex; align-items: center; gap: 0.4rem;
-  }
-  .opt-collapse > summary::-webkit-details-marker { display: none; }
-  .opt-collapse > summary::before {
-    content: '\25B8'; color: var(--text-dim); font-size: 0.8rem;
-    transition: transform 0.15s ease;
-  }
-  .opt-collapse[open] > summary::before { transform: rotate(90deg); }
-  .opt-collapse > *:not(summary) { margin-top: 0.7rem; }
-
-  .site-chips { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin: 0 0 0.75rem; }
-  .site-chips .site-label { font-size: 0.8rem; color: var(--text-dim); }
-  .site-chip {
-    background: var(--surface2); color: var(--text);
-    border: 1px solid var(--border); border-radius: 999px;
-    padding: 0.3rem 0.9rem; font-size: 0.85rem; cursor: pointer;
-    text-decoration: none;
-  }
-  .site-chip.active { border-color: var(--accent); color: var(--accent); }
   .lightcurve-grid {
     display: flex;
     gap: 0.75rem;
@@ -161,6 +108,22 @@
     color: var(--red); font-size: 0.75rem; margin-top: 0.15rem; line-height: 1.2; display: none;
   }
   .field-error.visible { display: block; }
+
+  .ephem-src {
+    display: inline-block; font-size: 0.62rem; font-weight: 600;
+    letter-spacing: 0.03em; text-transform: uppercase; vertical-align: middle;
+    padding: 0.02rem 0.32rem; margin-left: 0.25rem; border-radius: 0.6rem;
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--accent);
+  }
+  .ephem-src.manual {
+    background: color-mix(in srgb, var(--text-dim) 18%, transparent);
+    color: var(--text-dim);
+  }
+  .ephem-src.none {
+    background: transparent; color: var(--text-dim);
+    font-weight: 500; opacity: 0.5;
+  }
 </style>
 
 <h1>Transit Fit</h1>
@@ -388,7 +351,7 @@
       </div>
       <div class="opt-grid">
         <div class="opt-section-title" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
-          <span>Stellar Parameters <span id="stellar-ref-container" style="font-size: 0.75rem; font-weight: normal; color: var(--text-dim); text-transform: none;"></span></span>
+          <span>Stellar Parameters <span id="stellar-ref-container" style="font-size: 0.75rem; font-weight: normal; color: var(--text-dim); text-transform: none;"></span><span class="ephem-src none" id="src-stellar">—</span></span>
         </div>
         <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem;">
           <div class="opt">
@@ -881,6 +844,29 @@
     return isNaN(n) ? part : (n / 24);
   }
 
+  function setFieldSource(badgeId, source) {
+    var b = document.getElementById(badgeId);
+    if (!b) {
+      document.querySelectorAll('.' + badgeId).forEach(function (el) {
+        if (source) {
+          el.textContent = source;
+          el.className = 'ephem-src' + (source === 'manual' ? ' manual' : '');
+        } else {
+          el.textContent = '\u2014';
+          el.className = 'ephem-src none';
+        }
+      });
+      return;
+    }
+    if (source) {
+      b.textContent = source;
+      b.className = 'ephem-src' + (source === 'manual' ? ' manual' : '');
+    } else {
+      b.textContent = '\u2014';
+      b.className = 'ephem-src none';
+    }
+  }
+
   function collectOptions() {
     var fixed = [];
     document.querySelectorAll('input[name="fixed-params"]:checked').forEach(function (c) { fixed.push(c.value); });
@@ -896,7 +882,8 @@
 
       planetData['query_target_' + letter] = card.querySelector('.planet-query-target').value;
       planetData['query_source_' + letter] = card.querySelector('.planet-source-select').value;
-      planetData['pl_ref_' + letter] = card.querySelector('.planet-ref-container').innerHTML;
+      var plBadgeEl = card.querySelector('.src-planet-badge');
+      planetData['pl_ref_' + letter] = plBadgeEl && plBadgeEl.textContent !== '\u2014' ? plBadgeEl.textContent : '';
 
       // Prior parameters use one "a,b" field; split into the two backend keys.
       var periodPair = splitPair(card.querySelector('.planet-period').value);
@@ -1287,7 +1274,8 @@
         '<div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">' +
           '<span style="font-weight: 600; color: var(--accent2);">Planet:</span>' +
           '<input type="text" class="planet-letter-input" value="' + letter + '" maxlength="1" style="width: 2.5rem; text-align: center; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 0.2rem; font-size: 0.85rem; font-weight: bold; text-transform: lowercase;">' +
-          '<span class="planet-ref-container" style="font-size: 0.75rem; color: var(--text-dim); margin-left: 0.5rem;">' + (values && values.pl_ref ? values.pl_ref : '') + '</span>' +
+          '<span class="planet-ref-container" style="font-size: 0.75rem; color: var(--text-dim); margin-left: 0.5rem;"></span>' +
+          '<span class="ephem-src none src-planet-badge" style="margin-left: 0.3rem;">—</span>' +
         '</div>' +
         '<div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">' +
           '<input type="text" class="planet-query-target" value="' + defaultQuery + '" placeholder="e.g. WASP-104 ' + letter + '" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 0.2rem 0.5rem; font-size: 0.8rem; width: 180px;">' +
@@ -1402,6 +1390,13 @@
     card.innerHTML = headerHtml + bodyHtml;
     container.appendChild(card);
 
+    // Set planet source badge from stored value
+    var plBadgeInit = card.querySelector('.src-planet-badge');
+    if (values && values.pl_ref && plBadgeInit) {
+      plBadgeInit.textContent = values.pl_ref;
+      plBadgeInit.className = 'ephem-src';
+    }
+
     card.querySelectorAll('.opt').forEach(function (optDiv) {
       var err = document.createElement('span');
       err.className = 'field-error';
@@ -1478,9 +1473,10 @@
           card.querySelector('.planet-ror').value = joinPair(params.ror, params.ror_unc, SIG_FIGS.ror);
           card.querySelector('.planet-b').value = joinPair(params.b, params.b_unc, SIG_FIGS.b);
 
-          var plRefContainer = card.querySelector('.planet-ref-container');
-          if (plRefContainer) {
-            plRefContainer.innerHTML = params.pl_ref ? 'Source: ' + params.pl_ref : '';
+          var plBadge = card.querySelector('.src-planet-badge');
+          if (plBadge) {
+            if (params.pl_ref) { plBadge.textContent = sourceLabel; plBadge.className = 'ephem-src'; }
+            else { plBadge.textContent = '\u2014'; plBadge.className = 'ephem-src none'; }
           }
 
           if (data.pl_name && data.pl_name.length > 2 && data.pl_name.indexOf(' ') !== -1) {
@@ -1611,7 +1607,11 @@
     if (archiveSourceEl && saved.archive_source !== undefined) archiveSourceEl.value = saved.archive_source;
 
     var stellarRefEl = document.getElementById('stellar-ref-container');
-    if (stellarRefEl && saved.stellar_ref !== undefined) stellarRefEl.innerHTML = saved.stellar_ref;
+    if (stellarRefEl && saved.stellar_ref !== undefined) {
+      stellarRefEl.innerHTML = saved.stellar_ref;
+      var src = saved.stellar_ref.replace(/^Source:\s*/i, '').trim();
+      setFieldSource('src-stellar', src || '');
+    }
 
     var cEl = document.getElementById('opt-chromatic');
     if (cEl && saved.chromatic !== undefined) cEl.checked = saved.chromatic === 'true';
@@ -1663,6 +1663,7 @@
 
       var stellarRefEl = document.getElementById('stellar-ref-container');
       if (stellarRefEl) stellarRefEl.innerHTML = '';
+      setFieldSource('src-stellar', '');
 
       var cEl = document.getElementById('opt-chromatic');
       if (cEl) cEl.checked = false;
@@ -1755,6 +1756,8 @@
 
         var stellarRefEl = document.getElementById('stellar-ref-container');
         if (stellarRefEl) stellarRefEl.innerHTML = backup.stellar_ref || '';
+        var backupSrc = (backup.stellar_ref || '').replace(/^Source:\s*/i, '').trim();
+        setFieldSource('src-stellar', backupSrc || '');
 
         var cEl = document.getElementById('opt-chromatic');
         if (cEl && backup.chromatic !== undefined) cEl.checked = backup.chromatic === 'true';
@@ -2569,6 +2572,7 @@
           if (stellarRefEl) {
             stellarRefEl.innerHTML = params.st_ref ? 'Source: ' + params.st_ref : '';
           }
+          setFieldSource('src-stellar', params.st_ref || '');
 
           // Sync first planet card's priors
           var container = document.getElementById('planet-cards-container');
@@ -2598,9 +2602,10 @@
             firstCard.querySelector('.planet-ror').value = joinPair(params.ror, params.ror_unc, SIG_FIGS.ror);
             firstCard.querySelector('.planet-b').value = joinPair(params.b, params.b_unc, SIG_FIGS.b);
 
-            var plRefContainer = firstCard.querySelector('.planet-ref-container');
-            if (plRefContainer) {
-              plRefContainer.innerHTML = params.pl_ref ? 'Source: ' + params.pl_ref : '';
+            var plBadge = firstCard.querySelector('.src-planet-badge');
+            if (plBadge) {
+              if (params.pl_ref) { plBadge.textContent = sourceLabel; plBadge.className = 'ephem-src'; }
+              else { plBadge.textContent = '\u2014'; plBadge.className = 'ephem-src none'; }
             }
 
             var firstQueryTarget = firstCard.querySelector('.planet-query-target');
@@ -2644,17 +2649,17 @@
   }
 })();
 </script>
-<div style="text-align:center; margin:2em 0; display: flex; justify-content: center; gap: 1rem; align-items: center;">
-  <a href="#" style="display:inline-block; padding:0.5em 2em; background:#0056b3; color:#fff; border:1px solid #0056b3; text-decoration:none; border-radius:4px;">Back to Top</a>
+<div class="page-nav">
+  <a href="#" class="btn solid">Back to Top</a>
   {% if sel_target %}
-    <a href="/target?name={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To Target</a>
+    <a href="/target?name={{ sel_target | urlencode }}" class="btn solid">To Target</a>
   {% endif %}
-  <a href="/jobs" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To Jobs</a>
+  <a href="/jobs" class="btn solid">To Jobs</a>
   {% if sel_inst and sel_date and sel_target %}
-    <a href="/photometry?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To Photometry</a>
+    <a href="/photometry?inst={{ sel_inst }}&amp;date={{ sel_date }}&amp;target={{ sel_target | urlencode }}" class="btn solid">To Photometry</a>
   {% else %}
-    <a href="/photometry" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To Photometry</a>
+    <a href="/photometry" class="btn solid">To Photometry</a>
   {% endif %}
-  <a href="/lco/schedule" class="btn primary" style="text-decoration: none; display: inline-block; padding: 0.5em 2em; line-height: 1.2; background:#0056b3; color:#fff; border-color:#0056b3; border-radius:4px;">To LCO</a>
+  <a href="/lco/schedule" class="btn solid">To LCO</a>
 </div>
 {% endblock %}

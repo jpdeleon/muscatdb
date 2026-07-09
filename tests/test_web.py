@@ -2041,4 +2041,118 @@ def test_api_exofop_check_confirmed(monkeypatch, tmp_path):
     assert len(url_calls) == 0
 
 
+def test_ttv_fit_command_endpoint(monkeypatch):
+    payload = {
+        "instrument": "muscat3",
+        "date": "260101",
+        "target": "WASP-12",
+        "options": {
+            "run_name": "test_run",
+            "walkers": 100,
+            "steps": 2000,
+            "burn": 1000,
+            "thin": 10,
+            "nproc": 10,
+            "seed": 42,
+            "planet_letters": "bc",
+            "non_transiting_outer": True,
+            "phase_offsets": True,
+            "clobber": True
+        }
+    }
+    r = TestClient(app).post("/api/ttv-fit/command", json=payload)
+    assert r.status_code == 200
+    res = r.json()
+    assert res["ok"] is True
+    assert "harmonic" in res["command"]
+    assert "-i" in res["command"]
+    assert "-c" in res["command"]
+    assert "-o" in res["command"]
+    assert "-w 100" in res["command"]
+    assert "--steps 2000" in res["command"]
+    assert "-b 1000" in res["command"]
+    assert "--thin 10" in res["command"]
+    assert "--nproc 10" in res["command"]
+    assert "--seed 42" in res["command"]
+    assert "-l bc" in res["command"]
+    assert "-n" in res["command"]
+    assert "--phase-offsets" in res["command"]
+    assert "--clobber" in res["command"]
+    assert "/WASP-12/_runs/test_run" in res["command"]
 
+
+def test_ttv_output_dir_layout(tmp_path, monkeypatch):
+    """TTV results live at <base>/<target>/_runs/<slug>, mirroring photometry."""
+    from muscat_db import ttv_fit as ttv
+
+    monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path))
+    base = tmp_path.resolve()
+
+    def rel(run_name):
+        p = ttv.ttv_output_dir("muscat3", "260101", "HIP67522", run_name)
+        return p.relative_to(base).as_posix()
+
+    # Blank run name slugs to "default" (never the bare target dir).
+    assert rel("") == "HIP67522/_runs/default"
+    assert rel("test") == "HIP67522/_runs/test"
+    # Run names are slugified, not passed through verbatim.
+    assert rel("My Run 1") == "HIP67522/_runs/my_run_1"
+    # The job key uses the same slug as the directory segment.
+    assert ttv.ttv_job_key("muscat3", "260101", "HIP67522", "My Run 1").endswith("/my_run_1")
+
+
+def test_ttv_output_dir_rejects_traversal(tmp_path, monkeypatch):
+    from muscat_db import ttv_fit as ttv
+
+    monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path))
+    with pytest.raises(ValueError):
+        ttv.ttv_output_dir("muscat3", "260101", "../etc", "run")
+    # A traversal-looking run name is slugified into a single safe segment.
+    p = ttv.ttv_output_dir("muscat3", "260101", "HIP67522", "../../etc")
+    assert p.relative_to(tmp_path.resolve()).as_posix() == "HIP67522/_runs/etc"
+
+
+def _make_ttv_run(tmp_path, target, run_name, plot="corner.png"):
+    d = tmp_path / target / "_runs" / run_name
+    d.mkdir(parents=True)
+    if plot:
+        (d / plot).write_bytes(b"\x89PNG\r\n\x1a\n")
+    return d
+
+
+def test_list_ttv_runs_skips_empty_and_sorts_newest_first(tmp_path, monkeypatch):
+    """Only runs holding results are listed, freshest first (drives the chips)."""
+    from muscat_db import ttv_fit as ttv
+
+    monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path))
+    older = _make_ttv_run(tmp_path, "HIP67522", "default")
+    newer = _make_ttv_run(tmp_path, "HIP67522", "test")
+    _make_ttv_run(tmp_path, "HIP67522", "empty", plot=None)
+
+    os.utime(older, (1_000_000, 1_000_000))
+    os.utime(newer, (2_000_000, 2_000_000))
+
+    runs = ttv.list_ttv_runs("muscat3", "260101", "HIP67522")
+    assert [r["run_name"] for r in runs] == ["test", "default"]
+
+
+def test_list_ttv_runs_empty_for_unknown_or_unsafe_target(tmp_path, monkeypatch):
+    from muscat_db import ttv_fit as ttv
+
+    monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path))
+    assert ttv.list_ttv_runs("muscat3", "260101", "NoSuchTarget") == []
+    assert ttv.list_ttv_runs("muscat3", "260101", "../etc") == []
+
+
+def test_ttv_fit_runs_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path))
+    _make_ttv_run(tmp_path, "HIP67522", "default")
+
+    client = TestClient(app)
+    r = client.get("/api/ttv-fit/runs", params={"inst": "muscat3", "date": "260101", "target": "HIP67522"})
+    assert r.status_code == 200
+    assert [x["run_name"] for x in r.json()["runs"]] == ["default"]
+
+    # Guardrails: instrument must be known and target is required.
+    assert client.get("/api/ttv-fit/runs", params={"inst": "nope", "target": "HIP67522"}).status_code == 400
+    assert client.get("/api/ttv-fit/runs", params={"inst": "muscat3", "target": ""}).status_code == 400

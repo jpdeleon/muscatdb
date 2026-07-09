@@ -3,18 +3,17 @@
 {% block content %}
 <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
 
-<div class="card" style="margin-top: 2rem; padding: 2rem;">
-  <h1 style="margin-top: 0; color: var(--accent); display: flex; align-items: center; gap: 0.5rem;">
-    Ephemerides
-  </h1>
-  <p style="color: var(--text-dim); margin-bottom: 1.5rem; font-size: 0.95rem;">
-    Analyze Transit Timing Variations (TTVs) across multiple instruments and dates. Click on any data point in the plot to navigate directly to the transit fit page it is based on.
-  </p>
+<h1>Ephemeris</h1>
 
+<p style="color: var(--text-dim); margin-bottom: 1.5rem; font-size: 0.95rem;">
+  Analyze Transit Timing Variations (TTVs) across multiple instruments and dates. Click on any data point in the plot to navigate directly to the transit fit page it is based on.
+</p>
+
+<div class="card" style="padding: 1.5rem;">
   <!-- Target Selection Grid -->
   <div class="opt-grid" style="border-bottom: 1px solid var(--border); padding-bottom: 1.5rem; margin-bottom: 1.5rem;">
     <div class="opt">
-      <label for="target-input" style="font-weight: 500;">🔍 Select Target Star</label>
+      <label for="target-input">Select target star</label>
       <div style="display: flex; gap: 0.5rem;">
         <select id="target-input" style="flex-grow: 1;">
           <option value="">-- select target star --</option>
@@ -29,17 +28,17 @@
   </div>
 
   <!-- Dynamic Planet Parameter Cards Container -->
-  <div id="planet-cards-section" style="display: none; margin-bottom: 1.5rem;">
-    <h2 style="color: var(--text);">Planetary Reference Ephemerides</h2>
-    <div id="planet-cards-container" class="card-grid" style="grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); margin-bottom: 1.5rem;">
+  <details class="adv" id="planet-cards-section" style="display: none; margin-bottom: 1.5rem;" open>
+    <summary>Planetary Reference Ephemerides</summary>
+    <div id="planet-cards-container" class="card-grid" style="grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); margin-top: 1.5rem;">
       <!-- Dynamically filled with planet inputs -->
     </div>
-  </div>
+  </details>
 
   <!-- Dataset Checkbox List Table -->
-  <div id="datasets-section" style="display: none; margin-bottom: 1.5rem;">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-      <h2 style="margin: 0; color: var(--text);">Select Datasets to Include in Fit</h2>
+  <details class="adv" id="datasets-section" style="display: none; margin-bottom: 1.5rem;" open>
+    <summary>Select Datasets to Include in Fit</summary>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; margin-top: 1rem;">
       <div style="display: flex; gap: 0.5rem;">
         <button class="btn sm" type="button" onclick="toggleAllDatasets(true)">Select All</button>
         <button class="btn sm" type="button" onclick="toggleAllDatasets(false)">Deselect All</button>
@@ -63,7 +62,7 @@
         </tbody>
       </table>
     </div>
-  </div>
+  </details>
 
   <!-- Automatic Fit Controls -->
   <div id="action-section" style="display: none; gap: 1rem; align-items: center; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 1.5rem;">
@@ -81,17 +80,13 @@
     <div id="loader" style="display: none; align-items: center;">
       <div class="spinner" title="Calculating fit"></div>
     </div>
-    <a class="btn sm" id="lco-schedule-link" href="#"
-       title="Open this saved view on the LCO scheduling & download page"
-       style="display: none; align-items: center; gap: 0.35rem; font-weight: 500;">
-      🔭 Schedule on LCO
-    </a>
   </div>
 </div>
 
 <!-- Interactive Plot Area -->
-<div id="plot-card" class="card" style="margin-top: 1.5rem; display: none; padding: 1.5rem; min-height: 520px;">
-  <h2 style="margin-top: 0; margin-bottom: 0.5rem; color: var(--text);">O-C Plot</h2>
+<details class="phot-section phot-fold" id="plot-card" style="display: none;" open>
+  <summary><h2>O-C Plot</h2></summary>
+  <div class="card" style="min-height: 520px; margin-top: 1rem;">
   <div id="oc-plot"></div>
   <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.75rem; gap: 1.5rem; flex-wrap: wrap;">
     <div style="display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; flex-grow: 1;">
@@ -128,19 +123,163 @@
       </button>
     </div>
   </div>
-  <div id="plot-planet-settings" style="margin-top: 0.75rem; border-top: 1px solid var(--border); padding-top: 0.75rem; display: none; flex-direction: column; gap: 0.5rem;">
+    <div id="plot-planet-settings" style="margin-top: 0.75rem; border-top: 1px solid var(--border); padding-top: 0.75rem; display: none; flex-direction: column; gap: 0.5rem;">
+    </div>
+  </div>
+</details>
+
+<!-- Fit Summary Panel -->
+<details class="phot-section phot-fold" id="results-card" style="display: none;">
+  <summary><h2>Linear Ephemeris Fit Results</h2></summary>
+  <div id="results-grid" style="display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); margin-top: 1rem;">
+    <!-- Filled on fit calculate response -->
+  </div>
+</details>
+
+<!-- TTV Fit Results (filled by renderTTVOutputs). A top-level section rather than
+     a card nested in the Configure panel, and placed above it, mirroring the
+     transit-fit page. -->
+<div class="phot-section" id="ttv-outputs-container" style="display: none;"></div>
+
+<!-- Configure TTV Model Section -->
+<details class="phot-section phot-fold" id="ttv-section" style="display: none;">
+  <summary><h2>Configure & Run TTV Fitting</h2></summary>
+  <div class="card" style="padding: 1.5rem; margin-top: 1rem;">
+    <p style="font-size: 0.85rem; color: var(--text-dim); margin-bottom: 1.5rem;">
+      Transit timing data is derived from the O-C (Observed minus Calculated) plot above. Configure harmonic model parameters and run the TTV fit.
+    </p>
+    <div class="opt-grid">
+      <div class="opt">
+        <label for="opt-planet_letters">Planet letters <span class="help-tooltip" title="Planet letter designations, e.g. bcd for three planets. Sorted alphabetically, mapped to internal indices 0,1,2.">?</span></label>
+        <input type="text" id="opt-planet_letters" placeholder="e.g. bcd">
+      </div>
+      <div class="opt">
+        <label for="opt-mstar">Stellar mass (M☉) <span class="help-tooltip" title="Host star mass in solar masses. Used for mass/eccentricity constraints from Lithwick+2012.">?</span></label>
+        <input type="number" id="opt-mstar" value="1.0" min="0.1" step="0.01">
+      </div>
+    </div>
+
+
+
+
+
+    <!-- Optional: Non-transiting outer / Phase offsets -->
+    <div class="opt-grid" style="margin-top: 1rem;">
+      <div class="opt-section-title">Model Options</div>
+      <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: center;">
+        <label style="display: flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; cursor: pointer;">
+          <input type="checkbox" id="opt-non_transiting_outer">
+          Non-transiting outer planet <span class="help-tooltip" title="Include a non-transiting outer planet. Requires [OUTER] section in INI below.">?</span>
+        </label>
+        <label style="display: flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; cursor: pointer;">
+          <input type="checkbox" id="opt-phase_offsets">
+          Phase offsets <span class="help-tooltip" title="Allow different phase offsets per planet pair instead of shared anti-phase.">?</span>
+        </label>
+        <label style="display: flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; cursor: pointer;">
+          <input type="checkbox" id="opt-clobber">
+          Overwrite <span class="help-tooltip" title="Overwrite previous results instead of reusing cached samples.">?</span>
+        </label>
+      </div>
+    </div>
+
+    <!-- INI Config Editor (Advanced) -->
+    <details class="opt-collapse">
+      <summary>INI Configuration <span class="help-tooltip" title="Raw INI configuration passed to harmonic. Use the pair cards above to auto-generate, or edit directly.">?</span></summary>
+      <textarea id="opt-ini_content" rows="12" style="width: 100%;"></textarea>
+      <p style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.25rem;">
+        Required [INIT] section: a_bc, a_cb, per_bc, t_bc for each adjacent pair.
+        Optional [T14] for transit durations, [OUTER] for non-transiting outer planet.
+      </p>
+    </details>
+
+    <!-- MCMC Options -->
+    <details class="opt-collapse">
+      <summary>MCMC Sampler Options</summary>
+      <div class="opt-grid" style="margin-top: 0.75rem;">
+        <div class="opt">
+          <label for="opt-walkers">Walkers <span class="help-tooltip" title="Number of MCMC walkers. Default 100.">?</span></label>
+          <input type="number" id="opt-walkers" value="100" min="4" step="10">
+        </div>
+        <div class="opt">
+          <label for="opt-steps">Steps <span class="help-tooltip" title="Number of MCMC steps. Default 2000.">?</span></label>
+          <input type="number" id="opt-steps" value="2000" min="10" step="100">
+        </div>
+        <div class="opt">
+          <label for="opt-burn">Burn-in <span class="help-tooltip" title="Burn-in steps discarded before sampling. Default 1000.">?</span></label>
+          <input type="number" id="opt-burn" value="1000" min="0" step="100">
+        </div>
+        <div class="opt">
+          <label for="opt-thin">Thinning <span class="help-tooltip" title="Thin every N steps. Default 10.">?</span></label>
+          <input type="number" id="opt-thin" value="10" min="1" step="1">
+        </div>
+        <div class="opt">
+          <label for="opt-nproc">Processes <span class="help-tooltip" title="Number of parallel processes. Default 10.">?</span></label>
+          <input type="number" id="opt-nproc" value="10" min="1" step="1">
+        </div>
+        <div class="opt">
+          <label for="opt-seed">Random seed <span class="help-tooltip" title="Random seed for reproducibility. Default 42.">?</span></label>
+          <input type="number" id="opt-seed" value="42" step="1">
+        </div>
+      </div>
+    </details>
+  </div>
+</details>
+
+<!-- Run controls live outside the Configure fold, so collapsing the options does
+     not take the Run/Cancel/Delete buttons with it. Mirrors the always-visible
+     .run-panel on the photometry and transit-fit pages. -->
+<div class="phot-section run-panel" id="ttv-run-panel" style="display: none;">
+  <div id="opt-error" style="color: var(--red); font-size: 0.85rem; margin-top: 0.5rem;"></div>
+
+  <div class="run-actions" style="margin-top: 1rem;">
+    <div style="display:flex; align-items:center; gap:0.75rem;">
+      <label for="opt-run_name" style="font-size:0.9rem; font-weight:600; color:var(--text); white-space:nowrap;">Run name
+        <span class="help-tooltip" title="Label for this isolated TTV fit run. Blank becomes default.">?</span>
+      </label>
+      <input type="text" id="opt-run_name" placeholder="default" value=""
+             style="background: var(--input-bg); color: var(--text); border: 1.5px solid var(--border); border-radius: 6px; padding: 0.4rem 0.7rem; font-size: 0.9rem; min-width: 140px;">
+    </div>
+    <button class="btn primary" type="button" id="run-ttv-btn">▶ Run TTV Fit</button>
+    <button class="btn" type="button" id="cancel-btn" style="display:none;border-color:var(--red);color:var(--red);">■ Cancel</button>
+    <button class="btn" type="button" id="delete-btn" style="display:none;border-color:var(--red);color:var(--red);margin-left:auto;">🗑 Delete Results</button>
+  </div>
+
+  <p style="color: var(--text-dim); font-size: 0.8rem; margin-top: 1rem;">Or copy &amp; run the command in the terminal:</p>
+  <div class="run-cmd">
+    <code id="full-cmd">Calculating command…</code>
+    <button class="btn" type="button" id="copy-cmd">Copy</button>
+  </div>
+
+  <pre id="run-log"></pre>
+</div>
+
+<div id="delete-confirm-overlay">
+  <div class="modal-box">
+    <p style="margin-bottom:0.75rem;font-size:0.95rem;font-weight:600;">Delete TTV fit results</p>
+    <p id="delete-confirm-text" style="color:var(--text-dim);font-size:0.85rem;margin-bottom:1.5rem;line-height:1.5;">Delete TTV fit results? This cannot be undone.</p>
+    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+      <button class="btn" id="delete-cancel-btn">Cancel</button>
+      <button class="btn" id="delete-confirm-btn" style="border-color:var(--red);color:var(--red);">Delete</button>
+    </div>
   </div>
 </div>
 
-<!-- Fit Summary Panel -->
-<div id="results-card" class="card" style="margin-top: 1.5rem; display: none; padding: 1.5rem;">
-  <h2 style="margin-top: 0; color: var(--text);">Best-Fit Ephemeris Results</h2>
-  <div id="results-grid" style="display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));">
-    <!-- Filled on fit calculate response -->
-  </div>
+<div class="page-nav">
+  <a href="#" class="btn solid">Back to Top</a>
+  {# href/visibility set by updateCombinedUI(); this page picks targets client-side. #}
+  <a class="btn solid" id="target-page-link" href="#" style="display: none;">To Target</a>
+  <a href="/jobs" class="btn solid">To Jobs</a>
+  {# Revealed by updateViewUrl() once a saved view exists for the loaded targets. #}
+  <a class="btn solid" id="lco-schedule-link" href="#"
+     title="Open this saved view on the LCO scheduling &amp; download page"
+     style="display: none;">🔭 Schedule on LCO</a>
 </div>
 
 <style>
+  /* Page-specific styles only. Shared components (buttons, .opt* form fields,
+     .opt-section-title, .opt-collapse, details.adv, .run-panel, .run-cmd,
+     .phot-section, .phot-fold, .selector-group, .help-tooltip, #run-log,
+     .dl-row) live in /static/styles.css. */
   .planet-card {
     background: var(--surface2);
     border: 1px solid var(--border);
@@ -206,6 +345,11 @@
   }
   @keyframes spin {
     to { transform: rotate(360deg); }
+  }
+  .opt-collapse textarea {
+    width: 100%; background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 0.5rem;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; white-space: pre; tab-size: 2;
   }
 </style>
 
@@ -752,10 +896,25 @@
       document.getElementById('plot-card').style.display = 'none';
       const pSettings = document.getElementById('plot-planet-settings');
       if (pSettings) pSettings.style.display = 'none';
+      // Footer links live outside #action-section, so hide them explicitly.
+      const lcoLink = document.getElementById('lco-schedule-link');
+      if (lcoLink) lcoLink.style.display = 'none';
+      const targetLink = document.getElementById('target-page-link');
+      if (targetLink) targetLink.style.display = 'none';
+      hideTTVSection();
       fitResults = null;
       return;
     }
-    
+
+    // Several targets can be combined here; the footer link follows the first,
+    // matching the target the LCO link and the TTV run path are keyed on.
+    const targetLink = document.getElementById('target-page-link');
+    if (targetLink) {
+      const firstTarget = loadedTargets.slice().sort()[0];
+      targetLink.href = `/target?name=${encodeURIComponent(firstTarget)}`;
+      targetLink.style.display = 'inline-block';
+    }
+
     const combinedKey = getCombinedStorageKey();
     if (pendingViewState) {
       applyViewStateToStorage(pendingViewState, combinedKey);
@@ -792,6 +951,34 @@
     }
     scheduleComputeFit(0);
     scheduleSaveView(1200);
+    
+    // Show TTV section if targets are loaded and auto-populate planet letters and INI
+    const ttvSection = document.getElementById('ttv-section');
+    if (ttvSection) {
+      const firstTarget = loadedTargets.slice().sort()[0];
+      if (firstTarget) {
+        // showTTVSection reveals the fold and the run panel that now sits outside it.
+        showTTVSection(firstTarget);
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlInst = urlParams.get('inst') || '';
+        const urlDate = urlParams.get('date') || '';
+        const inst = urlInst || (combinedDatasets.length > 0 ? combinedDatasets[0].instrument : '');
+        const date = urlDate || (combinedDatasets.length > 0 ? combinedDatasets[0].date : '');
+        checkTTVOutputs(inst, date, firstTarget);
+      }
+      
+      // Auto-populate planet letters from combined planets and generate default INI
+      if (combinedPlanets.length > 0) {
+        const planetLettersInput = document.getElementById('opt-planet_letters');
+        const autoLetters = combinedPlanets.sort().join('');
+        if (planetLettersInput && planetLettersInput.value !== autoLetters) {
+          planetLettersInput.value = autoLetters;
+          rebuildINI(false);
+        } else {
+          rebuildINI(true);
+        }
+      }
+    }
   }
 
   // Render planet parameters inputs
@@ -824,6 +1011,27 @@
 
       const t0Val = storedOpts[p + '_t0'] !== undefined ? storedOpts[p + '_t0'] : (refEphem[p] ? refEphem[p].t0 : 2450000.0);
       const perVal = storedOpts[p + '_period'] !== undefined ? storedOpts[p + '_period'] : (refEphem[p] ? refEphem[p].period : 1.0);
+      
+      let durVal = storedOpts[p + '_duration'] !== undefined ? storedOpts[p + '_duration'] : null;
+      if (durVal === null) {
+        if (selectedSource === 'nasa' && combinedNasaEphem[p] && combinedNasaEphem[p].duration) {
+          durVal = combinedNasaEphem[p].duration / 24.0;
+        } else if (selectedSource === 'toi' && combinedToiEphem[p] && combinedToiEphem[p].duration) {
+          durVal = combinedToiEphem[p].duration / 24.0;
+        } else if (selectedSource.startsWith('dataset_')) {
+          const dsIdx = parseInt(selectedSource.split('_')[1]);
+          const ds = combinedDatasets[dsIdx];
+          if (ds && ds.planets_ephem && ds.planets_ephem[p] && ds.planets_ephem[p].duration) {
+            durVal = ds.planets_ephem[p].duration / 24.0;
+          }
+        }
+        if (durVal === null && refEphem[p] && refEphem[p].duration) {
+          durVal = refEphem[p].duration / 24.0;
+        }
+        if (durVal === null) {
+          durVal = 0.1;
+        }
+      }
 
       card.innerHTML = `
         <h3>
@@ -837,6 +1045,10 @@
           <div class="opt">
             <label>Period (days)</label>
             <input type="number" class="planet-period" step="any" value="${perVal}" onchange="saveTargetOpts(); scheduleComputeFit()">
+          </div>
+          <div class="opt">
+            <label>Transit Duration T14 (days)</label>
+            <input type="number" class="planet-duration" step="any" value="${parseFloat(durVal).toFixed(5)}" oninput="saveTargetOpts(); rebuildINI(true);" onchange="scheduleComputeFit()">
           </div>
           <div class="opt">
             <label>Source</label>
@@ -860,20 +1072,28 @@
     
     const t0Input = card.querySelector('.planet-t0');
     const periodInput = card.querySelector('.planet-period');
+    const durationInput = card.querySelector('.planet-duration');
     if (!t0Input || !periodInput) return;
     
     let newT0 = 2450000.0;
     let newPeriod = 1.0;
+    let newDuration = 0.1;
     
     if (val === 'nasa') {
       if (combinedNasaEphem[p]) {
         newT0 = combinedNasaEphem[p].t0;
         newPeriod = combinedNasaEphem[p].period;
+        if (combinedNasaEphem[p].duration !== undefined && combinedNasaEphem[p].duration !== null) {
+          newDuration = combinedNasaEphem[p].duration / 24.0;
+        }
       }
     } else if (val === 'toi') {
       if (combinedToiEphem[p]) {
         newT0 = combinedToiEphem[p].t0;
         newPeriod = combinedToiEphem[p].period;
+        if (combinedToiEphem[p].duration !== undefined && combinedToiEphem[p].duration !== null) {
+          newDuration = combinedToiEphem[p].duration / 24.0;
+        }
       }
     } else if (val.startsWith('dataset_')) {
       const dsIdx = parseInt(val.split('_')[1]);
@@ -881,13 +1101,20 @@
       if (ds && ds.planets_ephem && ds.planets_ephem[p]) {
         newT0 = ds.planets_ephem[p].t0;
         newPeriod = ds.planets_ephem[p].period;
+        if (ds.planets_ephem[p].duration !== undefined && ds.planets_ephem[p].duration !== null) {
+          newDuration = ds.planets_ephem[p].duration / 24.0;
+        }
       }
     }
     
     t0Input.value = newT0;
     periodInput.value = newPeriod;
+    if (durationInput) {
+      durationInput.value = parseFloat(newDuration).toFixed(5);
+    }
     
     saveTargetOpts();
+    rebuildINI(true);
     scheduleComputeFit();
     scheduleSaveView();
   };
@@ -901,6 +1128,10 @@
       const pl = card.getAttribute('data-planet');
       opts[pl + '_t0'] = card.querySelector('.planet-t0').value;
       opts[pl + '_period'] = card.querySelector('.planet-period').value;
+      const durInput = card.querySelector('.planet-duration');
+      if (durInput) {
+        opts[pl + '_duration'] = durInput.value;
+      }
       const selectEl = card.querySelector('.planet-source-select');
       if (selectEl) {
         opts[pl + '_source'] = selectEl.value;
@@ -1801,6 +2032,741 @@
     }
 
     return traces;
+  }
+
+  // ── TTV Fit Integration ─────────────────────────────────────────────────────
+
+  const TTV_STORAGE_KEY = 'muscat-ttv-opts';
+
+  function saveTTVOptions() {
+    const opts = {
+      run_name: document.getElementById('opt-run_name')?.value || '',
+      walkers: document.getElementById('opt-walkers')?.value || '100',
+      steps: document.getElementById('opt-steps')?.value || '2000',
+      burn: document.getElementById('opt-burn')?.value || '1000',
+      thin: document.getElementById('opt-thin')?.value || '10',
+      nproc: document.getElementById('opt-nproc')?.value || '10',
+      seed: document.getElementById('opt-seed')?.value || '42',
+      mstar: document.getElementById('opt-mstar')?.value || '1.0',
+      non_transiting_outer: document.getElementById('opt-non_transiting_outer')?.checked || false,
+      phase_offsets: document.getElementById('opt-phase_offsets')?.checked || false,
+      clobber: document.getElementById('opt-clobber')?.checked || false,
+      planet_letters: document.getElementById('opt-planet_letters')?.value || 'bc'
+    };
+    localStorage.setItem(TTV_STORAGE_KEY, JSON.stringify(opts));
+  }
+
+  function restoreTTVOptions() {
+    let opts = null;
+    try {
+      opts = JSON.parse(localStorage.getItem(TTV_STORAGE_KEY));
+    } catch(e) {}
+    if (!opts) return;
+    
+    if (document.getElementById('opt-run_name')) document.getElementById('opt-run_name').value = opts.run_name || '';
+    if (document.getElementById('opt-walkers')) document.getElementById('opt-walkers').value = opts.walkers || '100';
+    if (document.getElementById('opt-steps')) document.getElementById('opt-steps').value = opts.steps || '2000';
+    if (document.getElementById('opt-burn')) document.getElementById('opt-burn').value = opts.burn || '1000';
+    if (document.getElementById('opt-thin')) document.getElementById('opt-thin').value = opts.thin || '10';
+    if (document.getElementById('opt-nproc')) document.getElementById('opt-nproc').value = opts.nproc || '10';
+    if (document.getElementById('opt-seed')) document.getElementById('opt-seed').value = opts.seed || '42';
+    if (document.getElementById('opt-mstar')) document.getElementById('opt-mstar').value = opts.mstar || '1.0';
+    if (document.getElementById('opt-non_transiting_outer')) document.getElementById('opt-non_transiting_outer').checked = !!opts.non_transiting_outer;
+    if (document.getElementById('opt-phase_offsets')) document.getElementById('opt-phase_offsets').checked = !!opts.phase_offsets;
+    if (document.getElementById('opt-clobber')) document.getElementById('opt-clobber').checked = !!opts.clobber;
+    if (document.getElementById('opt-planet_letters')) document.getElementById('opt-planet_letters').value = opts.planet_letters || 'bc';
+  }
+
+  function refreshTTVCmd() {
+    const cmdEl = document.getElementById('full-cmd');
+    if (!cmdEl) return;
+    
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlInst = urlParams.get('inst') || '';
+    const urlDate = urlParams.get('date') || '';
+    const inst = urlInst || (combinedDatasets.length > 0 ? combinedDatasets[0].instrument : '');
+    const date = urlDate || (combinedDatasets.length > 0 ? combinedDatasets[0].date : '');
+    const target = loadedTargets[0] || '';
+    
+    if (!inst || !date || !target) {
+      cmdEl.textContent = 'Select target and loaded dataset to generate command';
+      return;
+    }
+    
+    const options = collectOptions();
+    
+    fetch('/api/ttv-fit/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        instrument: inst,
+        date: date,
+        target: target,
+        options: options
+      })
+    })
+    .then(r => r.json())
+    .then(res => {
+      if (res.ok && res.command) {
+        cmdEl.textContent = res.command;
+      }
+    })
+    .catch(() => {});
+  }
+  
+  function showTTVSection(target) {
+    const section = document.getElementById('ttv-section');
+    if (section) section.style.display = 'block';
+    const runPanel = document.getElementById('ttv-run-panel');
+    if (runPanel) runPanel.style.display = 'block';
+    restoreTTVOptions();
+    refreshTTVCmd();
+  }
+
+  function hideTTVSection() {
+    const section = document.getElementById('ttv-section');
+    if (section) section.style.display = 'none';
+    // The run panel and results are siblings now, so neither hides along with it.
+    const runPanel = document.getElementById('ttv-run-panel');
+    if (runPanel) runPanel.style.display = 'none';
+    hideTTVOutputs();
+  }
+
+  window.addEventListener('load', function() {
+    const runBtn = document.getElementById('run-ttv-btn');
+    if (runBtn) {
+      runBtn.addEventListener('click', function() {
+        const planetLetters = document.getElementById('opt-planet_letters').value;
+        if (!planetLetters) {
+          showMessageModal('Planet Letters Required', 'Please enter planet letters');
+          return;
+        }
+        
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlInst = urlParams.get('inst') || '';
+        const urlDate = urlParams.get('date') || '';
+        const inst = urlInst || (combinedDatasets.length > 0 ? combinedDatasets[0].instrument : '');
+        const date = urlDate || (combinedDatasets.length > 0 ? combinedDatasets[0].date : '');
+        const target = loadedTargets[0] || '';
+        
+        if (!inst || !date || !target) {
+          showMessageModal('Missing Path Information', 'No completed datasets found to define a run path. Please select/load a target first.');
+          return;
+        }
+        
+        const options = collectOptions();
+        if (!options.csv_content) {
+          showMessageModal('No Transit Time Data', 'No transit time data. Please check at least one dataset to fit.');
+          return;
+        }
+        
+        if (runBtn) runBtn.disabled = true;
+        const logEl = document.getElementById('run-log');
+        logEl.style.display = 'block';
+        logEl.textContent = 'Launching TTV fitting run…';
+        
+        const runNameVal = (document.getElementById('opt-run_name')?.value || '').trim();
+        const job = { inst: inst, date: date, target: target, run_name: runNameVal };
+        localStorage.setItem(JOB_KEY, JSON.stringify(job));
+        
+        fetch('/api/ttv-fit/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            instrument: inst,
+            date: date,
+            target: target,
+            options: options
+          })
+        })
+        .then(r => r.json())
+        .then(res => {
+          if (!res.ok) {
+            localStorage.removeItem(JOB_KEY);
+            if (runBtn) runBtn.disabled = false;
+            logEl.textContent = 'Error: ' + (res.error || 'failed to start');
+            return;
+          }
+          if (res.queued) {
+            logEl.textContent = '⏳ Queued — waiting for the running fit to finish…';
+          }
+          poller.stop();
+          pollTTVStatus();
+          // Light up the site-wide loading indicator immediately for this run.
+          if (window.MuscatJobIndicator) window.MuscatJobIndicator.refresh();
+        })
+        .catch(err => {
+          localStorage.removeItem(JOB_KEY);
+          if (runBtn) runBtn.disabled = false;
+          logEl.textContent = 'Error: ' + err.message;
+          if (window.MuscatJobIndicator) window.MuscatJobIndicator.refresh();
+        });
+      });
+    }
+
+    const cancelBtn = document.getElementById('cancel-btn');
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', function() {
+        let saved = null;
+        try {
+          saved = JSON.parse(localStorage.getItem(JOB_KEY));
+        } catch(e) {}
+        if (!saved || !saved.inst) return;
+        
+        cancelBtn.disabled = true;
+        const logEl = document.getElementById('run-log');
+        logEl.textContent += '\n\n■ cancelling…';
+        
+        fetch('/api/ttv-fit/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            instrument: saved.inst,
+            date: saved.date,
+            target: saved.target,
+            run_name: saved.run_name || ''
+          })
+        })
+        .then(r => r.json())
+        .then(() => {
+          cancelBtn.disabled = false;
+          poller.stop();
+          pollTTVStatus();
+        })
+        .catch(() => {
+          cancelBtn.disabled = false;
+        });
+      });
+    }
+
+    const deleteBtn = document.getElementById('delete-btn');
+    const deleteOverlay = document.getElementById('delete-confirm-overlay');
+    const deleteConfirmBtn = document.getElementById('delete-confirm-btn');
+    const deleteCancelBtn = document.getElementById('delete-cancel-btn');
+    
+    if (deleteBtn && deleteOverlay) {
+      deleteBtn.addEventListener('click', () => {
+        // Name the run being deleted: with several runs stored, "Delete results"
+        // alone does not say which one goes.
+        const textEl = document.getElementById('delete-confirm-text');
+        if (textEl) {
+          const run = selectedTTVRun || slugifyRunName(document.getElementById('opt-run_name')?.value || '');
+          textEl.textContent = `Delete TTV fit results for run "${run}"? This cannot be undone.`;
+        }
+        deleteOverlay.classList.add('visible');
+      });
+    }
+
+    if (deleteCancelBtn && deleteOverlay) {
+      deleteCancelBtn.addEventListener('click', () => {
+        deleteOverlay.classList.remove('visible');
+      });
+    }
+
+    if (deleteConfirmBtn && deleteOverlay) {
+      deleteConfirmBtn.addEventListener('click', () => {
+        deleteOverlay.classList.remove('visible');
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlInst = urlParams.get('inst') || '';
+        const urlDate = urlParams.get('date') || '';
+        const inst = urlInst || (combinedDatasets.length > 0 ? combinedDatasets[0].instrument : '');
+        const date = urlDate || (combinedDatasets.length > 0 ? combinedDatasets[0].date : '');
+        const target = loadedTargets[0] || '';
+        // Delete the run whose results are on screen, not whatever label happens
+        // to be typed in the run-name box.
+        const runNameVal = selectedTTVRun || (document.getElementById('opt-run_name')?.value || '').trim();
+
+        if (!inst || !date || !target) return;
+
+        if (deleteBtn) {
+          deleteBtn.disabled = true;
+          deleteBtn.textContent = 'Deleting…';
+        }
+        
+        fetch('/api/ttv-fit/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            instrument: inst,
+            date: date,
+            target: target,
+            run_name: runNameVal
+          })
+        })
+        .then(r => r.json())
+        .then(res => {
+          if (res.ok) {
+            window.location.reload();
+          } else {
+            showMessageModal('Delete Failed', 'Delete failed: ' + (res.error || 'unknown error'));
+            if (deleteBtn) {
+              deleteBtn.disabled = false;
+              deleteBtn.textContent = '🗑 Delete Results';
+            }
+          }
+        })
+        .catch(err => {
+          showMessageModal('Delete Failed', 'Delete failed: ' + err.message);
+          if (deleteBtn) {
+            deleteBtn.disabled = false;
+            deleteBtn.textContent = '🗑 Delete Results';
+          }
+        });
+      });
+    }
+
+    const planetLettersInput = document.getElementById('opt-planet_letters');
+    if (planetLettersInput) {
+      planetLettersInput.addEventListener('change', function() {
+        rebuildINI(false);
+      });
+    }
+
+    const copyBtn = document.getElementById('copy-cmd');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', function () {
+        const cmdEl = document.getElementById('full-cmd');
+        const text = cmdEl ? cmdEl.textContent : '';
+        if (!text || text.startsWith('Select target') || text.startsWith('Calculating')) return;
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(function () {
+            copyBtn.textContent = 'Copied';
+            setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1500);
+          }).catch(function () {
+            fallbackCopy(text);
+          });
+        } else {
+          fallbackCopy(text);
+        }
+      });
+    }
+
+    function fallbackCopy(text) {
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      textArea.style.position = "fixed";
+      textArea.style.top = "0";
+      textArea.style.left = "0";
+      textArea.style.width = "2em";
+      textArea.style.height = "2em";
+      textArea.style.padding = "0";
+      textArea.style.border = "none";
+      textArea.style.outline = "none";
+      textArea.style.boxShadow = "none";
+      textArea.style.background = "transparent";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      try {
+        document.execCommand('copy');
+        copyBtn.textContent = 'Copied';
+        setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1500);
+      } catch (err) {}
+      document.body.removeChild(textArea);
+    }
+
+    // The run-name field lives in the run panel, outside the Configure fold, so
+    // both roots must be wired up for persistence and command refresh.
+    ['ttv-section', 'ttv-run-panel'].forEach(rootId => {
+      const root = document.getElementById(rootId);
+      if (!root) return;
+      root.querySelectorAll('input, select, textarea').forEach(el => {
+        el.addEventListener('input', function() {
+          saveTTVOptions();
+          refreshTTVCmd();
+        });
+        el.addEventListener('change', function() {
+          saveTTVOptions();
+          refreshTTVCmd();
+        });
+      });
+    });
+
+    checkSavedTTVJob();
+  });
+
+  const JOB_KEY = 'muscat-ttv-job';
+  var poller = window.MuscatJobPolling.createTimeoutPoller(pollTTVStatus);
+
+  function pollTTVStatus() {
+    let saved = null;
+    try {
+      saved = JSON.parse(localStorage.getItem(JOB_KEY));
+    } catch(e) {}
+    if (!saved || !saved.inst || !saved.target) {
+      poller.stop();
+      return;
+    }
+    doPoll(saved.inst, saved.date, saved.target, saved.run_name || '');
+  }
+
+  function doPoll(inst, date, target, runName = '') {
+    if (!inst || !date || !target) return;
+    const qs = `inst=${encodeURIComponent(inst)}&date=${encodeURIComponent(date)}&target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}`;
+    
+    const runBtn = document.getElementById('run-ttv-btn');
+    const cancelBtn = document.getElementById('cancel-btn');
+    const deleteBtn = document.getElementById('delete-btn');
+    const logEl = document.getElementById('run-log');
+    
+    fetch('/api/ttv-fit/status?' + qs)
+      .then(r => r.json())
+      .then(s => {
+        if (s.log) {
+          logEl.style.display = 'block';
+          logEl.textContent = s.log;
+          logEl.scrollTop = logEl.scrollHeight;
+        }
+        
+        if (s.state === 'running' || s.state === 'cancelling') {
+          if (runBtn) runBtn.disabled = true;
+          if (cancelBtn) cancelBtn.style.display = 'inline-block';
+          if (deleteBtn) deleteBtn.style.display = 'none';
+          poller.stop();
+          poller.schedule(2000);
+        } else if (s.state === 'done') {
+          poller.stop();
+          localStorage.removeItem(JOB_KEY);
+          if (runBtn) runBtn.disabled = false;
+          if (cancelBtn) cancelBtn.style.display = 'none';
+          if (deleteBtn) deleteBtn.style.display = 'inline-block';
+          logEl.textContent += '\n\n✓ done — reloading…';
+          if (typeof window.showLoading === 'function') window.showLoading('Reloading…');
+          setTimeout(() => { window.location.reload(); }, 1200);
+        } else if (s.state === 'error') {
+          poller.stop();
+          localStorage.removeItem(JOB_KEY);
+          if (runBtn) runBtn.disabled = false;
+          if (cancelBtn) cancelBtn.style.display = 'none';
+          if (deleteBtn) deleteBtn.style.display = 'inline-block';
+          logEl.textContent += '\n\n✗ fit run exited with code ' + s.returncode;
+          if (window.MuscatJobIndicator) window.MuscatJobIndicator.refresh();
+        } else if (s.state === 'cancelled') {
+          poller.stop();
+          localStorage.removeItem(JOB_KEY);
+          if (runBtn) runBtn.disabled = false;
+          if (cancelBtn) cancelBtn.style.display = 'none';
+          if (deleteBtn) deleteBtn.style.display = 'none';
+          logEl.textContent += '\n\n■ cancelled';
+          if (window.MuscatJobIndicator) window.MuscatJobIndicator.refresh();
+        } else if (s.state === 'pending') {
+          if (runBtn) runBtn.disabled = true;
+          if (cancelBtn) cancelBtn.style.display = 'inline-block';
+          if (deleteBtn) deleteBtn.style.display = 'none';
+          if (!s.log) {
+            logEl.style.display = 'block';
+            logEl.textContent = '⏳ Queued — waiting for running fit to finish…';
+          }
+          poller.stop();
+          poller.schedule(7000);
+        } else {
+          poller.stop();
+          localStorage.removeItem(JOB_KEY);
+          if (runBtn) runBtn.disabled = false;
+          if (cancelBtn) cancelBtn.style.display = 'none';
+          checkTTVOutputs(inst, date, target);
+          if (window.MuscatJobIndicator) window.MuscatJobIndicator.refresh();
+        }
+      })
+      .catch(err => {
+        poller.stop();
+        poller.schedule(5000);
+      });
+  }
+
+  function checkSavedTTVJob() {
+    let saved = null;
+    try {
+      saved = JSON.parse(localStorage.getItem(JOB_KEY));
+    } catch(e) {}
+    if (!saved || !saved.inst || !saved.target) return;
+    
+    if (loadedTargets.includes(saved.target)) {
+      pollTTVStatus();
+    }
+  }
+
+  // Mirrors jobs.slugify_run_name(): the run label the user types is stored on
+  // disk (and returned by /api/ttv-fit/runs) as a slug, so the two must be
+  // compared in slug space.
+  function slugifyRunName(runName) {
+    const s = String(runName || '').trim().toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    return s.slice(0, 40).replace(/^_+|_+$/g, '') || 'default';
+  }
+
+  // Run whose results are currently displayed. Also the run that Delete acts on.
+  var selectedTTVRun = null;
+
+  function checkTTVOutputs(inst, date, target) {
+    if (!inst || !date || !target) return;
+    const qs = `inst=${encodeURIComponent(inst)}&date=${encodeURIComponent(date)}&target=${encodeURIComponent(target)}`;
+
+    fetch('/api/ttv-fit/runs?' + qs)
+      .then(r => r.json())
+      .then(res => {
+        const runs = (res.ok && res.runs) ? res.runs.map(r => r.run_name) : [];
+        if (runs.length === 0) {
+          const deleteBtn = document.getElementById('delete-btn');
+          if (deleteBtn) deleteBtn.style.display = 'none';
+          hideTTVOutputs();
+          return;
+        }
+        // Keep the current chip if it survived; otherwise prefer the run the
+        // user has typed in, else the newest (the API sorts newest-first).
+        let sel = selectedTTVRun;
+        if (!sel || runs.indexOf(sel) === -1) {
+          const typed = slugifyRunName(document.getElementById('opt-run_name')?.value || '');
+          sel = runs.indexOf(typed) !== -1 ? typed : runs[0];
+        }
+        loadTTVRunOutputs(inst, date, target, sel, runs);
+      })
+      .catch(e => {
+        const deleteBtn = document.getElementById('delete-btn');
+        if (deleteBtn) deleteBtn.style.display = 'none';
+      });
+  }
+
+  function loadTTVRunOutputs(inst, date, target, runName, runs) {
+    const qs = `inst=${encodeURIComponent(inst)}&date=${encodeURIComponent(date)}&target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}`;
+    const deleteBtn = document.getElementById('delete-btn');
+
+    return fetch('/api/ttv-fit/outputs?' + qs)
+      .then(r => r.json())
+      .then(res => {
+        if (res.ok && res.outputs && res.outputs.has_any) {
+          selectedTTVRun = runName;
+          if (deleteBtn) deleteBtn.style.display = 'inline-block';
+          renderTTVOutputs(inst, date, target, runName, res.outputs, runs);
+        } else {
+          if (deleteBtn) deleteBtn.style.display = 'none';
+          hideTTVOutputs();
+        }
+      })
+      .catch(e => {
+        if (deleteBtn) deleteBtn.style.display = 'none';
+      });
+  }
+
+  function renderTTVOutputs(inst, date, target, runName, outputs, runs) {
+    const container = document.getElementById('ttv-outputs-container');
+    if (!container) return;
+
+    let html = '<h2>TTV Fit Results <span style="font-size: 0.8rem; color: var(--text-dim); font-weight: 400;">— ' +
+               (runName || 'default') + '</span></h2>';
+
+    // Chips to switch between stored runs, mirroring the transit-fit page.
+    if (runs && runs.length > 1) {
+      html += '<div class="site-chips"><span class="site-label">Run:</span>';
+      runs.forEach(r => {
+        const active = r === runName ? ' active' : '';
+        html += `<button type="button" class="site-chip${active}" data-run="${r}">${r}</button>`;
+      });
+      html += '</div>';
+    }
+
+    if (outputs.plots && outputs.plots.length > 0) {
+      html += '<div class="fig-grid" style="margin-bottom: 1.5rem;">';
+      outputs.plots.forEach(p => {
+        const imgUrl = `/api/ttv-fit/output-file?inst=${encodeURIComponent(inst)}&date=${encodeURIComponent(date)}&target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}&file=${encodeURIComponent(p.file)}&v=${p.version}`;
+        html += `
+          <figure class="fig">
+            <figcaption class="cap">
+              <span>${p.file.replace(/\.png$/, '')} (Created: ${p.created_at})</span>
+            </figcaption>
+            <a href="${imgUrl}" target="_blank">
+              <img draggable="false" loading="lazy" src="${imgUrl}" alt="${p.file}">
+            </a>
+          </figure>
+        `;
+      });
+      html += '</div>';
+    }
+    
+    const files = [];
+    if (outputs.has_data_csv) files.push('data.csv');
+    if (outputs.has_config_ini) files.push('config.ini');
+    if (outputs.has_log) files.push('harmonic.log');
+    if (outputs.has_samples) files.push('samples.csv.gz');
+    if (outputs.extra_files) {
+      outputs.extra_files.forEach(f => {
+        if (!files.includes(f)) files.push(f);
+      });
+    }
+    
+    if (files.length > 0) {
+      html += '<div class="dl-row">';
+      files.forEach(f => {
+        const fileUrl = `/api/ttv-fit/output-file?inst=${encodeURIComponent(inst)}&date=${encodeURIComponent(date)}&target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}&file=${encodeURIComponent(f)}`;
+        html += `<a href="${fileUrl}" target="_blank">📁 ${f}</a>`;
+      });
+
+      const zipUrl = `/api/ttv-fit/download-all?inst=${encodeURIComponent(inst)}&date=${encodeURIComponent(date)}&target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}`;
+      html += `<a href="${zipUrl}" download style="font-weight: 600; color: var(--accent2);">📦 Download all (.zip)</a>`;
+      html += '</div>';
+    }
+    
+    container.innerHTML = html;
+    container.style.display = 'block';
+
+    container.querySelectorAll('.site-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const run = chip.getAttribute('data-run');
+        if (run && run !== selectedTTVRun) loadTTVRunOutputs(inst, date, target, run, runs);
+      });
+    });
+  }
+
+  function hideTTVOutputs() {
+    selectedTTVRun = null;
+    const container = document.getElementById('ttv-outputs-container');
+    if (container) {
+      container.innerHTML = '';
+      container.style.display = 'none';
+    }
+  }
+
+  function buildCSVContent() {
+    if (!fitResults) return '';
+    const letters = (document.getElementById('opt-planet_letters').value || '').toLowerCase().split('').sort();
+    if (letters.length === 0) return '';
+    
+    let csv = 'planet,epoch,tc,tc_unc\n';
+    let hasPoints = false;
+    for (const pl in fitResults) {
+      const plLower = pl.toLowerCase();
+      const idx = letters.indexOf(plLower);
+      if (idx === -1) continue;
+      
+      const res = fitResults[pl];
+      if (res && res.points) {
+        res.points.forEach(p => {
+          if (p.checked && p.tc_unc !== null && p.tc_unc !== undefined) {
+            csv += `${idx},${p.epoch},${p.bjd},${p.tc_unc}\n`;
+            hasPoints = true;
+          }
+        });
+      }
+    }
+    return hasPoints ? csv : '';
+  }
+
+  function collectOptions() {
+    const csv = buildCSVContent();
+    const ini = document.getElementById('opt-ini_content').value;
+    const walkers = parseInt(document.getElementById('opt-walkers').value) || 100;
+    const steps = parseInt(document.getElementById('opt-steps').value) || 2000;
+    const burn = parseInt(document.getElementById('opt-burn').value) || 1000;
+    const thin = parseInt(document.getElementById('opt-thin').value) || 10;
+    const nproc = parseInt(document.getElementById('opt-nproc').value) || 10;
+    const seed = parseInt(document.getElementById('opt-seed').value) || 42;
+    const mstar = parseFloat(document.getElementById('opt-mstar').value) || 1.0;
+    const non_transiting_outer = document.getElementById('opt-non_transiting_outer').checked;
+    const phase_offsets = document.getElementById('opt-phase_offsets').checked;
+    const clobber = document.getElementById('opt-clobber').checked;
+    const planet_letters = document.getElementById('opt-planet_letters').value;
+    const run_name = (document.getElementById('opt-run_name')?.value || '').trim();
+    
+    return {
+      csv_content: csv,
+      ini_content: ini,
+      walkers: walkers,
+      steps: steps,
+      burn: burn,
+      thin: thin,
+      nproc: nproc,
+      seed: seed,
+      mstar: mstar,
+      non_transiting_outer: non_transiting_outer,
+      phase_offsets: phase_offsets,
+      clobber: clobber,
+      planet_letters: planet_letters,
+      run_name: run_name
+    };
+  }
+
+  function rebuildINI(onlyT14 = false) {
+    const textarea = document.getElementById('opt-ini_content');
+    const letters = (document.getElementById('opt-planet_letters').value || '').split('').sort();
+    if (letters.length < 2) {
+      textarea.value = '';
+      return;
+    }
+    
+    let initSection = '';
+    
+    if (onlyT14 && textarea.value) {
+      // Extract existing sections other than [T14]
+      const lines = textarea.value.split('\n');
+      let currentSection = '';
+      const sectionLines = {};
+      
+      lines.forEach(line => {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+          currentSection = trimmed.slice(1, -1).toUpperCase();
+          if (!sectionLines[currentSection]) sectionLines[currentSection] = [];
+        } else if (currentSection && currentSection !== 'T14') {
+          if (!sectionLines[currentSection]) sectionLines[currentSection] = [];
+          sectionLines[currentSection].push(line);
+        }
+      });
+      
+      if (sectionLines.INIT && sectionLines.INIT.length > 0) {
+        initSection = '[INIT]\n' + sectionLines.INIT.join('\n').trim() + '\n';
+      }
+      
+      for (const sect in sectionLines) {
+        if (sect !== 'INIT' && sect !== 'T14' && sectionLines[sect].length > 0) {
+          initSection += `\n[${sect}]\n` + sectionLines[sect].join('\n').trim() + '\n';
+        }
+      }
+    }
+    
+    if (!initSection) {
+      initSection = '[INIT]\n';
+      for (let i = 0; i < letters.length - 1; i++) {
+        const p1 = letters[i];
+        const p2 = letters[i + 1];
+        const a1 = '0.02';
+        const a2 = '0.02';
+        const per = '1000.0';
+        
+        let t = '2450000.0';
+        if (combinedRefEphem[p1] && combinedRefEphem[p1].t0) {
+          t = combinedRefEphem[p1].t0.toFixed(2);
+        } else if (combinedDatasets.length > 0 && combinedDatasets[0].planets_ephem && combinedDatasets[0].planets_ephem[p1]) {
+          t = combinedDatasets[0].planets_ephem[p1].t0?.toFixed(2) || '2450000.0';
+        }
+        
+        initSection += `a_${p1}${p2} = ${a1}\n`;
+        initSection += `a_${p2}${p1} = ${a2}\n`;
+        initSection += `per_${p1}${p2} = ${per}\n`;
+        initSection += `t_${p1}${p2} = ${t}\n`;
+      }
+    }
+    
+    const t14Values = {};
+    for (const pl of letters) {
+      const card = document.querySelector(`.planet-card[data-planet="${pl}"]`);
+      const val = card ? card.querySelector('.planet-duration')?.value : null;
+      if (val && val !== '0' && val !== '') {
+        t14Values[pl] = val;
+      }
+    }
+    
+    let t14Section = '';
+    if (Object.keys(t14Values).length > 0) {
+      t14Section = '\n[T14]\n';
+      for (const pl of letters) {
+        if (t14Values[pl]) {
+          t14Section += `t14_${pl} = ${t14Values[pl]}\n`;
+        }
+      }
+    }
+    
+    textarea.value = initSection.trim() + '\n' + t14Section.trim();
   }
 </script>
 {% endblock %}

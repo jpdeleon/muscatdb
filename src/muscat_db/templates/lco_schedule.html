@@ -1914,14 +1914,19 @@
     window.location.href = url;
   });
 
-  function prefillFromView() {
-    var params = new URLSearchParams(window.location.search);
+  // An explicit ?target= is a deliberate navigation from another page (ephemeris,
+  // target, …) and must win over the target restored from localStorage. Returns
+  // true when it replaced the restored one, so the caller knows the restored
+  // ephemeris fields belong to a different target and must not be reused.
+  function prefillTargetFromQuery(params) {
     var target = params.get('target');
-    if (target && !val('sch-target')) {
-      setVal('sch-target', target);
-      saveOptions();
-      refreshTargetFields({ silent: true });
-    }
+    if (!target || val('sch-target') === target) return false;
+    setVal('sch-target', target);
+    saveOptions();
+    return true;
+  }
+
+  function prefillFromView(params) {
     var slug = params.get('view');
     if (!slug) return;
     fetch('/api/ephemeris/view/' + encodeURIComponent(slug)).then(function (r) { return r.json(); }).then(function (d) {
@@ -1941,8 +1946,15 @@
   applyKind();
   updateScheduleFields();
   restoreScheduleState();
-  if (val('sch-target')) refreshTargetFields({ silent: true, isInitialLoad: true });
-  prefillFromView();
+  // Read the query string once: saveOptions() rewrites the URL to pathname+hash,
+  // dropping ?target=/?view= the moment the target below is applied.
+  var urlParams = new URLSearchParams(window.location.search);
+  // Apply ?target= before the first lookup so only one fetch runs, against the
+  // right target. isInitialLoad must be false when it replaced the restored
+  // target, otherwise the previous target's t0/period/duration would survive.
+  var targetFromQuery = prefillTargetFromQuery(urlParams);
+  if (val('sch-target')) refreshTargetFields({ silent: true, isInitialLoad: !targetFromQuery });
+  prefillFromView(urlParams);
 })();
 </script>
 {% endblock %}
