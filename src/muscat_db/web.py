@@ -393,12 +393,15 @@ def target_page(name: str = ""):
         target_tic_id = _target_tic_id(norm_name, datasets)
 
         has_jwst_data = False
+        has_spectra_data = False
         try:
             target_aliases = _resolve_all_aliases(norm_name, datasets)
             jwst_aliases = _load_jwst_targets_aliases()
             has_jwst_data = bool(target_aliases & jwst_aliases)
+            spectra_aliases = _load_spectra_targets_aliases()
+            has_spectra_data = bool(target_aliases & spectra_aliases)
         except Exception as e:
-            logger.warning("failed to check jwst membership for %s: %s", norm_name, e)
+            logger.warning("failed to check membership for %s: %s", norm_name, e)
 
         html = jinja.get_template("target.html").render(
             target_name=norm_name,
@@ -408,6 +411,7 @@ def target_page(name: str = ""):
             target_tic_id=target_tic_id,
             exofop_target_id=target_tic_id or norm_name,
             has_jwst_data=has_jwst_data,
+            has_spectra_data=has_spectra_data,
         )
 
         _index_cache[cache_key] = (key, html)
@@ -1496,6 +1500,33 @@ def _matched_jwst_targets(target_name: str, datasets: list[dict] | None = None) 
     return matched
 
 
+_spectra_aliases_cache: set[str] = set()
+
+
+def _load_spectra_targets_aliases() -> set[str]:
+    """Load all aliases for the spectra targets."""
+    global _spectra_aliases_cache
+    if _spectra_aliases_cache:
+        return _spectra_aliases_cache
+    targets = _load_spectra_targets()
+    aliases = set()
+    for t in targets:
+        aliases.update(_target_lookup_aliases(t))
+    _spectra_aliases_cache = aliases
+    return _spectra_aliases_cache
+
+
+def _matched_spectra_targets(target_name: str, datasets: list[dict] | None = None) -> list[str]:
+    """Return actual pl_name values from spectra_targets.csv matching target's aliases."""
+    target_aliases = _resolve_all_aliases(target_name, datasets)
+    spectra_targets = _load_spectra_targets()
+    matched = []
+    for t in spectra_targets:
+        if _target_lookup_aliases(t) & target_aliases:
+            matched.append(t)
+    return matched
+
+
 @target_router.get("/jwst", response_class=JSONResponse)
 @app.get("/api/target/jwst", response_class=JSONResponse, deprecated=True)
 def api_target_jwst(name: str = ""):
@@ -1590,6 +1621,93 @@ def api_target_jwst(name: str = ""):
             })
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"Failed to query JWST observations: {str(e)}"}, status_code=500)
+
+
+@target_router.get("/spectra", response_class=JSONResponse)
+@app.get("/api/target/spectra", response_class=JSONResponse, deprecated=True)
+def api_target_spectra(name: str = ""):
+    norm_name = _normalize_target_name(name)
+    if not norm_name:
+        return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
+    
+    db = _db_path()
+    datasets, _last_updated = _get_datasets_for_normalized_target(db, norm_name)
+    matched = _matched_spectra_targets(norm_name, datasets)
+    
+    if not matched:
+        return JSONResponse({
+            "ok": True,
+            "target": norm_name,
+            "spectra": {
+                "columns": [],
+                "rows": []
+            }
+        })
+    
+    import urllib.request
+    import urllib.parse
+    import csv
+    import io
+    
+    names_str = ", ".join("'" + n.replace("'", "''") + "'" for n in matched)
+    query = f"SELECT spec_type, facility, instrument, minwavelng, maxwavelng, num_datapoints, authors, bibcode FROM spectra WHERE pl_name IN ({names_str})"
+    params = {
+        "query": query,
+        "format": "csv"
+    }
+    url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "MuSCAT-db/0.1.0"
+    })
+    
+    try:
+        with urllib.request.urlopen(req, timeout=15.0) as response:
+            content = response.read().decode("utf-8")
+            f = io.StringIO(content)
+            reader = csv.DictReader(f)
+            col_map = {
+                "spec_type": "Type",
+                "facility": "Facility",
+                "instrument": "Instrument",
+                "minwavelng": "Min Wavelng (μm)",
+                "maxwavelng": "Max Wavelng (μm)",
+                "num_datapoints": "# Points",
+                "authors": "Authors",
+                "bibcode": "Bibcode"
+            }
+            columns = ["Type", "Facility", "Instrument", "Min Wavelng (μm)", "Max Wavelng (μm)", "# Points", "Authors", "Bibcode"]
+            rows = []
+            for row in reader:
+                if not row or "ERROR" in row:
+                    continue
+                mapped_row = {}
+                for orig_col, new_col in col_map.items():
+                    val = row.get(orig_col)
+                    if val is None:
+                        val = ""
+                    else:
+                        val = val.strip()
+                        if orig_col in ("minwavelng", "maxwavelng"):
+                            try:
+                                float_val = float(val)
+                                val = f"{float_val:.4f}"
+                            except ValueError:
+                                pass
+                    mapped_row[new_col] = val
+                rows.append(mapped_row)
+            
+            rows.sort(key=lambda r: (r.get("Type", ""), r.get("Authors", "")))
+            
+            return JSONResponse({
+                "ok": True,
+                "target": norm_name,
+                "spectra": {
+                    "columns": columns,
+                    "rows": rows
+                }
+            })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"Failed to query spectra observations: {str(e)}"}, status_code=500)
 
 
 # ── NASA Exoplanet Archive (NExScI) composite catalog ──────────────────────
