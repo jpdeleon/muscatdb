@@ -392,6 +392,14 @@ def target_page(name: str = ""):
         datasets, last_updated = _get_datasets_for_normalized_target(db, norm_name)
         target_tic_id = _target_tic_id(norm_name, datasets)
 
+        has_jwst_data = False
+        try:
+            target_aliases = _resolve_all_aliases(norm_name, datasets)
+            jwst_aliases = _load_jwst_targets_aliases()
+            has_jwst_data = bool(target_aliases & jwst_aliases)
+        except Exception as e:
+            logger.warning("failed to check jwst membership for %s: %s", norm_name, e)
+
         html = jinja.get_template("target.html").render(
             target_name=norm_name,
             datasets=datasets,
@@ -399,6 +407,7 @@ def target_page(name: str = ""):
             harps_match_arcsec=_HARPS_MATCH_ARCSEC,
             target_tic_id=target_tic_id,
             exofop_target_id=target_tic_id or norm_name,
+            has_jwst_data=has_jwst_data,
         )
 
         _index_cache[cache_key] = (key, html)
@@ -616,6 +625,7 @@ def _harps_source_cache_key() -> tuple:
 
 _TOI_CATALOG_PATH = HERE.parent.parent / "data" / "TOIs.csv"
 _NEXSCI_CATALOG_PATH = HERE.parent.parent / "data" / "nexsci_pscomppars.csv"
+_JWST_TARGETS_PATH = HERE.parent.parent / "data" / "jwst_targets.csv"
 
 
 def _path_cache_part(path: pathlib.Path) -> tuple:
@@ -628,7 +638,7 @@ def _path_cache_part(path: pathlib.Path) -> tuple:
 
 def _catalog_source_cache_key() -> tuple:
     """Cache component for target-page catalog-coordinate fallbacks."""
-    return (_path_cache_part(_TOI_CATALOG_PATH), _path_cache_part(_NEXSCI_CATALOG_PATH))
+    return (_path_cache_part(_TOI_CATALOG_PATH), _path_cache_part(_NEXSCI_CATALOG_PATH), _path_cache_part(_JWST_TARGETS_PATH))
 
 
 def _load_harps_targets() -> tuple[list[dict], str]:
@@ -1349,7 +1359,6 @@ def toi_page():
     )
 
 
-_JWST_TARGETS_PATH = HERE.parent.parent / "data" / "jwst_targets.csv"
 _jwst_targets_cache: set[str] = set()
 
 
@@ -1369,6 +1378,180 @@ def _load_jwst_targets() -> set[str]:
         logger.warning("failed to read JWST targets catalog %s", path, exc_info=True)
         return set()
     return _jwst_targets_cache
+
+
+_jwst_aliases_cache: set[str] = set()
+
+
+def _load_jwst_targets_aliases() -> set[str]:
+    """Load all aliases for the JWST targets."""
+    global _jwst_aliases_cache
+    if _jwst_aliases_cache:
+        return _jwst_aliases_cache
+    targets = _load_jwst_targets()
+    aliases = set()
+    for t in targets:
+        aliases.update(_target_lookup_aliases(t))
+    _jwst_aliases_cache = aliases
+    return _jwst_aliases_cache
+
+
+def _resolve_all_aliases(target_name: str, datasets: list[dict] | None = None) -> set[str]:
+    """Resolve all possible aliases for a given target name, using TOI and NExScI catalogs."""
+    names = [target_name]
+    names.extend(str(ds.get("object") or "") for ds in (datasets or []))
+    aliases: set[str] = set()
+    for name in names:
+        aliases.update(_target_lookup_aliases(name))
+        
+    try:
+        cat = _load_toi_catalog()["data"]
+        n = len(cat.get("toi", []))
+        for i in range(n):
+            toi = str((cat.get("toi") or [""])[i] or "").strip()
+            name = str((cat.get("name") or [""])[i] or "")
+            row_aliases = _target_lookup_aliases(name)
+            if toi:
+                toi_num = _toi_float(toi)
+                if toi_num is not None:
+                    row_aliases.add(f"TOI{int(toi_num)}")
+                row_aliases.add(_normalize_target_name(f"TOI-{toi}"))
+            if aliases & row_aliases:
+                aliases.update(row_aliases)
+                tic = str((cat.get("tic") or [""])[i] or "")
+                digits = re.sub(r"\D", "", tic)
+                if digits:
+                    aliases.add(f"TIC{digits}")
+                    aliases.add(f"TIC {digits}")
+    except Exception:
+        pass
+
+    try:
+        cat = _load_nexsci_catalog()["data"]
+        n = len(cat.get("name", []))
+        for i in range(n):
+            name = str((cat.get("name") or [""])[i] or "")
+            host = str((cat.get("host") or [""])[i] or "")
+            tic = str((cat.get("tic") or [""])[i] or "")
+            row_aliases = _target_lookup_aliases(name) | _target_lookup_aliases(host)
+            if tic:
+                digits = re.sub(r"\D", "", tic)
+                if digits:
+                    row_aliases.add(f"TIC{digits}")
+                    row_aliases.add(f"TIC {digits}")
+            if aliases & row_aliases:
+                aliases.update(row_aliases)
+    except Exception:
+        pass
+        
+    return aliases
+
+
+def _matched_jwst_targets(target_name: str, datasets: list[dict] | None = None) -> list[str]:
+    """Return actual pl_name values from jwst_targets.csv matching target's aliases."""
+    target_aliases = _resolve_all_aliases(target_name, datasets)
+    jwst_targets = _load_jwst_targets()
+    matched = []
+    for t in jwst_targets:
+        if _target_lookup_aliases(t) & target_aliases:
+            matched.append(t)
+    return matched
+
+
+@target_router.get("/jwst", response_class=JSONResponse)
+@app.get("/api/target/jwst", response_class=JSONResponse, deprecated=True)
+def api_target_jwst(name: str = ""):
+    norm_name = _normalize_target_name(name)
+    if not norm_name:
+        return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
+    
+    db = _db_path()
+    datasets, _last_updated = _get_datasets_for_normalized_target(db, norm_name)
+    matched = _matched_jwst_targets(norm_name, datasets)
+    
+    if not matched:
+        return JSONResponse({
+            "ok": True,
+            "target": norm_name,
+            "jwst": {
+                "columns": [],
+                "rows": []
+            }
+        })
+    
+    import urllib.request
+    import urllib.parse
+    import csv
+    import io
+    import datetime
+    
+    names_str = ", ".join("'" + n.replace("'", "''") + "'" for n in matched)
+    query = f"SELECT program, observation_num, instrument, observingmode, gratinggrism, event, status, starttime, observation_dur FROM nexolist WHERE pl_name IN ({names_str})"
+    params = {
+        "query": query,
+        "format": "csv"
+    }
+    url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "MuSCAT-db/0.1.0"
+    })
+    
+    try:
+        with urllib.request.urlopen(req, timeout=15.0) as response:
+            content = response.read().decode("utf-8")
+            f = io.StringIO(content)
+            reader = csv.DictReader(f)
+            col_map = {
+                "program": "Program",
+                "observation_num": "Obs #",
+                "instrument": "Instrument",
+                "observingmode": "Observing Mode",
+                "gratinggrism": "Grating/Grism",
+                "event": "Event",
+                "status": "Status",
+                "starttime": "Start Time (UTC)",
+                "observation_dur": "Duration (h)"
+            }
+            columns = ["Program", "Obs #", "Instrument", "Observing Mode", "Grating/Grism", "Event", "Status", "Start Time (UTC)", "Duration (h)"]
+            rows = []
+            for row in reader:
+                if not row or "ERROR" in row:
+                    continue
+                mapped_row = {}
+                for orig_col, new_col in col_map.items():
+                    val = row.get(orig_col)
+                    if val is None:
+                        val = ""
+                    else:
+                        val = val.strip()
+                        if orig_col == "observation_dur":
+                            try:
+                                float_val = float(val)
+                                val = f"{float_val:.2f}"
+                            except ValueError:
+                                pass
+                    mapped_row[new_col] = val
+                rows.append(mapped_row)
+            
+            def get_start_time(r):
+                t_str = r.get("Start Time (UTC)", "")
+                try:
+                    return datetime.datetime.strptime(t_str, "%b %d, %Y %H:%M:%S")
+                except Exception:
+                    return datetime.datetime.min
+            
+            rows.sort(key=get_start_time, reverse=True)
+            
+            return JSONResponse({
+                "ok": True,
+                "target": norm_name,
+                "jwst": {
+                    "columns": columns,
+                    "rows": rows
+                }
+            })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"Failed to query JWST observations: {str(e)}"}, status_code=500)
 
 
 # ── NASA Exoplanet Archive (NExScI) composite catalog ──────────────────────

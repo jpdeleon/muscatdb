@@ -1932,3 +1932,29 @@ def test_api_ads_config_not_configured(monkeypatch):
     r = TestClient(app).get("/api/ads/config")
     assert r.status_code == 200
     assert r.json()["token_configured"] is False
+
+
+def test_api_target_jwst(mocker):
+    mock_csv = (
+        b"program,observation_num,instrument,observingmode,gratinggrism,event,status,starttime,observation_dur\n"
+        b'"COM 2734",2,"NIRISS","SOSS","N/A","Transit","Archived","Jun 21, 2022 02:41:18",7.51\n'
+    )
+    mock_response = mocker.MagicMock()
+    mock_response.__enter__.return_value = mock_response
+    mock_response.read.return_value = mock_csv
+    mocker.patch("urllib.request.urlopen", return_value=mock_response)
+
+    mocker.patch("muscat_db.web._matched_jwst_targets", return_value=["WASP-96 b"])
+
+    r = TestClient(app).get("/api/targets/jwst?name=WASP-96%20b")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["target"] == "WASP96"
+    assert "jwst" in data
+    assert data["jwst"]["columns"] == ["Program", "Obs #", "Instrument", "Observing Mode", "Grating/Grism", "Event", "Status", "Start Time (UTC)", "Duration (h)"]
+    assert len(data["jwst"]["rows"]) == 1
+    assert data["jwst"]["rows"][0]["Program"] == "COM 2734"
+    assert data["jwst"]["rows"][0]["Obs #"] == "2"
+    assert data["jwst"]["rows"][0]["Duration (h)"] == "7.51"
+
