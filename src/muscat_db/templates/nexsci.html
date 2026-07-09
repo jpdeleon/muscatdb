@@ -26,7 +26,8 @@
   — {{ '{:,}'.format(n_rows) }} planets
   · <strong>{{ '{:,}'.format(n_indb) }}</strong> whose host is in muscat-db (★ markers)
   · <strong>{{ '{:,}'.format(n_harps) }}</strong> with HARPS RVBank data
-  · <strong>{{ '{:,}'.format(n_jwst) }}</strong> in JWST Atmospheric Observation List (NExoList).
+  · <strong>{{ '{:,}'.format(n_jwst) }}</strong> in JWST Atmospheric Observation List (NExoList)
+  · <strong>{{ '{:,}'.format(n_spectra) }}</strong> with time-series spectra.
   Click a point to open its muscat-db target page, or — if the host is not in muscat-db —
   its <a href="https://exoplanetarchive.ipac.caltech.edu/overview/" target="_blank" rel="noopener">NASA Exoplanet Archive overview</a>.
   {% if nexsci_updated %}· catalog file updated {{ nexsci_updated }}{% endif %}.
@@ -83,6 +84,7 @@
   <span class="chip-label">External data:</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="harps" title="Coordinate-matched to the public HARPS RVBank catalog">has HARPS RV</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="jwst" title="Only planets with JWST Atmospheric Observation List (NExoList) data">has JWST data</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="spectra" title="Has time-series spectra available in the Atmospheric Spectroscopy table">has time-series spectra</span>
 </div>
 
 <div class="chip-bar">
@@ -339,6 +341,7 @@
     phot:     i => NEXSCI.nphot[i] != null && NEXSCI.nphot[i] > 1,
     harps:    i => !!NEXSCI.has_harps_rv[i],
     jwst:     i => !!NEXSCI.has_jwst[i],
+    spectra:  i => !!NEXSCI.has_spectra[i],
   };
 
   // ── filter state ───────────────────────────────────────────────────────────
