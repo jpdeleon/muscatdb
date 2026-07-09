@@ -1402,7 +1402,7 @@ def check_confirmed_planets(tics: str):
             url = f"https://exofop.ipac.caltech.edu/tess/target.php?id={encoded_tic}&json"
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": "MuSCAT-db/0.1.0"})
-                with urllib.request.urlopen(req, timeout=5.0) as resp:
+                with urllib.request.urlopen(req, timeout=10.0) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     bi = data.get("basic_info", {})
                     confirmed_val = bi.get("confirmed_planets") or ""
