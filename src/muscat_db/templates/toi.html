@@ -530,6 +530,9 @@
             ticToIndices[tic] = [];
           }
           ticToIndices[tic].push(i);
+          if (ticsToCheck.length >= 50) {
+            break;
+          }
         }
       }
     }
