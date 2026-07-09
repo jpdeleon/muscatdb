@@ -1052,7 +1052,6 @@ def _harps_data_for_target(datasets: list[dict], target_name: str | None = None)
 
 
 @target_router.get("/harps-rv", response_class=JSONResponse)
-@app.get("/api/target/harps-rv", response_class=JSONResponse, deprecated=True)
 def api_target_harps_rv(name: str = ""):
     norm_name = _normalize_target_name(name)
     if not norm_name:
@@ -1595,7 +1594,6 @@ def _matched_spectra_targets(target_name: str, datasets: list[dict] | None = Non
 
 
 @target_router.get("/jwst", response_class=JSONResponse)
-@app.get("/api/target/jwst", response_class=JSONResponse, deprecated=True)
 def api_target_jwst(name: str = ""):
     norm_name = _normalize_target_name(name)
     if not norm_name:
@@ -1691,7 +1689,6 @@ def api_target_jwst(name: str = ""):
 
 
 @target_router.get("/spectra", response_class=JSONResponse)
-@app.get("/api/target/spectra", response_class=JSONResponse, deprecated=True)
 def api_target_spectra(name: str = ""):
     norm_name = _normalize_target_name(name)
     if not norm_name:
@@ -1967,7 +1964,6 @@ def nexsci_page():
 
 
 @target_router.get("/export.csv")
-@app.get("/api/targets/export.csv", deprecated=True)
 def export_targets_csv():
     db = _db_path()
     targets = _get_targets(db)
@@ -2318,7 +2314,6 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
 
 
 @transit_fit_router.get("/query-archive")
-@app.get("/transit-fit/query-archive", deprecated=True)
 def transit_fit_query_archive(target: str, source: str = "nasa"):
     if not (target or "").strip():
         return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
@@ -2753,14 +2748,12 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
 
 
 @transit_fit_router.get("/status")
-@app.get("/transit-fit/status", deprecated=True)
 def transit_fit_status(inst: str, date: str, target: str, run: str = ""):
     fit.sync_jobs()
     return JSONResponse(fit.job_status(inst, date, target, run_id=(run or "").strip()))
 
 
 @transit_fit_router.post("/run")
-@app.post("/transit-fit/run", deprecated=True)
 def transit_fit_run(request: Request, payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
@@ -2776,7 +2769,6 @@ def transit_fit_run(request: Request, payload: dict = Body(...)):
 
 
 @transit_fit_router.post("/logp")
-@app.post("/transit-fit/logp", deprecated=True)
 def transit_fit_logp(payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
@@ -2790,7 +2782,6 @@ def transit_fit_logp(payload: dict = Body(...)):
 
 
 @transit_fit_router.post("/cancel")
-@app.post("/transit-fit/cancel", deprecated=True)
 def transit_fit_cancel(payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
@@ -2803,7 +2794,6 @@ def transit_fit_cancel(payload: dict = Body(...)):
 
 
 @transit_fit_router.post("/delete")
-@app.post("/transit-fit/delete", deprecated=True)
 def transit_fit_delete(payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
@@ -2845,13 +2835,11 @@ def _serve_transit_file(inst: str, date: str, target: str, name: str, run_id: st
 
 
 @transit_fit_router.get("/file/{inst}/{date}/{target}/run/{run_id}/{name}")
-@app.get("/transit-fit/file/{inst}/{date}/{target}/run/{run_id}/{name}", deprecated=True)
 def transit_fit_file_run(inst: str, date: str, target: str, run_id: str, name: str):
     return _serve_transit_file(inst, date, target, name, run_id)
 
 
 @transit_fit_router.get("/file/{inst}/{date}/{target}/{name}")
-@app.get("/transit-fit/file/{inst}/{date}/{target}/{name}", deprecated=True)
 def transit_fit_file(inst: str, date: str, target: str, name: str):
     # Legacy single-dir fits (run_id="").
     return _serve_transit_file(inst, date, target, name, None)
@@ -2937,13 +2925,11 @@ def _transit_fit_download_all(inst: str, date: str, target: str, run_id: str | N
 
 
 @transit_fit_router.get("/download-all/{inst}/{date}/{target}/run/{run_id}")
-@app.get("/transit-fit/download-all/{inst}/{date}/{target}/run/{run_id}", deprecated=True)
 def transit_fit_download_all_run(inst: str, date: str, target: str, run_id: str):
     return _transit_fit_download_all(inst, date, target, run_id)
 
 
 @transit_fit_router.get("/download-all/{inst}/{date}/{target}")
-@app.get("/transit-fit/download-all/{inst}/{date}/{target}", deprecated=True)
 def transit_fit_download_all(inst: str, date: str, target: str):
     return _transit_fit_download_all(inst, date, target, None)
 
@@ -2972,7 +2958,6 @@ def exposure_page(inst: str = "", target: str = ""):
 
 
 @exposure_router.post("/calculate", response_class=JSONResponse)
-@app.post("/exposure/calculate", response_class=JSONResponse, deprecated=True)
 def exposure_calculate(payload: dict = Body(...)):
     inst = (payload.get("instrument") or "").strip()
     if inst not in INSTRUMENTS:
@@ -3012,7 +2997,6 @@ def exposure_calculate(payload: dict = Body(...)):
 
 
 @exposure_router.post("/calibrate", response_class=JSONResponse)
-@app.post("/exposure/calibrate", response_class=JSONResponse, deprecated=True)
 def exposure_calibrate(payload: dict = Body(...)):
     inst = (payload.get("instrument") or "").strip()
     if inst not in INSTRUMENTS:
@@ -3025,7 +3009,6 @@ def exposure_calibrate(payload: dict = Body(...)):
 
 
 @exposure_router.post("/lookup-mags", response_class=JSONResponse)
-@app.post("/exposure/lookup-mags", response_class=JSONResponse, deprecated=True)
 def exposure_lookup_mags(payload: dict = Body(...)):
     target = (payload.get("target") or "").strip()
     if not target:
@@ -3057,7 +3040,6 @@ def exposure_lookup_mags(payload: dict = Body(...)):
 
 
 @exposure_router.get("/status", response_class=JSONResponse)
-@app.get("/exposure/status", response_class=JSONResponse, deprecated=True)
 def exposure_status():
     calibrations = {}
     for name in INSTRUMENTS:
@@ -3066,7 +3048,6 @@ def exposure_status():
 
 
 @exposure_router.get("/coeffs/{instrument}", response_class=JSONResponse)
-@app.get("/exposure/coeffs/{instrument}", response_class=JSONResponse, deprecated=True)
 def exposure_coeffs(instrument: str):
     if instrument not in INSTRUMENTS:
         return JSONResponse({"ok": False, "error": "Invalid instrument"}, status_code=400)
@@ -4743,7 +4724,6 @@ def api_ads_config(request: Request):
 
 
 @target_router.get("/publications", response_class=JSONResponse)
-@app.get("/api/target/publications", response_class=JSONResponse, deprecated=True)
 def api_target_publications(request: Request, q: str):
     import urllib.request
     import urllib.parse
@@ -5278,7 +5258,6 @@ def _validate_lco_dataset_action(payload: dict) -> tuple[str, str]:
 
 
 @jobs_router.post("/lco-archive/scan", response_class=JSONResponse)
-@app.post("/jobs/lco-archive/scan", response_class=JSONResponse, deprecated=True)
 def jobs_lco_archive_scan(payload: dict = Body(...)):
     inst, obsdate = _validate_lco_dataset_action(payload)
     try:
@@ -5295,7 +5274,6 @@ def jobs_lco_archive_scan(payload: dict = Body(...)):
 
 
 @jobs_router.post("/lco-archive/ingest-date", response_class=JSONResponse)
-@app.post("/jobs/lco-archive/ingest-date", response_class=JSONResponse, deprecated=True)
 def jobs_lco_archive_ingest_date(payload: dict = Body(...)):
     inst, obsdate = _validate_lco_dataset_action(payload)
     try:
@@ -5341,7 +5319,6 @@ def jobs_page():
 _last_running: set[str] = set()
 
 @jobs_router.get("/status", response_class=JSONResponse)
-@app.get("/jobs/status", response_class=JSONResponse, deprecated=True)
 def jobs_status(active_only: bool = False):
     phot.sync_jobs()
     fit.sync_jobs()
@@ -5427,7 +5404,6 @@ def jobs_status(active_only: bool = False):
 
 
 @jobs_router.get("/log/{type_}/{inst}/{date}/{target}")
-@app.get("/jobs/log/{type_}/{inst}/{date}/{target}", deprecated=True)
 def job_log(type_: str, inst: str, date: str, target: str, run: str = ""):
     if type_ == "photometry":
         path = phot.log_path(inst, date, target, run_id=(run or "").strip())
@@ -5441,7 +5417,6 @@ def job_log(type_: str, inst: str, date: str, target: str, run: str = ""):
 
 
 @jobs_router.post("/rerun")
-@app.post("/jobs/rerun", deprecated=True)
 def jobs_rerun(request: Request, payload: dict = Body(...)):
     import json
     key = (payload.get("key") or "").strip()
@@ -5475,7 +5450,6 @@ def jobs_rerun(request: Request, payload: dict = Body(...)):
 
 
 @photometry_router.get("/file/{inst}/{date}/{target}/run/{run_id}/{name}")
-@app.get("/photometry/file/{inst}/{date}/{target}/run/{run_id}/{name}", deprecated=True)
 def photometry_file_run(inst: str, date: str, target: str, run_id: str, name: str):
     path = phot.safe_run_artifact_path(inst, date, target, run_id, name)
     if path is None:
@@ -5484,7 +5458,6 @@ def photometry_file_run(inst: str, date: str, target: str, run_id: str, name: st
 
 
 @photometry_router.get("/file/{inst}/{date}/{name}")
-@app.get("/photometry/file/{inst}/{date}/{name}", deprecated=True)
 def photometry_file(inst: str, date: str, name: str):
     path = phot.safe_artifact_path(inst, date, name)
     if path is None:
@@ -5567,19 +5540,16 @@ def _photometry_download_all(inst: str, date: str, target: str, run_id: str | No
 
 
 @photometry_router.get("/download-all/{inst}/{date}/{target}/run/{run_id}")
-@app.get("/photometry/download-all/{inst}/{date}/{target}/run/{run_id}", deprecated=True)
 def photometry_download_all_run(inst: str, date: str, target: str, run_id: str):
     return _photometry_download_all(inst, date, target, run_id)
 
 
 @photometry_router.get("/download-all/{inst}/{date}/{target}")
-@app.get("/photometry/download-all/{inst}/{date}/{target}", deprecated=True)
 def photometry_download_all(inst: str, date: str, target: str):
     return _photometry_download_all(inst, date, target, None)
 
 
 @photometry_router.post("/run")
-@app.post("/photometry/run", deprecated=True)
 def photometry_run(request: Request, payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
@@ -5598,7 +5568,6 @@ def photometry_run(request: Request, payload: dict = Body(...)):
 
 
 @photometry_router.post("/command")
-@app.post("/photometry/command", deprecated=True)
 def photometry_command(payload: dict = Body(...)):
     """Preview the exact prose command for the chosen options (live form echo)."""
     inst = (payload.get("inst") or "").strip()
@@ -5616,7 +5585,6 @@ def photometry_command(payload: dict = Body(...)):
 
 
 @photometry_router.get("/status")
-@app.get("/photometry/status", deprecated=True)
 def photometry_status(inst: str, date: str, target: str, run: str = ""):
     # Drain the queue so a pending full job is promoted once the slot frees,
     # even when only the photometry page (not the Jobs page) is polling.
@@ -5625,7 +5593,6 @@ def photometry_status(inst: str, date: str, target: str, run: str = ""):
 
 
 @photometry_router.post("/status-batch")
-@app.post("/photometry/status-batch", deprecated=True)
 def photometry_status_batch(payload: dict = Body(...)):
     """Poll multiple jobs in a single request. Reduces polling overhead when monitoring many jobs.
 
@@ -5677,7 +5644,6 @@ def photometry_status_batch(payload: dict = Body(...)):
 
 
 @photometry_router.post("/cancel")
-@app.post("/photometry/cancel", deprecated=True)
 def photometry_cancel(payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
@@ -5690,7 +5656,6 @@ def photometry_cancel(payload: dict = Body(...)):
 
 
 @photometry_router.post("/delete")
-@app.post("/photometry/delete", deprecated=True)
 def photometry_delete(payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()

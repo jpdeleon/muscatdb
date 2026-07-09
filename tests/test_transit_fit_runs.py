@@ -240,14 +240,14 @@ class TestRunFileRoute:
         (tdir / "out").mkdir(parents=True, exist_ok=True)
         (tdir / "out" / "fit.png").write_bytes(b"\x89PNG\r\n")  # legacy too
 
-        r = c.get("/transit-fit/file/sinistro/250710/HIP67522/run/lsc-g/summary.csv")
+        r = c.get("/api/transit-fit/file/sinistro/250710/HIP67522/run/lsc-g/summary.csv")
         assert r.status_code == 200 and "t0[0]" in r.text
-        r_legacy = c.get("/transit-fit/file/sinistro/250710/HIP67522/fit.png")
+        r_legacy = c.get("/api/transit-fit/file/sinistro/250710/HIP67522/fit.png")
         assert r_legacy.status_code == 200
 
     def test_run_segment_rejects_traversal(self, client):
         c, _ = client
-        r = c.get("/transit-fit/file/sinistro/250710/HIP67522/run/..%2Fevil/summary.csv")
+        r = c.get("/api/transit-fit/file/sinistro/250710/HIP67522/run/..%2Fevil/summary.csv")
         assert r.status_code in (400, 404)
 
     def test_page_route_filters_runs_by_site_and_mode(self, client):
@@ -284,7 +284,7 @@ class TestRunFileRoute:
         r = c.get("/transit-fit?inst=sinistro&date=250710&target=HIP%2067522&run=lsc-g")
 
         assert r.status_code == 200
-        assert "/transit-fit/file/sinistro/250710/HIP 67522/run/lsc-g/fit.png?v=" in r.text
+        assert "/api/transit-fit/file/sinistro/250710/HIP 67522/run/lsc-g/fit.png?v=" in r.text
 
     def test_page_groups_systematics_plots_in_collapsible_section(self, client):
         c, tmp_path = client

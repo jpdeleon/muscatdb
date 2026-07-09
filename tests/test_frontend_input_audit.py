@@ -458,11 +458,11 @@ class TestBackendEndpoints:
                         return
             pytest.fail(f"missing endpoint for {path_suffix} with method {method}")
             
-        assert_has_endpoint("/photometry/run", "POST")
-        assert_has_endpoint("/photometry/command", "POST")
-        assert_has_endpoint("/photometry/cancel", "POST")
-        assert_has_endpoint("/photometry/status", "GET")
-        assert_has_endpoint("/photometry/status-batch", "POST")
+        assert_has_endpoint("/api/photometry/run", "POST")
+        assert_has_endpoint("/api/photometry/command", "POST")
+        assert_has_endpoint("/api/photometry/cancel", "POST")
+        assert_has_endpoint("/api/photometry/status", "GET")
+        assert_has_endpoint("/api/photometry/status-batch", "POST")
 
     def test_transit_fit_endpoints(self):
         from muscat_db.web import app
@@ -476,8 +476,8 @@ class TestBackendEndpoints:
                         return
             pytest.fail(f"missing endpoint for {path_suffix} with method {method}")
             
-        assert_has_endpoint("/transit-fit/run", "POST")
-        assert_has_endpoint("/transit-fit/cancel", "POST")
+        assert_has_endpoint("/api/transit-fit/run", "POST")
+        assert_has_endpoint("/api/transit-fit/cancel", "POST")
 
     def test_jobs_endpoints(self):
         from muscat_db.web import app
@@ -495,9 +495,9 @@ class TestBackendEndpoints:
                             return
             pytest.fail(f"missing endpoint for {path_suffix} with method {method}")
             
-        assert_has_endpoint("/jobs/rerun", "POST")
-        assert_has_endpoint("/jobs/status", "GET")
-        assert_has_endpoint("/jobs/log/", "GET", exact=False)
+        assert_has_endpoint("/api/jobs/rerun", "POST")
+        assert_has_endpoint("/api/jobs/status", "GET")
+        assert_has_endpoint("/api/jobs/log/", "GET", exact=False)
 
     def test_exposure_and_fov_and_lco_endpoints(self):
         from muscat_db.web import app

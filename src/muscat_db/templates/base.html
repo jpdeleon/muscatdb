@@ -267,7 +267,7 @@
     function tick() {
       const tracked = trackedKeys();
       if (tracked.length === 0) { bar.setJob(false, ''); stop(); return; }
-      fetch('/jobs/status?active_only=1', { headers: { 'X-Requested-With': 'fetch' } })
+      fetch('/api/jobs/status?active_only=1', { headers: { 'X-Requested-With': 'fetch' } })
         .then(function (r) { return r.json(); })
         .then(function (d) {
           const active = {};

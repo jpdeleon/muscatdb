@@ -348,7 +348,7 @@
     {% endif %}
 
     <div class="dl-row">
-      {% set dl_all_url = '/transit-fit/download-all/' ~ sel_inst ~ '/' ~ sel_date ~ '/' ~ sel_target ~ ('/run/' ~ sel_run if sel_run else '') %}
+      {% set dl_all_url = '/api/transit-fit/download-all/' ~ sel_inst ~ '/' ~ sel_date ~ '/' ~ sel_target ~ ('/run/' ~ sel_run if sel_run else '') %}
       <a href="{{ dl_all_url }}" download style="font-weight: 600; color: var(--accent2);">📦 Download all output (.zip)</a>
       {% if outputs.has_log %}<a href="{{ file_base }}/timer-fit.log" target="_blank">📄 fit run log</a>{% endif %}
       {% if outputs.has_fit_yaml %}<a href="{{ file_base }}/fit.yaml" target="_blank">⚙ fit.yaml</a>{% endif %}
