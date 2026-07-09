@@ -1962,3 +1962,30 @@ def test_api_target_jwst(mocker):
     assert data["jwst"]["rows"][0]["Obs #"] == "2"
     assert data["jwst"]["rows"][0]["Duration (h)"] == "7.51"
 
+
+def test_api_target_spectra(mocker):
+    mock_csv = (
+        b"spec_type,facility,instrument,minwavelng,maxwavelng,num_datapoints,authors,bibcode\n"
+        b'Transmission,"Spitzer Space Telescope satellite","Infrared Array Camera (IRAC)",4.5000,4.5000,1,"Desert et al. 2015",2015ApJ...804...59D\n'
+    )
+    mock_response = mocker.MagicMock()
+    mock_response.__enter__.return_value = mock_response
+    mock_response.read.return_value = mock_csv
+    mocker.patch("urllib.request.urlopen", return_value=mock_response)
+
+    mocker.patch("muscat_db.web._matched_spectra_targets", return_value=["Kepler-20 c"])
+
+    r = TestClient(app).get("/api/targets/spectra?name=Kepler-20%20c")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["target"] == "KEPLER20"
+    assert "spectra" in data
+    assert data["spectra"]["columns"] == ["Type", "Facility", "Instrument", "Min Wavelng (μm)", "Max Wavelng (μm)", "# Points", "Authors", "Bibcode"]
+    assert len(data["spectra"]["rows"]) == 1
+    assert data["spectra"]["rows"][0]["Type"] == "Transmission"
+    assert data["spectra"]["rows"][0]["Facility"] == "Spitzer Space Telescope satellite"
+    assert data["spectra"]["rows"][0]["Min Wavelng (μm)"] == "4.5000"
+    assert data["spectra"]["rows"][0]["Bibcode"] == "2015ApJ...804...59D"
+
+
