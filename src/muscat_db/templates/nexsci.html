@@ -25,7 +25,8 @@
   Source: <code>data/nexsci_pscomppars.csv</code> (Composite Planetary Systems, one row per confirmed planet)
   — {{ '{:,}'.format(n_rows) }} planets
   · <strong>{{ '{:,}'.format(n_indb) }}</strong> whose host is in muscat-db (★ markers)
-  · <strong>{{ '{:,}'.format(n_harps) }}</strong> with HARPS RVBank data.
+  · <strong>{{ '{:,}'.format(n_harps) }}</strong> with HARPS RVBank data
+  · <strong>{{ '{:,}'.format(n_jwst) }}</strong> in JWST Atmospheric Observation List (NExoList).
   Click a point to open its muscat-db target page, or — if the host is not in muscat-db —
   its <a href="https://exoplanetarchive.ipac.caltech.edu/overview/" target="_blank" rel="noopener">NASA Exoplanet Archive overview</a>.
   {% if nexsci_updated %}· catalog file updated {{ nexsci_updated }}{% endif %}.
@@ -81,6 +82,7 @@
 <div class="chip-bar">
   <span class="chip-label">External data:</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="harps" title="Coordinate-matched to the public HARPS RVBank catalog">has HARPS RV</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="jwst" title="Only planets with JWST Atmospheric Observation List (NExoList) data">has JWST data</span>
 </div>
 
 <div class="chip-bar">
@@ -336,6 +338,7 @@
     spec:     i => NEXSCI.nspec[i] != null && NEXSCI.nspec[i] > 1,
     phot:     i => NEXSCI.nphot[i] != null && NEXSCI.nphot[i] > 1,
     harps:    i => !!NEXSCI.has_harps_rv[i],
+    jwst:     i => !!NEXSCI.has_jwst[i],
   };
 
   // ── filter state ───────────────────────────────────────────────────────────
@@ -546,7 +549,11 @@
     const inDb = i => NEXSCI.indb && NEXSCI.indb[i];
     const symOf = i => (inDb(i) ? 'star' : 'circle');
     const sizeOf = i => (inDb(i) ? size + 3 : size);
-    const textOf = i => pointText(i) + (inDb(i) ? ' ★ (in muscat-db)' : '');
+    const pubYear = i => {
+      const pubDate = NEXSCI.pubdate && NEXSCI.pubdate[i];
+      return pubDate ? pubDate.substring(0, 4) : (NEXSCI.year[i] || '—');
+    };
+    const textOf = i => pointText(i) + (inDb(i) ? ' ★ (in muscat-db)' : '') + '<br>Last publish: ' + pubYear(i);
 
     function push(a, i) {
       a.x.push(NEXSCI[xk][i]); a.y.push(NEXSCI[yk][i]); a.text.push(textOf(i));
