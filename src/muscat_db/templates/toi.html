@@ -141,6 +141,10 @@
   const N = TOI.toi ? TOI.toi.length : 0;
   const CAP = 1000;  // max rows painted into the DOM at once (plot uses all)
 
+  // Keep track of checked TICs to avoid duplicate checks
+  const exofopChecked = new Map();
+  let exofopInFlight = false;
+
   // ── column model (drives table, filter row, and plot axis menus) ───────────
   const COLS = [
     { key: 'toi',      label: 'TOI',         type: 'text' },
@@ -508,6 +512,59 @@
     return '<tr>' + cells.join('') + '</tr>';
   }
 
+  function checkExofopForVisible(idx) {
+    if (!selectedNasa.has('0')) return; // Only run when "not NASA confirmed" filter is active
+
+    const shown = Math.min(idx.length, CAP);
+    const ticsToCheck = [];
+    const ticToIndices = {};
+
+    for (let k = 0; k < shown; k++) {
+      const i = idx[k];
+      const rawTic = TOI.tic[i] || TOI.name[i];
+      if (rawTic != null) {
+        const tic = String(rawTic);
+        if (tic && !exofopChecked.has(tic) && !TOI.nasa_confirmed[i]) {
+          ticsToCheck.push(tic);
+          if (!ticToIndices[tic]) {
+            ticToIndices[tic] = [];
+          }
+          ticToIndices[tic].push(i);
+        }
+      }
+    }
+
+    if (ticsToCheck.length === 0 || exofopInFlight) return;
+
+    exofopInFlight = true;
+    const url = '/api/exofop/check_confirmed?tics=' + ticsToCheck.map(encodeURIComponent).join(',');
+    fetch(url)
+      .then(r => r.json())
+      .then(data => {
+        let updated = false;
+        for (const [tic, isConfirmed] of Object.entries(data)) {
+          exofopChecked.set(tic, isConfirmed);
+          if (isConfirmed) {
+            // Update the local data structure so this target counts as confirmed
+            const indices = ticToIndices[tic] || [];
+            indices.forEach(idxVal => {
+              TOI.nasa_confirmed[idxVal] = 1;
+            });
+            updated = true;
+          }
+        }
+        exofopInFlight = false;
+        if (updated) {
+          // Re-filter and re-render the table
+          apply();
+        }
+      })
+      .catch(err => {
+        console.error('Failed to cross-check ExoFOP targets:', err);
+        exofopInFlight = false;
+      });
+  }
+
   function renderTable(idx) {
     const shown = Math.min(idx.length, CAP);
     let html = '';
@@ -533,6 +590,9 @@
       table.dataset.initializedWithRows = '1';
       window.initTable(table);
     }
+
+    // Trigger asynchronous background cross-check with ExoFOP
+    checkExofopForVisible(idx);
   }
 
   function updateSortIndicators() {

@@ -1364,6 +1364,73 @@ def toi_page():
     )
 
 
+@app.get("/api/exofop/check_confirmed")
+def check_confirmed_planets(tics: str):
+    import urllib.request
+    import urllib.parse
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+    from .database import get_conn, SCHEMA
+
+    tic_list = [t.strip() for t in tics.split(",") if t.strip()]
+    if not tic_list:
+        return {}
+
+    results = {}
+    missing_tics = []
+
+    # 1. Query the cache
+    with get_conn() as conn:
+        conn.executescript(SCHEMA)  # Ensure schema updated
+        placeholders = ",".join("?" for _ in tic_list)
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT tic_id, has_confirmed_planets FROM exofop_cache WHERE tic_id IN ({placeholders})",
+            tic_list
+        )
+        for row in cursor.fetchall():
+            results[row[0]] = bool(row[1])
+
+    # 2. Identify missing ones
+    for t in tic_list:
+        if t not in results:
+            missing_tics.append(t)
+
+    if missing_tics:
+        def fetch_one(tic):
+            encoded_tic = urllib.parse.quote(tic)
+            url = f"https://exofop.ipac.caltech.edu/tess/target.php?id={encoded_tic}&json"
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "MuSCAT-db/0.1.0"})
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    bi = data.get("basic_info", {})
+                    confirmed_val = bi.get("confirmed_planets") or ""
+                    has_confirmed = len(confirmed_val.strip()) > 0
+                    return tic, has_confirmed, confirmed_val
+            except Exception as e:
+                logger.warning("Failed to fetch ExoFOP for TIC %s: %s", tic, e)
+                return tic, None, None
+
+        # Fetch in parallel with up to 10 workers
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            fetched_results = list(executor.map(fetch_one, missing_tics))
+
+        # 3. Write new entries to cache
+        with get_conn() as conn:
+            cursor = conn.cursor()
+            for tic, has_confirmed, confirmed_val in fetched_results:
+                if has_confirmed is not None:
+                    cursor.execute(
+                        "INSERT OR REPLACE INTO exofop_cache (tic_id, has_confirmed_planets, confirmed_planets, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                        (tic, 1 if has_confirmed else 0, confirmed_val)
+                    )
+                    results[tic] = has_confirmed
+            conn.commit()
+
+    return results
+
+
 _jwst_targets_cache: set[str] = set()
 
 
