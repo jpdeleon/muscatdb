@@ -240,14 +240,15 @@ def test_optimize_avoid_mag_infeasible_returns_error(monkeypatch):
 
 
 def test_optimize_rejects_target_not_observable_for_instrument(monkeypatch):
-    # All current sites sit at southern latitudes (~-30 to -32 deg), so a
-    # target at dec=+60 never clears MIN_ALTITUDE_DEG above the horizon.
+    # muscat3 is at Haleakala, Maui (lat ≈ +20.72°N). With MIN_ALTITUDE_DEG=20°
+    # the southern limit is 20.72 − 70 ≈ −49.3°. A target at dec=−55° can
+    # never clear 20° altitude there and must be rejected before querying Gaia.
     def _fail_if_called(*_a, **_k):
         raise AssertionError("query_gaia_field must not be called for an unobservable target")
 
     monkeypatch.setattr(fov, "query_gaia_field", _fail_if_called)
 
-    res = fov.optimize("muscat3", ra=10.0, dec=60.0)
+    res = fov.optimize("muscat3", ra=10.0, dec=-55.0)
     assert not res.ok
     assert res.error and "not observable" in res.error
     assert "muscat3" in res.error
