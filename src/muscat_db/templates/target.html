@@ -381,6 +381,123 @@
     })();
   </script>
 
+  {% if has_jwst_data %}
+  <details class="adv" id="jwst-details" style="margin-top: 1rem;">
+    <summary><span id="jwst-summary">JWST Observations</span></summary>
+    <div style="margin-top: 0.5rem;">
+      <p class="hint" id="jwst-status" style="margin-top: 0;">Open this section to load JWST observations from NASA Exoplanet Archive (NExoList).</p>
+      <div id="jwst-content">
+      </div>
+    </div>
+  </details>
+
+  <script>
+    (function() {
+      const details = document.getElementById('jwst-details');
+      if (!details) return;
+      const summary = document.getElementById('jwst-summary');
+      const status = document.getElementById('jwst-status');
+      const content = document.getElementById('jwst-content');
+      const targetName = {{ target_name | tojson }};
+      let loaded = false;
+      let loading = false;
+
+      function clearNode(node) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+      }
+
+      function appendText(parent, text) {
+        parent.appendChild(document.createTextNode(text));
+      }
+
+      function renderTable(jwstData) {
+        const columns = jwstData.columns || [];
+        const rows = jwstData.rows || [];
+        const wrap = document.createElement('div');
+        wrap.className = 'csv-wrap';
+        const table = document.createElement('table');
+        table.id = 'jwst-table';
+        const thead = document.createElement('thead');
+        const headRow = document.createElement('tr');
+        columns.forEach(col => {
+          const th = document.createElement('th');
+          th.textContent = col;
+          headRow.appendChild(th);
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = document.createElement('tbody');
+        rows.forEach(row => {
+          const tr = document.createElement('tr');
+          columns.forEach(col => {
+            const td = document.createElement('td');
+            const value = row[col] !== null && row[col] !== undefined ? row[col] : '';
+            if (/^-?\d/.test(value)) td.className = 'mono';
+            if (col === 'Program' && value) {
+              const m = String(value).match(/\d+/);
+              if (m) {
+                const a = document.createElement('a');
+                a.href = 'https://www.stsci.edu/jwst-program-info/download/jwst/pdf/' + encodeURIComponent(m[0]);
+                a.target = '_blank';
+                a.rel = 'noopener';
+                a.textContent = value;
+                td.appendChild(a);
+              } else {
+                td.textContent = value;
+              }
+            } else {
+              td.textContent = value;
+            }
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        content.appendChild(wrap);
+      }
+
+      function loadJwst() {
+        if (loaded || loading) return;
+        loading = true;
+        status.textContent = 'Loading JWST observations...';
+        status.style.color = 'var(--text-dim)';
+        fetch('/api/targets/jwst?name=' + encodeURIComponent(targetName))
+          .then(res => res.json().then(data => ({ ok: res.ok, data: data })))
+          .then(result => {
+            if (!result.ok || !result.data.ok) {
+              throw new Error(result.data.error || 'Request failed');
+            }
+            const jwstData = result.data.jwst || {};
+            const total = jwstData.rows ? jwstData.rows.length : 0;
+            clearNode(content);
+            if (!total) {
+              summary.textContent = 'JWST Observations';
+              status.textContent = 'No JWST observations found for this target.';
+              status.style.color = 'var(--text-dim)';
+              return;
+            }
+            summary.textContent = 'JWST Observations (' + total.toLocaleString() + ' observations)';
+            status.textContent = '';
+            renderTable(jwstData);
+            loaded = true;
+          })
+          .catch(err => {
+            status.textContent = 'JWST observations lookup failed: ' + err.message;
+            status.style.color = 'var(--red)';
+          })
+          .finally(() => {
+            loading = false;
+          });
+      }
+
+      details.addEventListener('toggle', function() {
+        if (details.open) loadJwst();
+      });
+    })();
+  </script>
+  {% endif %}
+
   <details class="adv" id="ads-details" style="margin-top: 1rem;">
     <summary>NASA ADS Publications</summary>
     <div style="margin-top: 0.5rem;">
