@@ -30,6 +30,7 @@ build-backend = "setuptools.build_meta"
 dev = [
     "pytest>=9.0.3",
     "pytest-mock>=3.15.1",
+    "pytest-cov>=6",
     "httpx>=0.28",
     "ruff>=0.8",
 ]
@@ -48,6 +49,5 @@ line-length = 100
 # Pyflakes only: real defects (unused imports/vars, undefined names, malformed
 # f-strings), not whitespace/one-liner/import-placement style — those match the
 # project's existing conventions and would drown the signal. The CI lint job is
-# advisory until the audit's L1 (bare excepts) / L2 (scattered imports) cleanups
-# land; widen `select` (e.g. add "E", "W", "B") and make the job required then.
+# required; widen `select` (e.g. add "E", "W", "B") once style debt is cleared.
 select = ["F"]

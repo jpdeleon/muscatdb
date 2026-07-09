@@ -594,7 +594,7 @@ def build_db(db_path: str, progress=None) -> int:
 
         conn.commit()
         conn.close()
-    except BaseException:
+    except Exception:
         _remove_sqlite_tmp(tmp_path)
         raise
 

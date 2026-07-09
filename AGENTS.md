@@ -21,6 +21,7 @@
 * path: /ut2/jerome/miniconda3/envs/prose
 * photometry.py depends on run_photometry.py in /ut2/jerome/github/research/project/ext_tools/prose2
 * transit_fit.py depends on timer package in /ut2/jerome/github/research/project/ext_tools/timer
+* ttv_fit.py depends on /ut2/jerome/github/research/project/ext_tools/harmonic
 * do not duplicate functions between muscat-db and prose2. all photometry functions should live in prose2.
 * do not use /tmp. use $HOME/temp
 
@@ -56,7 +57,7 @@ The pipeline is launched with `start_new_session=True` and prose spawns multipro
 
 ## Testing
 * The default suite is fast: `pyproject.toml` sets `addopts = "-m 'not slow'"`, so anything marked `@pytest.mark.slow` is deselected unless you opt in with `pytest -m slow`.
-* `tests/test_slow_runs.py` holds heavyweight full-pipeline runtime-profiling runs (real `prose`/`timer` conda tools + real data on the production host). They `pytest.skip` cleanly when raw data, CSV lightcurves, or the external conda envs are absent, so they collect/skip safely anywhere and only do real work on the host. Run them on the host with `uv run pytest -m slow`.
+* `tests/test_slow_runs.py` holds heavyweight full-pipeline runtime-profiling runs (real `prose`/`timer`/`harmonic` conda tools + real data on the production host). They `pytest.skip` cleanly when raw data, CSV lightcurves, or the external conda envs are absent, so they collect/skip safely anywhere and only do real work on the host. Run them on the host with `uv run pytest -m slow`.
 * Verify transit and visibility from https://exoplanetarchive.ipac.caltech.edu/docs/transit/transit_API.html
 
 ## Prompt
