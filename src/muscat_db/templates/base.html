@@ -35,7 +35,8 @@
         var urlStr = (typeof input === 'string') ? input
                    : (input && input.url) ? input.url : String(input);
         var u = new URL(urlStr, window.location.href);
-        return u.origin === window.location.origin && u.pathname.indexOf('/api/') === 0;
+        var isStatus = u.pathname.endsWith('/status') || u.pathname.endsWith('/status-batch');
+        return u.origin === window.location.origin && u.pathname.indexOf('/api/') === 0 && !isStatus;
       } catch (e) { return false; }
     }
     window.fetch = function (input, init) {

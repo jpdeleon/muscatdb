@@ -58,7 +58,13 @@
           {{ j.started_at | int | datetime_from_timestamp }}
         {% else %}—{% endif %}
       </td>
-      <td class="mono elapsed-cell" data-elapsed="{{ j.elapsed }}">{{ format_elapsed(j.elapsed) }}</td>
+      <td class="mono elapsed-cell" data-elapsed="{{ j.elapsed }}">
+        {%- if j.state == 'pending' -%}
+          —
+        {%- else -%}
+          {{ format_elapsed(j.elapsed) }}
+        {%- endif -%}
+      </td>
       <td class="status-cell">
         {% if j.state == 'done' %}
           <span class="badge badge-green status-badge">Done</span>
@@ -380,7 +386,7 @@
       '<td class="mono">' + escapeHtml(job.date || 'mixed') + '</td>' +
       '<td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">' + escapeHtml(job.user_name || '—') + '</td>' +
       '<td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">' + escapeHtml(job.started_at_str || '—') + '</td>' +
-      '<td class="mono elapsed-cell" data-elapsed="' + escapeHtml(job.elapsed || 0) + '">' + escapeHtml(formatElapsed(job.elapsed || 0)) + '</td>' +
+      '<td class="mono elapsed-cell" data-elapsed="' + escapeHtml(job.elapsed || 0) + '">' + escapeHtml(job.state === 'pending' ? '—' : formatElapsed(job.elapsed || 0)) + '</td>' +
       '<td class="status-cell"></td>' +
       '<td class="details-cell" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;"><span class="badge badge-blue">archive</span></td>';
 
@@ -639,7 +645,7 @@
     var date   = btn.getAttribute('data-date');
     var target = btn.getAttribute('data-target');
     var runId  = btn.getAttribute('data-run') || '';
-    var url    = type === 'transit_fit' ? '/transit-fit/cancel' : '/photometry/cancel';
+    var url    = type === 'transit_fit' ? '/api/transit-fit/cancel' : '/api/photometry/cancel';
 
     btn.disabled = true;
     btn.innerText = 'Cancelling…';
@@ -671,7 +677,7 @@
   window.reRunJob = function(btn, key) {
     btn.disabled = true;
     btn.innerText = 'Launching…';
-    fetch('/jobs/rerun', {
+    fetch('/api/jobs/rerun', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ key: key })
@@ -712,7 +718,7 @@
 
     logRow.style.display = '';
     pre.textContent = 'Loading…';
-    var url = '/jobs/log/' + encodeURIComponent(type) + '/' + encodeURIComponent(inst) + '/' + encodeURIComponent(date) + '/' + encodeURIComponent(target);
+    var url = '/api/jobs/log/' + encodeURIComponent(type) + '/' + encodeURIComponent(inst) + '/' + encodeURIComponent(date) + '/' + encodeURIComponent(target);
     if (runId) url += '?run=' + encodeURIComponent(runId);
     fetch(url)
       .then(function(r) { if (!r.ok) throw new Error('Log not found'); return r.text(); })
@@ -723,7 +729,7 @@
   window.runLcoArchiveCommand = function(btn, action) {
     var inst = btn.getAttribute('data-inst') || '';
     var date = btn.getAttribute('data-date') || '';
-    var endpoint = action === 'ingest-date' ? '/jobs/lco-archive/ingest-date' : '/jobs/lco-archive/scan';
+    var endpoint = action === 'ingest-date' ? '/api/jobs/lco-archive/ingest-date' : '/api/jobs/lco-archive/scan';
     var label = btn.textContent;
     btn.disabled = true;
     btn.textContent = 'Running…';
@@ -752,7 +758,7 @@
   // ── Live polling (in-place updates, no page reload) ────────────────────
   function refreshLiveElapsed() {
     var now = Math.floor(Date.now() / 1000);
-    document.querySelectorAll('.job-row[data-status="running"] .elapsed-cell, .job-row[data-status="cancelling"] .elapsed-cell, .job-row[data-status="pending"] .elapsed-cell').forEach(function(cell) {
+    document.querySelectorAll('.job-row[data-status="running"] .elapsed-cell, .job-row[data-status="cancelling"] .elapsed-cell').forEach(function(cell) {
       var row = cell.closest('.job-row');
       var startedAt = row ? parseInt(row.getAttribute('data-started-at') || '0', 10) : 0;
       var e = parseInt(cell.getAttribute('data-elapsed') || '0', 10);
@@ -767,7 +773,7 @@
   }
 
   function pollRunning() {
-    fetch('/jobs/status')
+    fetch('/api/jobs/status')
       .then(function(r) { return r.json(); })
       .then(function(data) {
         // Update finished jobs in-place

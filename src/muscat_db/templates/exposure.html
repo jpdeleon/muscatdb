@@ -557,7 +557,7 @@
     lookupStatus.className = 'msg dim'; lookupStatus.textContent = 'Looking up…';
     calcStatus.textContent = '';
     return withLoading(lookupBtn, 'Looking up', function () {
-      return fetch('/exposure/lookup-mags', {
+      return fetch('/api/exposure/lookup-mags', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ target: target })
       }).then(function (r) { return r.json(); }).then(function (data) {
@@ -644,7 +644,7 @@
     var btn = mode === 'exptime' ? calcBtn : calcPeakBtn;
     var label = mode === 'exptime' ? 'Calculating' : 'Calculating';
     return withLoading(btn, label, function () {
-      return fetch('/exposure/calculate', {
+      return fetch('/api/exposure/calculate', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       }).then(function (r) { return r.json(); }).then(function (data) {
@@ -805,7 +805,7 @@
     }
     instParams.innerHTML = html + '<div id="coeff-slot" class="msg dim">Loading calibration…</div>';
 
-    fetch('/exposure/coeffs/' + inst).then(function (r) { return r.json(); }).then(function (data) {
+    fetch('/api/exposure/coeffs/' + inst).then(function (r) { return r.json(); }).then(function (data) {
       var slot = document.getElementById('coeff-slot');
       if (!slot) return;
       if (!data.ok) { slot.textContent = ''; return; }

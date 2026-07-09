@@ -447,42 +447,69 @@ def test_transit_fit_archive_query_modal_uses_shared_style_variants():
 
 class TestBackendEndpoints:
     def test_photometry_endpoints(self):
-        web = WEB_PY.read_text()
-        for ep in (
-            '@app.post("/photometry/run")',
-            '@app.post("/photometry/command")',
-            '@app.post("/photometry/cancel")',
-            '@app.get("/photometry/status"',
-            '@app.post("/photometry/status-batch")',
-        ):
-            assert ep in web, f"missing endpoint: {ep}"
+        from muscat_db.web import app
+        from starlette.routing import Route
+        routes = [(r.path, r.methods) for r in app.routes if isinstance(r, Route)]
+        
+        def assert_has_endpoint(path_suffix: str, method: str):
+            for path, methods in routes:
+                if method in methods:
+                    if path == path_suffix or path == f"/api{path_suffix}":
+                        return
+            pytest.fail(f"missing endpoint for {path_suffix} with method {method}")
+            
+        assert_has_endpoint("/photometry/run", "POST")
+        assert_has_endpoint("/photometry/command", "POST")
+        assert_has_endpoint("/photometry/cancel", "POST")
+        assert_has_endpoint("/photometry/status", "GET")
+        assert_has_endpoint("/photometry/status-batch", "POST")
 
     def test_transit_fit_endpoints(self):
-        web = WEB_PY.read_text()
-        for ep in (
-            '@app.post("/transit-fit/run")',
-            '@app.post("/transit-fit/cancel")',
-        ):
-            assert ep in web, f"missing endpoint: {ep}"
+        from muscat_db.web import app
+        from starlette.routing import Route
+        routes = [(r.path, r.methods) for r in app.routes if isinstance(r, Route)]
+        
+        def assert_has_endpoint(path_suffix: str, method: str):
+            for path, methods in routes:
+                if method in methods:
+                    if path == path_suffix or path == f"/api{path_suffix}":
+                        return
+            pytest.fail(f"missing endpoint for {path_suffix} with method {method}")
+            
+        assert_has_endpoint("/transit-fit/run", "POST")
+        assert_has_endpoint("/transit-fit/cancel", "POST")
 
     def test_jobs_endpoints(self):
-        web = WEB_PY.read_text()
-        for ep in (
-            '@app.post("/jobs/rerun")',
-            '@app.get("/jobs/status"',
-            '@app.get("/jobs/log/',
-        ):
-            assert ep in web, f"missing endpoint: {ep}"
+        from muscat_db.web import app
+        from starlette.routing import Route
+        routes = [(r.path, r.methods) for r in app.routes if isinstance(r, Route)]
+        
+        def assert_has_endpoint(path_suffix: str, method: str, exact: bool = True):
+            for path, methods in routes:
+                if method in methods:
+                    if exact:
+                        if path == path_suffix or path == f"/api{path_suffix}":
+                            return
+                    else:
+                        if path.startswith(path_suffix) or path.startswith(f"/api{path_suffix}"):
+                            return
+            pytest.fail(f"missing endpoint for {path_suffix} with method {method}")
+            
+        assert_has_endpoint("/jobs/rerun", "POST")
+        assert_has_endpoint("/jobs/status", "GET")
+        assert_has_endpoint("/jobs/log/", "GET", exact=False)
 
     def test_exposure_and_fov_and_lco_endpoints(self):
-        web = WEB_PY.read_text()
+        from muscat_db.web import app
+        from starlette.routing import Route
+        handler_names = {r.endpoint.__name__ for r in app.routes if isinstance(r, Route)}
         for handler in (
-            "def exposure_calculate",
-            "def api_fov_optimize",
-            "def api_lco_ipp",
-            "def api_lco_submit",
+            "exposure_calculate",
+            "api_fov_optimize",
+            "api_lco_ipp",
+            "api_lco_submit",
         ):
-            assert handler in web, f"missing handler: {handler}"
+            assert handler in handler_names, f"missing handler: {handler}"
 
     def test_exposure_payload_keys_consumed(self):
         """Keys the exposure form posts are all read by the handler."""

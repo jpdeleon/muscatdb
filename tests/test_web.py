@@ -421,15 +421,15 @@ def test_target_detail_has_lco_schedule_and_archive_buttons(mock_db, monkeypatch
     assert 'href="/lco/archive?target=V1298TAU"' in html
     assert (
         '<a href="https://exoplanetarchive.ipac.caltech.edu/overview/V1298TAU" '
-        'target="_blank" rel="noopener">NASA Archive</a>'
+        'target="_blank" rel="noopener">NASA Archive ↗</a>'
     ) in html
     assert (
         '<a href="https://exofop.ipac.caltech.edu/tess/target.php?id=12345" '
-        'target="_blank" rel="noopener">ExoFOP-TESS</a>'
+        'target="_blank" rel="noopener">ExoFOP-TESS ↗</a>'
     ) in html
     assert (
         '<a href="https://tess.cuikaiming.com/12345" '
-        'target="_blank" rel="noopener">TESS Viewer</a>'
+        'target="_blank" rel="noopener">TESS Viewer ↗</a>'
     ) in html
     assert 'then save your token in <a href="/settings">Settings</a>.' in html
     assert "then set the token as" not in html
@@ -469,7 +469,7 @@ def test_target_detail_harps_panel_is_lazy_loaded(mock_db, monkeypatch):
     r = TestClient(app).get("/target?name=HD209458")
     assert r.status_code == 200
     assert "HARPS RVBank Data" in r.text
-    assert "/api/target/harps-rv?name=" in r.text
+    assert "/api/targets/harps-rv?name=" in r.text
     assert "Open this section to load coordinate-matched HARPS RVBank rows." in r.text
     assert "Match tolerance: 5 arcsec." in r.text
     assert "2451000.123456" not in r.text
@@ -515,7 +515,7 @@ def test_target_harps_rv_api_returns_table_payload(mock_db, monkeypatch):
         },
     )
 
-    r = TestClient(app).get("/api/target/harps-rv?name=HD209458")
+    r = TestClient(app).get("/api/targets/harps-rv?name=HD209458")
     assert r.status_code == 200
     data = r.json()
     assert data["ok"] is True
@@ -1660,6 +1660,7 @@ def test_nexsci_page_renders_with_payload_and_archive_link(mock_db, monkeypatch)
     data["ra"] = [20.0, 30.0]
     data["dec"] = [-10.0, -5.0]
     monkeypatch.setattr(web, "_load_harps_coords", lambda: ([(20.0, -10.0)], "2026-07-08"))
+    monkeypatch.setattr(web, "_load_spectra_targets", lambda: {"TOI-2000 b"})
     monkeypatch.setattr(
         web, "_load_nexsci_catalog", lambda: {"data": data, "n": 2, "updated": "2026-07-05"}
     )
@@ -1670,8 +1671,11 @@ def test_nexsci_page_renders_with_payload_and_archive_link(mock_db, monkeypatch)
     # Empty targets table -> nothing is in muscat-db.
     assert '"indb":[0,0]' in r.text
     assert '"has_harps_rv":[1,0]' in r.text
+    assert '"has_spectra":[1,0]' in r.text
     assert 'data-key="harps"' in r.text
     assert 'has HARPS RV' in r.text
+    assert 'data-key="spectra"' in r.text
+    assert 'has time-series spectra' in r.text
     # Archive-overview fallback URL prefix is present in the page JS.
     assert "exoplanetarchive.ipac.caltech.edu/overview/" in r.text
     # Nav link renders beside TOI.
@@ -1857,7 +1861,7 @@ def test_api_target_publications_token_missing(monkeypatch):
     monkeypatch.delenv("ADS_DEV_KEY", raising=False)
     monkeypatch.delenv("ADS_TOKEN", raising=False)
     
-    r = TestClient(app).get("/api/target/publications", params={"q": "WASP-12"})
+    r = TestClient(app).get("/api/targets/publications", params={"q": "WASP-12"})
     assert r.status_code == 400
     assert r.json()["token_missing"] is True
     assert "not configured" in r.json()["error"]
@@ -1871,7 +1875,7 @@ def test_api_target_publications_success(monkeypatch, mocker):
     mock_response.read.return_value = b'{"response": {"docs": [{"bibcode": "2020ApJ...123..456A", "title": ["A Great Paper"], "author": ["Astronomer, A."], "pubdate": "2020-01-00", "pub": "ApJ", "citation_count": 10}]}}'
     mock_urlopen = mocker.patch("urllib.request.urlopen", return_value=mock_response)
     
-    r = TestClient(app).get("/api/target/publications", params={"q": "WASP-12"})
+    r = TestClient(app).get("/api/targets/publications", params={"q": "WASP-12"})
     assert r.status_code == 200
     
     called_req = mock_urlopen.call_args[0][0]
@@ -1904,7 +1908,7 @@ def test_api_target_publications_uses_saved_ads_token(mock_db, monkeypatch, mock
     mock_response.read.return_value = b'{"response": {"docs": []}}'
     mock_urlopen = mocker.patch("urllib.request.urlopen", return_value=mock_response)
 
-    r = client.get("/api/target/publications", headers=headers, params={"q": "WASP-12"})
+    r = client.get("/api/targets/publications", headers=headers, params={"q": "WASP-12"})
 
     assert r.status_code == 200
     called_req = mock_urlopen.call_args[0][0]
@@ -1913,7 +1917,7 @@ def test_api_target_publications_uses_saved_ads_token(mock_db, monkeypatch, mock
 
 
 def test_api_target_publications_empty_query():
-    r = TestClient(app).get("/api/target/publications", params={"q": ""})
+    r = TestClient(app).get("/api/targets/publications", params={"q": ""})
     assert r.status_code == 400
     assert r.json()["ok"] is False
 
@@ -1932,3 +1936,109 @@ def test_api_ads_config_not_configured(monkeypatch):
     r = TestClient(app).get("/api/ads/config")
     assert r.status_code == 200
     assert r.json()["token_configured"] is False
+
+
+def test_api_target_jwst(mocker):
+    mock_csv = (
+        b"program,observation_num,instrument,observingmode,gratinggrism,event,status,starttime,observation_dur\n"
+        b'"COM 2734",2,"NIRISS","SOSS","N/A","Transit","Archived","Jun 21, 2022 02:41:18",7.51\n'
+    )
+    mock_response = mocker.MagicMock()
+    mock_response.__enter__.return_value = mock_response
+    mock_response.read.return_value = mock_csv
+    mocker.patch("urllib.request.urlopen", return_value=mock_response)
+
+    mocker.patch("muscat_db.web._matched_jwst_targets", return_value=["WASP-96 b"])
+
+    r = TestClient(app).get("/api/targets/jwst?name=WASP-96%20b")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["target"] == "WASP96"
+    assert "jwst" in data
+    assert data["jwst"]["columns"] == ["Program", "Obs #", "Instrument", "Observing Mode", "Grating/Grism", "Event", "Status", "Start Time (UTC)", "Duration (h)"]
+    assert len(data["jwst"]["rows"]) == 1
+    assert data["jwst"]["rows"][0]["Program"] == "COM 2734"
+    assert data["jwst"]["rows"][0]["Obs #"] == "2"
+    assert data["jwst"]["rows"][0]["Duration (h)"] == "7.51"
+
+
+def test_api_target_spectra(mocker):
+    mock_csv = (
+        b"spec_type,facility,instrument,minwavelng,maxwavelng,num_datapoints,authors,bibcode\n"
+        b'Transmission,"Spitzer Space Telescope satellite","Infrared Array Camera (IRAC)",4.5000,4.5000,1,"Desert et al. 2015",2015ApJ...804...59D\n'
+    )
+    mock_response = mocker.MagicMock()
+    mock_response.__enter__.return_value = mock_response
+    mock_response.read.return_value = mock_csv
+    mocker.patch("urllib.request.urlopen", return_value=mock_response)
+
+    mocker.patch("muscat_db.web._matched_spectra_targets", return_value=["Kepler-20 c"])
+
+    r = TestClient(app).get("/api/targets/spectra?name=Kepler-20%20c")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["target"] == "KEPLER20"
+    assert "spectra" in data
+    assert data["spectra"]["columns"] == ["Type", "Facility", "Instrument", "Min Wavelng (μm)", "Max Wavelng (μm)", "# Points", "Authors", "Bibcode"]
+    assert len(data["spectra"]["rows"]) == 1
+    assert data["spectra"]["rows"][0]["Type"] == "Transmission"
+    assert data["spectra"]["rows"][0]["Facility"] == "Spitzer Space Telescope satellite"
+    assert data["spectra"]["rows"][0]["Min Wavelng (μm)"] == "4.5000"
+    assert data["spectra"]["rows"][0]["Bibcode"] == "2015ApJ...804...59D"
+
+
+def test_api_exofop_check_confirmed(monkeypatch, tmp_path):
+    # Use a temporary database path to avoid polluting the actual db
+    db_file = tmp_path / "test_muscat.db"
+    monkeypatch.setenv("MUSCAT_DB_PATH", str(db_file))
+
+    # Mock urllib.request.urlopen to simulate ExoFOP responses
+    url_calls = []
+
+    class MockResponse:
+        def __init__(self, data):
+            self.data = data
+        def read(self):
+            return self.data
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    def mock_urlopen(req, *args, **kwargs):
+        url = req.full_url if hasattr(req, "full_url") else req
+        url_calls.append(url)
+        if "79748331" in url:
+            # Confirmed target
+            return MockResponse(b'{"basic_info": {"confirmed_planets": "TOI-1064 b, TOI-1064 c"}}')
+        elif "25155310" in url:
+            # Unconfirmed target
+            return MockResponse(b'{"basic_info": {"confirmed_planets": ""}}')
+        else:
+            return MockResponse(b'{"basic_info": {}}')
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    from fastapi.testclient import TestClient
+    from muscat_db.web import app
+
+    client = TestClient(app)
+
+    # First call: should query ExoFOP
+    r = client.get("/api/exofop/check_confirmed?tics=79748331,25155310")
+    assert r.status_code == 200
+    assert r.json() == {"79748331": True, "25155310": False}
+    assert len(url_calls) == 2
+
+    # Second call: should use database cache and NOT query ExoFOP
+    url_calls.clear()
+    r2 = client.get("/api/exofop/check_confirmed?tics=79748331,25155310")
+    assert r2.status_code == 200
+    assert r2.json() == {"79748331": True, "25155310": False}
+    assert len(url_calls) == 0
+
+
+

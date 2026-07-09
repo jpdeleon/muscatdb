@@ -287,7 +287,7 @@
   <!-- Transit Fit Results Section -->
   {% if outputs and outputs.has_any %}
   {# Result files live under the per-run dir when a run is selected. #}
-  {% set file_base = '/transit-fit/file/' ~ sel_inst ~ '/' ~ sel_date ~ '/' ~ sel_target ~ ('/run/' ~ sel_run if sel_run else '') %}
+  {% set file_base = '/api/transit-fit/file/' ~ sel_inst ~ '/' ~ sel_date ~ '/' ~ sel_target ~ ('/run/' ~ sel_run if sel_run else '') %}
   <div class="phot-section">
     <h2>Transit Fit Results{% if sel_run %} <span style="font-size:0.8rem;color:var(--text-dim);font-weight:400;">— {{ sel_run }}</span>{% endif %}</h2>
 
@@ -1390,7 +1390,7 @@
           priorField('planet-ror', cmb_ror, val_ror_prior) +
         '</div>' +
         '<div class="opt">' +
-          '<label>tc_pred (BJD) <span class="help-tooltip" title="Predicted transit center epoch (BJD) for this planet on this night. Seeds the t0 prior. Leave empty to use this planet\'s t0 / the data midpoint.">?</span></label>' +
+          '<label>tc_pred (BJD) <span class="help-tooltip" title="Predicted transit center epoch (BJD) for this planet on this night. Seeds the t0 prior. If tc_pred is not provided, it defaults to the mean time of the dataset; If not provided, it defaults to a very narrow window of 0.04 days (about 57.6 minutes).">?</span></label>' +
           '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
             '<input type="number" class="planet-tc_pred" value="' + val_tc_pred + '" placeholder="auto" step="0.00001" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
             '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' +
@@ -1451,7 +1451,7 @@
       var source = sourceSelect ? sourceSelect.value : 'nasa';
       var sourceLabel = source === 'toi' ? 'TOI Catalog' : 'NASA Exoplanet Archive';
 
-      fetch('/transit-fit/query-archive?target=' + encodeURIComponent(targetVal) + '&source=' + encodeURIComponent(source))
+      fetch('/api/transit-fit/query-archive?target=' + encodeURIComponent(targetVal) + '&source=' + encodeURIComponent(source))
         .then(function(res) {
           if (!res.ok) {
             return res.json().then(function(err) { throw new Error(err.error || 'Failed to query archive'); });
@@ -2313,7 +2313,7 @@
   function poll() {
     var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
     if (runId) qs += '&run=' + encodeURIComponent(runId);
-    fetch('/transit-fit/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
+    fetch('/api/transit-fit/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
       if (s.log) {
         logEl.textContent = s.log;
         logEl.scrollTop = logEl.scrollHeight;
@@ -2385,7 +2385,7 @@
     logEl.textContent = 'Launching transit fitting run…';
     MuscatStorage.remove(logKey());
 
-    fetch('/transit-fit/run', {
+    fetch('/api/transit-fit/run', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inst: inst, date: date, target: target, test_run: !!testRun, options: collectOptions(), selected_csvs: getSelectedCsvs() })
     }).then(function (r) { return r.json(); }).then(function (res) {
@@ -2438,7 +2438,7 @@
     var prevText = calcLogpBtn.textContent;
     calcLogpBtn.textContent = '∑ Calculating…';
     if (logpResult) { logpResult.style.color = 'var(--text-dim)'; logpResult.textContent = 'computing… (can take ~1 min)'; }
-    fetch('/transit-fit/logp', {
+    fetch('/api/transit-fit/logp', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inst: inst, date: date, target: target, options: collectOptions(), selected_csvs: getSelectedCsvs() })
     }).then(function (r) { return r.json(); }).then(function (res) {
@@ -2461,7 +2461,7 @@
     cancelBtn.disabled = true;
     logEl.textContent += '\n\n■ cancelling…';
     MuscatStorage.set(logKey(), logEl.textContent);
-    fetch('/transit-fit/cancel', {
+    fetch('/api/transit-fit/cancel', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })
     }).then(function (r) { return r.json(); }).then(function () {
@@ -2477,7 +2477,7 @@
     deleteOverlay.classList.remove('visible');
     deleteBtn.disabled = true;
     deleteBtn.textContent = 'Deleting…';
-    fetch('/transit-fit/delete', {
+    fetch('/api/transit-fit/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })
     }).then(function (r) { return r.json(); }).then(function (res) {
@@ -2511,7 +2511,7 @@
     if (saved.inst === inst && saved.date === date && saved.target === target) {
       var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
       if (saved.run_id) qs += '&run=' + encodeURIComponent(saved.run_id);
-      fetch('/transit-fit/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
+      fetch('/api/transit-fit/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
         if (s.state === 'running' || s.state === 'cancelling' || s.state === 'pending') {
           if (saved.run_id !== undefined) runId = saved.run_id;
           setRunning(true);
@@ -2545,7 +2545,7 @@
       var source = sourceSelect ? sourceSelect.value : 'nasa';
       var sourceLabel = source === 'toi' ? 'TOI Catalog' : 'NASA Exoplanet Archive';
 
-      fetch('/transit-fit/query-archive?target=' + encodeURIComponent(targetVal) + '&source=' + encodeURIComponent(source))
+      fetch('/api/transit-fit/query-archive?target=' + encodeURIComponent(targetVal) + '&source=' + encodeURIComponent(source))
         .then(function (res) {
           if (!res.ok) {
             return res.json().then(function (err) { throw new Error(err.error || 'Failed to query archive'); });
