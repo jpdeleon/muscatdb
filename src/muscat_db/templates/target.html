@@ -357,7 +357,7 @@
         loading = true;
         status.textContent = 'Loading HARPS RVBank rows...';
         status.style.color = 'var(--text-dim)';
-        fetch('/api/target/harps-rv?name=' + encodeURIComponent(targetName))
+        fetch('/api/targets/harps-rv?name=' + encodeURIComponent(targetName))
           .then(res => res.json().then(data => ({ ok: res.ok, data: data })))
           .then(result => {
             if (!result.ok || !result.data.ok) {
@@ -380,6 +380,236 @@
       });
     })();
   </script>
+
+  {% if has_jwst_data %}
+  <details class="adv" id="jwst-details" style="margin-top: 1rem;">
+    <summary><span id="jwst-summary">JWST Observations</span></summary>
+    <div style="margin-top: 0.5rem;">
+      <p class="hint" id="jwst-status" style="margin-top: 0;">Open this section to load JWST observations from NASA Exoplanet Archive (NExoList).</p>
+      <div id="jwst-content">
+      </div>
+    </div>
+  </details>
+
+  <script>
+    (function() {
+      const details = document.getElementById('jwst-details');
+      if (!details) return;
+      const summary = document.getElementById('jwst-summary');
+      const status = document.getElementById('jwst-status');
+      const content = document.getElementById('jwst-content');
+      const targetName = {{ target_name | tojson }};
+      let loaded = false;
+      let loading = false;
+
+      function clearNode(node) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+      }
+
+      function appendText(parent, text) {
+        parent.appendChild(document.createTextNode(text));
+      }
+
+      function renderTable(jwstData) {
+        const columns = jwstData.columns || [];
+        const rows = jwstData.rows || [];
+        const wrap = document.createElement('div');
+        wrap.className = 'csv-wrap';
+        const table = document.createElement('table');
+        table.id = 'jwst-table';
+        const thead = document.createElement('thead');
+        const headRow = document.createElement('tr');
+        columns.forEach(col => {
+          const th = document.createElement('th');
+          th.textContent = col;
+          headRow.appendChild(th);
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = document.createElement('tbody');
+        rows.forEach(row => {
+          const tr = document.createElement('tr');
+          columns.forEach(col => {
+            const td = document.createElement('td');
+            const value = row[col] !== null && row[col] !== undefined ? row[col] : '';
+            if (/^-?\d/.test(value)) td.className = 'mono';
+            if (col === 'Program' && value) {
+              const m = String(value).match(/\d+/);
+              if (m) {
+                const a = document.createElement('a');
+                a.href = 'https://www.stsci.edu/jwst-program-info/download/jwst/pdf/' + encodeURIComponent(m[0]);
+                a.target = '_blank';
+                a.rel = 'noopener';
+                a.textContent = value;
+                td.appendChild(a);
+              } else {
+                td.textContent = value;
+              }
+            } else {
+              td.textContent = value;
+            }
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        content.appendChild(wrap);
+      }
+
+      function loadJwst() {
+        if (loaded || loading) return;
+        loading = true;
+        status.textContent = 'Loading JWST observations...';
+        status.style.color = 'var(--text-dim)';
+        fetch('/api/targets/jwst?name=' + encodeURIComponent(targetName))
+          .then(res => res.json().then(data => ({ ok: res.ok, data: data })))
+          .then(result => {
+            if (!result.ok || !result.data.ok) {
+              throw new Error(result.data.error || 'Request failed');
+            }
+            const jwstData = result.data.jwst || {};
+            const total = jwstData.rows ? jwstData.rows.length : 0;
+            clearNode(content);
+            if (!total) {
+              summary.textContent = 'JWST Observations';
+              status.textContent = 'No JWST observations found for this target.';
+              status.style.color = 'var(--text-dim)';
+              return;
+            }
+            summary.textContent = 'JWST Observations (' + total.toLocaleString() + ' observations)';
+            status.textContent = '';
+            renderTable(jwstData);
+            loaded = true;
+          })
+          .catch(err => {
+            status.textContent = 'JWST observations lookup failed: ' + err.message;
+            status.style.color = 'var(--red)';
+          })
+          .finally(() => {
+            loading = false;
+          });
+      }
+
+      details.addEventListener('toggle', function() {
+        if (details.open) loadJwst();
+      });
+    })();
+  </script>
+  {% endif %}
+
+  {% if has_spectra_data %}
+  <details class="adv" id="spectra-details" style="margin-top: 1rem;">
+    <summary><span id="spectra-summary">Atmospheric Spectroscopy</span></summary>
+    <div style="margin-top: 0.5rem;">
+      <p class="hint" id="spectra-status" style="margin-top: 0;">Open this section to load published exoplanet transmission/emission spectra from NASA Exoplanet Archive.</p>
+      <div id="spectra-content">
+      </div>
+    </div>
+  </details>
+
+  <script>
+    (function() {
+      const details = document.getElementById('spectra-details');
+      if (!details) return;
+      const summary = document.getElementById('spectra-summary');
+      const status = document.getElementById('spectra-status');
+      const content = document.getElementById('spectra-content');
+      const targetName = {{ target_name | tojson }};
+      let loaded = false;
+      let loading = false;
+
+      function clearNode(node) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+      }
+
+      function appendText(parent, text) {
+        parent.appendChild(document.createTextNode(text));
+      }
+
+      function renderTable(spectraData) {
+        const columns = spectraData.columns || [];
+        const rows = spectraData.rows || [];
+        const wrap = document.createElement('div');
+        wrap.className = 'csv-wrap';
+        const table = document.createElement('table');
+        table.id = 'spectra-table';
+        const thead = document.createElement('thead');
+        const headRow = document.createElement('tr');
+        columns.forEach(col => {
+          const th = document.createElement('th');
+          th.textContent = col;
+          headRow.appendChild(th);
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = document.createElement('tbody');
+        rows.forEach(row => {
+          const tr = document.createElement('tr');
+          columns.forEach(col => {
+            const td = document.createElement('td');
+            const value = row[col] !== null && row[col] !== undefined ? row[col] : '';
+            if (/^-?\d/.test(value)) td.className = 'mono';
+            
+            if (col === 'Bibcode' && value) {
+              const a = document.createElement('a');
+              a.href = 'https://ui.adsabs.harvard.edu/abs/' + encodeURIComponent(value);
+              a.target = '_blank';
+              a.rel = 'noopener';
+              a.textContent = value;
+              td.appendChild(a);
+            } else {
+              td.textContent = value;
+            }
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        content.appendChild(wrap);
+      }
+
+      function loadSpectra() {
+        if (loaded || loading) return;
+        loading = true;
+        status.textContent = 'Loading spectra datasets...';
+        status.style.color = 'var(--text-dim)';
+        fetch('/api/targets/spectra?name=' + encodeURIComponent(targetName))
+          .then(res => res.json().then(data => ({ ok: res.ok, data: data })))
+          .then(result => {
+            if (!result.ok || !result.data.ok) {
+              throw new Error(result.data.error || 'Request failed');
+            }
+            const spectraData = result.data.spectra || {};
+            const total = spectraData.rows ? spectraData.rows.length : 0;
+            clearNode(content);
+            if (!total) {
+              summary.textContent = 'Atmospheric Spectroscopy';
+              status.textContent = 'No spectra datasets found for this target.';
+              status.style.color = 'var(--text-dim)';
+              return;
+            }
+            summary.textContent = 'Atmospheric Spectroscopy (' + total.toLocaleString() + ' datasets)';
+            status.textContent = '';
+            renderTable(spectraData);
+            loaded = true;
+          })
+          .catch(err => {
+            status.textContent = 'Spectra datasets lookup failed: ' + err.message;
+            status.style.color = 'var(--red)';
+          })
+          .finally(() => {
+            loading = false;
+          });
+      }
+
+      details.addEventListener('toggle', function() {
+        if (details.open) loadSpectra();
+      });
+    })();
+  </script>
+  {% endif %}
 
   <details class="adv" id="ads-details" style="margin-top: 1rem;">
     <summary>NASA ADS Publications</summary>
@@ -437,7 +667,7 @@
         status.style.color = 'var(--text-dim)';
         resultsList.innerHTML = '';
 
-        fetch('/api/target/publications?q=' + encodeURIComponent(query))
+        fetch('/api/targets/publications?q=' + encodeURIComponent(query))
           .then(res => {
             if (!res.ok) {
               return res.json().then(err => {

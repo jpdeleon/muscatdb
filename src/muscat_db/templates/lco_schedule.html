@@ -104,6 +104,7 @@
     </p>
   </div>
   <p class="lco-note">Windows are coarse scheduling bounds. t0 is usually BJD_TDB; the ≤8&nbsp;min barycentric offset is absorbed by the padding above.</p>
+  <p class="lco-note">Window boundaries are always rounded to 5-minute intervals. When padding is 0 the rounded window may be slightly shorter than the transit visibility (floor for start, ceil for end). Verify for critical observations.</p>
 </div>
 
 <div class="lco-section">
@@ -168,7 +169,7 @@
     <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dim); margin-top: 0.6rem; margin-bottom: 0.4rem;">Settings:</div>
     <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.5rem 1rem;">
       <div class="lco-field"><label for="sch-exp-mode">Exp mode</label>
-        <select id="sch-exp-mode"><option value="SYNCHRONOUS">Sync</option><option value="ASYNCHRONOUS">Async</option></select></div>
+        <select id="sch-exp-mode"><option value="ASYNCHRONOUS" selected>Async</option><option value="SYNCHRONOUS">Sync</option></select></div>
       <div class="lco-field"><label for="sch-readout">Readout mode</label><select id="sch-readout" style="font-size: 0.8rem;"><option value="MUSCAT_FAST">MUSCAT_FAST</option><option value="MUSCAT_SLOW">MUSCAT_SLOW</option></select></div>
     </div>
     <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dim); margin-top: 0.6rem; margin-bottom: 0.4rem;">Narrowband filters:</div>
@@ -618,7 +619,9 @@
     if (effExp) effExp.readOnly = muscat;
     if (effMode) effMode.disabled = muscat;
     if (effFilter) effFilter.disabled = muscat;
-    if (!muscat) {
+    if (muscat) {
+      setSelectValue('sch-guiding-config', 'OFF');
+    } else {
       if (effMode) {
         effMode.innerHTML = 
           '<option value="central_2k_2x2">central_2k_2x2</option>' +

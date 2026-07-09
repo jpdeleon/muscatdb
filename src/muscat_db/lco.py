@@ -698,11 +698,29 @@ def archive_download_jobs() -> list[dict]:
     return jobs
 
 
+def _floor_5min(dt: datetime.datetime) -> datetime.datetime:
+    """Round down to nearest 5-minute boundary (always UTC safe)."""
+    return dt.replace(minute=(dt.minute // 5) * 5, second=0, microsecond=0)
+
+
+def _ceil_5min(dt: datetime.datetime) -> datetime.datetime:
+    """Round up to nearest 5-minute boundary."""
+    if dt.minute % 5 == 0 and dt.second == 0 and dt.microsecond == 0:
+        return dt
+    new_minute = ((dt.minute + 4) // 5) * 5
+    if new_minute >= 60:
+        return dt.replace(hour=dt.hour + 1, minute=new_minute - 60, second=0, microsecond=0)
+    return dt.replace(minute=new_minute, second=0, microsecond=0)
+
+
 def generate_windows(t0: float, period: float, duration_h: float, start_dt: str, end_dt: str, pad_before_min: float, pad_after_min: float) -> list[dict]:
     """Generate transit windows within a date range.
 
     Epochs are normalized to the first transit within the date range for clarity
     (epoch 0 = first transit in the range, not absolute count from t0).
+
+    Window boundaries are aligned to 5-minute intervals to match the LCO
+    scheduler convention, which avoids small mismatches in repeat_duration.
     """
     if not all([start_dt, end_dt]):
         raise LcoError("Date range is required", status=400)
@@ -733,8 +751,8 @@ def generate_windows(t0: float, period: float, duration_h: float, start_dt: str,
                 relative_epoch = current_epoch  # Store absolute epoch for first transit
                 first_in_range = False
 
-            start_obs = mid_dt - datetime.timedelta(hours=duration_h / 2.0, minutes=pad_before_min)
-            end_obs = mid_dt + datetime.timedelta(hours=duration_h / 2.0, minutes=pad_after_min)
+            start_obs = _floor_5min(mid_dt - datetime.timedelta(hours=duration_h / 2.0, minutes=pad_before_min))
+            end_obs = _ceil_5min(mid_dt + datetime.timedelta(hours=duration_h / 2.0, minutes=pad_after_min))
 
             windows.append({
                 "epoch": int(current_epoch - relative_epoch),  # Display relative epoch (0-indexed)

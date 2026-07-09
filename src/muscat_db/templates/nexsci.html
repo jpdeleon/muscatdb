@@ -25,7 +25,9 @@
   Source: <code>data/nexsci_pscomppars.csv</code> (Composite Planetary Systems, one row per confirmed planet)
   — {{ '{:,}'.format(n_rows) }} planets
   · <strong>{{ '{:,}'.format(n_indb) }}</strong> whose host is in muscat-db (★ markers)
-  · <strong>{{ '{:,}'.format(n_harps) }}</strong> with HARPS RVBank data.
+  · <strong>{{ '{:,}'.format(n_harps) }}</strong> with HARPS RVBank data
+  · <strong>{{ '{:,}'.format(n_jwst) }}</strong> in JWST Atmospheric Observation List (NExoList)
+  · <strong>{{ '{:,}'.format(n_spectra) }}</strong> with time-series spectra.
   Click a point to open its muscat-db target page, or — if the host is not in muscat-db —
   its <a href="https://exoplanetarchive.ipac.caltech.edu/overview/" target="_blank" rel="noopener">NASA Exoplanet Archive overview</a>.
   {% if nexsci_updated %}· catalog file updated {{ nexsci_updated }}{% endif %}.
@@ -81,6 +83,8 @@
 <div class="chip-bar">
   <span class="chip-label">External data:</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="harps" title="Coordinate-matched to the public HARPS RVBank catalog">has HARPS RV</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="jwst" title="Only planets with JWST Atmospheric Observation List (NExoList) data">has JWST data</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="spectra" title="Has time-series spectra available in the Atmospheric Spectroscopy table">has time-series spectra</span>
 </div>
 
 <div class="chip-bar">
@@ -336,6 +340,8 @@
     spec:     i => NEXSCI.nspec[i] != null && NEXSCI.nspec[i] > 1,
     phot:     i => NEXSCI.nphot[i] != null && NEXSCI.nphot[i] > 1,
     harps:    i => !!NEXSCI.has_harps_rv[i],
+    jwst:     i => !!NEXSCI.has_jwst[i],
+    spectra:  i => !!NEXSCI.has_spectra[i],
   };
 
   // ── filter state ───────────────────────────────────────────────────────────
@@ -441,6 +447,18 @@
         return '<td><a href="' + esc(hrefOf(i)) + '" target="_blank" rel="noopener">' +
           esc(label) + (NEXSCI.indb[i] ? ' ★' : '') + '</a></td>';
       }
+      if (c.key === 'radius') {
+        const hasHarps = selectedFlags.has('harps');
+        const harpsCount = NEXSCI.has_harps_rv[i] || 0;
+        let titleAttr = '';
+        if (hasHarps && harpsCount > 0) {
+          titleAttr = ' title="HARPS RV: ' + harpsCount + ' datapoints"';
+        }
+        return '<td class="num"' + titleAttr + '>' + fmtNum(v) + '</td>';
+      }
+      if (c.key === 'has_harps_rv') {
+        return '<td class="num">' + (v ? fmtNum(v) : '—') + '</td>';
+      }
       if (c.type === 'num') return '<td class="num">' + fmtNum(v) + '</td>';
       return '<td>' + esc(v || '—') + '</td>';
     });
@@ -507,7 +525,16 @@
     const logx = logXEl.checked, logy = logYEl.checked;
     const size = +sizeEl.value;
     const xlabel = colByKey[xk].plot, ylabel = colByKey[yk].plot;
-    const hovertmpl = '%{text}<br>' + xlabel + ': %{x}<br>' + ylabel + ': %{y}<extra></extra>';
+    const showHarpsCount = selectedFlags.has('harps');
+    let hovertmpl = '%{text}<br>' + xlabel + ': %{x}';
+    if (showHarpsCount && xk === 'radius') {
+      hovertmpl += '%{customdata[1]}';
+    }
+    hovertmpl += '<br>' + ylabel + ': %{y}';
+    if (showHarpsCount && yk === 'radius') {
+      hovertmpl += '%{customdata[1]}';
+    }
+    hovertmpl += '<extra></extra>';
 
     const isMass = k => k === 'mass' || k === 'massj';
     const isMassUsed = isMass(xk) || isMass(yk);
@@ -525,11 +552,18 @@
     const inDb = i => NEXSCI.indb && NEXSCI.indb[i];
     const symOf = i => (inDb(i) ? 'star' : 'circle');
     const sizeOf = i => (inDb(i) ? size + 3 : size);
-    const textOf = i => pointText(i) + (inDb(i) ? ' ★ (in muscat-db)' : '');
+    const pubYear = i => {
+      const pubDate = NEXSCI.pubdate && NEXSCI.pubdate[i];
+      return pubDate ? pubDate.substring(0, 4) : (NEXSCI.year[i] || '—');
+    };
+    const textOf = i => pointText(i) + (inDb(i) ? ' ★ (in muscat-db)' : '') + '<br>Last publish: ' + pubYear(i);
 
     function push(a, i) {
       a.x.push(NEXSCI[xk][i]); a.y.push(NEXSCI[yk][i]); a.text.push(textOf(i));
-      a.sym.push(symOf(i)); a.sz.push(sizeOf(i)); a.cd.push(i);   // original row index
+      a.sym.push(symOf(i)); a.sz.push(sizeOf(i));
+      const harpsCount = NEXSCI.has_harps_rv[i] || 0;
+      const harpsStr = (showHarpsCount && harpsCount > 0) ? ('<br>HARPS RV: ' + harpsCount + ' datapoints') : '';
+      a.cd.push([i, harpsStr]);
     }
     const newAcc = () => ({ x: [], y: [], text: [], sym: [], sz: [], cd: [], c: [] });
 
@@ -823,7 +857,8 @@
     plotClickBound = true;
     plotDiv.on('plotly_click', function (ev) {
       const pt = ev && ev.points && ev.points[0];
-      const i = pt && pt.customdata;
+      const cd = pt && pt.customdata;
+      const i = pt && (Array.isArray(cd) ? cd[0] : cd);
       if (i == null) return;
       window.open(hrefOf(i), '_blank', 'noopener');
     });

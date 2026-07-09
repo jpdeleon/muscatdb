@@ -104,6 +104,19 @@ app = FastAPI(title="MuSCAT Observation Log", lifespan=_lifespan)
 # which is the dominant cost when serving over an SSH port-forward tunnel.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
+from fastapi import APIRouter
+
+photometry_router = APIRouter(prefix="/api/photometry", tags=["photometry"])
+transit_fit_router = APIRouter(prefix="/api/transit-fit", tags=["transit-fit"])
+exposure_router = APIRouter(prefix="/api/exposure", tags=["exposure"])
+jobs_router = APIRouter(prefix="/api/jobs", tags=["jobs"])
+target_router = APIRouter(prefix="/api/targets", tags=["targets"])
+ephemeris_router = APIRouter(prefix="/api/ephemeris", tags=["ephemeris"])
+fov_router = APIRouter(prefix="/api/fov", tags=["fov"])
+lco_router = APIRouter(prefix="/api/lco", tags=["lco"])
+settings_router = APIRouter(prefix="/api/settings", tags=["settings"])
+ads_router = APIRouter(prefix="/api/ads", tags=["ads"])
+
 # Middleware: extract authenticated user from nginx reverse proxy.
 # nginx sets X-Forwarded-User after HTTP Basic Auth. Trusting that header is
 # ONLY safe for connections that actually came from nginx's own loopback
@@ -379,6 +392,17 @@ def target_page(name: str = ""):
         datasets, last_updated = _get_datasets_for_normalized_target(db, norm_name)
         target_tic_id = _target_tic_id(norm_name, datasets)
 
+        has_jwst_data = False
+        has_spectra_data = False
+        try:
+            target_aliases = _resolve_all_aliases(norm_name, datasets)
+            jwst_aliases = _load_jwst_targets_aliases()
+            has_jwst_data = bool(target_aliases & jwst_aliases)
+            spectra_aliases = _load_spectra_targets_aliases()
+            has_spectra_data = bool(target_aliases & spectra_aliases)
+        except Exception as e:
+            logger.warning("failed to check membership for %s: %s", norm_name, e)
+
         html = jinja.get_template("target.html").render(
             target_name=norm_name,
             datasets=datasets,
@@ -386,6 +410,8 @@ def target_page(name: str = ""):
             harps_match_arcsec=_HARPS_MATCH_ARCSEC,
             target_tic_id=target_tic_id,
             exofop_target_id=target_tic_id or norm_name,
+            has_jwst_data=has_jwst_data,
+            has_spectra_data=has_spectra_data,
         )
 
         _index_cache[cache_key] = (key, html)
@@ -603,6 +629,8 @@ def _harps_source_cache_key() -> tuple:
 
 _TOI_CATALOG_PATH = HERE.parent.parent / "data" / "TOIs.csv"
 _NEXSCI_CATALOG_PATH = HERE.parent.parent / "data" / "nexsci_pscomppars.csv"
+_JWST_TARGETS_PATH = HERE.parent.parent / "data" / "jwst_targets.csv"
+_SPECTRA_TARGETS_PATH = HERE.parent.parent / "data" / "spectra_targets.csv"
 
 
 def _path_cache_part(path: pathlib.Path) -> tuple:
@@ -615,7 +643,7 @@ def _path_cache_part(path: pathlib.Path) -> tuple:
 
 def _catalog_source_cache_key() -> tuple:
     """Cache component for target-page catalog-coordinate fallbacks."""
-    return (_path_cache_part(_TOI_CATALOG_PATH), _path_cache_part(_NEXSCI_CATALOG_PATH))
+    return (_path_cache_part(_TOI_CATALOG_PATH), _path_cache_part(_NEXSCI_CATALOG_PATH), _path_cache_part(_JWST_TARGETS_PATH), _path_cache_part(_SPECTRA_TARGETS_PATH))
 
 
 def _load_harps_targets() -> tuple[list[dict], str]:
@@ -703,7 +731,7 @@ def _open_harps_rvbank_csv():
 
 
 def _harps_coord_membership(cat_data: dict) -> tuple[list[int], int]:
-    """Return 0/1 flags for catalog rows positionally matched to HARPS RVBank."""
+    """Return RV counts (or 0) for catalog rows positionally matched to HARPS RVBank."""
     harps_coords, _updated = _load_harps_coords()
     n = len(cat_data.get("ra") or [])
     out = [0] * n
@@ -715,11 +743,20 @@ def _harps_coord_membership(cat_data: dict) -> tuple[list[int], int]:
         return out, 0
     bucket = max(_HARPS_BUCKET_DEG, tol / 3600.0)
     ra_bins = max(1, int(math.ceil(360.0 / bucket)))
-    index: dict[tuple[int, int], list[tuple[float, float]]] = {}
+
+    # Attempt to load target-level counts to resolve coordinate-level RV counts.
+    harps_targets, _ = _load_harps_targets()
+    counts_map = {}
+    for t in harps_targets:
+        counts_map[(round(t["ra"], 8), round(t["dec"], 8))] = t.get("n_rv", 0)
+
+    index: dict[tuple[int, int], list[tuple[float, float, int]]] = {}
     for ra, dec in harps_coords:
+        key = (round(ra, 8), round(dec, 8))
+        n_rv = counts_map.get(key, 1)
         rb = int((ra % 360.0) / bucket) % ra_bins
         db = int((dec + 90.0) / bucket)
-        index.setdefault((rb, db), []).append((ra, dec))
+        index.setdefault((rb, db), []).append((ra, dec, n_rv))
 
     ras, decs = cat_data.get("ra") or [], cat_data.get("dec") or []
     matched = 0
@@ -728,19 +765,16 @@ def _harps_coord_membership(cat_data: dict) -> tuple[list[int], int]:
             continue
         rb = int((ra % 360.0) / bucket) % ra_bins
         db = int((dec + 90.0) / bucket)
+        hit_count = 0
         hit = False
         for dra in (-1, 0, 1):
             for ddec in (-1, 0, 1):
-                for hra, hdec in index.get(((rb + dra) % ra_bins, db + ddec), ()):
+                for hra, hdec, hn_rv in index.get(((rb + dra) % ra_bins, db + ddec), ()):
                     if _angular_sep_arcsec(float(ra), float(dec), hra, hdec) <= tol:
                         hit = True
-                        break
-                if hit:
-                    break
-            if hit:
-                break
+                        hit_count = max(hit_count, hn_rv)
         if hit:
-            out[i] = 1
+            out[i] = hit_count if hit_count > 0 else 1
             matched += 1
     return out, matched
 
@@ -1017,7 +1051,8 @@ def _harps_data_for_target(datasets: list[dict], target_name: str | None = None)
     return _query_harps_rvbank_rows(coords, matches)
 
 
-@app.get("/api/target/harps-rv", response_class=JSONResponse)
+@target_router.get("/harps-rv", response_class=JSONResponse)
+@app.get("/api/target/harps-rv", response_class=JSONResponse, deprecated=True)
 def api_target_harps_rv(name: str = ""):
     norm_name = _normalize_target_name(name)
     if not norm_name:
@@ -1329,6 +1364,419 @@ def toi_page():
     )
 
 
+@app.get("/api/exofop/check_confirmed")
+def check_confirmed_planets(tics: str):
+    import urllib.request
+    import urllib.parse
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+    from .database import get_conn, SCHEMA
+
+    tic_list = [t.strip() for t in tics.split(",") if t.strip()]
+    if not tic_list:
+        return {}
+
+    results = {}
+    missing_tics = []
+
+    # 1. Query the cache
+    with get_conn() as conn:
+        conn.executescript(SCHEMA)  # Ensure schema updated
+        placeholders = ",".join("?" for _ in tic_list)
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT tic_id, has_confirmed_planets FROM exofop_cache WHERE tic_id IN ({placeholders})",
+            tic_list
+        )
+        for row in cursor.fetchall():
+            results[row[0]] = bool(row[1])
+
+    # 2. Identify missing ones
+    for t in tic_list:
+        if t not in results:
+            missing_tics.append(t)
+
+    if missing_tics:
+        def fetch_one(tic):
+            encoded_tic = urllib.parse.quote(tic)
+            url = f"https://exofop.ipac.caltech.edu/tess/target.php?id={encoded_tic}&json"
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "MuSCAT-db/0.1.0"})
+                with urllib.request.urlopen(req, timeout=10.0) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    bi = data.get("basic_info", {})
+                    confirmed_val = bi.get("confirmed_planets") or ""
+                    has_confirmed = len(confirmed_val.strip()) > 0
+                    return tic, has_confirmed, confirmed_val
+            except Exception as e:
+                logger.warning("Failed to fetch ExoFOP for TIC %s: %s", tic, e)
+                return tic, None, None
+
+        # Fetch in parallel with up to 10 workers
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            fetched_results = list(executor.map(fetch_one, missing_tics))
+
+        # 3. Write new entries to cache
+        with get_conn() as conn:
+            cursor = conn.cursor()
+            for tic, has_confirmed, confirmed_val in fetched_results:
+                if has_confirmed is not None:
+                    cursor.execute(
+                        "INSERT OR REPLACE INTO exofop_cache (tic_id, has_confirmed_planets, confirmed_planets, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                        (tic, 1 if has_confirmed else 0, confirmed_val)
+                    )
+                    results[tic] = has_confirmed
+            conn.commit()
+
+    return results
+
+
+_jwst_targets_cache: set[str] = set()
+
+
+def _load_jwst_targets() -> set[str]:
+    """Load unique JWST target names from data/jwst_targets.csv."""
+    global _jwst_targets_cache
+    if _jwst_targets_cache:
+        return _jwst_targets_cache
+    path = _JWST_TARGETS_PATH
+    if not path.is_file():
+        return set()
+    try:
+        with open(path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            _jwst_targets_cache = {row["pl_name"].strip() for row in reader if row.get("pl_name")}
+    except Exception:
+        logger.warning("failed to read JWST targets catalog %s", path, exc_info=True)
+        return set()
+    return _jwst_targets_cache
+
+
+_spectra_targets_cache: set[str] = set()
+
+
+def _load_spectra_targets() -> set[str]:
+    """Load unique spectra target names from data/spectra_targets.csv or fetch from TAP if missing."""
+    global _spectra_targets_cache
+    if _spectra_targets_cache:
+        return _spectra_targets_cache
+    path = _SPECTRA_TARGETS_PATH
+    if not path.is_file():
+        logger.info("data/spectra_targets.csv not found, downloading from NASA Exoplanet Archive...")
+        try:
+            import urllib.request
+            import urllib.parse
+            query = "SELECT distinct pl_name FROM spectra"
+            params = {"query": query, "format": "csv"}
+            url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?" + urllib.parse.urlencode(params)
+            req = urllib.request.Request(url, headers={"User-Agent": "MuSCAT-db/0.1.0"})
+            with urllib.request.urlopen(req, timeout=15.0) as response:
+                content = response.read().decode("utf-8")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(content)
+        except Exception as e:
+            logger.warning("failed to download spectra targets from TAP: %s", e)
+            return set()
+            
+    try:
+        with open(path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            _spectra_targets_cache = {row["pl_name"].strip() for row in reader if row.get("pl_name")}
+    except Exception:
+        logger.warning("failed to read spectra targets catalog %s", path, exc_info=True)
+        return set()
+    return _spectra_targets_cache
+
+
+_jwst_aliases_cache: set[str] = set()
+
+
+def _load_jwst_targets_aliases() -> set[str]:
+    """Load all aliases for the JWST targets."""
+    global _jwst_aliases_cache
+    if _jwst_aliases_cache:
+        return _jwst_aliases_cache
+    targets = _load_jwst_targets()
+    aliases = set()
+    for t in targets:
+        aliases.update(_target_lookup_aliases(t))
+    _jwst_aliases_cache = aliases
+    return _jwst_aliases_cache
+
+
+def _resolve_all_aliases(target_name: str, datasets: list[dict] | None = None) -> set[str]:
+    """Resolve all possible aliases for a given target name, using TOI and NExScI catalogs."""
+    names = [target_name]
+    names.extend(str(ds.get("object") or "") for ds in (datasets or []))
+    aliases: set[str] = set()
+    for name in names:
+        aliases.update(_target_lookup_aliases(name))
+        
+    try:
+        cat = _load_toi_catalog()["data"]
+        n = len(cat.get("toi", []))
+        for i in range(n):
+            toi = str((cat.get("toi") or [""])[i] or "").strip()
+            name = str((cat.get("name") or [""])[i] or "")
+            row_aliases = _target_lookup_aliases(name)
+            if toi:
+                toi_num = _toi_float(toi)
+                if toi_num is not None:
+                    row_aliases.add(f"TOI{int(toi_num)}")
+                row_aliases.add(_normalize_target_name(f"TOI-{toi}"))
+            if aliases & row_aliases:
+                aliases.update(row_aliases)
+                tic = str((cat.get("tic") or [""])[i] or "")
+                digits = re.sub(r"\D", "", tic)
+                if digits:
+                    aliases.add(f"TIC{digits}")
+                    aliases.add(f"TIC {digits}")
+    except Exception:
+        pass
+
+    try:
+        cat = _load_nexsci_catalog()["data"]
+        n = len(cat.get("name", []))
+        for i in range(n):
+            name = str((cat.get("name") or [""])[i] or "")
+            host = str((cat.get("host") or [""])[i] or "")
+            tic = str((cat.get("tic") or [""])[i] or "")
+            row_aliases = _target_lookup_aliases(name) | _target_lookup_aliases(host)
+            if tic:
+                digits = re.sub(r"\D", "", tic)
+                if digits:
+                    row_aliases.add(f"TIC{digits}")
+                    row_aliases.add(f"TIC {digits}")
+            if aliases & row_aliases:
+                aliases.update(row_aliases)
+    except Exception:
+        pass
+        
+    return aliases
+
+
+def _matched_jwst_targets(target_name: str, datasets: list[dict] | None = None) -> list[str]:
+    """Return actual pl_name values from jwst_targets.csv matching target's aliases."""
+    target_aliases = _resolve_all_aliases(target_name, datasets)
+    jwst_targets = _load_jwst_targets()
+    matched = []
+    for t in jwst_targets:
+        if _target_lookup_aliases(t) & target_aliases:
+            matched.append(t)
+    return matched
+
+
+_spectra_aliases_cache: set[str] = set()
+
+
+def _load_spectra_targets_aliases() -> set[str]:
+    """Load all aliases for the spectra targets."""
+    global _spectra_aliases_cache
+    if _spectra_aliases_cache:
+        return _spectra_aliases_cache
+    targets = _load_spectra_targets()
+    aliases = set()
+    for t in targets:
+        aliases.update(_target_lookup_aliases(t))
+    _spectra_aliases_cache = aliases
+    return _spectra_aliases_cache
+
+
+def _matched_spectra_targets(target_name: str, datasets: list[dict] | None = None) -> list[str]:
+    """Return actual pl_name values from spectra_targets.csv matching target's aliases."""
+    target_aliases = _resolve_all_aliases(target_name, datasets)
+    spectra_targets = _load_spectra_targets()
+    matched = []
+    for t in spectra_targets:
+        if _target_lookup_aliases(t) & target_aliases:
+            matched.append(t)
+    return matched
+
+
+@target_router.get("/jwst", response_class=JSONResponse)
+@app.get("/api/target/jwst", response_class=JSONResponse, deprecated=True)
+def api_target_jwst(name: str = ""):
+    norm_name = _normalize_target_name(name)
+    if not norm_name:
+        return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
+    
+    db = _db_path()
+    datasets, _last_updated = _get_datasets_for_normalized_target(db, norm_name)
+    matched = _matched_jwst_targets(norm_name, datasets)
+    
+    if not matched:
+        return JSONResponse({
+            "ok": True,
+            "target": norm_name,
+            "jwst": {
+                "columns": [],
+                "rows": []
+            }
+        })
+    
+    import urllib.request
+    import urllib.parse
+    import csv
+    import io
+    import datetime
+    
+    names_str = ", ".join("'" + n.replace("'", "''") + "'" for n in matched)
+    query = f"SELECT program, observation_num, instrument, observingmode, gratinggrism, event, status, starttime, observation_dur FROM nexolist WHERE pl_name IN ({names_str})"
+    params = {
+        "query": query,
+        "format": "csv"
+    }
+    url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "MuSCAT-db/0.1.0"
+    })
+    
+    try:
+        with urllib.request.urlopen(req, timeout=15.0) as response:
+            content = response.read().decode("utf-8")
+            f = io.StringIO(content)
+            reader = csv.DictReader(f)
+            col_map = {
+                "program": "Program",
+                "observation_num": "Obs #",
+                "instrument": "Instrument",
+                "observingmode": "Observing Mode",
+                "gratinggrism": "Grating/Grism",
+                "event": "Event",
+                "status": "Status",
+                "starttime": "Start Time (UTC)",
+                "observation_dur": "Duration (h)"
+            }
+            columns = ["Program", "Obs #", "Instrument", "Observing Mode", "Grating/Grism", "Event", "Status", "Start Time (UTC)", "Duration (h)"]
+            rows = []
+            for row in reader:
+                if not row or "ERROR" in row:
+                    continue
+                mapped_row = {}
+                for orig_col, new_col in col_map.items():
+                    val = row.get(orig_col)
+                    if val is None:
+                        val = ""
+                    else:
+                        val = val.strip()
+                        if orig_col == "observation_dur":
+                            try:
+                                float_val = float(val)
+                                val = f"{float_val:.2f}"
+                            except ValueError:
+                                pass
+                    mapped_row[new_col] = val
+                rows.append(mapped_row)
+            
+            def get_start_time(r):
+                t_str = r.get("Start Time (UTC)", "")
+                try:
+                    return datetime.datetime.strptime(t_str, "%b %d, %Y %H:%M:%S")
+                except Exception:
+                    return datetime.datetime.min
+            
+            rows.sort(key=get_start_time, reverse=True)
+            
+            return JSONResponse({
+                "ok": True,
+                "target": norm_name,
+                "jwst": {
+                    "columns": columns,
+                    "rows": rows
+                }
+            })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"Failed to query JWST observations: {str(e)}"}, status_code=500)
+
+
+@target_router.get("/spectra", response_class=JSONResponse)
+@app.get("/api/target/spectra", response_class=JSONResponse, deprecated=True)
+def api_target_spectra(name: str = ""):
+    norm_name = _normalize_target_name(name)
+    if not norm_name:
+        return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
+    
+    db = _db_path()
+    datasets, _last_updated = _get_datasets_for_normalized_target(db, norm_name)
+    matched = _matched_spectra_targets(norm_name, datasets)
+    
+    if not matched:
+        return JSONResponse({
+            "ok": True,
+            "target": norm_name,
+            "spectra": {
+                "columns": [],
+                "rows": []
+            }
+        })
+    
+    import urllib.request
+    import urllib.parse
+    import csv
+    import io
+    
+    names_str = ", ".join("'" + n.replace("'", "''") + "'" for n in matched)
+    query = f"SELECT spec_type, facility, instrument, minwavelng, maxwavelng, num_datapoints, authors, bibcode FROM spectra WHERE pl_name IN ({names_str})"
+    params = {
+        "query": query,
+        "format": "csv"
+    }
+    url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "MuSCAT-db/0.1.0"
+    })
+    
+    try:
+        with urllib.request.urlopen(req, timeout=15.0) as response:
+            content = response.read().decode("utf-8")
+            f = io.StringIO(content)
+            reader = csv.DictReader(f)
+            col_map = {
+                "spec_type": "Type",
+                "facility": "Facility",
+                "instrument": "Instrument",
+                "minwavelng": "Min Wavelng (μm)",
+                "maxwavelng": "Max Wavelng (μm)",
+                "num_datapoints": "# Points",
+                "authors": "Authors",
+                "bibcode": "Bibcode"
+            }
+            columns = ["Type", "Facility", "Instrument", "Min Wavelng (μm)", "Max Wavelng (μm)", "# Points", "Authors", "Bibcode"]
+            rows = []
+            for row in reader:
+                if not row or "ERROR" in row:
+                    continue
+                mapped_row = {}
+                for orig_col, new_col in col_map.items():
+                    val = row.get(orig_col)
+                    if val is None:
+                        val = ""
+                    else:
+                        val = val.strip()
+                        if orig_col in ("minwavelng", "maxwavelng"):
+                            try:
+                                float_val = float(val)
+                                val = f"{float_val:.4f}"
+                            except ValueError:
+                                pass
+                    mapped_row[new_col] = val
+                rows.append(mapped_row)
+            
+            rows.sort(key=lambda r: (r.get("Type", ""), r.get("Authors", "")))
+            
+            return JSONResponse({
+                "ok": True,
+                "target": norm_name,
+                "spectra": {
+                    "columns": columns,
+                    "rows": rows
+                }
+            })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"Failed to query spectra observations: {str(e)}"}, status_code=500)
+
+
 # ── NASA Exoplanet Archive (NExScI) composite catalog ──────────────────────
 # Column map for the /nexsci page: (csv header, json key, kind). "s" keeps the
 # raw string, "f" parses a finite float (or null) via _toi_float. Header names
@@ -1341,6 +1789,7 @@ _NEXSCI_COLUMNS: list[tuple[str, str, str]] = [
     ("disc_facility", "facility", "s"),
     ("st_spectype", "spectype", "s"),
     ("disc_year", "year", "f"),
+    ("disc_pubdate", "pubdate", "s"),
     ("ra_x", "ra", "f"),
     ("dec_x", "dec", "f"),
     ("pl_orbper", "period", "f"),
@@ -1385,6 +1834,28 @@ _NEXSCI_COLUMNS: list[tuple[str, str, str]] = [
 _nexsci_cache: dict = {}
 
 
+_PUBDATES_PATH = HERE.parent.parent / "data" / "nexsci_pubdates.csv"
+_pubdates_cache: dict[str, str] = {}
+
+
+def _load_pubdates() -> dict[str, str]:
+    """Load latest publication dates mapping from data/nexsci_pubdates.csv."""
+    global _pubdates_cache
+    if _pubdates_cache:
+        return _pubdates_cache
+    path = _PUBDATES_PATH
+    if not path.is_file():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            _pubdates_cache = {row["pl_name"].strip(): (row.get("pl_pubdate") or "").strip() for row in reader if row.get("pl_name")}
+    except Exception:
+        logger.warning("failed to read latest publication dates catalog %s", path, exc_info=True)
+        return {}
+    return _pubdates_cache
+
+
 def _load_nexsci_catalog() -> dict:
     """Read ``data/nexsci_pscomppars.csv`` (NASA Exoplanet Archive Composite
     Planetary Systems — one row per confirmed planet) into column-oriented
@@ -1402,11 +1873,17 @@ def _load_nexsci_catalog() -> dict:
     if cached is not None and cached[0] == mtime:
         return cached[1]
 
+    pubdates = _load_pubdates()
+
     data: dict[str, list] = {key: [] for _, key, _ in _NEXSCI_COLUMNS}
     with open(path, encoding="utf-8") as f:
         for row in csv.DictReader(f):
             for header, key, kind in _NEXSCI_COLUMNS:
-                raw = row.get(header)
+                if key == "pubdate":
+                    pl_name = row.get("pl_name", "").strip()
+                    raw = pubdates.get(pl_name) or row.get(header)
+                else:
+                    raw = row.get(header)
                 data[key].append(_toi_float(raw) if kind == "f" else (raw or "").strip())
             # Fallback for transit radius ratio if empty
             if data["ratror"][-1] is None:
@@ -1466,21 +1943,31 @@ def nexsci_page():
     cat = _load_nexsci_catalog()
     indb, tname = _nexsci_db_membership(cat["data"], _db_path())
     harps, n_harps = _harps_coord_membership(cat["data"])
+    jwst_targets = _load_jwst_targets()
+    jwst = [1 if p in jwst_targets else 0 for p in cat["data"]["name"]]
+    spectra_targets = _load_spectra_targets()
+    spectra = [1 if p in spectra_targets else 0 for p in cat["data"]["name"]]
+
     payload = dict(cat["data"])
     payload["indb"] = indb
     payload["tname"] = tname
     payload["has_harps_rv"] = harps
+    payload["has_jwst"] = jwst
+    payload["has_spectra"] = spectra
     return _render(
         "nexsci.html",
         nexsci_json=json.dumps(payload, separators=(",", ":"), allow_nan=False),
         n_rows=cat["n"],
         n_indb=sum(indb),
         n_harps=n_harps,
+        n_jwst=sum(jwst),
+        n_spectra=sum(spectra),
         nexsci_updated=cat["updated"],
     )
 
 
-@app.get("/api/targets/export.csv")
+@target_router.get("/export.csv")
+@app.get("/api/targets/export.csv", deprecated=True)
 def export_targets_csv():
     db = _db_path()
     targets = _get_targets(db)
@@ -1830,7 +2317,8 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
     )
 
 
-@app.get("/transit-fit/query-archive")
+@transit_fit_router.get("/query-archive")
+@app.get("/transit-fit/query-archive", deprecated=True)
 def transit_fit_query_archive(target: str, source: str = "nasa"):
     if not (target or "").strip():
         return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
@@ -1868,9 +2356,10 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
         with open(csv_path, mode='r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
-                toi = (row.get("TOI") or "").strip()
-                planet_name = (row.get("Planet Name") or "").strip()
-                tic_id = (row.get("TIC ID") or "").strip()
+                row = {k.lower(): v for k, v in row.items()}
+                toi = (row.get("toi") or "").strip()
+                planet_name = (row.get("planet name") or "").strip()
+                tic_id = (row.get("tic id") or "").strip()
 
                 # Match TOI by numeric value (handles leading zeros like toi02688 vs TOI-688)
                 if toi:
@@ -1914,19 +2403,19 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
             try: return float(val)
             except ValueError: return None
             
-        toi_val = best_row.get("TOI", "")
+        toi_val = best_row.get("toi", "")
         toi_display = f"TOI-{toi_val}" if toi_val else target
         
-        teff = _float_or_none(best_row.get("Stellar Eff Temp (K)"))
-        teff_err = _float_or_none(best_row.get("Stellar Eff Temp (K) err"))
-        logg = _float_or_none(best_row.get("Stellar log(g) (cm/s^2)"))
-        logg_err = _float_or_none(best_row.get("Stellar log(g) (cm/s^2) err"))
-        period = _float_or_none(best_row.get("Period (days)"))
-        period_err = _float_or_none(best_row.get("Period (days) err"))
-        t0 = _float_or_none(best_row.get("Epoch (BJD)"))
-        t0_err = _float_or_none(best_row.get("Epoch (BJD) err"))
-        dur = _float_or_none(best_row.get("Duration (hours)"))
-        dur_err = _float_or_none(best_row.get("Duration (hours) err"))
+        teff = _float_or_none(best_row.get("stellar eff temp (k)"))
+        teff_err = _float_or_none(best_row.get("stellar eff temp (k) err"))
+        logg = _float_or_none(best_row.get("stellar log(g) (cm/s^2)"))
+        logg_err = _float_or_none(best_row.get("stellar log(g) (cm/s^2) err"))
+        period = _float_or_none(best_row.get("period (days)"))
+        period_err = _float_or_none(best_row.get("period (days) err"))
+        t0 = _float_or_none(best_row.get("epoch (bjd)"))
+        t0_err = _float_or_none(best_row.get("epoch (bjd) err"))
+        dur = _float_or_none(best_row.get("duration (hours)"))
+        dur_err = _float_or_none(best_row.get("duration (hours) err"))
         
         params = {
             "planets": "b",
@@ -2263,13 +2752,15 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
         return JSONResponse({"ok": True, "params": params, "pl_name": pl_name})
 
 
-@app.get("/transit-fit/status")
+@transit_fit_router.get("/status")
+@app.get("/transit-fit/status", deprecated=True)
 def transit_fit_status(inst: str, date: str, target: str, run: str = ""):
     fit.sync_jobs()
     return JSONResponse(fit.job_status(inst, date, target, run_id=(run or "").strip()))
 
 
-@app.post("/transit-fit/run")
+@transit_fit_router.post("/run")
+@app.post("/transit-fit/run", deprecated=True)
 def transit_fit_run(request: Request, payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
@@ -2284,7 +2775,8 @@ def transit_fit_run(request: Request, payload: dict = Body(...)):
     return JSONResponse(result)
 
 
-@app.post("/transit-fit/logp")
+@transit_fit_router.post("/logp")
+@app.post("/transit-fit/logp", deprecated=True)
 def transit_fit_logp(payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
@@ -2297,7 +2789,8 @@ def transit_fit_logp(payload: dict = Body(...)):
     return JSONResponse(result)
 
 
-@app.post("/transit-fit/cancel")
+@transit_fit_router.post("/cancel")
+@app.post("/transit-fit/cancel", deprecated=True)
 def transit_fit_cancel(payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
@@ -2309,7 +2802,8 @@ def transit_fit_cancel(payload: dict = Body(...)):
     return JSONResponse(result)
 
 
-@app.post("/transit-fit/delete")
+@transit_fit_router.post("/delete")
+@app.post("/transit-fit/delete", deprecated=True)
 def transit_fit_delete(payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
@@ -2350,12 +2844,14 @@ def _serve_transit_file(inst: str, date: str, target: str, name: str, run_id: st
     return FileResponse(str(path), headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
 
 
-@app.get("/transit-fit/file/{inst}/{date}/{target}/run/{run_id}/{name}")
+@transit_fit_router.get("/file/{inst}/{date}/{target}/run/{run_id}/{name}")
+@app.get("/transit-fit/file/{inst}/{date}/{target}/run/{run_id}/{name}", deprecated=True)
 def transit_fit_file_run(inst: str, date: str, target: str, run_id: str, name: str):
     return _serve_transit_file(inst, date, target, name, run_id)
 
 
-@app.get("/transit-fit/file/{inst}/{date}/{target}/{name}")
+@transit_fit_router.get("/file/{inst}/{date}/{target}/{name}")
+@app.get("/transit-fit/file/{inst}/{date}/{target}/{name}", deprecated=True)
 def transit_fit_file(inst: str, date: str, target: str, name: str):
     # Legacy single-dir fits (run_id="").
     return _serve_transit_file(inst, date, target, name, None)
@@ -2440,12 +2936,14 @@ def _transit_fit_download_all(inst: str, date: str, target: str, run_id: str | N
     return _create_zip_response(files_to_zip, archive_name)
 
 
-@app.get("/transit-fit/download-all/{inst}/{date}/{target}/run/{run_id}")
+@transit_fit_router.get("/download-all/{inst}/{date}/{target}/run/{run_id}")
+@app.get("/transit-fit/download-all/{inst}/{date}/{target}/run/{run_id}", deprecated=True)
 def transit_fit_download_all_run(inst: str, date: str, target: str, run_id: str):
     return _transit_fit_download_all(inst, date, target, run_id)
 
 
-@app.get("/transit-fit/download-all/{inst}/{date}/{target}")
+@transit_fit_router.get("/download-all/{inst}/{date}/{target}")
+@app.get("/transit-fit/download-all/{inst}/{date}/{target}", deprecated=True)
 def transit_fit_download_all(inst: str, date: str, target: str):
     return _transit_fit_download_all(inst, date, target, None)
 
@@ -2473,7 +2971,8 @@ def exposure_page(inst: str = "", target: str = ""):
     )
 
 
-@app.post("/exposure/calculate", response_class=JSONResponse)
+@exposure_router.post("/calculate", response_class=JSONResponse)
+@app.post("/exposure/calculate", response_class=JSONResponse, deprecated=True)
 def exposure_calculate(payload: dict = Body(...)):
     inst = (payload.get("instrument") or "").strip()
     if inst not in INSTRUMENTS:
@@ -2512,7 +3011,8 @@ def exposure_calculate(payload: dict = Body(...)):
     return JSONResponse({"ok": True, **result})
 
 
-@app.post("/exposure/calibrate", response_class=JSONResponse)
+@exposure_router.post("/calibrate", response_class=JSONResponse)
+@app.post("/exposure/calibrate", response_class=JSONResponse, deprecated=True)
 def exposure_calibrate(payload: dict = Body(...)):
     inst = (payload.get("instrument") or "").strip()
     if inst not in INSTRUMENTS:
@@ -2524,7 +3024,8 @@ def exposure_calibrate(payload: dict = Body(...)):
     return JSONResponse(result)
 
 
-@app.post("/exposure/lookup-mags", response_class=JSONResponse)
+@exposure_router.post("/lookup-mags", response_class=JSONResponse)
+@app.post("/exposure/lookup-mags", response_class=JSONResponse, deprecated=True)
 def exposure_lookup_mags(payload: dict = Body(...)):
     target = (payload.get("target") or "").strip()
     if not target:
@@ -2555,7 +3056,8 @@ def exposure_lookup_mags(payload: dict = Body(...)):
     })
 
 
-@app.get("/exposure/status", response_class=JSONResponse)
+@exposure_router.get("/status", response_class=JSONResponse)
+@app.get("/exposure/status", response_class=JSONResponse, deprecated=True)
 def exposure_status():
     calibrations = {}
     for name in INSTRUMENTS:
@@ -2563,7 +3065,8 @@ def exposure_status():
     return JSONResponse({"calibrations": calibrations})
 
 
-@app.get("/exposure/coeffs/{instrument}", response_class=JSONResponse)
+@exposure_router.get("/coeffs/{instrument}", response_class=JSONResponse)
+@app.get("/exposure/coeffs/{instrument}", response_class=JSONResponse, deprecated=True)
 def exposure_coeffs(instrument: str):
     if instrument not in INSTRUMENTS:
         return JSONResponse({"ok": False, "error": "Invalid instrument"}, status_code=400)
@@ -2575,7 +3078,7 @@ def exposure_coeffs(instrument: str):
     return JSONResponse({"ok": True, "instrument": instrument, "coeffs": rows})
 
 
-@app.get("/api/exposure/target/{target}", response_class=JSONResponse)
+@exposure_router.get("/target/{target}", response_class=JSONResponse)
 def api_exposure_target(target: str):
     """Get exposure information for a specific target.
 
@@ -2712,7 +3215,7 @@ def fov_page(inst: str = "", target: str = ""):
     )
 
 
-@app.post("/api/fov/optimize", response_class=JSONResponse)
+@fov_router.post("/optimize", response_class=JSONResponse)
 def api_fov_optimize(payload: dict = Body(...)):
     inst = (payload.get("instrument") or "").strip()
     if inst not in _FOV_INSTRUMENTS:
@@ -2749,24 +3252,31 @@ def api_fov_optimize(payload: dict = Body(...)):
     pa_step_deg = None if allow_rotation else 180.0
     sinistro_mode = payload.get("sinistro_mode")
 
-    result = fov_opt.optimize(
-        instrument=inst,
-        target=target,
-        ra=ra,
-        dec=dec,
-        margin_arcsec=margin,
-        comp_margin_arcsec=comp_margin,
-        mag_limit=mag_limit,
-        pa_step_deg=pa_step_deg,
-        sinistro_mode=sinistro_mode,
-        min_mag=min_mag,
-        max_mag=max_mag,
-        mag_delta=mag_delta,
-    )
-    return JSONResponse(result.to_dict(), status_code=200)
+    try:
+        result = fov_opt.optimize(
+            instrument=inst,
+            target=target,
+            ra=ra,
+            dec=dec,
+            margin_arcsec=margin,
+            comp_margin_arcsec=comp_margin,
+            mag_limit=mag_limit,
+            pa_step_deg=pa_step_deg,
+            sinistro_mode=sinistro_mode,
+            min_mag=min_mag,
+            max_mag=max_mag,
+            mag_delta=mag_delta,
+        )
+        return JSONResponse(result.to_dict(), status_code=200)
+    except Exception as exc:
+        logger.error("FOV optimization failed: %s", exc, exc_info=True)
+        return JSONResponse(
+            {"ok": False, "error": f"FOV optimization failed: {exc}"},
+            status_code=500,
+        )
 
 
-@app.post("/api/fov/resolve-target", response_class=JSONResponse)
+@fov_router.post("/resolve-target", response_class=JSONResponse)
 def api_fov_resolve_target(payload: dict = Body(...)):
     target = (payload.get("target") or "").strip()
     if not target:
@@ -2781,7 +3291,7 @@ def api_fov_resolve_target(payload: dict = Body(...)):
     return JSONResponse({"ok": True, "ra": round(coords[0], 5), "dec": round(coords[1], 5)})
 
 
-@app.get("/api/fov/observable", response_class=JSONResponse)
+@fov_router.get("/observable", response_class=JSONResponse)
 def api_fov_observable():
     """Report observable declination ranges for each instrument."""
     observable = {}
@@ -2800,7 +3310,7 @@ def ephemeris_page():
     return _render("ephemeris.html")
 
 
-@app.post("/api/ephemeris/view", response_class=JSONResponse)
+@ephemeris_router.post("/view", response_class=JSONResponse)
 def api_ephemeris_view_save(payload: dict = Body(...)):
     state = payload.get("state") if isinstance(payload, dict) else None
     if not isinstance(state, dict):
@@ -2812,7 +3322,7 @@ def api_ephemeris_view_save(payload: dict = Body(...)):
     return JSONResponse({"ok": True, **saved})
 
 
-@app.get("/api/ephemeris/view/{slug}", response_class=JSONResponse)
+@ephemeris_router.get("/view/{slug}", response_class=JSONResponse)
 def api_ephemeris_view_get(slug: str):
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", slug or ""):
         return JSONResponse({"ok": False, "error": "Invalid view slug"}, status_code=400)
@@ -2872,7 +3382,7 @@ def settings_page():
     return _render("settings.html")
 
 
-@app.get("/api/settings/lco-token-status", response_class=JSONResponse)
+@settings_router.get("/lco-token-status", response_class=JSONResponse)
 def api_settings_lco_token_status(request: Request):
     user = _request_user(request)
     if not user:
@@ -2895,7 +3405,7 @@ def api_settings_lco_token_status(request: Request):
     )
 
 
-@app.post("/api/settings/lco-token", response_class=JSONResponse)
+@settings_router.post("/lco-token", response_class=JSONResponse)
 def api_settings_lco_token(request: Request, payload: dict = Body(...)):
     if not _is_same_origin(request):
         return _csrf_error()
@@ -2913,7 +3423,7 @@ def api_settings_lco_token(request: Request, payload: dict = Body(...)):
     return JSONResponse({"ok": True, "user_token_configured": bool(token)})
 
 
-@app.get("/api/settings/ads-token-status", response_class=JSONResponse)
+@settings_router.get("/ads-token-status", response_class=JSONResponse)
 def api_settings_ads_token_status(request: Request):
     user = _request_user(request)
     if not user:
@@ -2936,7 +3446,7 @@ def api_settings_ads_token_status(request: Request):
     )
 
 
-@app.post("/api/settings/ads-token", response_class=JSONResponse)
+@settings_router.post("/ads-token", response_class=JSONResponse)
 def api_settings_ads_token(request: Request, payload: dict = Body(...)):
     if not _is_same_origin(request):
         return _csrf_error()
@@ -2969,13 +3479,13 @@ def lco_archive_page():
     return _render("lco_archive.html")
 
 
-@app.get("/api/lco/config", response_class=JSONResponse)
+@lco_router.get("/config", response_class=JSONResponse)
 def api_lco_config(request: Request):
     """Report whether the token/download-root/submit gate are configured. No secrets."""
     return JSONResponse({"ok": True, **lco.config_state(_request_user(request))})
 
 
-@app.get("/api/lco/proposals", response_class=JSONResponse)
+@lco_router.get("/proposals", response_class=JSONResponse)
 def api_lco_proposals(request: Request):
     try:
         return JSONResponse({"ok": True, **lco.get_proposals(_request_user(request))})
@@ -2983,7 +3493,7 @@ def api_lco_proposals(request: Request):
         return _lco_error_response(e)
 
 
-@app.get("/api/lco/requestgroups", response_class=JSONResponse)
+@lco_router.get("/requestgroups", response_class=JSONResponse)
 def api_lco_requestgroups(request: Request, proposal: str = ""):
     try:
         return JSONResponse({"ok": True, **lco.get_requestgroups(proposal, _request_user(request))})
@@ -2991,7 +3501,7 @@ def api_lco_requestgroups(request: Request, proposal: str = ""):
         return _lco_error_response(e)
 
 
-@app.post("/api/lco/windows", response_class=JSONResponse)
+@lco_router.post("/windows", response_class=JSONResponse)
 def api_lco_windows(payload: dict = Body(...)):
     """Generate transit windows from explicit t0/period/duration or a catalog lookup."""
     try:
@@ -3095,7 +3605,7 @@ def api_lco_windows(payload: dict = Body(...)):
         return JSONResponse({"ok": False, "error": f"invalid numeric input: {e}"}, status_code=400)
 
 
-@app.get("/api/lco/visibility", response_class=JSONResponse)
+@lco_router.get("/visibility", response_class=JSONResponse)
 def api_lco_visibility(
     ra: float,
     dec: float,
@@ -3121,7 +3631,7 @@ def api_lco_visibility(
         return JSONResponse({"ok": False, "error": f"visibility unavailable: {e}"}, status_code=500)
 
 
-@app.post("/api/lco/ipp", response_class=JSONResponse)
+@lco_router.post("/ipp", response_class=JSONResponse)
 def api_lco_ipp(request: Request, payload: dict = Body(...)):
     """Build the requestgroup and run the max-allowable-IPP dry-run."""
     try:
@@ -3134,7 +3644,7 @@ def api_lco_ipp(request: Request, payload: dict = Body(...)):
         return _lco_error_response(e)
 
 
-@app.post("/api/lco/submit", response_class=JSONResponse)
+@lco_router.post("/submit", response_class=JSONResponse)
 def api_lco_submit(request: Request, payload: dict = Body(...)):
     """Live submission. Guarded: requires explicit confirm AND a payload hash that
     matches a prior successful dry-run, plus the server-side submit switch."""
@@ -3165,7 +3675,7 @@ def _lco_split_error_response(e: "lco.LcoError", leg: str) -> JSONResponse:
     return JSONResponse(body, status_code=e.status)
 
 
-@app.post("/api/lco/split-ipp", response_class=JSONResponse)
+@lco_router.post("/split-ipp", response_class=JSONResponse)
 def api_lco_split_ipp(request: Request, payload: dict = Body(...)):
     """Build+dry-run BOTH legs of a two-site split-transit request (one site
     covering ingress through a handoff, the other the handoff through egress).
@@ -3189,7 +3699,7 @@ def api_lco_split_ipp(request: Request, payload: dict = Body(...)):
     })
 
 
-@app.post("/api/lco/split-submit", response_class=JSONResponse)
+@lco_router.post("/split-submit", response_class=JSONResponse)
 def api_lco_split_submit(request: Request, payload: dict = Body(...)):
     """Live two-site submission. Both legs' dry-run hashes must match before
     either submits. Leg A submits first; leg B only submits if leg A
@@ -3255,7 +3765,7 @@ def api_lco_split_submit(request: Request, payload: dict = Body(...)):
     return JSONResponse({"ok": True, "leg_a": {"result": result_a}, "leg_b": {"result": result_b}})
 
 
-@app.get("/api/lco/archive/frames", response_class=JSONResponse)
+@lco_router.get("/archive/frames", response_class=JSONResponse)
 def api_lco_archive_frames(
     request: Request,
     instrument: str = "",
@@ -3356,7 +3866,7 @@ def api_lco_archive_frames(
         return _lco_error_response(e)
 
 
-@app.post("/api/lco/archive/download", response_class=JSONResponse)
+@lco_router.post("/archive/download", response_class=JSONResponse)
 def api_lco_archive_download(payload: dict = Body(...)):
     try:
         frames = payload.get("frames")
@@ -3371,7 +3881,7 @@ def api_lco_archive_download(payload: dict = Body(...)):
         return _lco_error_response(e)
 
 
-@app.get("/api/lco/archive/download/{job_id}", response_class=JSONResponse)
+@lco_router.get("/archive/download/{job_id}", response_class=JSONResponse)
 def api_lco_archive_download_status(job_id: str):
     try:
         job = lco.archive_download_status(job_id)
@@ -3445,7 +3955,12 @@ def _query_target_planets_nasa(target: str) -> dict:
                     if (h_name and _normalize_target_name(h_name) == target_norm) or \
                        (p_name and _normalize_target_name(p_name) == target_norm) or \
                        (tic and _normalize_target_name(tic) == target_norm):
-                        pl_letter = row.get("pl_letter", "").strip().lower()
+                        pl_letter = (row.get("pl_letter") or "").strip().lower()
+                        if not pl_letter:
+                            pn = (row.get("pl_name") or "").strip()
+                            parts = pn.rsplit(None, 1)
+                            if len(parts) == 2 and len(parts[1]) == 1 and parts[1].isalpha():
+                                pl_letter = parts[1].lower()
                         t0 = row.get("pl_tranmid")
                         per = row.get("pl_orbper")
                         if pl_letter and t0 is not None and per is not None:
@@ -3469,6 +3984,61 @@ def _query_target_planets_nasa(target: str) -> dict:
                             results[pl_letter] = entry
     except Exception:
         logger.debug("failed local NASA ephemeris lookup for %s", target, exc_info=True)
+
+    # 1b. Fallback local database search (nexsci_ps.csv)
+    if not results:
+        try:
+            csv_path = pathlib.Path(HERE).parent.parent / "data" / "nexsci_ps.csv"
+            if csv_path.exists():
+                tokens = [t for t in re.split(r'[^0-9a-zA-Z]', target.lower()) if t and t not in ("toi", "tic", "hd", "hip")]
+                if not tokens:
+                    tokens = [target.lower()]
+                with open(csv_path, errors="replace") as f:
+                    header_line = f.readline()
+                    header = [h.strip('"') for h in next(csv.reader([header_line]))]
+                    for line in f:
+                        line_lower = line.lower()
+                        if not any(token in line_lower for token in tokens):
+                            continue
+                        row_values = next(csv.reader([line]))
+                        row = dict(zip(header, row_values))
+                        h_name = row.get("hostname", "")
+                        p_name = row.get("pl_name", "")
+                        tic = row.get("tic_id", "")
+                        if (h_name and _normalize_target_name(h_name) == target_norm) or \
+                           (p_name and _normalize_target_name(p_name) == target_norm) or \
+                           (tic and _normalize_target_name(tic) == target_norm):
+                            pl_letter = (row.get("pl_letter") or "").strip().lower()
+                            if not pl_letter:
+                                pn = (row.get("pl_name") or "").strip()
+                                parts = pn.rsplit(None, 1)
+                                if len(parts) == 2 and len(parts[1]) == 1 and parts[1].isalpha():
+                                    pl_letter = parts[1].lower()
+                            t0 = row.get("pl_tranmid")
+                            per = row.get("pl_orbper")
+                            if pl_letter and t0 and per:
+                                try:
+                                    entry = {"t0": float(t0), "period": float(per)}
+                                except ValueError:
+                                    continue
+                                dur = _safe_float(row.get("pl_trandur"))
+                                if dur is not None:
+                                    entry["duration"] = dur
+                                t0_unc = _get_err(row, "pl_tranmid")
+                                per_unc = _get_err(row, "pl_orbper")
+                                dur_unc = _get_err(row, "pl_trandur")
+                                if t0_unc is not None:
+                                    entry["t0_unc"] = t0_unc
+                                if per_unc is not None:
+                                    entry["period_unc"] = per_unc
+                                if dur_unc is not None:
+                                    entry["duration_unc"] = dur_unc
+                                
+                                is_default = (row.get("default_flag") == "1")
+                                if is_default or pl_letter not in results:
+                                    results[pl_letter] = entry
+        except Exception:
+            logger.debug("failed local fallback NASA ephemeris lookup for %s", target, exc_info=True)
 
     # 2. Online search
     if not results:
@@ -3576,8 +4146,9 @@ def _query_target_coordinates(target: str) -> dict | None:
             with open(csv_path, errors="replace") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    toi_val = row.get("TOI", "")
-                    tic_val = row.get("TIC ID", "")
+                    row = {k.lower(): v for k, v in row.items()}
+                    toi_val = row.get("toi", "")
+                    tic_val = row.get("tic id", "")
                     match = False
                     if toi_val and _normalize_target_name("TOI" + toi_val) == target_norm:
                         match = True
@@ -3586,7 +4157,7 @@ def _query_target_coordinates(target: str) -> dict | None:
                         or _normalize_target_name("TIC" + tic_val) == target_norm
                     ):
                         match = True
-                    elif row.get("Planet Name") and _normalize_target_name(row.get("Planet Name", "")) == target_norm:
+                    elif row.get("planet name") and _normalize_target_name(row.get("planet name", "")) == target_norm:
                         match = True
                     if match:
                         coords = _coords_from_toi_row(row)
@@ -3909,8 +4480,9 @@ def _query_target_planets_toi(target: str) -> dict:
             with open(csv_path, errors="replace") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    toi_val = row.get("TOI", "")
-                    tic_val = row.get("TIC ID", "")
+                    row = {k.lower(): v for k, v in row.items()}
+                    toi_val = row.get("toi", "")
+                    tic_val = row.get("tic id", "")
                     match = False
                     if toi_val and _normalize_target_name("TOI" + toi_val) == target_norm:
                         match = True
@@ -3918,6 +4490,8 @@ def _query_target_planets_toi(target: str) -> dict:
                         _normalize_target_name(tic_val) == target_norm or
                         _normalize_target_name("TIC" + tic_val) == target_norm
                     ):
+                        match = True
+                    elif row.get("planet name") and _normalize_target_name(row.get("planet name", "")) == target_norm:
                         match = True
                     
                     if match:
@@ -3930,20 +4504,20 @@ def _query_target_planets_toi(target: str) -> dict:
                                 letter = "b"
                         except Exception:
                             letter = "b"
-                        t0 = row.get("Epoch (BJD)")
-                        per = row.get("Period (days)")
+                        t0 = row.get("epoch (bjd)")
+                        per = row.get("period (days)")
                         if t0 is not None and per is not None:
                             try:
                                 entry = {"t0": float(t0), "period": float(per)}
                             except ValueError:
                                 continue
-                            dur = _safe_float(row.get("Duration (hours)"))
+                            dur = _safe_float(row.get("duration (hours)"))
                             if dur is not None:
                                 entry["duration"] = dur
                             # Extract uncertainties
-                            t0_unc = _safe_float(row.get("Epoch (BJD) err"))
-                            per_unc = _safe_float(row.get("Period (days) err"))
-                            dur_unc = _safe_float(row.get("Duration (hours) err"))
+                            t0_unc = _safe_float(row.get("epoch (bjd) err"))
+                            per_unc = _safe_float(row.get("period (days) err"))
+                            dur_unc = _safe_float(row.get("duration (hours) err"))
                             if t0_unc is not None:
                                 entry["t0_unc"] = t0_unc
                             if per_unc is not None:
@@ -3963,10 +4537,14 @@ def _query_target_planets_toi(target: str) -> dict:
         url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         try:
-            with urllib.request.urlopen(req, timeout=1.0) as response:
+            with urllib.request.urlopen(req, timeout=5.0) as response:
                 data = json.loads(response.read().decode())
                 for row in data:
                     toidisplay = row.get("toidisplay", "")
+                    if toidisplay:
+                        base_name = toidisplay.split(".")[0].strip()
+                        if _normalize_target_name(base_name) != target_norm:
+                            continue
                     t0 = row.get("pl_tranmid")
                     per = row.get("pl_orbper")
                     if toidisplay and t0 is not None and per is not None:
@@ -4149,7 +4727,7 @@ def _ads_token_for_request(request: Request | None) -> tuple[str, str | None]:
     return (token, "global") if token else ("", None)
 
 
-@app.get("/api/ads/config", response_class=JSONResponse)
+@ads_router.get("/config", response_class=JSONResponse)
 def api_ads_config(request: Request):
     """Report whether the ADS API token is configured. No secrets."""
     token, source = _ads_token_for_request(request)
@@ -4164,7 +4742,8 @@ def api_ads_config(request: Request):
     })
 
 
-@app.get("/api/target/publications", response_class=JSONResponse)
+@target_router.get("/publications", response_class=JSONResponse)
+@app.get("/api/target/publications", response_class=JSONResponse, deprecated=True)
 def api_target_publications(request: Request, q: str):
     import urllib.request
     import urllib.parse
@@ -4212,7 +4791,7 @@ def api_target_publications(request: Request, q: str):
         return JSONResponse({"ok": False, "error": f"Failed to query ADS: {str(e)}"}, status_code=500)
 
 
-@app.get("/api/ephemeris/targets", response_class=JSONResponse)
+@ephemeris_router.get("/targets", response_class=JSONResponse)
 def api_ephemeris_targets():
     with _DB_LOCK:
         fit.sync_jobs()
@@ -4225,7 +4804,7 @@ def api_ephemeris_targets():
     return JSONResponse({"ok": True, "targets": targets})
 
 
-@app.get("/api/ephemeris/target-info", response_class=JSONResponse)
+@ephemeris_router.get("/target-info", response_class=JSONResponse)
 def api_ephemeris_target_info(target: str):
     target = (target or "").strip()
     if not target:
@@ -4366,7 +4945,7 @@ def api_ephemeris_target_info(target: str):
     })
 
 
-@app.post("/api/ephemeris/calculate", response_class=JSONResponse)
+@ephemeris_router.post("/calculate", response_class=JSONResponse)
 def api_ephemeris_calculate(payload: dict = Body(...)):
     target_param = payload.get("target")
     if isinstance(target_param, list):
@@ -4698,7 +5277,8 @@ def _validate_lco_dataset_action(payload: dict) -> tuple[str, str]:
     return inst, obsdate
 
 
-@app.post("/jobs/lco-archive/scan", response_class=JSONResponse)
+@jobs_router.post("/lco-archive/scan", response_class=JSONResponse)
+@app.post("/jobs/lco-archive/scan", response_class=JSONResponse, deprecated=True)
 def jobs_lco_archive_scan(payload: dict = Body(...)):
     inst, obsdate = _validate_lco_dataset_action(payload)
     try:
@@ -4714,7 +5294,8 @@ def jobs_lco_archive_scan(payload: dict = Body(...)):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
-@app.post("/jobs/lco-archive/ingest-date", response_class=JSONResponse)
+@jobs_router.post("/lco-archive/ingest-date", response_class=JSONResponse)
+@app.post("/jobs/lco-archive/ingest-date", response_class=JSONResponse, deprecated=True)
 def jobs_lco_archive_ingest_date(payload: dict = Body(...)):
     inst, obsdate = _validate_lco_dataset_action(payload)
     try:
@@ -4759,7 +5340,8 @@ def jobs_page():
 
 _last_running: set[str] = set()
 
-@app.get("/jobs/status", response_class=JSONResponse)
+@jobs_router.get("/status", response_class=JSONResponse)
+@app.get("/jobs/status", response_class=JSONResponse, deprecated=True)
 def jobs_status(active_only: bool = False):
     phot.sync_jobs()
     fit.sync_jobs()
@@ -4844,7 +5426,8 @@ def jobs_status(active_only: bool = False):
     return {"running": running, "counts": counts, "finished": finished}
 
 
-@app.get("/jobs/log/{type_}/{inst}/{date}/{target}")
+@jobs_router.get("/log/{type_}/{inst}/{date}/{target}")
+@app.get("/jobs/log/{type_}/{inst}/{date}/{target}", deprecated=True)
 def job_log(type_: str, inst: str, date: str, target: str, run: str = ""):
     if type_ == "photometry":
         path = phot.log_path(inst, date, target, run_id=(run or "").strip())
@@ -4857,7 +5440,8 @@ def job_log(type_: str, inst: str, date: str, target: str, run: str = ""):
     return FileResponse(str(path))
 
 
-@app.post("/jobs/rerun")
+@jobs_router.post("/rerun")
+@app.post("/jobs/rerun", deprecated=True)
 def jobs_rerun(request: Request, payload: dict = Body(...)):
     import json
     key = (payload.get("key") or "").strip()
@@ -4890,7 +5474,8 @@ def jobs_rerun(request: Request, payload: dict = Body(...)):
     return JSONResponse(result)
 
 
-@app.get("/photometry/file/{inst}/{date}/{target}/run/{run_id}/{name}")
+@photometry_router.get("/file/{inst}/{date}/{target}/run/{run_id}/{name}")
+@app.get("/photometry/file/{inst}/{date}/{target}/run/{run_id}/{name}", deprecated=True)
 def photometry_file_run(inst: str, date: str, target: str, run_id: str, name: str):
     path = phot.safe_run_artifact_path(inst, date, target, run_id, name)
     if path is None:
@@ -4898,7 +5483,8 @@ def photometry_file_run(inst: str, date: str, target: str, run_id: str, name: st
     return FileResponse(str(path), headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
 
 
-@app.get("/photometry/file/{inst}/{date}/{name}")
+@photometry_router.get("/file/{inst}/{date}/{name}")
+@app.get("/photometry/file/{inst}/{date}/{name}", deprecated=True)
 def photometry_file(inst: str, date: str, name: str):
     path = phot.safe_artifact_path(inst, date, name)
     if path is None:
@@ -4980,17 +5566,20 @@ def _photometry_download_all(inst: str, date: str, target: str, run_id: str | No
     return _create_zip_response(files_to_zip, archive_name)
 
 
-@app.get("/photometry/download-all/{inst}/{date}/{target}/run/{run_id}")
+@photometry_router.get("/download-all/{inst}/{date}/{target}/run/{run_id}")
+@app.get("/photometry/download-all/{inst}/{date}/{target}/run/{run_id}", deprecated=True)
 def photometry_download_all_run(inst: str, date: str, target: str, run_id: str):
     return _photometry_download_all(inst, date, target, run_id)
 
 
-@app.get("/photometry/download-all/{inst}/{date}/{target}")
+@photometry_router.get("/download-all/{inst}/{date}/{target}")
+@app.get("/photometry/download-all/{inst}/{date}/{target}", deprecated=True)
 def photometry_download_all(inst: str, date: str, target: str):
     return _photometry_download_all(inst, date, target, None)
 
 
-@app.post("/photometry/run")
+@photometry_router.post("/run")
+@app.post("/photometry/run", deprecated=True)
 def photometry_run(request: Request, payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
@@ -5008,7 +5597,8 @@ def photometry_run(request: Request, payload: dict = Body(...)):
     return JSONResponse(result)
 
 
-@app.post("/photometry/command")
+@photometry_router.post("/command")
+@app.post("/photometry/command", deprecated=True)
 def photometry_command(payload: dict = Body(...)):
     """Preview the exact prose command for the chosen options (live form echo)."""
     inst = (payload.get("inst") or "").strip()
@@ -5025,7 +5615,8 @@ def photometry_command(payload: dict = Body(...)):
     return JSONResponse({"command": command, "error": error})
 
 
-@app.get("/photometry/status")
+@photometry_router.get("/status")
+@app.get("/photometry/status", deprecated=True)
 def photometry_status(inst: str, date: str, target: str, run: str = ""):
     # Drain the queue so a pending full job is promoted once the slot frees,
     # even when only the photometry page (not the Jobs page) is polling.
@@ -5033,7 +5624,8 @@ def photometry_status(inst: str, date: str, target: str, run: str = ""):
     return JSONResponse(phot.job_status(inst, date, target, run_id=(run or "").strip()))
 
 
-@app.post("/photometry/status-batch")
+@photometry_router.post("/status-batch")
+@app.post("/photometry/status-batch", deprecated=True)
 def photometry_status_batch(payload: dict = Body(...)):
     """Poll multiple jobs in a single request. Reduces polling overhead when monitoring many jobs.
 
@@ -5084,7 +5676,8 @@ def photometry_status_batch(payload: dict = Body(...)):
     return JSONResponse({"jobs": results})
 
 
-@app.post("/photometry/cancel")
+@photometry_router.post("/cancel")
+@app.post("/photometry/cancel", deprecated=True)
 def photometry_cancel(payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
@@ -5096,7 +5689,8 @@ def photometry_cancel(payload: dict = Body(...)):
     return JSONResponse(result)
 
 
-@app.post("/photometry/delete")
+@photometry_router.post("/delete")
+@app.post("/photometry/delete", deprecated=True)
 def photometry_delete(payload: dict = Body(...)):
     inst = (payload.get("inst") or "").strip()
     date = (payload.get("date") or "").strip()
@@ -5112,7 +5706,7 @@ def photometry_delete(payload: dict = Body(...)):
     return JSONResponse(result)
 
 
-@app.put("/api/targets/{obj}/note")
+@target_router.put("/{obj}/note")
 def api_set_note(obj: str, payload: dict = Body(...)):
     note = (payload.get("note") or "").strip()
     if len(note) > 2000:
@@ -5121,13 +5715,13 @@ def api_set_note(obj: str, payload: dict = Body(...)):
     return JSONResponse({"ok": True, "object": obj, "note": note})
 
 
-@app.delete("/api/targets/{obj}/note")
+@target_router.delete("/{obj}/note")
 def api_delete_note(obj: str):
     _delete_note(_db_path(), obj)
     return JSONResponse({"ok": True, "object": obj})
 
 
-@app.put("/api/targets/{obj}/identified")
+@target_router.put("/{obj}/identified")
 def api_set_identified(obj: str, payload: dict = Body(...)):
     val = payload.get("is_identified")
     if val not in (0, 1):
@@ -5153,3 +5747,15 @@ def date_page(instrument: str, obsdate: str):
 def ccd_page(instrument: str, obsdate: str, ccd: int):
     frames = _get_frames(_db_path(), instrument, obsdate, ccd)
     return _render("ccd.html", instrument=instrument, obsdate=obsdate, ccd=ccd, frames=frames)
+
+
+app.include_router(photometry_router)
+app.include_router(transit_fit_router)
+app.include_router(exposure_router)
+app.include_router(jobs_router)
+app.include_router(target_router)
+app.include_router(ephemeris_router)
+app.include_router(fov_router)
+app.include_router(lco_router)
+app.include_router(settings_router)
+app.include_router(ads_router)
