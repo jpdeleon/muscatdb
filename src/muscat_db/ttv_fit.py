@@ -487,16 +487,14 @@ def start_ttv_fit(
 
 
 def _pending_status(target: str, run_name: str = "") -> dict | None:
-    try:
-        db_key = f"ttv_fit:{ttv_job_key(target, run_name)}"
-    except ValueError:
-        return None
+    run_seg = slugify_run_name(run_name)
     try:
         for entry in get_job_store().all():
             if (
-                entry["key"] == db_key
-                and entry["type"] == "ttv_fit"
-                and entry["state"] == "pending"
+                entry.get("type") == "ttv_fit"
+                and entry.get("target") == target
+                and (entry.get("run_name") == run_name or entry.get("run_id") == run_seg)
+                and entry.get("state") == "pending"
             ):
                 started = entry.get("started_at") or time.time()
                 return {
@@ -511,16 +509,14 @@ def _pending_status(target: str, run_name: str = "") -> dict | None:
 
 
 def _running_status(target: str, run_name: str = "") -> dict | None:
-    try:
-        db_key = f"ttv_fit:{ttv_job_key(target, run_name)}"
-    except ValueError:
-        return None
+    run_seg = slugify_run_name(run_name)
     try:
         for entry in get_job_store().all():
             if (
-                entry["key"] == db_key
-                and entry["type"] == "ttv_fit"
-                and entry["state"] == "running"
+                entry.get("type") == "ttv_fit"
+                and entry.get("target") == target
+                and (entry.get("run_name") == run_name or entry.get("run_id") == run_seg)
+                and entry.get("state") == "running"
             ):
                 try:
                     rdir = ttv_output_dir(target, run_name)
@@ -540,13 +536,14 @@ def _running_status(target: str, run_name: str = "") -> dict | None:
 
 
 def _persisted_status(target: str, run_name: str = "") -> dict | None:
-    try:
-        db_key = f"ttv_fit:{ttv_job_key(target, run_name)}"
-    except ValueError:
-        return None
+    run_seg = slugify_run_name(run_name)
     try:
         for entry in get_job_store().all():
-            if entry["key"] != db_key or entry["type"] != "ttv_fit":
+            if (
+                entry.get("type") != "ttv_fit"
+                or entry.get("target") != target
+                or (entry.get("run_name") != run_name and entry.get("run_id") != run_seg)
+            ):
                 continue
             state = entry["state"]
             if state not in ("done", "error", "cancelled"):
@@ -627,17 +624,24 @@ def cancel_ttv_fit(target: str, run_name: str = "") -> dict:
     with _TTV_LOCK:
         job = _TTV_JOBS.get(key)
         if job is None:
-            db_key = f"ttv_fit:{key}"
-            found = [j for j in store.all() if j["key"] == db_key]
-            if found and found[0]["state"] == "pending":
+            found = [
+                j for j in store.all()
+                if j.get("type") == "ttv_fit"
+                and j.get("target") == target
+                and (j.get("run_name") == run_name or j.get("run_id") == run_seg)
+            ]
+            if found and found[0]["state"] in ("running", "pending"):
                 store.save(
-                    type_="ttv_fit", inst="_", date="_", target=target,
-                    state="cancelled", returncode=-1, elapsed=0,
+                    type_="ttv_fit",
+                    inst=found[0].get("inst") or "_",
+                    date=found[0].get("date") or "_",
+                    target=target,
+                    state="cancelled", returncode=-1, elapsed=found[0].get("elapsed") or 0,
                     started_at=found[0]["started_at"],
                     error_desc="Cancelled by user",
                     run_id=run_seg, run_name=run_name,
                 )
-                return {"ok": True, "key": key}
+                return {"ok": True, "key": found[0]["key"]}
             return {"ok": False, "error": "no job to cancel"}
         if job.proc.poll() is not None:
             return {"ok": True, "already_finished": True}
@@ -645,7 +649,7 @@ def cancel_ttv_fit(target: str, run_name: str = "") -> dict:
         proc = job.proc
         store.save(
             type_="ttv_fit",
-            inst="_", date="_", target=target,
+            inst=job.inst or "_", date=job.date or "_", target=target,
             state="cancelled", returncode=-1,
             elapsed=round(time.time() - job.started_at),
             started_at=job.started_at,
@@ -806,7 +810,9 @@ def sync_jobs() -> None:
         db_by_key = {j["key"]: j for j in db_jobs}
 
         for key, job in _TTV_JOBS.items():
-            db_key = f"ttv_fit:{ttv_job_key(job.target, job.run_name)}"
+            db_key = f"ttv_fit:{job.inst}/{job.date}/{job.target.replace(' ', '')}"
+            if job.run_id:
+                db_key = f"{db_key}/{job.run_id}"
             state, rc, is_terminal = jobs.resolve_job_state(job, _finalize_config())
             if is_terminal and job.state == "running":
                 job.state = state
@@ -843,8 +849,8 @@ def sync_jobs() -> None:
 
             store.save(
                 type_="ttv_fit",
-                inst="_",
-                date="_",
+                inst=job.inst or "_",
+                date=job.date or "_",
                 target=job.target,
                 state=persist_state,
                 returncode=persist_rc,
@@ -881,7 +887,7 @@ def sync_jobs() -> None:
             if completed_ok:
                 store.save(
                     type_="ttv_fit",
-                    inst="_", date="_", target=target,
+                    inst=row.get("inst") or "_", date=row.get("date") or "_", target=target,
                     state="done", returncode=0,
                     elapsed=row["elapsed"],
                     started_at=row["started_at"],
@@ -893,7 +899,7 @@ def sync_jobs() -> None:
             else:
                 store.save(
                     type_="ttv_fit",
-                    inst="_", date="_", target=target,
+                    inst=row.get("inst") or "_", date=row.get("date") or "_", target=target,
                     state="error", returncode=-1,
                     elapsed=row["elapsed"],
                     started_at=row["started_at"],

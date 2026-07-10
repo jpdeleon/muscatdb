@@ -57,8 +57,6 @@
       <td class="inst-cell"><span class="badge badge-blue">{{ j.inst }}</span></td>
       {% if j.type != 'ttv_fit' %}
       <td class="mono">{{ j.date }}</td>
-      {% else %}
-      <td class="mono">—</td>
       {% endif %}
       <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">{{ j.user_name or '—' }}</td>
       <td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">
@@ -217,7 +215,6 @@
         <th data-sort-attr="target" class="sortable">Target</th>
         <th data-sort-attr="run_name" class="sortable">Run Name</th>
         <th data-sort-attr="instrument" class="sortable">Instrument</th>
-        <th data-sort-attr="obsdate" class="sortable">Date Obs</th>
         <th data-sort-attr="userName" class="sortable">User</th>
         <th data-sort-attr="startedAt" data-sort-type="number" class="sortable">Date Run</th>
         <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
