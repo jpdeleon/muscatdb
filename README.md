@@ -1,9 +1,11 @@
 # muscat-db
 
+<!-- 
 #[![Documentation](https://readthedocs.org/projects/quicklook/badge/?version=latest)](https://quicklook.readthedocs.io/en/latest/)
-[![CI](https://github.com/jpdeleon/muscat-db/actions/workflows/ci.yml/badge.svg)](https://github.com/jpdeleon/muscatdb/actions/workflows/ci.yml)
 #[![PyPI](https://img.shields.io/pypi/v/muscat-db)](https://pypi.org/project/muscatdb/)
 #[![Python](https://img.shields.io/pypi/pyversions/muscat-db)](https://pypi.org/project/muscatdb/)
+-->
+[![CI](https://github.com/jpdeleon/muscat-db/actions/workflows/ci.yml/badge.svg)](https://github.com/jpdeleon/muscatdb/actions/workflows/ci.yml)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/jpdeleon/muscatdb)
 
 MuSCAT observation log pipeline — scan FITS files, build a fast SQLite database, and browse results in a web UI.
