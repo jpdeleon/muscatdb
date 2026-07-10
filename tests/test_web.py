@@ -2155,3 +2155,67 @@ def test_ttv_fit_runs_endpoint(tmp_path, monkeypatch):
 
     # Guardrails: target is required.
     assert client.get("/api/ttv-fit/runs", params={"target": ""}).status_code == 400
+
+
+def test_ttv_fit_stuck_job_sync_and_cancel(monkeypatch, tmp_path):
+    from muscat_db import ttv_fit as ttv
+    from muscat_db.job_store import get_job_store
+
+    monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path))
+    monkeypatch.setenv("MUSCAT_DB_PATH", str(tmp_path / "muscat.db"))
+
+    store = get_job_store()
+    # Save a running TTV fit job with sinistro prefix
+    store.save(
+        type_="ttv_fit",
+        inst="sinistro",
+        date="250710",
+        target="HIP67522",
+        state="running",
+        returncode=None,
+        elapsed=0,
+        started_at=100.0,
+        run_type="full",
+        run_id="default",
+        run_name="default",
+        user_name="jerome",
+    )
+
+    # Verify it is stored and shows as running
+    jobs_in_db = store.all()
+    assert any(j["key"] == "ttv_fit:sinistro/250710/HIP67522/default" and j["state"] == "running" for j in jobs_in_db)
+
+    # Call sync_jobs which should resolve it to error (Process lost) because the files don't exist
+    ttv.sync_jobs()
+
+    # Verify it got updated to error and not left running
+    jobs_in_db = store.all()
+    target_job = next(j for j in jobs_in_db if j["key"] == "ttv_fit:sinistro/250710/HIP67522/default")
+    assert target_job["state"] == "error"
+    assert target_job["error_desc"] == "Process lost (server restart)"
+
+    # Now let's save another running job to test cancel
+    store.save(
+        type_="ttv_fit",
+        inst="sinistro",
+        date="250710",
+        target="HIP67522",
+        state="running",
+        returncode=None,
+        elapsed=0,
+        started_at=200.0,
+        run_type="full",
+        run_id="default",
+        run_name="default",
+        user_name="jerome",
+    )
+
+    # Cancel it through cancel_ttv_fit API helper
+    res = ttv.cancel_ttv_fit("HIP67522", "default")
+    assert res["ok"] is True
+
+    # Verify it was successfully cancelled in the DB
+    jobs_in_db = store.all()
+    target_job = next(j for j in jobs_in_db if j["key"] == "ttv_fit:sinistro/250710/HIP67522/default")
+    assert target_job["state"] == "cancelled"
+
