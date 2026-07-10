@@ -90,14 +90,14 @@
       <h3>Target &amp; Instrument</h3>
       <div class="fov-grid">
         <div class="fov-field" style="grid-column: span 1;">
-          <label for="fov-target">Target name</label>
+          <label for="fov-target">Target name <span class="help-tooltip" title="Name of the target star, resolved by Sesame.">?</span></label>
           <input id="fov-target" type="text" placeholder="e.g. WASP-12" value="{{ sel_target }}">
         </div>
         <div class="fov-field" style="display: flex; align-items: flex-end;">
           <button id="fov-resolve" class="fov-btn ghost" type="button" title="Look up RA/Dec for the target name">Resolve</button>
         </div>
         <div class="fov-field">
-          <label for="fov-inst">Instrument</label>
+          <label for="fov-inst">Instrument <span class="help-tooltip" title="The instrument to use for the observation. The FOV size is determined by the instrument.">?</span></label>
           <select id="fov-inst">
             {% for name in instruments %}
             <option value="{{ name }}"{% if name == sel_inst %} selected{% endif %}>{{ name }} ({{ fov_sizes[name] }}′)</option>
@@ -105,19 +105,19 @@
           </select>
         </div>
         <div class="fov-field" id="fov-readout-mode-field">
-          <label for="fov-sinistro-mode">Readout mode</label>
+          <label for="fov-sinistro-mode">Readout mode <span class="help-tooltip" title="The readout mode of the instrument.">?</span></label>
           <select id="fov-sinistro-mode">
             {% for mode in readout_modes.get(sel_inst or instruments[0], [{"value": "MUSCAT_FAST", "label": "MUSCAT_FAST"}]) %}
             <option value="{{ mode.value }}">{{ mode.label }}</option>
             {% endfor %}
           </select>
         </div>
-        <div class="fov-field"><label for="fov-ra">RA (deg)</label><input id="fov-ra" type="text" inputmode="decimal" placeholder="optional"></div>
-        <div class="fov-field"><label for="fov-dec">Dec (deg)</label><input id="fov-dec" type="text" inputmode="decimal" placeholder="optional"></div>
-        <div class="fov-field"><label for="fov-margin" title="Keep the target at least this far from any field edge.">Target margin (″)</label><input id="fov-margin" type="number" step="any" value="30"></div>
-        <div class="fov-field"><label for="fov-comp-margin" title="Keep comparisons at least this far from any field edge. Leave empty to use target margin.">Comp margin (″)</label><input id="fov-comp-margin" type="number" step="any" placeholder="(use target)"></div>
+        <div class="fov-field"><label for="fov-ra">RA (deg) <span class="help-tooltip" title="Right Ascension of the target in degrees. Can be looked up by resolving the target name.">?</span></label><input id="fov-ra" type="text" inputmode="decimal" placeholder="optional"></div>
+        <div class="fov-field"><label for="fov-dec">Dec (deg) <span class="help-tooltip" title="Declination of the target in degrees. Can be looked up by resolving the target name.">?</span></label><input id="fov-dec" type="text" inputmode="decimal" placeholder="optional"></div>
+        <div class="fov-field"><label for="fov-margin">Target margin (″) <span class="help-tooltip" title="Keep the target at least this far from any field edge.">?</span></label><input id="fov-margin" type="number" step="any" value="30"></div>
+        <div class="fov-field"><label for="fov-comp-margin">Comp margin (″) <span class="help-tooltip" title="Keep comparisons at least this far from any field edge. Leave empty to use target margin.">?</span></label><input id="fov-comp-margin" type="number" step="any" placeholder="(use target)"></div>
         <div class="fov-field">
-          <label for="fov-mag-mode">Mag filter mode</label>
+          <label for="fov-mag-mode">Mag filter mode <span class="help-tooltip" title="Filter comparison candidates by magnitude, either with absolute limits or relative to the target's G-band magnitude.">?</span></label>
           <select id="fov-mag-mode">
             <option value="absolute">Absolute limits</option>
             <option value="relative">Delta Gmag (relative)</option>
