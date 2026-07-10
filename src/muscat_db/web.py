@@ -5447,10 +5447,10 @@ def job_log(type_: str, inst: str, date: str, target: str, run: str = ""):
 
 @jobs_router.get("/ttv-log/{target}")
 def ttv_job_log(target: str, run: str = ""):
-    from muscat_db.ttv_fit import ttv_output_dir
-    rdir = ttv_output_dir(target, run_name=(run or ""))
-    path = rdir / "harmonic.log"
-    if not path.is_file():
+    # `run` is the job's run_id (an already-slugified segment); log_path
+    # validates it and resolves the default run when it is empty.
+    path = ttv.log_path(target, (run or "").strip())
+    if path is None:
         raise HTTPException(404, "log not found")
     return FileResponse(str(path))
 

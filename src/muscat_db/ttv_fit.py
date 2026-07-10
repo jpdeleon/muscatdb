@@ -162,13 +162,27 @@ _target_dir_name = jobs.target_dir_name
 slugify_run_name = jobs.slugify_run_name
 
 
-def log_path(target: str) -> pathlib.Path | None:
+def log_path(target: str, run_id: str = "") -> pathlib.Path | None:
+    """Path to the ``harmonic.log`` for a given TTV fit run, or ``None`` if absent.
+
+    ``run_id`` is an already-slugified run segment (as persisted on jobs as
+    ``run_id``); an empty value means the default run. Both ``target`` and
+    ``run_id`` are validated as single path segments so a crafted value cannot
+    escape ``MUSCAT_TTV_DIR``.
+    """
     try:
-        rdir = ttv_output_dir(target)
+        base = pathlib.Path(os.environ.get("MUSCAT_TTV_DIR", "~/ql/harmonic")).expanduser().resolve(strict=False)
+        target_seg = _target_dir_name(target)
+        # run_id is already a slug; empty run_id means the default run.
+        run_seg = jobs.run_dir_name(run_id) if run_id else "default"
     except ValueError:
         return None
-    p = rdir / "harmonic.log"
-    return p if p.is_file() else None
+    p = base / target_seg / _RUNS_DIR_NAME / run_seg / "harmonic.log"
+    if p.is_file():
+        return p
+    # Fallback for legacy runs written directly under <base>/<target>/.
+    legacy = base / target_seg / "harmonic.log"
+    return legacy if legacy.is_file() else None
 
 
 TTVFitJob = jobs.PipelineJob
