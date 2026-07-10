@@ -22,7 +22,7 @@
     {% set link_url -%}
       {%- if j.type == 'photometry' -%}/photometry?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}{% if j.run_id %}&run={{ j.run_id }}{% endif %}
       {%- elif j.type == 'transit_fit' -%}/transit-fit?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}{% if j.run_id %}&run={{ j.run_id }}{% endif %}
-      {%- elif j.type == 'ttv_fit' -%}/ephemeris?targets={{ j.target | urlencode }}
+      {%- elif j.type == 'ttv_fit' -%}/ephemeris?targets={{ j.target | urlencode }}{% if j.run_id %}&run={{ j.run_id }}{% endif %}
       {%- else -%}/lco/archive
       {%- endif -%}
     {%- endset %}
