@@ -470,6 +470,12 @@
     return new URLSearchParams(window.location.search).get('view') || '';
   }
 
+  // Explicit TTV run slug from the URL (e.g. a Jobs-page "View TTV" link). Lets
+  // an incoming link open that exact run instead of the newest one.
+  function parseUrlRun() {
+    return new URLSearchParams(window.location.search).get('run') || '';
+  }
+
   function datasetStateKey(d) {
     return [d.target || '', d.instrument || '', d.date || '', d.run_id || ''].join('|');
   }
@@ -2582,9 +2588,19 @@
 
   // Run whose results are currently displayed. Also the run that Delete acts on.
   var selectedTTVRun = null;
+  // The URL's ?run= is honored exactly once, on first load, so switching run
+  // chips afterwards is not overridden on subsequent re-renders.
+  var urlTTVRunApplied = false;
 
   function checkTTVOutputs(target) {
     if (!target) return;
+    if (!urlTTVRunApplied) {
+      urlTTVRunApplied = true;
+      const urlRun = parseUrlRun();
+      // run_id in the URL is already a slug; slugify defensively (in slug space,
+      // slugify is idempotent) so a hand-edited value still matches the runs list.
+      if (urlRun) selectedTTVRun = slugifyRunName(urlRun);
+    }
     const qs = `target=${encodeURIComponent(target)}`;
 
     fetch('/api/ttv-fit/runs?' + qs)
