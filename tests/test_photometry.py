@@ -1800,7 +1800,7 @@ class TestRoutes:
         assert data2["params"]["teff"] == 5600.0
         assert data2["params"]["period"] == 1.43036994965074
 
-    def test_transit_fit_query_archive_toi_zero_padding(self, client):
+    def test_transit_fit_query_archive_toi_zero_padding(self, client, catalog):
         """Test that TOI queries handle zero-padding correctly (toi02688.01 != toi00688.01)."""
         # Query with zero-padded format should find TOI-101.01 (not any substring match)
         r = client.get("/api/transit-fit/query-archive?target=toi0101.01&source=toi")
