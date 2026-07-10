@@ -54,7 +54,9 @@
       <td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ j.run_name or '' }}">
         {{ j.run_name or ('default' if j.type == 'ttv_fit' else '—') }}
       </td>
+      {% if j.type != 'ttv_fit' %}
       <td class="inst-cell"><span class="badge badge-blue">{{ j.inst }}</span></td>
+      {% endif %}
       {% if j.type != 'ttv_fit' %}
       <td class="mono">{{ j.date }}</td>
       {% endif %}
@@ -130,7 +132,7 @@
       {% endif %}
     </tr>
     <tr class="log-row" style="display:none;">
-      <td colspan="11">
+      <td colspan="{% if j.type == 'ttv_fit' %}8{% else %}10{% endif %}">
         <pre class="log-content">Loading…</pre>
       </td>
     </tr>
@@ -214,7 +216,6 @@
       <tr>
         <th data-sort-attr="target" class="sortable">Target</th>
         <th data-sort-attr="run_name" class="sortable">Run Name</th>
-        <th data-sort-attr="instrument" class="sortable">Instrument</th>
         <th data-sort-attr="userName" class="sortable">User</th>
         <th data-sort-attr="startedAt" data-sort-type="number" class="sortable">Date Run</th>
         <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
@@ -252,7 +253,7 @@
     <tbody>
       {{ render_job_rows(lco_archive_jobs) }}
       <tr class="empty-job-row" data-empty-for="lco_archive_download" {% if lco_archive_jobs %}style="display:none;"{% endif %}>
-        <td colspan="11" style="color:var(--text-dim);text-align:center;padding:1rem;">
+        <td colspan="10" style="color:var(--text-dim);text-align:center;padding:1rem;">
           No LCO archive downloads are currently tracked in this server process.
         </td>
       </tr>
