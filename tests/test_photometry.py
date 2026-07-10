@@ -2022,9 +2022,20 @@ class TestRoutes:
         assert _normalize_target_name("V1298Tau") == "V1298TAU"
         assert _normalize_target_name("V1298Tau_b") == "V1298TAU"
         assert _normalize_target_name("V1298Tauc") == "V1298TAU"
-        assert _normalize_target_name("TOI02016.03") == "TOI02016"
+        assert _normalize_target_name("TOI02016.03") == "TOI2016"
         assert _normalize_target_name("TOI-4600") == "TOI4600"
+        assert _normalize_target_name("TOI-6109") == "TOI6109"
+        assert _normalize_target_name("TOI06109.01") == "TOI6109"
+        assert _normalize_target_name("TOI06109.02") == "TOI6109"
+        assert _normalize_target_name("TOI 06109 b") == "TOI6109"
         assert _normalize_target_name("HIP 67522") == "HIP67522"
+
+    def test_target_name_normalization_does_not_reinterpret_malformed_tois(self):
+        from muscat_db.web import _normalize_target_name
+
+        assert _normalize_target_name("TOI06209-01") == "TOI0620901"
+        assert _normalize_target_name("TOI2106.01--exp0") == "TOI2106.01EXP0"
+        assert _normalize_target_name("TOI3915TRACK") == "TOI3915TRACK"
 
 
 class TestTransitFitJobs:

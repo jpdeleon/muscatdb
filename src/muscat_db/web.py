@@ -3902,6 +3902,18 @@ def api_lco_archive_download_status(job_id: str):
 
 # Helper to normalize target names for comparison
 def _normalize_target_name(t: str) -> str:
+    # Parse recognized TOI spellings before removing punctuation.  Otherwise a
+    # malformed value such as ``TOI06209-01`` would be reinterpreted as TOI
+    # 620901 after the hyphen is discarded.  TOI comparison keys represent the
+    # host, so candidate-number and confirmed-planet suffixes are omitted.
+    raw = t.strip().upper()
+    toi_match = re.fullmatch(
+        r"TOI(?:[ _-]*)0*(\d+)(?:\.\d+)?(?:\s*[B-H])?",
+        raw,
+    )
+    if toi_match:
+        return f"TOI{int(toi_match.group(1))}"
+
     s = t.strip().upper().replace(" ", "").replace("-", "").replace("_", "")
     s = re.sub(r"\.\d+$", "", s)
     if len(s) > 2 and s[-1] in "BCDEFGH":
