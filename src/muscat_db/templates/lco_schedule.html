@@ -29,8 +29,8 @@
 <div class="lco-section">
   <h3>Target &amp; Transit Windows</h3>
   <div class="lco-grid">
-    <div class="lco-field"><label for="sch-target">Target</label><input id="sch-target" type="text" placeholder="WASP-12"></div>
-    <div class="lco-field"><label for="sch-planet">Planet</label><input id="sch-planet" type="text" placeholder="b" style="max-width: 90px;"></div>
+    <div class="lco-field"><label for="sch-target" title="Target star name. Matches normalized names from muscat-db (e.g. HIP 67522, TOI-1234).">Target</label><input id="sch-target" type="text" placeholder="WASP-12" list="target-datalist" autocomplete="off"><datalist id="target-datalist"></datalist></div>
+    <div class="lco-field"><label for="sch-planet" title="Planet letter identifier (e.g. b, c). Used to look up the ephemeris for this planet.">Planet</label><input id="sch-planet" type="text" placeholder="b" style="max-width: 90px;"></div>
     <div class="lco-field"><label for="sch-source" title="Where t0 / period come from. 'linear fit' refines the ephemeris across all of this target's completed transit fits; individual datasets use that fit's t0/period directly (same as the Planetary Reference Ephemerides on the Ephemeris page). Click 'Fetch ephemeris' to populate datasets.">Ephemeris source</label>
       <select id="sch-source">
         <option value="">Auto</option>
@@ -38,14 +38,14 @@
         <option value="toi">TOI catalog</option>
         <option value="linear">linear fit</option>
       </select></div>
-    <div class="lco-field"><label for="sch-coords">RA, Dec (deg) <span class="ephem-src none" id="src-coords">—</span></label><input id="sch-coords" type="text" placeholder="e.g. 97.64, 29.67"></div>
-    <div class="lco-field"><label for="sch-range-start">Range start (UTC)</label><input id="sch-range-start" type="date"></div>
-    <div class="lco-field"><label for="sch-range-end">Range end (UTC)</label><input id="sch-range-end" type="date"></div>
+    <div class="lco-field"><label for="sch-coords" title="Target coordinates in decimal degrees (RA, Dec). Auto-filled by Fetch ephemeris from the catalog.">RA, Dec (deg) <span class="ephem-src none" id="src-coords">—</span></label><input id="sch-coords" type="text" placeholder="e.g. 97.64, 29.67"></div>
+    <div class="lco-field"><label for="sch-range-start" title="Start of the scheduling search window in UTC. Only transits with mid-point inside this range are considered.">Range start (UTC)</label><input id="sch-range-start" type="date"></div>
+    <div class="lco-field"><label for="sch-range-end" title="End of the scheduling search window in UTC.">Range end (UTC)</label><input id="sch-range-end" type="date"></div>
     <div class="lco-field"><label for="sch-t0" title="BJD_TDB. Enter mean,uncertainty. Populated by Fetch ephemeris; editable.">t0 (BJD) <span class="ephem-src none" id="src-t0">—</span></label><input id="sch-t0" type="text" inputmode="decimal" placeholder="e.g. 2459000.5,0.0003"></div>
-    <div class="lco-field"><label for="sch-period">Period (days) <span class="ephem-src none" id="src-period">—</span></label><input id="sch-period" type="text" inputmode="decimal" placeholder="e.g. 1.0914,0.00001"></div>
+    <div class="lco-field"><label for="sch-period" title="Orbital period in days. Auto-filled by Fetch ephemeris. Enter mean,uncertainty (e.g. 1.0914,0.00001).">Period (days) <span class="ephem-src none" id="src-period">—</span></label><input id="sch-period" type="text" inputmode="decimal" placeholder="e.g. 1.0914,0.00001"></div>
     <div class="lco-field"><label for="sch-duration" title="From the catalog when available; override here. Enter mean,uncertainty.">Duration (hr) <span class="ephem-src none" id="src-duration">—</span></label><input id="sch-duration" type="text" inputmode="decimal" placeholder="e.g. 2.5,0.1"></div>
-    <div class="lco-field"><label for="sch-pad-before">Pre-ingress (min)</label><input id="sch-pad-before" type="number" step="any" value="45"></div>
-    <div class="lco-field"><label for="sch-pad-after">Post-egress (min)</label><input id="sch-pad-after" type="number" step="any" value="45"></div>
+    <div class="lco-field"><label for="sch-pad-before" title="Minutes to add before ingress (start of transit). Extends the scheduling window earlier to ensure baseline coverage.">Pre-ingress (min)</label><input id="sch-pad-before" type="number" step="any" value="45"></div>
+    <div class="lco-field"><label for="sch-pad-after" title="Minutes to add after egress (end of transit). Extends the scheduling window later to ensure baseline coverage.">Post-egress (min)</label><input id="sch-pad-after" type="number" step="any" value="45"></div>
     <div class="lco-field"><label for="sch-include-padding" style="margin: 0;" title="When on, the padded baseline (start→end) must also be observable for a transit to rate 'full'. When off, padding is used only for the displayed span and the observability check spans just the transit (mid ± duration/2).">Include padding in obs check</label>
       <input id="sch-include-padding" type="checkbox" checked></div>
   </div>
@@ -68,8 +68,8 @@
         <option value="nautical" selected>Nautical (−12°)</option>
         <option value="astronomical">Astronomical (−18°)</option>
       </select></div>
-    <div class="lco-field"><label for="sch-obs-airmass">Max airmass</label><input id="sch-obs-airmass" type="number" step="any" value="2"></div>
-    <div class="lco-field"><label for="sch-moon-sep">Min lunar (deg)</label><input id="sch-moon-sep" type="number" step="any" value="30"></div>
+    <div class="lco-field"><label for="sch-obs-airmass" title="Maximum airmass for a transit to count as observable. Lower values mean better image quality. 2.0 is typical; 1.5 for high-precision work.">Max airmass</label><input id="sch-obs-airmass" type="number" step="any" value="2"></div>
+    <div class="lco-field"><label for="sch-moon-sep" title="Minimum angular distance from the Moon (degrees) for a transit to count as observable. Higher values avoid moonlight contamination.">Min lunar (deg)</label><input id="sch-moon-sep" type="number" step="any" value="30"></div>
     <button class="btn" type="button" id="btn-fov" title="Optimize field-of-view pointing for this target">Show FOV</button>
   </div>
   <div class="lco-actions">
@@ -110,22 +110,22 @@
 <div class="lco-section">
   <h3>Imaging Request</h3>
   <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
-    <div class="lco-field"><label for="sch-proposal">Proposal ID</label>
+    <div class="lco-field"><label for="sch-proposal" title="LCO proposal ID. Required for submission. Loaded from your LCO account settings.">Proposal ID</label>
       <select id="sch-proposal">
         <option value="">none</option>
       </select>
     </div>
-    <div class="lco-field"><label for="sch-kind">Instrument</label>
+    <div class="lco-field"><label for="sch-kind" title="Imaging instrument. MuSCAT (2m) has 4 simultaneous bands; Sinistro (1m) uses a single filter.">Instrument</label>
       <select id="sch-kind">
         <option value="sinistro">1M0-SCICAM-SINISTRO</option>
         <option value="muscat">2M0-SCICAM-MUSCAT</option>
       </select>
     </div>
-    <div class="lco-field"><label for="sch-name">Request name</label><input id="sch-name" type="text" placeholder="WASP-12b transit"></div>
-    <div class="lco-field muscat-only"><label for="sch-count">Exp count</label>
+    <div class="lco-field"><label for="sch-name" title="Human-readable name for this LCO request. Shown in the observing queue.">Request name</label><input id="sch-name" type="text" placeholder="WASP-12b transit"></div>
+    <div class="lco-field muscat-only"><label for="sch-count" title="Number of exposures per visit. Each exposure covers all 4 bands simultaneously.">Exp count</label>
       <input id="sch-count" type="number" min="1" value="1"></div>
-    <div class="lco-field sinistro-only"><label for="sch-sin-count">Exp count</label><input id="sch-sin-count" type="number" min="1" value="1"></div>
-    <div class="lco-field"><label>Site</label>
+    <div class="lco-field sinistro-only"><label for="sch-sin-count" title="Number of exposures per visit.">Exp count</label><input id="sch-sin-count" type="number" min="1" value="1"></div>
+    <div class="lco-field"><label title="Observing site. For MuSCAT3 choose ogg (Maui) or coj (Siding Spring); for Sinistro choose any LCO 1m node.">Site</label>
       <div class="muscat-only" style="display: none;">
         <select id="sch-muscat-site">
           <option value="">— select —</option>
@@ -146,7 +146,7 @@
       </div>
     </div>
     <div class="lco-field sinistro-only" style="display: none;">
-      <label for="sch-effective-filter">Filter</label>
+      <label for="sch-effective-filter" title="Sloan-like filter for Sinistro observations.">Filter</label>
       <select id="sch-effective-filter">
         <option value="rp">rp</option>
         <option value="up">up</option>
@@ -161,48 +161,48 @@
   <div class="muscat-only" style="margin-top: 0.6rem;">
     <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dim); margin-bottom: 0.4rem;">Exposure times per band:</div>
     <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 0.5rem 1rem;">
-      <div class="lco-field"><label for="sch-exp-g">g (s)</label><input id="sch-exp-g" type="number" step="any" placeholder="30"></div>
-      <div class="lco-field"><label for="sch-exp-r">r (s)</label><input id="sch-exp-r" type="number" step="any" placeholder="30"></div>
-      <div class="lco-field"><label for="sch-exp-i">i (s)</label><input id="sch-exp-i" type="number" step="any" placeholder="30"></div>
-      <div class="lco-field"><label for="sch-exp-z">z (s)</label><input id="sch-exp-z" type="number" step="any" placeholder="30"></div>
+      <div class="lco-field"><label for="sch-exp-g" title="Exposure time in seconds for the g band.">g (s)</label><input id="sch-exp-g" type="number" step="any" placeholder="30"></div>
+      <div class="lco-field"><label for="sch-exp-r" title="Exposure time in seconds for the r band.">r (s)</label><input id="sch-exp-r" type="number" step="any" placeholder="30"></div>
+      <div class="lco-field"><label for="sch-exp-i" title="Exposure time in seconds for the i band.">i (s)</label><input id="sch-exp-i" type="number" step="any" placeholder="30"></div>
+      <div class="lco-field"><label for="sch-exp-z" title="Exposure time in seconds for the z band.">z (s)</label><input id="sch-exp-z" type="number" step="any" placeholder="30"></div>
     </div>
     <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dim); margin-top: 0.6rem; margin-bottom: 0.4rem;">Settings:</div>
     <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.5rem 1rem;">
-      <div class="lco-field"><label for="sch-exp-mode">Exp mode</label>
+      <div class="lco-field"><label for="sch-exp-mode" title="Async returns immediately after exposure; Sync blocks until data is available.">Exp mode</label>
         <select id="sch-exp-mode"><option value="ASYNCHRONOUS" selected>Async</option><option value="SYNCHRONOUS">Sync</option></select></div>
-      <div class="lco-field"><label for="sch-readout">Readout mode</label><select id="sch-readout" style="font-size: 0.8rem;"><option value="MUSCAT_FAST">MUSCAT_FAST</option><option value="MUSCAT_SLOW">MUSCAT_SLOW</option></select></div>
+      <div class="lco-field"><label for="sch-readout" title="MUSCAT_FAST is faster but noisier; MUSCAT_SLOW is slower but lower read noise.">Readout mode</label><select id="sch-readout" style="font-size: 0.8rem;"><option value="MUSCAT_FAST">MUSCAT_FAST</option><option value="MUSCAT_SLOW">MUSCAT_SLOW</option></select></div>
     </div>
     <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dim); margin-top: 0.6rem; margin-bottom: 0.4rem;">Narrowband filters:</div>
     <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap: 0.5rem 1rem;">
-      <div class="lco-field"><label for="sch-nb-g">gp</label><select id="sch-nb-g"><option value="out">out</option><option value="in">in</option></select></div>
-      <div class="lco-field"><label for="sch-nb-r">rp</label><select id="sch-nb-r"><option value="out">out</option><option value="in">in</option></select></div>
-      <div class="lco-field"><label for="sch-nb-i">ip</label><select id="sch-nb-i"><option value="out">out</option><option value="in">in</option></select></div>
-      <div class="lco-field"><label for="sch-nb-z">zs</label><select id="sch-nb-z"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-g" title="gp narrowband filter: in or out of the beam.">gp</label><select id="sch-nb-g"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-r" title="rp narrowband filter: in or out of the beam.">rp</label><select id="sch-nb-r"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-i" title="ip narrowband filter: in or out of the beam.">ip</label><select id="sch-nb-i"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-z" title="zs narrowband filter: in or out of the beam.">zs</label><select id="sch-nb-z"><option value="out">out</option><option value="in">in</option></select></div>
     </div>
   </div>
 
   <div class="lco-grid" style="margin-top: 0.6rem; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
-    <div class="lco-field"><label for="sch-ipp">IPP value</label><input id="sch-ipp" type="number" step="any" value="1.0"></div>
-    <div class="lco-field"><label for="sch-type">Type</label>
+    <div class="lco-field"><label for="sch-ipp" title="Observing Priority Parity. Higher values (e.g. 2.0) increase priority in the LCO queue. Default is 1.0.">IPP value</label><input id="sch-ipp" type="number" step="any" value="1.0"></div>
+    <div class="lco-field"><label for="sch-type" title="REPEAT_EXPOSE runs the exposure sequence once per visit. EXPOSE runs a single exposure.">Type</label>
       <select id="sch-type">
         <option value="REPEAT_EXPOSE">REPEAT_EXPOSE</option>
         <option value="EXPOSE">EXPOSE</option>
       </select>
     </div>
-    <div class="lco-field"><label for="sch-observation-type">Obs type</label>
+    <div class="lco-field"><label for="sch-observation-type" title="TIME_CRITICAL requests get higher priority but may not fill the queue. NORMAL requests fill gaps.">Obs type</label>
       <select id="sch-observation-type">
         <option value="NORMAL">NORMAL</option>
         <option value="TIME_CRITICAL">TIME_CRITICAL</option>
       </select>
     </div>
-    <div class="lco-field"><label for="sch-guiding-config">Guiding</label>
+    <div class="lco-field"><label for="sch-guiding-config" title="Guide star acquisition: ON uses the guider for precise tracking; OFF uses blind offsets.">Guiding</label>
       <select id="sch-guiding-config">
         <option value="ON">ON</option>
         <option value="OFF">OFF</option>
       </select>
     </div>
-    <div class="lco-field sinistro-only"><label for="sch-effective-exptime">Exp time (s)</label><input id="sch-effective-exptime" type="text" inputmode="decimal" placeholder="60"></div>
-    <div class="lco-field sinistro-only"><label for="sch-effective-mode">Readout</label>
+    <div class="lco-field sinistro-only"><label for="sch-effective-exptime" title="Exposure time in seconds for Sinistro observations.">Exp time (s)</label><input id="sch-effective-exptime" type="text" inputmode="decimal" placeholder="60"></div>
+    <div class="lco-field sinistro-only"><label for="sch-effective-mode" title="Readout mode for Sinistro: 2k 2x2 uses central CCD region; full uses entire frame.">Readout</label>
       <select id="sch-effective-mode">
         <option value="central_2k_2x2">2k 2x2</option>
         <option value="full_frame">full</option>
@@ -219,7 +219,7 @@
   <h3>Split Request (two-site relay)</h3>
   <p class="lco-note" id="split-note"></p>
   <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
-    <div class="lco-field"><label for="sch-site-a">Leg A site (ingress)</label>
+    <div class="lco-field"><label for="sch-site-a" title="LCO site for the ingress leg of a split relay request. Choose a site where ingress is observable.">Leg A site (ingress)</label>
       <select id="sch-site-a">
         <option value="">— select —</option>
         <option value="ogg">ogg</option>
@@ -230,7 +230,7 @@
         <option value="elp">elp</option>
       </select>
     </div>
-    <div class="lco-field"><label for="sch-site-b">Leg B site (egress)</label>
+    <div class="lco-field"><label for="sch-site-b" title="LCO site for the egress leg of a split relay request. Choose a site where egress is observable.">Leg B site (egress)</label>
       <select id="sch-site-b">
         <option value="">— select —</option>
         <option value="ogg">ogg</option>
@@ -1940,6 +1940,16 @@
     }).catch(function () {});
   }
 
+  fetch('/api/ephemeris/targets').then(function (r) { return r.json(); }).then(function (res) {
+    if (res.ok && res.targets) {
+      var dl = document.getElementById('target-datalist');
+      res.targets.forEach(function (t) {
+        var opt = document.createElement('option');
+        opt.value = t;
+        dl.appendChild(opt);
+      });
+    }
+  }).catch(function () {});
   loadProposals();
   restoreOptions();
   ensureDefaultRange();

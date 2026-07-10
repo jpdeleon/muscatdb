@@ -669,6 +669,9 @@
             return;
           }
           pendingViewState = res.state || null;
+          if (pendingViewState) {
+            try { lastSavedViewJson = JSON.stringify(pendingViewState); } catch(e) {}
+          }
           const stateTargets = Array.isArray(pendingViewState?.targets) ? pendingViewState.targets : [];
           const targetsToLoad = urlTargets.length > 0 ? urlTargets : stateTargets;
           if (targetsToLoad.length > 0) loadMultipleTargets(targetsToLoad);
@@ -1062,7 +1065,7 @@
         const urlDate = urlParams.get('date') || '';
         const inst = urlInst || (combinedDatasets.length > 0 ? combinedDatasets[0].instrument : '');
         const date = urlDate || (combinedDatasets.length > 0 ? combinedDatasets[0].date : '');
-        checkTTVOutputs(inst, date, firstTarget);
+        checkTTVOutputs(firstTarget);
       }
       
       // Auto-populate planet letters from combined planets and generate default INI
