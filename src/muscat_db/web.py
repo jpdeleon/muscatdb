@@ -30,6 +30,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from muscat_db import photometry as phot
 from muscat_db import exposure as exp_calc
+from muscat_db.auth import trusted_forwarded_user
 from muscat_db import transit_fit as fit
 from muscat_db import ttv_fit as ttv
 from muscat_db import lco
@@ -97,7 +98,13 @@ async def _lifespan(app: FastAPI):
             "muscat/muscat2 calibration with --wcs_method astrometry.net will fail; "
             "use --wcs_method twirl (no API key) or export the key."
         )
-    yield
+
+    from muscat_db import proxy
+    await proxy.startup()
+    try:
+        yield
+    finally:
+        await proxy.shutdown()
 
 
 app = FastAPI(title="MuSCAT Observation Log", lifespan=_lifespan)
@@ -106,6 +113,7 @@ app = FastAPI(title="MuSCAT Observation Log", lifespan=_lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 from fastapi import APIRouter
+from muscat_db.proxy import router as proxy_router
 
 photometry_router = APIRouter(prefix="/api/photometry", tags=["photometry"])
 transit_fit_router = APIRouter(prefix="/api/transit-fit", tags=["transit-fit"])
@@ -119,30 +127,20 @@ lco_router = APIRouter(prefix="/api/lco", tags=["lco"])
 settings_router = APIRouter(prefix="/api/settings", tags=["settings"])
 ads_router = APIRouter(prefix="/api/ads", tags=["ads"])
 
-# Middleware: extract authenticated user from nginx reverse proxy.
-# nginx sets X-Forwarded-User after HTTP Basic Auth. Trusting that header is
-# ONLY safe for connections that actually came from nginx's own loopback
-# socket, so we verify the immediate TCP peer is loopback before honoring it
-# -- rather than relying on the operator having remembered --nginx at start
-# time (uvicorn's default bind is 0.0.0.0, which would otherwise let any
-# network client set this header and impersonate a user). This does not
-# defend against another local account on the same host connecting straight
-# to uvicorn's loopback port; that requires a shared-secret header between
-# nginx and uvicorn, which is not implemented yet.
-_TRUSTED_PROXY_HOSTS = frozenset({"127.0.0.1", "::1"})
-
-
+# Middleware: extract the authenticated user from the nginx reverse proxy.
+# The trust rule (only honor X-Forwarded-User from a loopback proxy peer) lives
+# in muscat_db.auth so the companion-app gateway applies it identically.
 @app.middleware("http")
 async def _nginx_auth_middleware(request: Request, call_next):
     client_host = request.client.host if request.client else None
-    user = request.headers.get("X-Forwarded-User") or None
-    if user and client_host not in _TRUSTED_PROXY_HOSTS:
+    forwarded = request.headers.get("X-Forwarded-User")
+    user = trusted_forwarded_user(forwarded, client_host)
+    if forwarded and user is None:
         logger.warning(
             "ignoring X-Forwarded-User=%r from non-loopback peer %s "
             "(request did not arrive via the nginx proxy)",
-            user, client_host,
+            forwarded, client_host,
         )
-        user = None
     request.state.user = user
     token = _CURRENT_USER.set(user)
     try:
@@ -5869,3 +5867,4 @@ app.include_router(fov_router)
 app.include_router(lco_router)
 app.include_router(settings_router)
 app.include_router(ads_router)
+app.include_router(proxy_router)
