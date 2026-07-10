@@ -33,6 +33,7 @@ dev = [
     "pytest-cov>=6",
     "httpx>=0.28",
     "ruff>=0.8",
+    "pandas>=2.2", # Used in notebooks for data manipulation
 ]
 
 [tool.pytest.ini_options]
