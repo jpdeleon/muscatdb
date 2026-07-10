@@ -867,6 +867,12 @@
     }
   }
 
+  // Human label for an archive source value. The `src-stellar`/`src-planet`
+  // badges show this catalog label; the ref containers hold the paper link.
+  function sourceLabelFor(source) {
+    return source === 'toi' ? 'TOI Catalog' : 'NASA Exoplanet Archive';
+  }
+
   function collectOptions() {
     var fixed = [];
     document.querySelectorAll('input[name="fixed-params"]:checked').forEach(function (c) { fixed.push(c.value); });
@@ -1444,7 +1450,7 @@
 
       var sourceSelect = card.querySelector('.planet-source-select');
       var source = sourceSelect ? sourceSelect.value : 'nasa';
-      var sourceLabel = source === 'toi' ? 'TOI Catalog' : 'NASA Exoplanet Archive';
+      var sourceLabel = sourceLabelFor(source);
 
       fetch('/api/transit-fit/query-archive?target=' + encodeURIComponent(targetVal) + '&source=' + encodeURIComponent(source))
         .then(function(res) {
@@ -1609,8 +1615,7 @@
     var stellarRefEl = document.getElementById('stellar-ref-container');
     if (stellarRefEl && saved.stellar_ref !== undefined) {
       stellarRefEl.innerHTML = saved.stellar_ref;
-      var src = saved.stellar_ref.replace(/^Source:\s*/i, '').trim();
-      setFieldSource('src-stellar', src || '');
+      setFieldSource('src-stellar', saved.stellar_ref ? sourceLabelFor(saved.archive_source) : '');
     }
 
     var cEl = document.getElementById('opt-chromatic');
@@ -1756,8 +1761,7 @@
 
         var stellarRefEl = document.getElementById('stellar-ref-container');
         if (stellarRefEl) stellarRefEl.innerHTML = backup.stellar_ref || '';
-        var backupSrc = (backup.stellar_ref || '').replace(/^Source:\s*/i, '').trim();
-        setFieldSource('src-stellar', backupSrc || '');
+        setFieldSource('src-stellar', backup.stellar_ref ? sourceLabelFor(backup.archive_source) : '');
 
         var cEl = document.getElementById('opt-chromatic');
         if (cEl && backup.chromatic !== undefined) cEl.checked = backup.chromatic === 'true';
@@ -2546,7 +2550,7 @@
 
       var sourceSelect = document.getElementById('archive-source-select');
       var source = sourceSelect ? sourceSelect.value : 'nasa';
-      var sourceLabel = source === 'toi' ? 'TOI Catalog' : 'NASA Exoplanet Archive';
+      var sourceLabel = sourceLabelFor(source);
 
       fetch('/api/transit-fit/query-archive?target=' + encodeURIComponent(targetVal) + '&source=' + encodeURIComponent(source))
         .then(function (res) {
@@ -2567,12 +2571,13 @@
             if (el && params[id] !== undefined) el.value = params[id];
           });
 
-          // Stellar parameters reference
+          // Stellar parameters reference: the container holds the paper link,
+          // the badge shows the catalog label (mirrors the planet badge).
           var stellarRefEl = document.getElementById('stellar-ref-container');
           if (stellarRefEl) {
             stellarRefEl.innerHTML = params.st_ref ? 'Source: ' + params.st_ref : '';
           }
-          setFieldSource('src-stellar', params.st_ref || '');
+          setFieldSource('src-stellar', params.st_ref ? sourceLabel : '');
 
           // Sync first planet card's priors
           var container = document.getElementById('planet-cards-container');
