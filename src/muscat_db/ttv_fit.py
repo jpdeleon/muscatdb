@@ -309,11 +309,12 @@ def validate_ttv_options(options: dict | None) -> str | None:
     except Exception:
         return "Could not parse INI configuration"
 
-    first_pair = planet_letters[:2]
-    expected_amp = f"a_{first_pair}"
-    has_any_amp = any(k.startswith("a_") for k in config["INIT"])
-    if not has_any_amp:
-        return f"INI [INIT] must contain at least one amplitude guess (e.g. {expected_amp})"
+    if len(planet_letters) >= 2:
+        first_pair = planet_letters[:2]
+        expected_amp = f"a_{first_pair}"
+        has_any_amp = any(k.startswith("a_") for k in config["INIT"])
+        if not has_any_amp:
+            return f"INI [INIT] must contain at least one amplitude guess (e.g. {expected_amp})"
 
     return None
 

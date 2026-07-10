@@ -221,6 +221,7 @@
           <strong><code>[OUTER]</code> — optional.</strong> Parameters for the
           non-transiting outer planet. Not auto-generated: add it yourself when
           <em>Non-transiting outer planet</em> is checked.
+          <a href="https://raw.githubusercontent.com/jpdeleon/harmonic/refs/heads/master/examples/kep51.ini" target="_blank" rel="noopener noreferrer" style="margin-left: 0.5rem;">See Kepler-51 example</a>
         </p>
         <p class="ini-warn">
           Changing the planet letters regenerates the whole file from defaults and
@@ -516,6 +517,21 @@
       );
       Object.keys(planetPlotSettings).forEach(k => delete planetPlotSettings[k]);
     }
+
+    if (state.ttv_opts && typeof state.ttv_opts === 'object') {
+      const opts = state.ttv_opts;
+      localStorage.setItem(TTV_STORAGE_KEY, JSON.stringify(opts));
+      const textFields = ['run_name','walkers','steps','burn','thin','nproc','seed','mstar','planet_letters','ini_content'];
+      textFields.forEach(f => {
+        const el = document.getElementById('opt-' + f);
+        if (el && opts[f] !== undefined) el.value = opts[f];
+      });
+      const boolFields = ['non_transiting_outer','phase_offsets','clobber'];
+      boolFields.forEach(f => {
+        const el = document.getElementById('opt-' + f);
+        if (el && opts[f] !== undefined) el.checked = opts[f];
+      });
+    }
   }
 
   function collectEphemerisViewState() {
@@ -543,6 +559,17 @@
       if (planetPlotSettings[pl]) currentPlanetPlotSettings[pl] = planetPlotSettings[pl];
     });
 
+    const ttvFields = {};
+    ['opt-run_name','opt-walkers','opt-steps','opt-burn','opt-thin','opt-nproc','opt-seed','opt-mstar','opt-planet_letters'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) ttvFields[id.replace('opt-', '')] = el.value;
+    });
+    ['opt-non_transiting_outer','opt-phase_offsets','opt-clobber'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) ttvFields[id.replace('opt-', '')] = el.checked;
+    });
+    ttvFields.ini_content = document.getElementById('opt-ini_content')?.value || '';
+
     return {
       targets: loadedTargets.slice().sort(),
       checked_datasets: checkedDatasets,
@@ -552,7 +579,8 @@
       x_axis: xAxis,
       show_excluded: Boolean(document.getElementById('show-excluded-checkbox')?.checked),
       show_utc: Boolean(document.getElementById('show-twin-checkbox')?.checked),
-      plot_title: plotTitle
+      plot_title: plotTitle,
+      ttv_opts: ttvFields
     };
   }
 
@@ -2437,10 +2465,12 @@
         el.addEventListener('input', function() {
           saveTTVOptions();
           refreshTTVCmd();
+          scheduleSaveView();
         });
         el.addEventListener('change', function() {
           saveTTVOptions();
           refreshTTVCmd();
+          scheduleSaveView();
         });
       });
     });
@@ -2751,8 +2781,28 @@
   function rebuildINI(onlyT14 = false) {
     const textarea = document.getElementById('opt-ini_content');
     const letters = (document.getElementById('opt-planet_letters').value || '').split('').sort();
+
+    const t14Values = {};
+    for (const pl of letters) {
+      const card = document.querySelector(`.planet-card[data-planet="${pl}"]`);
+      const val = card ? card.querySelector('.planet-duration')?.value : null;
+      if (val && val !== '0' && val !== '') {
+        t14Values[pl] = val;
+      }
+    }
+
+    let t14Section = '';
+    if (Object.keys(t14Values).length > 0) {
+      t14Section = '\n[T14]\n';
+      for (const pl of letters) {
+        if (t14Values[pl]) {
+          t14Section += `t14_${pl} = ${t14Values[pl]}\n`;
+        }
+      }
+    }
+
     if (letters.length < 2) {
-      textarea.value = '';
+      textarea.value = '[INIT]\n' + t14Section.trim();
       return;
     }
     
@@ -2806,25 +2856,6 @@
         initSection += `a_${p2}${p1} = ${a2}\n`;
         initSection += `per_${p1}${p2} = ${per}\n`;
         initSection += `t_${p1}${p2} = ${t}\n`;
-      }
-    }
-    
-    const t14Values = {};
-    for (const pl of letters) {
-      const card = document.querySelector(`.planet-card[data-planet="${pl}"]`);
-      const val = card ? card.querySelector('.planet-duration')?.value : null;
-      if (val && val !== '0' && val !== '') {
-        t14Values[pl] = val;
-      }
-    }
-    
-    let t14Section = '';
-    if (Object.keys(t14Values).length > 0) {
-      t14Section = '\n[T14]\n';
-      for (const pl of letters) {
-        if (t14Values[pl]) {
-          t14Section += `t14_${pl} = ${t14Values[pl]}\n`;
-        }
       }
     }
     
