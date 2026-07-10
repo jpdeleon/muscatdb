@@ -250,12 +250,11 @@
     // TTV runs are keyed on a slugged run name rather than a run_id — see
     // ttv_fit.ttv_job_key() / jobs.slugify_run_name().
     function ttvJobKey(j) {
-      if (!j || !j.inst || !j.date || !j.target) return null;
+      if (!j || !j.target) return null;
       const slug = String(j.run_name || '').trim().toLowerCase()
         .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40)
         .replace(/^_+|_+$/g, '') || 'default';
-      return 'ttv_fit:' + j.inst + '/' + j.date + '/' +
-             String(j.target).replace(/ /g, '') + '/' + slug;
+      return 'ttv_fit:' + String(j.target).replace(/ /g, '') + '/' + slug;
     }
     function trackedKeys() {
       const keys = [];

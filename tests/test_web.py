@@ -2089,7 +2089,7 @@ def test_ttv_output_dir_layout(tmp_path, monkeypatch):
     base = tmp_path.resolve()
 
     def rel(run_name):
-        p = ttv.ttv_output_dir("muscat3", "260101", "HIP67522", run_name)
+        p = ttv.ttv_output_dir("HIP67522", run_name)
         return p.relative_to(base).as_posix()
 
     # Blank run name slugs to "default" (never the bare target dir).
@@ -2098,7 +2098,7 @@ def test_ttv_output_dir_layout(tmp_path, monkeypatch):
     # Run names are slugified, not passed through verbatim.
     assert rel("My Run 1") == "HIP67522/_runs/my_run_1"
     # The job key uses the same slug as the directory segment.
-    assert ttv.ttv_job_key("muscat3", "260101", "HIP67522", "My Run 1").endswith("/my_run_1")
+    assert ttv.ttv_job_key("HIP67522", "My Run 1").endswith("/my_run_1")
 
 
 def test_ttv_output_dir_rejects_traversal(tmp_path, monkeypatch):
@@ -2106,9 +2106,9 @@ def test_ttv_output_dir_rejects_traversal(tmp_path, monkeypatch):
 
     monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path))
     with pytest.raises(ValueError):
-        ttv.ttv_output_dir("muscat3", "260101", "../etc", "run")
+        ttv.ttv_output_dir("../etc", "run")
     # A traversal-looking run name is slugified into a single safe segment.
-    p = ttv.ttv_output_dir("muscat3", "260101", "HIP67522", "../../etc")
+    p = ttv.ttv_output_dir("HIP67522", "../../etc")
     assert p.relative_to(tmp_path.resolve()).as_posix() == "HIP67522/_runs/etc"
 
 
@@ -2132,7 +2132,7 @@ def test_list_ttv_runs_skips_empty_and_sorts_newest_first(tmp_path, monkeypatch)
     os.utime(older, (1_000_000, 1_000_000))
     os.utime(newer, (2_000_000, 2_000_000))
 
-    runs = ttv.list_ttv_runs("muscat3", "260101", "HIP67522")
+    runs = ttv.list_ttv_runs("HIP67522")
     assert [r["run_name"] for r in runs] == ["test", "default"]
 
 
@@ -2140,8 +2140,8 @@ def test_list_ttv_runs_empty_for_unknown_or_unsafe_target(tmp_path, monkeypatch)
     from muscat_db import ttv_fit as ttv
 
     monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path))
-    assert ttv.list_ttv_runs("muscat3", "260101", "NoSuchTarget") == []
-    assert ttv.list_ttv_runs("muscat3", "260101", "../etc") == []
+    assert ttv.list_ttv_runs("NoSuchTarget") == []
+    assert ttv.list_ttv_runs("../etc") == []
 
 
 def test_ttv_fit_runs_endpoint(tmp_path, monkeypatch):
@@ -2149,10 +2149,9 @@ def test_ttv_fit_runs_endpoint(tmp_path, monkeypatch):
     _make_ttv_run(tmp_path, "HIP67522", "default")
 
     client = TestClient(app)
-    r = client.get("/api/ttv-fit/runs", params={"inst": "muscat3", "date": "260101", "target": "HIP67522"})
+    r = client.get("/api/ttv-fit/runs", params={"target": "HIP67522"})
     assert r.status_code == 200
     assert [x["run_name"] for x in r.json()["runs"]] == ["default"]
 
-    # Guardrails: instrument must be known and target is required.
-    assert client.get("/api/ttv-fit/runs", params={"inst": "nope", "target": "HIP67522"}).status_code == 400
-    assert client.get("/api/ttv-fit/runs", params={"inst": "muscat3", "target": ""}).status_code == 400
+    # Guardrails: target is required.
+    assert client.get("/api/ttv-fit/runs", params={"target": ""}).status_code == 400

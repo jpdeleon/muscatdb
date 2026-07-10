@@ -3311,7 +3311,7 @@ def ephemeris_page():
 
 
 @app.get("/ttv-fit")
-def ttv_fit_redirect(inst: str = "", date: str = "", target: str = ""):
+def ttv_fit_redirect(target: str = ""):
     """Redirect to ephemeris page (TTV fitting is now integrated there)."""
     params = []
     if target:
@@ -5447,6 +5447,16 @@ def job_log(type_: str, inst: str, date: str, target: str, run: str = ""):
     return FileResponse(str(path))
 
 
+@jobs_router.get("/ttv-log/{target}")
+def ttv_job_log(target: str, run: str = ""):
+    from muscat_db.ttv_fit import ttv_output_dir
+    rdir = ttv_output_dir(target, run_name=(run or ""))
+    path = rdir / "harmonic.log"
+    if not path.is_file():
+        raise HTTPException(404, "log not found")
+    return FileResponse(str(path))
+
+
 @jobs_router.post("/rerun")
 def jobs_rerun(request: Request, payload: dict = Body(...)):
     import json
@@ -5473,6 +5483,9 @@ def jobs_rerun(request: Request, payload: dict = Body(...)):
         result = phot.start_run(inst, date, target, options=options, test_run=p.get("test_run", True), user_name=user_name)
     elif job["type"] == "transit_fit":
         result = fit.start_fit(inst, date, target, options=options, test_run=p.get("test_run", False), selected_csvs=p.get("selected_csvs"), user_name=user_name)
+    elif job["type"] == "ttv_fit":
+        from muscat_db.ttv_fit import start_ttv_fit
+        result = start_ttv_fit(target, options, user_name)
     else:
         raise HTTPException(400, "unknown job type")
     if not result.get("ok"):
@@ -5749,82 +5762,64 @@ def ccd_page(instrument: str, obsdate: str, ccd: int):
 
 
 @ttv_fit_router.get("/outputs", response_class=JSONResponse)
-def ttv_fit_outputs(inst: str = "", date: str = "", target: str = "", run_name: str = ""):
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
-    if target:
-        target = target.strip()
-    outputs = ttv.get_ttv_outputs(inst, date, target, run_name)
+def ttv_fit_outputs(target: str = "", run_name: str = ""):
+    if not target:
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    outputs = ttv.get_ttv_outputs(target.strip(), run_name)
     return JSONResponse({"ok": True, "outputs": outputs})
 
 
 @ttv_fit_router.get("/runs", response_class=JSONResponse)
-def ttv_fit_runs(inst: str = "", date: str = "", target: str = ""):
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
+def ttv_fit_runs(target: str = ""):
     if not target:
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
-    return JSONResponse({"ok": True, "runs": ttv.list_ttv_runs(inst, date, target.strip())})
+    return JSONResponse({"ok": True, "runs": ttv.list_ttv_runs(target.strip())})
 
 
 @ttv_fit_router.post("/start", response_class=JSONResponse)
 def api_start_ttv_fit(payload: dict = Body(...)):
-    inst = (payload.get("instrument") or "").strip()
-    date = (payload.get("date") or "").strip()
     target = (payload.get("target") or "").strip()
     user_name = (payload.get("user_name") or "").strip()
     options = payload.get("options") or {}
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
-    if not date:
-        return JSONResponse({"ok": False, "error": "date is required"}, status_code=400)
     if not target:
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
-    result = ttv.start_ttv_fit(inst, date, target, options, user_name)
+    result = ttv.start_ttv_fit(target, options, user_name)
     return JSONResponse(result)
 
 
 @ttv_fit_router.post("/cancel", response_class=JSONResponse)
 def api_cancel_ttv_fit(payload: dict = Body(...)):
-    inst = (payload.get("instrument") or "").strip()
-    date = (payload.get("date") or "").strip()
     target = (payload.get("target") or "").strip()
     run_name = (payload.get("run_name") or "").strip()
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
-    res = ttv.cancel_ttv_fit(inst, date, target, run_name)
+    if not target:
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    res = ttv.cancel_ttv_fit(target, run_name)
     return JSONResponse(res)
 
 
 @ttv_fit_router.post("/delete", response_class=JSONResponse)
 def api_delete_ttv_fit(payload: dict = Body(...)):
-    inst = (payload.get("instrument") or "").strip()
-    date = (payload.get("date") or "").strip()
     target = (payload.get("target") or "").strip()
     run_name = (payload.get("run_name") or "").strip()
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
-    res = ttv.delete_ttv_fit(inst, date, target, run_name)
+    if not target:
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    res = ttv.delete_ttv_fit(target, run_name)
     return JSONResponse(res)
 
 
 @ttv_fit_router.get("/status", response_class=JSONResponse)
-def ttv_fit_status(inst: str = "", date: str = "", target: str = "", run_name: str = ""):
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
+def ttv_fit_status(target: str = "", run_name: str = ""):
     if not target:
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
-    status = ttv.job_status(inst, date, target, run_name)
+    status = ttv.job_status(target.strip(), run_name)
     return JSONResponse(status)
 
 
 @ttv_fit_router.get("/output-file", response_class=FileResponse)
-def ttv_fit_output_file(inst: str = "", date: str = "", target: str = "", run_name: str = "", file: str = ""):
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
+def ttv_fit_output_file(target: str = "", run_name: str = "", file: str = ""):
     if not target:
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
-    output_dir = ttv.ttv_output_dir(inst, date, target, run_name)
+    output_dir = ttv.ttv_output_dir(target.strip(), run_name)
     filepath = output_dir / file
     if not filepath.exists() or not filepath.is_file():
         raise HTTPException(404, f"file not found: {file}")
@@ -5832,14 +5827,12 @@ def ttv_fit_output_file(inst: str = "", date: str = "", target: str = "", run_na
 
 
 @ttv_fit_router.get("/download-all", response_class=FileResponse)
-def ttv_fit_download_all(inst: str = "", date: str = "", target: str = "", run_name: str = ""):
+def ttv_fit_download_all(target: str = "", run_name: str = ""):
     import io, zipfile
 
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
     if not target:
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
-    output_dir = ttv.ttv_output_dir(inst, date, target, run_name)
+    output_dir = ttv.ttv_output_dir(target.strip(), run_name)
     if not output_dir.is_dir():
         raise HTTPException(404, "output directory not found")
     buf = io.BytesIO()
@@ -5857,15 +5850,11 @@ def ttv_fit_download_all(inst: str = "", date: str = "", target: str = "", run_n
 
 @ttv_fit_router.post("/command", response_class=JSONResponse)
 def api_ttv_fit_command(payload: dict = Body(...)):
-    inst = (payload.get("instrument") or "").strip()
-    date = (payload.get("date") or "").strip()
     target = (payload.get("target") or "").strip()
     options = payload.get("options") or {}
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
     if not target:
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
-    cmd_str = ttv.get_ttv_command(inst, date, target, options)
+    cmd_str = ttv.get_ttv_command(target, options)
     return JSONResponse({"ok": True, "command": cmd_str})
 
 
