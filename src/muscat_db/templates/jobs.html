@@ -678,7 +678,17 @@
     var date   = btn.getAttribute('data-date');
     var target = btn.getAttribute('data-target');
     var runId  = btn.getAttribute('data-run') || '';
-    var url    = type === 'transit_fit' ? '/api/transit-fit/cancel' : (type === 'ttv_fit' ? '/api/ttv-fit/cancel' : '/api/photometry/cancel');
+    var url, body;
+    if (type === 'ttv_fit') {
+      url = '/api/ttv-fit/cancel';
+      body = JSON.stringify({ target: target, run_name: runId });
+    } else if (type === 'transit_fit') {
+      url = '/api/transit-fit/cancel';
+      body = JSON.stringify({ inst: inst, date: date, target: target, run_id: runId });
+    } else {
+      url = '/api/photometry/cancel';
+      body = JSON.stringify({ inst: inst, date: date, target: target, run_id: runId });
+    }
 
     btn.disabled = true;
     btn.innerText = 'Cancelling…';
@@ -686,7 +696,7 @@
     fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })
+      body: body
     })
     .then(function(r) { if (!r.ok) return r.json().then(function(e) { throw new Error(e.error || 'Failed'); }); return r.json(); })
     .then(function() {
@@ -751,8 +761,14 @@
 
     logRow.style.display = '';
     pre.textContent = 'Loading…';
-    var url = '/api/jobs/log/' + encodeURIComponent(type) + '/' + encodeURIComponent(inst) + '/' + encodeURIComponent(date) + '/' + encodeURIComponent(target);
-    if (runId) url += '?run=' + encodeURIComponent(runId);
+    var url;
+    if (type === 'ttv_fit') {
+      url = '/api/jobs/ttv-log/' + encodeURIComponent(target);
+      if (runId) url += '?run=' + encodeURIComponent(runId);
+    } else {
+      url = '/api/jobs/log/' + encodeURIComponent(type) + '/' + encodeURIComponent(inst) + '/' + encodeURIComponent(date) + '/' + encodeURIComponent(target);
+      if (runId) url += '?run=' + encodeURIComponent(runId);
+    }
     fetch(url)
       .then(function(r) { if (!r.ok) throw new Error('Log not found'); return r.text(); })
       .then(function(text) { pre.textContent = text; })
