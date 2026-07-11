@@ -2097,6 +2097,24 @@ def test_ttv_fit_command_endpoint(monkeypatch):
     assert "/WASP-12/_runs/test_run" in res["command"]
 
 
+def test_ttv_fit_start_uses_authenticated_user(monkeypatch):
+    captured = {}
+
+    def fake_start(target, options, user_name):
+        captured.update(target=target, options=options, user_name=user_name)
+        return {"ok": True}
+
+    monkeypatch.setattr("muscat_db.web.ttv.start_ttv_fit", fake_start)
+    response = TestClient(app, client=("127.0.0.1", 12345)).post(
+        "/api/ttv-fit/start",
+        headers={"X-Forwarded-User": "trusted-user"},
+        json={"target": "WASP-12", "user_name": "forged-user", "options": {}},
+    )
+
+    assert response.status_code == 200
+    assert captured["user_name"] == "trusted-user"
+
+
 def test_ttv_output_dir_layout(tmp_path, monkeypatch):
     """TTV results live at <base>/<target>/_runs/<slug>, mirroring photometry."""
     from muscat_db import ttv_fit as ttv

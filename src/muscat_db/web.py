@@ -5840,13 +5840,12 @@ def ttv_fit_runs(target: str = ""):
 
 
 @ttv_fit_router.post("/start", response_class=JSONResponse)
-def api_start_ttv_fit(payload: dict = Body(...)):
+def api_start_ttv_fit(request: Request, payload: dict = Body(...)):
     target = (payload.get("target") or "").strip()
-    user_name = (payload.get("user_name") or "").strip()
     options = payload.get("options") or {}
     if not target:
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
-    result = ttv.start_ttv_fit(target, options, user_name)
+    result = ttv.start_ttv_fit(target, options, request.state.user)
     return JSONResponse(result)
 
 
