@@ -104,6 +104,7 @@ RUN_DEFAULTS: dict = {
     "sig_dy": None,            # None -> sigma clipping disabled for dy axis
     "min_star_area": 10,
     "wcs_method": "astrometry.net",
+    "centroid_method": "auto",  # auto | quad | com (mirrors prose2's --centroid_method)
     "calib_dir": "",
     "site": "",                # sinistro only: "" -> all sites; else one of SINISTRO_SITES
     "mode": "",                # sinistro only: "" -> all modes; else one of SINISTRO_MODES
@@ -121,6 +122,12 @@ CMAP_CHOICES = (
     "coolwarm", "RdBu", "RdGy", "PiYG", "PRGn", "BrBG", "PuOr",
     "RdYlBu", "RdYlGn", "Spectral",
 )
+
+# Centroid refinement strategies exposed by prose2's --centroid_method: adaptive
+# quadratic/COM selection ("auto"), quadratic only ("quad"), or center-of-mass
+# only ("com"). Must stay in sync with the <select> options in
+# templates/photometry.html.
+CENTROID_METHODS = ("auto", "quad", "com")
 
 # NaN imputation strategies exposed by prose2's --nan-imputation-method.
 NAN_IMPUTATION_METHODS = (
@@ -987,7 +994,7 @@ def normalize_run_options(raw: dict | None) -> dict:
     if "bands" in raw:  # present-but-empty must surface as an error, not default
         o["bands"] = [str(b).strip() for b in (bands or []) if str(b).strip()]
 
-    for key in ("run_name", "ref_band", "ref_select", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "avoid_nearby_star_mode", "avoid_nearby_star", "target_coord", "wcs_method", "calib_dir", "site", "mode", "cmap", "nan_imputation_method"):
+    for key in ("run_name", "ref_band", "ref_select", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "avoid_nearby_star_mode", "avoid_nearby_star", "target_coord", "wcs_method", "centroid_method", "calib_dir", "site", "mode", "cmap", "nan_imputation_method"):
         if raw.get(key) is not None:
             o[key] = str(raw[key]).strip()
 
@@ -1079,6 +1086,8 @@ def validate_run_options(o: dict, inst: str | None = None) -> str | None:
         return "aperture unit must be 'pix' or 'fwhm'"
     if o.get("wcs_method") not in ("twirl", "astrometry.net"):
         return "WCS method must be 'twirl' or 'astrometry.net'"
+    if o.get("centroid_method", "auto") not in CENTROID_METHODS:
+        return f"centroid method must be one of {', '.join(CENTROID_METHODS)}"
     # Colormap validation: default is "gray" (black=low, white=high).
     # Note: prose2's run_photometry has a bug where gray and gray_r render
     # identically; this is a prose2 issue and needs to be fixed there.
@@ -1186,6 +1195,8 @@ def build_command(
 
     if o.get("wcs_method", "astrometry.net") != "astrometry.net":
         args += ["--wcs_method", o["wcs_method"]]
+    if o.get("centroid_method", "auto") != "auto":
+        args += ["--centroid_method", o["centroid_method"]]
     # --site / --mode are sinistro-only filters; ignore for other instruments.
     if inst == "sinistro":
         site = (o.get("site") or "").strip()

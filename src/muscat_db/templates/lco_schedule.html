@@ -42,7 +42,7 @@
     <div class="lco-field"><label for="sch-range-start">Range start (UTC) <span class="help-tooltip" title="Start of the scheduling search window in UTC. Only transits with mid-point inside this range are considered.">?</span></label><input id="sch-range-start" type="date"></div>
     <div class="lco-field"><label for="sch-range-end">Range end (UTC) <span class="help-tooltip" title="End of the scheduling search window in UTC.">?</span></label><input id="sch-range-end" type="date"></div>
     <div class="lco-field"><label for="sch-t0">t0 (BJD) <span class="ephem-src none" id="src-t0">—</span> <span class="help-tooltip" title="BJD_TDB. Enter mean,uncertainty. Populated by Fetch ephemeris; editable.">?</span></label><input id="sch-t0" type="text" inputmode="decimal" placeholder="e.g. 2459000.5,0.0003"></div>
-    <div class="lco-field"><label for="sch-period">Period (days) <span class="ephem-src none" id="src-period">—</span> <span class="help-tooltip" title="Orbital period in days. Auto-filled by Fetch ephemeris. Enter mean,uncertainty (e.g. 1.0914,0.00001).">?</span></label><input id="sch-period" type="text" inputmode="decimal" placeholder="e.g. 1.0914,0.00001"></div>
+    <div class="lco-field"><label for="sch-period">Period (d) <span class="ephem-src none" id="src-period">—</span> <span class="help-tooltip" title="Orbital period in days. Auto-filled by Fetch ephemeris. Enter mean,uncertainty (e.g. 1.0914,0.00001).">?</span></label><input id="sch-period" type="text" inputmode="decimal" placeholder="e.g. 1.0914,0.00001"></div>
     <div class="lco-field"><label for="sch-duration">Duration (hr) <span class="ephem-src none" id="src-duration">—</span> <span class="help-tooltip" title="From the catalog when available; override here. Enter mean,uncertainty.">?</span></label><input id="sch-duration" type="text" inputmode="decimal" placeholder="e.g. 2.5,0.1"></div>
     <div class="lco-field"><label for="sch-pad-before">Pre-ingress (min) <span class="help-tooltip" title="Minutes to add before ingress (start of transit). Extends the scheduling window earlier to ensure baseline coverage.">?</span></label><input id="sch-pad-before" type="number" step="any" value="45"></div>
     <div class="lco-field"><label for="sch-pad-after">Post-egress (min) <span class="help-tooltip" title="Minutes to add after egress (end of transit). Extends the scheduling window later to ensure baseline coverage.">?</span></label><input id="sch-pad-after" type="number" step="any" value="45"></div>
@@ -198,9 +198,10 @@
     <div class="lco-field"><label for="sch-guiding-config">Guiding <span class="help-tooltip" title="Guide star acquisition: ON uses the guider for precise tracking; OFF uses blind offsets.">?</span></label>
       <select id="sch-guiding-config">
         <option value="ON">ON</option>
-        <option value="OFF">OFF</option>
+        <option value="OFF" selected>OFF</option>
       </select>
     </div>
+    <div class="lco-field"><label for="sch-defocus">Defocus (mm) <span class="help-tooltip" id="hint-defocus" title="Secondary-mirror offset from focus, in mm, to prevent CCD saturation on bright targets. 0 = focused. Limits: ±8mm for MuSCAT, ±5mm for Sinistro.">?</span></label><input id="sch-defocus" type="number" step="any" value="0" min="-8" max="8"></div>
     <div class="lco-field sinistro-only"><label for="sch-effective-exptime">Exp time (s) <span class="help-tooltip" title="Exposure time in seconds for Sinistro observations.">?</span></label><input id="sch-effective-exptime" type="text" inputmode="decimal" placeholder="60"></div>
     <div class="lco-field sinistro-only"><label for="sch-effective-mode">Readout <span class="help-tooltip" title="Readout mode for Sinistro: 2k 2x2 uses central CCD region; full uses entire frame.">?</span></label>
       <select id="sch-effective-mode">
@@ -325,6 +326,11 @@
     e.className = 'lco-msg' + (kind ? ' ' + kind : '');
   }
 
+  function updateGenWindowsButtonState() {
+    el('btn-gen-windows').disabled = !val('sch-coords');
+  }
+  el('sch-coords').addEventListener('input', updateGenWindowsButtonState);
+
   // --- Ephemeris field provenance -----------------------------------------
   // These four fields are target-scoped: their value only makes sense for the
   // target it was resolved for. We track which target the current values belong
@@ -351,6 +357,7 @@
   }
   function clearEphemFields() {
     EPHEM_FIELDS.forEach(function (id) { setVal(id, ''); setFieldSource(id, ''); });
+    updateGenWindowsButtonState();
   }
   function parseTupleValue(raw) {
     var s = (raw || '').trim();
@@ -393,7 +400,7 @@
     'sch-kind','sch-name','sch-count','sch-exp-g','sch-exp-r','sch-exp-i','sch-exp-z',
     'sch-exp-mode','sch-readout','sch-muscat-site','sch-nb-g','sch-nb-r','sch-nb-i','sch-nb-z',
     'sch-sin-count','sch-site','sch-site-a','sch-site-b',
-    'sch-type','sch-observation-type','sch-guiding-config',
+    'sch-type','sch-observation-type','sch-guiding-config','sch-defocus',
     'sch-effective-filter','sch-effective-exptime','sch-effective-mode',
     'sch-obs-airmass','sch-moon-sep','sch-ipp'
   ];
@@ -606,6 +613,20 @@
     }
   }
 
+  function updateDefocusLimits() {
+    var muscat = val('sch-kind') !== 'sinistro';
+    var limit = muscat ? 8 : 5;
+    var defocusEl = el('sch-defocus');
+    var hint = el('hint-defocus');
+    if (defocusEl) {
+      defocusEl.min = -limit;
+      defocusEl.max = limit;
+      var current = num('sch-defocus');
+      if (current !== null && Math.abs(current) > limit) setVal('sch-defocus', 0);
+    }
+    if (hint) hint.title = 'Secondary-mirror offset from focus, in mm, to prevent CCD saturation on bright targets. 0 = focused. Limit for this instrument: ±' + limit + 'mm.';
+  }
+
   function applyKind() {
     var k = val('sch-kind');
     var muscat = k === 'muscat' || k === 'muscat3' || k === 'muscat4';
@@ -613,15 +634,15 @@
     if (!prevMuscat) rememberSinistroFields();
     document.querySelectorAll('.muscat-only').forEach(function (e) { e.style.display = muscat ? 'block' : 'none'; });
     document.querySelectorAll('.sinistro-only').forEach(function (e) { e.style.display = muscat ? 'none' : 'block'; });
+    updateDefocusLimits();
     var effExp = el('sch-effective-exptime');
     var effMode = el('sch-effective-mode');
     var effFilter = el('sch-effective-filter');
     if (effExp) effExp.readOnly = muscat;
     if (effMode) effMode.disabled = muscat;
     if (effFilter) effFilter.disabled = muscat;
-    if (muscat) {
-      setSelectValue('sch-guiding-config', 'OFF');
-    } else {
+    setSelectValue('sch-guiding-config', 'OFF');
+    if (!muscat) {
       if (effMode) {
         effMode.innerHTML = 
           '<option value="central_2k_2x2">central_2k_2x2</option>' +
@@ -759,6 +780,7 @@
     }
     setVal('sch-coords', coords.ra.toFixed(5) + ', ' + coords.dec.toFixed(5));
     setFieldSource('sch-coords', String(coords.source || 'catalog').toUpperCase());
+    updateGenWindowsButtonState();
     saveOptions();
   }
 
@@ -1556,7 +1578,8 @@
       twilight: val('sch-twilight'),
       type: val('sch-type'),
       observation_type: val('sch-observation-type'),
-      guiding_config: val('sch-guiding-config')
+      guiding_config: val('sch-guiding-config'),
+      defocus: num('sch-defocus')
     };
     if (kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4') {
       p.exposure_times = {};
@@ -1952,6 +1975,7 @@
   }).catch(function () {});
   loadProposals();
   restoreOptions();
+  updateGenWindowsButtonState();
   ensureDefaultRange();
   applyKind();
   updateScheduleFields();

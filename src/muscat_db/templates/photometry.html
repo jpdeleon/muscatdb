@@ -465,6 +465,14 @@
                 <option value="twirl" {% if run_defaults.wcs_method == 'twirl' %}selected{% endif %}>twirl</option>
               </select>
             </div>
+            <div class="opt">
+              <label for="opt-centroid_method">Centroid method <span class="help-tooltip" title="Star centroid refinement (corresponds to --centroid_method): 'auto' adaptively picks quadratic or center-of-mass per star, 'quad' forces quadratic fitting, 'com' forces center-of-mass (recommended for heavily defocused frames).">?</span></label>
+              <select id="opt-centroid_method" style="width: 100%;">
+                <option value="auto" {% if run_defaults.centroid_method == 'auto' %}selected{% endif %}>auto</option>
+                <option value="quad" {% if run_defaults.centroid_method == 'quad' %}selected{% endif %}>quad</option>
+                <option value="com" {% if run_defaults.centroid_method == 'com' %}selected{% endif %}>com</option>
+              </select>
+            </div>
           </div>
         </details>
 
@@ -853,6 +861,7 @@
       sig_dy: val('opt-sig_dy'),
       min_star_area: val('opt-min_star_area'),
       wcs_method: val('opt-wcs_method'),
+      centroid_method: val('opt-centroid_method'),
       cmap: val('opt-cmap'),
       site: val('opt-site'),
       mode: val('opt-mode')
@@ -876,7 +885,7 @@
     });
     ['run_name','ref_band','refid','ref_select','ref_select_top_k','aper_unit','aper_radii','annulus',
      'target_id','comparison_ids','avoid_comparison_ids','avoid_nearby_star_mode','avoid_nearby_star','target_coord','test_run_frames','min_star_separation','max_num_stars',
-       'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','cmap','site','mode'].forEach(function (id) {
+       'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','centroid_method','cmap','site','mode'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
     });
@@ -953,7 +962,7 @@
       });
       ['run_name','ref_band','refid','ref_select','ref_select_top_k','aper_unit','aper_radii','annulus',
        'target_id','comparison_ids','avoid_comparison_ids','avoid_nearby_star_mode','avoid_nearby_star','target_coord','test_run_frames','min_star_separation','max_num_stars',
-     'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','cmap','site','mode'].forEach(function (id) {
+     'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','centroid_method','cmap','site','mode'].forEach(function (id) {
         var el = document.getElementById('opt-'+id);
         if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';
       });

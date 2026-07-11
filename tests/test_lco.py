@@ -120,6 +120,73 @@ class LcoTest(unittest.TestCase):
         self.assertEqual(inst_config["extra_params"]["bin_x"], 2)
         self.assertEqual(inst_config["extra_params"]["bin_y"], 2)
 
+    def test_defocus_defaults_to_zero(self):
+        params = {
+            "name": "n", "proposal": "p", "target_name": "t",
+            "ra": 10.0, "dec": -5.0, "kind": "sinistro",
+            "exposure_time": 60, "filter": "rp",
+            "windows": [{"start": "2026-07-01T00:00:00Z", "end": "2026-07-01T01:00:00Z"}],
+        }
+        config = lco.build_requestgroup("sinistro", params)["requests"][0]["configurations"][0]
+        self.assertEqual(config["instrument_configs"][0]["extra_params"]["defocus"], 0.0)
+
+    def test_defocus_passed_through_for_muscat(self):
+        params = {
+            "name": "n", "proposal": "p", "target_name": "t",
+            "ra": 10.0, "dec": -5.0, "kind": "muscat3", "defocus": "3.5",
+            "exposure_times": {"g": 30, "r": 30, "i": 30, "z": 30},
+            "windows": [{"start": "2026-07-01T00:00:00Z", "end": "2026-07-01T01:00:00Z"}],
+        }
+        config = lco.build_requestgroup("muscat3", params)["requests"][0]["configurations"][0]
+        self.assertEqual(config["instrument_configs"][0]["extra_params"]["defocus"], 3.5)
+
+    def test_defocus_passed_through_for_sinistro(self):
+        params = {
+            "name": "n", "proposal": "p", "target_name": "t",
+            "ra": 10.0, "dec": -5.0, "kind": "sinistro", "defocus": -4,
+            "exposure_time": 60, "filter": "rp",
+            "windows": [{"start": "2026-07-01T00:00:00Z", "end": "2026-07-01T01:00:00Z"}],
+        }
+        config = lco.build_requestgroup("sinistro", params)["requests"][0]["configurations"][0]
+        self.assertEqual(config["instrument_configs"][0]["extra_params"]["defocus"], -4.0)
+
+    def test_defocus_rejects_out_of_range_for_sinistro(self):
+        # Sinistro's live LCO limit is +/-5mm, tighter than MuSCAT's +/-8mm.
+        params = {
+            "name": "n", "proposal": "p", "target_name": "t",
+            "ra": 10.0, "dec": -5.0, "kind": "sinistro", "defocus": 6,
+            "exposure_time": 60, "filter": "rp",
+            "windows": [{"start": "2026-07-01T00:00:00Z", "end": "2026-07-01T01:00:00Z"}],
+        }
+        with self.assertRaises(lco.LcoError) as cm:
+            lco.build_requestgroup("sinistro", params)
+        self.assertEqual(cm.exception.status, 400)
+        self.assertIn("5mm", str(cm.exception))
+
+    def test_defocus_rejects_out_of_range_for_muscat(self):
+        params = {
+            "name": "n", "proposal": "p", "target_name": "t",
+            "ra": 10.0, "dec": -5.0, "kind": "muscat3", "defocus": 9,
+            "exposure_times": {"g": 30, "r": 30, "i": 30, "z": 30},
+            "windows": [{"start": "2026-07-01T00:00:00Z", "end": "2026-07-01T01:00:00Z"}],
+        }
+        with self.assertRaises(lco.LcoError) as cm:
+            lco.build_requestgroup("muscat3", params)
+        self.assertEqual(cm.exception.status, 400)
+        self.assertIn("8mm", str(cm.exception))
+
+    def test_defocus_rejects_non_numeric(self):
+        params = {
+            "name": "n", "proposal": "p", "target_name": "t",
+            "ra": 10.0, "dec": -5.0, "kind": "sinistro", "defocus": "abc",
+            "exposure_time": 60, "filter": "rp",
+            "windows": [{"start": "2026-07-01T00:00:00Z", "end": "2026-07-01T01:00:00Z"}],
+        }
+        with self.assertRaises(lco.LcoError) as cm:
+            lco.build_requestgroup("sinistro", params)
+        self.assertEqual(cm.exception.status, 400)
+        self.assertIn("number", str(cm.exception))
+
     def test_muscat_repeat_duration_computed_from_windows(self):
         """A REPEAT_EXPOSE config with no explicit duration derives it from the window."""
         params = {
@@ -306,6 +373,22 @@ class LcoTest(unittest.TestCase):
         self.assertEqual(windows[0]["epoch_abs"], 2036)  # Absolute epoch preserved
         self.assertEqual(windows[1]["epoch"], 1)
         self.assertEqual(windows[2]["epoch"], 2)
+
+    def test_generate_windows_preserves_precise_boundaries(self):
+        windows = lco.generate_windows(
+            # 2026-07-01 00:01:00 UTC; the resulting boundaries must retain
+            # the one-minute offset rather than being rounded to 5 minutes.
+            t0=2461222.500694444,
+            period=1.0,
+            duration_h=1.0,
+            start_dt="2026-07-01",
+            end_dt="2026-07-01",
+            pad_before_min=0,
+            pad_after_min=0,
+        )
+        self.assertEqual(len(windows), 1)
+        self.assertIn(":31:", windows[0]["start"])
+        self.assertIn(":31:", windows[0]["end"])
 
 class FrameDestSecurityTest(unittest.TestCase):
     """frame_dest / URL validation must block path traversal and SSRF."""
