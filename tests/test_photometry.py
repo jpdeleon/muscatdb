@@ -1415,6 +1415,23 @@ class TestRoutes:
         assert r.status_code == 400
         assert "must be a list" in r.json()["error"]
 
+    def test_status_batch_route_rejects_oversized_batch(self, client):
+        r = client.post("/api/photometry/status-batch", json={"jobs": [{}] * 101})
+        assert r.status_code == 400
+        assert "at most 100" in r.json()["error"]
+
+    def test_status_batch_route_handles_non_object_entry(self, client):
+        r = client.post("/api/photometry/status-batch", json={"jobs": [None]})
+        assert r.status_code == 200
+        assert r.json()["jobs"] == [{"error": "each job must be an object"}]
+
+    def test_status_batch_route_rejects_long_fields(self, client):
+        r = client.post("/api/photometry/status-batch", json={
+            "jobs": [{"inst": INST, "date": DATE, "target": "x" * 257}],
+        })
+        assert r.status_code == 200
+        assert r.json()["jobs"] == [{"error": "job fields are too long"}]
+
     def test_status_batch_route_missing_fields(self, client):
         r = client.post("/api/photometry/status-batch", json={
             "jobs": [{"inst": INST}]
