@@ -127,6 +127,9 @@ lco_router = APIRouter(prefix="/api/lco", tags=["lco"])
 settings_router = APIRouter(prefix="/api/settings", tags=["settings"])
 ads_router = APIRouter(prefix="/api/ads", tags=["ads"])
 
+_MAX_STATUS_BATCH = 100
+_MAX_STATUS_FIELD_LEN = 256
+
 # Middleware: extract the authenticated user from the nginx reverse proxy.
 # The trust rule (only honor X-Forwarded-User from a loopback proxy peer) lives
 # in muscat_db.auth so the companion-app gateway applies it identically.
@@ -5726,16 +5729,28 @@ def photometry_status_batch(payload: dict = Body(...)):
     jobs = payload.get("jobs") or []
     if not isinstance(jobs, list):
         return JSONResponse({"error": "jobs must be a list"}, status_code=400)
+    if len(jobs) > _MAX_STATUS_BATCH:
+        return JSONResponse(
+            {"error": f"jobs must contain at most {_MAX_STATUS_BATCH} entries"},
+            status_code=400,
+        )
 
     results = []
     for job_spec in jobs:
-        inst = (job_spec.get("inst") or "").strip()
-        date = (job_spec.get("date") or "").strip()
-        target = (job_spec.get("target") or "").strip()
-        run = (job_spec.get("run") or "").strip()
+        if not isinstance(job_spec, dict):
+            results.append({"error": "each job must be an object"})
+            continue
+        raw_fields = tuple(job_spec.get(name) or "" for name in ("inst", "date", "target", "run"))
+        if not all(isinstance(value, str) for value in raw_fields):
+            results.append({"error": "job fields must be strings"})
+            continue
+        inst, date, target, run = (value.strip() for value in raw_fields)
 
         if not all([inst, date, target]):
             results.append({"error": "inst, date, and target are required"})
+            continue
+        if any(len(value) > _MAX_STATUS_FIELD_LEN for value in (inst, date, target, run)):
+            results.append({"error": "job fields are too long"})
             continue
 
         status = phot.job_status(inst, date, target, run_id=run)
