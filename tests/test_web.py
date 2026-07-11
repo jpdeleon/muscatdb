@@ -8,6 +8,7 @@ import getpass
 import zipfile
 import pytest
 from fastapi.testclient import TestClient
+from starlette.responses import Response
 
 from muscat_db.database import save_job, get_persisted_jobs
 from muscat_db.web import app, _annotate_lco_archive_results
@@ -2189,6 +2190,31 @@ def test_ttv_fit_runs_endpoint(tmp_path, monkeypatch):
 
     # Guardrails: target is required.
     assert client.get("/api/ttv-fit/runs", params={"target": ""}).status_code == 400
+
+
+def test_ttv_download_all_uses_disk_backed_archive(tmp_path, monkeypatch):
+    monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path))
+    run_dir = _make_ttv_run(tmp_path, "HIP67522", "default")
+    (run_dir / "samples.csv.gz").write_bytes(b"samples")
+    captured = {}
+
+    def fake_zip(files, archive_name):
+        captured["files"] = files
+        captured["archive_name"] = archive_name
+        return Response("archive", media_type="application/zip")
+
+    monkeypatch.setattr("muscat_db.web._create_zip_response", fake_zip)
+    response = TestClient(app).get(
+        "/api/ttv-fit/download-all",
+        params={"target": "HIP67522"},
+    )
+
+    assert response.status_code == 200
+    assert captured["archive_name"] == "HIP67522_ttv_outputs.zip"
+    assert {arcname for _, arcname in captured["files"]} == {
+        "corner.png",
+        "samples.csv.gz",
+    }
 
 
 def test_ttv_fit_stuck_job_sync_and_cancel(monkeypatch, tmp_path):
