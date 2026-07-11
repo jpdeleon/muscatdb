@@ -108,6 +108,22 @@ def test_jobs_status_response_counts_and_started_at(mock_db, monkeypatch):
     assert default_user_found
 
 
+def test_ttv_output_file_rejects_paths_outside_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path / "ttv"))
+    secret = tmp_path / "secret.txt"
+    secret.write_text("server secret")
+    run_dir = tmp_path / "ttv" / "TOI123" / "_runs" / "default"
+    run_dir.mkdir(parents=True)
+
+    response = TestClient(app).get(
+        "/api/ttv-fit/output-file",
+        params={"target": "TOI123", "file": str(secret)},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "invalid filename"
+
+
 def test_jobs_status_elapsed_uses_latest_rerun_started_at(mock_db, monkeypatch):
     save_job(
         type_="photometry",
@@ -2218,4 +2234,3 @@ def test_ttv_fit_stuck_job_sync_and_cancel(monkeypatch, tmp_path):
     jobs_in_db = store.all()
     target_job = next(j for j in jobs_in_db if j["key"] == "ttv_fit:sinistro/250710/HIP67522/default")
     assert target_job["state"] == "cancelled"
-
