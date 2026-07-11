@@ -35,6 +35,34 @@ _DOWNLOAD_INSTRUMENT_DIRS = {
     "muscat4": "MuSCAT4",
 }
 
+# Secondary-mirror defocus offset limits (mm), from LCO's live instrument
+# capabilities schema (observe.lco.global/api/instruments/): the InstrumentConfig
+# "defocus" extra_param is capped at +/-8mm for 2M0-SCICAM-MUSCAT and +/-5mm for
+# 1M0-SCICAM-SINISTRO.
+_DEFOCUS_LIMIT_MM = {
+    "muscat": 8.0,
+    "muscat3": 8.0,
+    "muscat4": 8.0,
+    "sinistro": 5.0,
+}
+
+
+def _validated_defocus(params: dict, limit_mm: float) -> float:
+    """Parse and range-check the secondary-mirror defocus offset (mm)."""
+    raw = params.get("defocus")
+    if raw in (None, ""):
+        return 0.0
+    try:
+        defocus = float(raw)
+    except (TypeError, ValueError):
+        raise LcoError("Defocus must be a number in mm", status=400)
+    if abs(defocus) > limit_mm:
+        raise LcoError(
+            f"Defocus must be within ±{limit_mm:g}mm (got {defocus:g}mm)",
+            status=400,
+        )
+    return defocus
+
 
 class LcoError(Exception):
     """Structured LCO API error."""
@@ -698,29 +726,15 @@ def archive_download_jobs() -> list[dict]:
     return jobs
 
 
-def _floor_5min(dt: datetime.datetime) -> datetime.datetime:
-    """Round down to nearest 5-minute boundary (always UTC safe)."""
-    return dt.replace(minute=(dt.minute // 5) * 5, second=0, microsecond=0)
-
-
-def _ceil_5min(dt: datetime.datetime) -> datetime.datetime:
-    """Round up to nearest 5-minute boundary."""
-    if dt.minute % 5 == 0 and dt.second == 0 and dt.microsecond == 0:
-        return dt
-    new_minute = ((dt.minute + 4) // 5) * 5
-    if new_minute >= 60:
-        return dt.replace(hour=dt.hour + 1, minute=new_minute - 60, second=0, microsecond=0)
-    return dt.replace(minute=new_minute, second=0, microsecond=0)
-
-
 def generate_windows(t0: float, period: float, duration_h: float, start_dt: str, end_dt: str, pad_before_min: float, pad_after_min: float) -> list[dict]:
     """Generate transit windows within a date range.
 
     Epochs are normalized to the first transit within the date range for clarity
     (epoch 0 = first transit in the range, not absolute count from t0).
 
-    Window boundaries are aligned to 5-minute intervals to match the LCO
-    scheduler convention, which avoids small mismatches in repeat_duration.
+    Window boundaries retain the precise calculated transit times. LCO checks
+    visibility against the actual astronomical window, so rounding boundaries
+    can make a request claim slightly more observable time than exists.
     """
     if not all([start_dt, end_dt]):
         raise LcoError("Date range is required", status=400)
@@ -751,8 +765,8 @@ def generate_windows(t0: float, period: float, duration_h: float, start_dt: str,
                 relative_epoch = current_epoch  # Store absolute epoch for first transit
                 first_in_range = False
 
-            start_obs = _floor_5min(mid_dt - datetime.timedelta(hours=duration_h / 2.0, minutes=pad_before_min))
-            end_obs = _ceil_5min(mid_dt + datetime.timedelta(hours=duration_h / 2.0, minutes=pad_after_min))
+            start_obs = mid_dt - datetime.timedelta(hours=duration_h / 2.0, minutes=pad_before_min)
+            end_obs = mid_dt + datetime.timedelta(hours=duration_h / 2.0, minutes=pad_after_min)
 
             windows.append({
                 "epoch": int(current_epoch - relative_epoch),  # Display relative epoch (0-indexed)
@@ -956,6 +970,7 @@ def build_requestgroup(kind: str, params: dict) -> dict:
         nb = params.get("narrowband", {})
         config_type = params.get("type") or "REPEAT_EXPOSE"
         exposure_count = 1 if config_type == "REPEAT_EXPOSE" else params.get("exposure_count", 1)
+        defocus = _validated_defocus(params, _DEFOCUS_LIMIT_MM[kind])
         instrument_configs = [{
             "exposure_time": max(band_times.values()),
             "exposure_count": exposure_count,
@@ -971,6 +986,7 @@ def build_requestgroup(kind: str, params: dict) -> dict:
                 "bin_y": 1,
                 "offset_ra": 0,
                 "offset_dec": 0,
+                "defocus": defocus,
                 "exposure_mode": params.get("exposure_mode", "ASYNCHRONOUS"),
                 "exposure_time_g": band_times["g"],
                 "exposure_time_i": band_times["i"],
@@ -1007,6 +1023,7 @@ def build_requestgroup(kind: str, params: dict) -> dict:
         # exposure-count field, so any caller is protected.
         sin_config_type = params.get("type") or "EXPOSE"
         sin_exposure_count = 1 if sin_config_type == "REPEAT_EXPOSE" else params.get("exposure_count", 1)
+        defocus = _validated_defocus(params, _DEFOCUS_LIMIT_MM["sinistro"])
         instrument_configs = [{
             "exposure_count": sin_exposure_count,
             "exposure_time": params.get("exposure_time", 60),
@@ -1016,7 +1033,8 @@ def build_requestgroup(kind: str, params: dict) -> dict:
                 "bin_x": binning,
                 "bin_y": binning,
                 "offset_ra": 0,
-                "offset_dec": 0
+                "offset_dec": 0,
+                "defocus": defocus
             }
         }]
         instrument_type = "1M0-SCICAM-SINISTRO"

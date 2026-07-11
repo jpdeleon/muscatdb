@@ -669,6 +669,16 @@ class TestRunOptions:
         opts = phot.normalize_run_options({"bands": ["gp"], "avoid_nearby_stars": True, "avoid_nearby_star": "4.5"})
         assert opts["avoid_nearby_star_mode"] == "custom"
 
+    def test_centroid_method_default_not_echoed(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        cmd = phot.build_command(INST, DATE, TARGET, {}, test_run=False)
+        assert "--centroid_method" not in cmd
+
+    def test_centroid_method_non_default_is_emitted(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        cmd = phot.build_command(INST, DATE, TARGET, {"centroid_method": "com"}, test_run=False)
+        assert "--centroid_method com" in " ".join(cmd)
+
     def test_validate_requires_band(self):
         assert phot.validate_run_options(phot.normalize_run_options({"bands": []}))
 
@@ -691,6 +701,19 @@ class TestRunOptions:
             phot.normalize_run_options({"bands": ["gp"], "nan_imputation_method": "bogus"})
         )
         assert err and "nan imputation method" in err.lower()
+
+    def test_validate_rejects_unknown_centroid_method(self):
+        err = phot.validate_run_options(
+            phot.normalize_run_options({"bands": ["gp"], "centroid_method": "bogus"})
+        )
+        assert err and "centroid method" in err.lower()
+
+    def test_validate_accepts_known_centroid_methods(self):
+        for method in phot.CENTROID_METHODS:
+            err = phot.validate_run_options(
+                phot.normalize_run_options({"bands": ["gp"], "centroid_method": method})
+            )
+            assert err is None
 
     def test_validate_rejects_reference_band_not_selected(self):
         err = phot.validate_run_options(
