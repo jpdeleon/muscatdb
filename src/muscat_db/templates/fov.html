@@ -163,8 +163,10 @@
       </div>
       <div class="fov-actions">
         <button id="fov-copy-center" class="fov-btn ghost" type="button" title="Copy field center coordinates as RA, Dec">Copy FOV center</button>
+        <button id="fov-check-saturation" class="fov-btn ghost" type="button" style="display: none;" title="Send the target and brightest in-field stars to the Exposure Calculator to check whether any of them would saturate">Check saturation in Exp Calc &rarr;</button>
       </div>
       <div class="fov-note" id="r-note"></div>
+      <div class="fov-note" id="r-bright-note" style="display: none;"></div>
     </div>
 
   </div>
@@ -361,6 +363,21 @@
     }
     $('r-note').textContent = note;
     $('fov-results').style.display = '';
+
+    // --- brightest in-field star advisory + Exp Calc handoff ---
+    const brightest = result.brightest_in_field || [];
+    const brightNote = $('r-bright-note');
+    const satBtn = $('fov-check-saturation');
+    if (brightest.length) {
+      const b0 = brightest[0];
+      brightNote.textContent = `Brightest in-field star: Gmag ${b0.gmag.toFixed(2)}, ${b0.sep_arcsec.toFixed(0)}″ away` +
+        (b0.dmag < 0 ? ` (${Math.abs(b0.dmag).toFixed(1)} mag brighter than the target — may cap the exposure).` : '.');
+      brightNote.style.display = '';
+      satBtn.style.display = '';
+    } else {
+      brightNote.style.display = 'none';
+      satBtn.style.display = 'none';
+    }
 
     // --- comparison table ---
     const body = $('fov-comps-body');
@@ -811,6 +828,40 @@
     });
   }
 
+  // How many brightest in-field stars to hand off to the Exposure Calculator.
+  // The backend reports up to BRIGHTEST_IN_FIELD_N (5); we only send the
+  // top few so the Exp Calc page doesn't fire off a pile of catalog lookups
+  // for stars unlikely to matter.
+  const COMP_HANDOFF_N = 3;
+  const COMP_HANDOFF_KEY = 'fov.compHandoff.v1';
+
+  function checkSaturationInExpCalc() {
+    if (!lastResult) {
+      setMsg('Run an optimization first.', 'err');
+      return;
+    }
+    const inst = $('fov-inst').value;
+    const payload = {
+      target: lastResult.target || '',
+      ra: lastResult.ra,
+      dec: lastResult.dec,
+      instrument: inst,
+      sinistro_mode: inst === 'sinistro' ? $('fov-sinistro-mode').value : null,
+      comps: (lastResult.brightest_in_field || []).slice(0, COMP_HANDOFF_N),
+    };
+    try {
+      sessionStorage.setItem(COMP_HANDOFF_KEY, JSON.stringify(payload));
+    } catch (e) {
+      setMsg('Could not stash comparison stars for handoff: ' + e, 'err');
+      return;
+    }
+    const sp = new URLSearchParams();
+    if (inst) sp.set('inst', inst);
+    if (payload.target) sp.set('target', payload.target);
+    sp.set('fromFov', '1');
+    window.location.href = '/exposure?' + sp.toString();
+  }
+
   function copyFovCenter() {
     if (!lastResult) {
       setMsg('Run an optimization first.', 'err');
@@ -836,6 +887,7 @@
   $('fov-resolve').addEventListener('click', resolveTarget);
   $('fov-reset-view').addEventListener('click', () => recenter(lastResult));
   $('fov-copy-center').addEventListener('click', copyFovCenter);
+  $('fov-check-saturation').addEventListener('click', checkSaturationInExpCalc);
   $('fov-inst').addEventListener('change', () => updateReadoutModeOptions($('fov-inst').value));
   $('fov-dec').addEventListener('change', updateInstrumentAvailability);
   $('fov-target').addEventListener('keydown', (e) => { if (e.key === 'Enter') resolveTarget(); });

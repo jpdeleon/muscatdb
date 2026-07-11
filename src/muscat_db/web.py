@@ -2999,6 +2999,23 @@ def exposure_calculate(payload: dict = Body(...)):
     if not mags:
         return JSONResponse({"ok": False, "error": "No magnitudes provided"}, status_code=400)
 
+    extra_sources = None
+    raw_extra_sources = payload.get("extra_sources")
+    if isinstance(raw_extra_sources, list):
+        extra_sources = []
+        for entry in raw_extra_sources:
+            if not isinstance(entry, dict):
+                continue
+            entry_mags = entry.get("mags")
+            if not isinstance(entry_mags, dict) or not entry_mags:
+                continue
+            try:
+                cleaned_mags = {str(band): float(m) for band, m in entry_mags.items()}
+            except (TypeError, ValueError):
+                continue
+            label = entry.get("label")
+            extra_sources.append({"label": str(label) if label else None, "mags": cleaned_mags})
+
     result = exp_calc.calc_all_bands(
         instrument=inst,
         mags=mags,
@@ -3009,6 +3026,7 @@ def exposure_calculate(payload: dict = Body(...)):
         exptime=exptime,
         target_adu=target_adu,
         confmode=confmode,
+        extra_sources=extra_sources,
     )
     return JSONResponse({"ok": True, **result})
 
@@ -3054,6 +3072,41 @@ def exposure_lookup_mags(payload: dict = Body(...)):
         "mags": mags,
         "source": source,
     })
+
+
+@exposure_router.post("/lookup-mags-batch", response_class=JSONResponse)
+def exposure_lookup_mags_batch(payload: dict = Body(...)):
+    """Griz magnitudes for a batch of stars (e.g. FOV comparison stars).
+
+    Each star tries the same Pan-STARRS/SkyMapper catalog lookup as the
+    primary target first, falling back to a Gaia color transform when given
+    ``gmag``/``bp_rp`` and no catalog match exists (see
+    ``exposure.lookup_magnitudes_with_fallback``). Looked up in parallel
+    since each is an independent network round trip.
+    """
+    stars = payload.get("stars") or []
+    if not isinstance(stars, list) or not stars:
+        return JSONResponse({"ok": False, "error": "No stars provided"}, status_code=400)
+
+    def _lookup(star: dict) -> dict:
+        try:
+            ra = float(star.get("ra"))
+            dec = float(star.get("dec"))
+        except (TypeError, ValueError):
+            return {"mags": None, "source": None, "is_approx": False, "error": "Invalid ra/dec"}
+        gmag = star.get("gmag")
+        bp_rp = star.get("bp_rp")
+        gmag = float(gmag) if gmag not in (None, "") else None
+        bp_rp = float(bp_rp) if bp_rp not in (None, "") else None
+        mags, source, is_approx = exp_calc.lookup_magnitudes_with_fallback(ra, dec, gmag, bp_rp)
+        return {"mags": mags, "source": source, "is_approx": is_approx}
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=min(8, len(stars))) as executor:
+        results = list(executor.map(_lookup, stars))
+
+    return JSONResponse({"ok": True, "results": results})
 
 
 @exposure_router.get("/status", response_class=JSONResponse)
