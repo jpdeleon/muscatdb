@@ -5891,23 +5891,19 @@ def ttv_fit_output_file(target: str = "", run_name: str = "", file: str = ""):
 
 @ttv_fit_router.get("/download-all", response_class=FileResponse)
 def ttv_fit_download_all(target: str = "", run_name: str = ""):
-    import io, zipfile
-
     if not target:
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
     output_dir = ttv.ttv_output_dir(target.strip(), run_name)
     if not output_dir.is_dir():
         raise HTTPException(404, "output directory not found")
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for fpath in sorted(output_dir.iterdir()):
-            if fpath.is_file() and not fpath.name.startswith("."):
-                zf.write(str(fpath), arcname=fpath.name)
-    buf.seek(0)
-    return Response(
-        content=buf.getvalue(),
-        media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename={target}_ttv_outputs.zip"},
+    files = [
+        (path, path.name)
+        for path in sorted(output_dir.iterdir())
+        if path.is_file() and not path.name.startswith(".")
+    ]
+    return _create_zip_response(
+        files,
+        f"{jobs.slugify_run_name(target)}_ttv_outputs.zip",
     )
 
 
