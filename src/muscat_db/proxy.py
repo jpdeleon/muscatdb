@@ -104,7 +104,10 @@ async def shutdown() -> None:
     """Close the shared upstream client. Idempotent; called from the lifespan."""
     global _client
     if _client is not None:
-        await _client.aclose()
+        try:
+            await asyncio.wait_for(_client.aclose(), timeout=2.0)
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning("proxy client shutdown timeout or error: %s", e)
         _client = None
 
 
