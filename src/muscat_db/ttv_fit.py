@@ -104,6 +104,19 @@ def ttv_output_dir(target: str, run_name: str = "") -> pathlib.Path:
     return path
 
 
+def safe_output_file(target: str, run_name: str, filename: str) -> pathlib.Path | None:
+    """Return a direct file child of a TTV run, rejecting path traversal."""
+    if not filename or pathlib.PurePath(filename).name != filename:
+        return None
+    try:
+        output_dir = ttv_output_dir(target, run_name).resolve(strict=False)
+        candidate = (output_dir / filename).resolve(strict=False)
+        candidate.relative_to(output_dir)
+    except (OSError, ValueError):
+        return None
+    return candidate if candidate.is_file() else None
+
+
 def get_ttv_command(target: str, options: dict) -> str:
     run_name = (options.get("run_name") or "").strip()
     try:

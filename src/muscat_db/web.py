@@ -5882,9 +5882,10 @@ def ttv_fit_status(target: str = "", run_name: str = ""):
 def ttv_fit_output_file(target: str = "", run_name: str = "", file: str = ""):
     if not target:
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
-    output_dir = ttv.ttv_output_dir(target.strip(), run_name)
-    filepath = output_dir / file
-    if not filepath.exists() or not filepath.is_file():
+    filepath = ttv.safe_output_file(target.strip(), run_name, file)
+    if filepath is None:
+        if not file or pathlib.PurePath(file).name != file:
+            raise HTTPException(400, "invalid filename")
         raise HTTPException(404, f"file not found: {file}")
     return FileResponse(str(filepath))
 
