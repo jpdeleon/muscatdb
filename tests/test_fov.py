@@ -341,6 +341,93 @@ def test_optimize_magnitude_filtering(monkeypatch):
     assert 14.5 not in comp_gmags
 
 
+# ── brightest_in_field (saturation-risk stars, independent of comp weighting) ──
+
+def test_brightest_in_field_excludes_target_and_sorts_by_gmag(monkeypatch):
+    # Target (index 0, Gmag 12.0) plus three in-field stars at varying
+    # brightness, all close enough to sit inside the footprint regardless of
+    # where the optimizer points.
+    mock_stars = fov.StarField(
+        ra=np.array([10.0, 10.001, 10.002, 10.003]),
+        dec=np.array([-20.0, -20.0, -20.0, -20.0]),
+        gmag=np.array([12.0, 13.0, 9.5, 11.0]),
+        bp_rp=np.array([0.8, 0.8, 0.8, 0.8]),
+        source="mock",
+    )
+    monkeypatch.setattr(fov, "query_gaia_field", lambda *a, **k: mock_stars)
+
+    res = fov.optimize("muscat3", ra=10.0, dec=-20.0)
+    assert res.ok
+    gmags = [s["gmag"] for s in res.brightest_in_field]
+    assert 12.0 not in gmags  # the target itself must not appear
+    assert gmags == [9.5, 11.0, 13.0]  # ascending by brightness (lowest Gmag first)
+
+
+def test_brightest_in_field_ignores_comparison_weight_and_mag_filters(monkeypatch):
+    # A star far brighter than the target (dmag well past BRIGHT_DMAG_LIMIT)
+    # is weighted out of `comps` entirely, and a mag_min filter would also
+    # exclude it from `comps` explicitly -- but it still physically lands in
+    # the footprint and is exactly the kind of star that risks saturating a
+    # shared exposure, so brightest_in_field must report it regardless.
+    #
+    # A third, normally-weighted comp star (dmag near IDEAL_DMAG) is included
+    # so the optimizer has a genuine reason to center the field on the target
+    # neighbourhood; with only the target and the zero-weight bright star,
+    # every candidate pointing ties at score=0 and optimize_pointing's
+    # first-wins tie-break can land on a degenerate corner offset instead of
+    # a naturally-centered one, which isn't what this test is about.
+    mock_stars = fov.StarField(
+        ra=np.array([10.0, 10.001, 10.0005]),
+        dec=np.array([-20.0, -20.0, -20.0]),
+        gmag=np.array([12.0, 5.0, 12.3]),  # index 1: far brighter than the target
+        bp_rp=np.array([0.8, 0.8, 0.8]),
+        source="mock",
+    )
+    monkeypatch.setattr(fov, "query_gaia_field", lambda *a, **k: mock_stars)
+
+    res = fov.optimize("muscat3", ra=10.0, dec=-20.0, min_mag=10.0, max_mag=18.0)
+    assert res.ok
+    assert 5.0 not in [c["gmag"] for c in res.comps]
+    assert 5.0 in [s["gmag"] for s in res.brightest_in_field]
+
+
+def test_brightest_in_field_respects_avoid_mag_exclusion(monkeypatch):
+    # Same fixture as test_optimize_avoid_mag_excludes_bright_star: a Gmag=7
+    # star the optimizer steers the footprint away from. Since the winning
+    # pointing's full footprint never contains it, it can't appear in
+    # brightest_in_field either.
+    mock_stars = fov.StarField(
+        ra=np.array([10.0, 10.03, 9.94]),
+        dec=np.array([-20.0, -20.0, -20.0]),
+        gmag=np.array([12.0, 12.5, 7.0]),
+        bp_rp=np.array([0.8, 0.8, 0.8]),
+        source="mock",
+    )
+    monkeypatch.setattr(fov, "query_gaia_field", lambda *a, **k: mock_stars)
+
+    res = fov.optimize("muscat3", ra=10.0, dec=-20.0, avoid_mag=9.0)
+    assert res.ok
+    assert 7.0 not in [s["gmag"] for s in res.brightest_in_field]
+
+
+def test_brightest_in_field_capped_at_five(monkeypatch):
+    others_gmag = [20.0, 19.0, 18.0, 17.0, 16.0, 15.0, 14.0]  # 7 non-target stars
+    ra = [10.0] + [10.0 + 0.0002 * (i + 1) for i in range(len(others_gmag))]
+    dec = [-20.0] * (len(others_gmag) + 1)
+    gmag = [12.0] + others_gmag
+    mock_stars = fov.StarField(
+        ra=np.array(ra), dec=np.array(dec), gmag=np.array(gmag),
+        bp_rp=np.array([0.8] * len(gmag)), source="mock",
+    )
+    monkeypatch.setattr(fov, "query_gaia_field", lambda *a, **k: mock_stars)
+
+    res = fov.optimize("muscat3", ra=10.0, dec=-20.0)
+    assert res.ok
+    assert len(res.brightest_in_field) == fov.BRIGHTEST_IN_FIELD_N
+    result_gmags = [s["gmag"] for s in res.brightest_in_field]
+    assert result_gmags == sorted(others_gmag)[: fov.BRIGHTEST_IN_FIELD_N]
+
+
 # ── VizieR server-error detection ────────────────────────────────────────────
 # A VizieR outage (e.g. its own database backend unreachable) comes back as an
 # HTTP 200 VOTable with QUERY_STATUS=ERROR, which astroquery otherwise parses

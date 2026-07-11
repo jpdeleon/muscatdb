@@ -117,6 +117,16 @@
   .legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
   .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 
+  /* Comparison stars (FOV handoff) */
+  .comp-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 0.55rem 0.75rem; margin-bottom: 0.5rem; }
+  .comp-card:last-child { margin-bottom: 0; }
+  .comp-card-head { display: flex; align-items: center; gap: 0.55rem; flex-wrap: wrap; }
+  .comp-card-mags { font-size: 0.82rem; color: var(--text-dim); margin-top: 0.3rem; }
+
+  /* Results: Source column only shown when comparison stars are included */
+  table.results .src-col { display: none; }
+  table.results.has-comps .src-col { display: table-cell; }
+
   /* Instrument param chips */
   .chip-row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.85rem; }
   .chip { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 0.4rem 0.65rem; display: flex; flex-direction: column; gap: 0.1rem; }
@@ -246,6 +256,16 @@
       <div class="mag-grid" id="mag-broad"></div>
     </div>
 
+    {# ---- Comparison stars (handed off from the FOV optimizer) ---- #}
+    <div class="exp-section" id="comps-section" style="display:none;">
+      <div class="mag-head">
+        <h3 style="margin:0;">Comparison stars <span class="help-icon multiline" data-help="Bright in-field stars sent over from the FOV Optimizer. MuSCAT instruments expose every star in the field at once, so a comparison star brighter than the target can saturate first and cap the usable exposure — these are included in the calculation below.">?</span></h3>
+        <button class="copy-btn" type="button" id="clear-comps">Clear</button>
+      </div>
+      <div id="comps-status" class="msg dim"></div>
+      <div id="comps-list"></div>
+    </div>
+
     {# ---- Observation parameters ---- #}
     <div class="exp-section">
       <h3>Observation parameters</h3>
@@ -306,6 +326,7 @@
             <thead>
               <tr>
                 <th>Band</th>
+                <th class="src-col">Source</th>
                 <th>Mag</th>
                 <th id="col-primary">Exp (s)</th>
                 <th>Peak (ADU)</th>
@@ -326,7 +347,7 @@
           <div class="rec-main">
             <span class="rec-label">Recommended exposure</span>
             <span class="rec-val" id="rec-val"></span>
-            <span class="rec-note">conservative — keeps every band below the selected saturation limit</span>
+            <span class="rec-note" id="rec-note">conservative — keeps every band below the selected saturation limit</span>
           </div>
           <button class="copy-btn" type="button" id="copy-rec">Copy</button>
         </div>
@@ -454,11 +475,22 @@
   var clearMags = document.getElementById('clear-mags');
   var instParams = document.getElementById('inst-params');
   var colPrimary = document.getElementById('col-primary');
+  var resultsTable = document.getElementById('results-table');
+  var compsSection = document.getElementById('comps-section');
+  var compsStatus = document.getElementById('comps-status');
+  var compsList = document.getElementById('comps-list');
+  var clearComps = document.getElementById('clear-comps');
+  var recNote = document.getElementById('rec-note');
 
   var INST_PARAMS = {};
   try { INST_PARAMS = JSON.parse(document.getElementById('inst-params-data').textContent || '{}'); } catch (e) {}
 
+  // Resolved comparison stars handed off from the FOV page:
+  // [{label, sepArcsec, gmag, mags: {band: mag} | null, source, isApprox}]
+  var currentComps = [];
+
   var STORE_KEY = 'expcalc.v1';
+  var COMP_HANDOFF_KEY = 'fov.compHandoff.v1';
   var BAND_COLORS = {
     gp: '#4f9eff', rp: '#e0564a', ip: '#b03a2e', zs: '#8e44ad',
     g_narrow: '#45d6b5', Na_D: '#45d6b5', i_narrow: '#45d6b5', z_narrow: '#45d6b5'
@@ -512,7 +544,7 @@
       localStorage.setItem(STORE_KEY, JSON.stringify({
         inst: selInst.value, confmode: selConfmode.value, target: targetName.value, mags: mags,
         focus: focusMm.value, airmass: airmass.value, satFrac: satFrac.value, customAdu: customAdu.value,
-        showNarrow: showNarrow.checked
+        showNarrow: showNarrow.checked, comps: currentComps
       }));
     } catch (e) {}
   }
@@ -529,6 +561,7 @@
     if (s.satFrac) { satFrac.value = s.satFrac; customAduField.style.display = s.satFrac === 'custom' ? '' : 'none'; }
     if (s.customAdu) customAdu.value = s.customAdu;
     if (s.showNarrow !== undefined) showNarrow.checked = s.showNarrow;
+    if (Array.isArray(s.comps) && s.comps.length) { currentComps = s.comps; renderComps(); }
     syncFocus(); syncAirmass();
   }
 
@@ -589,9 +622,97 @@
     lookupStatus.textContent = ''; saveState();
   });
 
+  // ---- Comparison stars (FOV handoff) ----
+  function renderComps() {
+    if (!currentComps.length) {
+      compsSection.style.display = 'none';
+      compsList.innerHTML = '';
+      return;
+    }
+    compsSection.style.display = '';
+    compsList.innerHTML = currentComps.map(function (c) {
+      var badgeClass = c.mags ? (c.isApprox ? 'calib-none' : 'calib-ok') : 'calib-none';
+      var badgeText = c.mags ? (c.isApprox ? 'approx' : 'catalog') : 'no photometry';
+      var magsTxt = c.mags
+        ? BROAD.filter(function (b) { return c.mags[b] !== undefined; })
+            .map(function (b) { return b + '=' + Number(c.mags[b]).toFixed(2); }).join('  ')
+        : 'No griz photometry available for this star (no Pan-STARRS/SkyMapper match; Gaia color-transform fallback is under development).';
+      return '<div class="comp-card">' +
+        '<div class="comp-card-head">' +
+          '<strong>' + c.label + '</strong>' +
+          '<span class="msg dim">&Delta;' + c.sepArcsec.toFixed(0) + '&Prime; &middot; Gmag ' + c.gmag.toFixed(2) + '</span>' +
+          '<span class="calib-badge ' + badgeClass + '"><span class="cb-dot"></span>' + badgeText +
+            (c.source ? ' &middot; ' + c.source : '') + '</span>' +
+        '</div>' +
+        '<div class="comp-card-mags mono">' + magsTxt + '</div>' +
+        '</div>';
+    }).join('');
+  }
+
+  clearComps.addEventListener('click', function () {
+    currentComps = [];
+    compsStatus.textContent = '';
+    renderComps();
+    saveState();
+  });
+
+  // One-shot handoff from the FOV page: a "Check saturation in Exp Calc"
+  // click there stashes {target, ra, dec, instrument, comps: [...]} in
+  // sessionStorage and navigates here with ?fromFov=1. Consumed once (the
+  // key is removed immediately) then resolved comps persist normally via
+  // the regular expcalc.v1 localStorage state.
+  function consumeFovHandoff() {
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('fromFov') !== '1') return;
+    var raw = null;
+    try {
+      raw = sessionStorage.getItem(COMP_HANDOFF_KEY);
+      sessionStorage.removeItem(COMP_HANDOFF_KEY);
+    } catch (e) { /* ignore */ }
+    if (!raw) return;
+    var payload;
+    try { payload = JSON.parse(raw); } catch (e) { return; }
+    var comps = payload && payload.comps ? payload.comps : [];
+    if (!comps.length) return;
+
+    compsSection.style.display = '';
+    compsStatus.className = 'msg dim';
+    compsStatus.textContent = 'Resolving griz photometry for ' + comps.length + ' comparison star(s) from FOV…';
+
+    fetch('/api/exposure/lookup-mags-batch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        stars: comps.map(function (c) { return { ra: c.ra, dec: c.dec, gmag: c.gmag, bp_rp: c.bp_rp }; }),
+      }),
+    }).then(function (r) { return r.json(); }).then(function (data) {
+      if (!data.ok) {
+        compsStatus.className = 'msg err';
+        compsStatus.textContent = 'Failed to resolve comparison stars: ' + (data.error || 'unknown error');
+        return;
+      }
+      currentComps = comps.map(function (c, i) {
+        var res = data.results[i] || {};
+        return {
+          label: 'Comp ' + (i + 1),
+          sepArcsec: c.sep_arcsec, gmag: c.gmag,
+          mags: res.mags || null, source: res.source || null, isApprox: !!res.is_approx,
+        };
+      });
+      var nOk = currentComps.filter(function (c) { return c.mags; }).length;
+      compsStatus.className = nOk ? 'msg ok' : 'msg err';
+      compsStatus.textContent = nOk
+        ? '✓ Resolved ' + nOk + '/' + currentComps.length + ' comparison star(s) from FOV.'
+        : 'No griz photometry found for any handed-off comparison star.';
+      renderComps();
+      saveState();
+    }).catch(function (err) {
+      compsStatus.className = 'msg err';
+      compsStatus.textContent = 'Error resolving comparison stars: ' + err.message;
+    });
+  }
+
   // ---- Collect magnitudes ----
   var NARROW_MAP = { g_narrow: 'gp', Na_D: 'rp', i_narrow: 'ip', z_narrow: 'zs' };
-  var NARROW_OFFSET = { g_narrow: -1.15, Na_D: -1.30, i_narrow: -1.30, z_narrow: -1.30 };
 
   function collectMags() {
     var mags = {};
@@ -600,16 +721,15 @@
       if (!isNaN(v) && v > 0) mags[inp.dataset.band] = v;
     });
 
-    // Add narrowband magnitudes if checkbox is checked
+    // Add narrowband magnitudes if checkbox is checked. A star's magnitude
+    // doesn't change between broad and narrow filters (assuming ~flat SED),
+    // so reuse the broadband parent magnitude as-is -- the backend scales
+    // exposure time up for the narrower filter's reduced throughput.
     if (showNarrow.checked) {
       Object.keys(NARROW_MAP).forEach(function (narrow) {
         var parent = NARROW_MAP[narrow];
         var parentMag = mags[parent];
-        if (parentMag) {
-          var offset = NARROW_OFFSET[narrow] || 0;
-          var narrowMag = parentMag + (offset / 0.4);
-          mags[narrow] = narrowMag;
-        }
+        if (parentMag) mags[narrow] = parentMag;
       });
     }
 
@@ -640,6 +760,10 @@
     } else {
       payload.exptime = parseFloat(document.getElementById('calc-exptime').value || 30);
     }
+    var extraSources = currentComps
+      .filter(function (c) { return c.mags; })
+      .map(function (c) { return { label: c.label, mags: c.mags }; });
+    if (extraSources.length) payload.extra_sources = extraSources;
 
     var btn = mode === 'exptime' ? calcBtn : calcPeakBtn;
     var label = mode === 'exptime' ? 'Calculating' : 'Calculating';
@@ -692,18 +816,26 @@
     var minExp = mode === 'exptime' && rows.length
       ? Math.min.apply(null, rows.map(function (r) { return r.exptime; })) : null;
 
+    // Source column (Target / Comp N) only makes sense to show once
+    // comparison stars are actually part of the calculation.
+    var hasComps = rows.some(function (r) { return r.is_target === false; });
+    resultsTable.classList.toggle('has-comps', hasComps);
+
     rows.forEach(function (r) {
       var pct = Number(r.pct_full_well);
       var cls = r.is_saturated ? 'sat' : fwClass(pct);
       var pill = cls === 'sat' ? 'pill-sat' : (cls === 'warn' ? 'pill-warn' : 'pill-safe');
       var pillTxt = cls === 'sat' ? 'saturated' : (cls === 'warn' ? 'near limit' : 'safe');
       var isLimiting = (minExp !== null && Math.abs(r.exptime - minExp) < 1e-6);
+      var limitedByComp = isLimiting && r.is_target === false;
 
       var tr = document.createElement('tr');
       if (isLimiting) tr.className = 'limiting';
       tr.innerHTML =
         '<td><span class="band-cell">' + dot(r.band) + r.band +
           (isLimiting ? ' <span class="limiting-tag">limiting</span>' : '') + '</span></td>' +
+        '<td class="src-col">' + (r.is_target === false ? (r.source_label || 'Comp') : 'Target') +
+          (limitedByComp ? ' <span class="limiting-tag" title="A comparison star, not the target, is capping this exposure">⚠</span>' : '') + '</td>' +
         '<td class="mono">' + r.mag.toFixed(2) + '</td>' +
         '<td><strong>' + r.exptime.toFixed(1) + '</strong></td>' +
         '<td class="mono">' + Number(r.peak_adu).toLocaleString() + '</td>' +
@@ -752,6 +884,9 @@
     if (mode === 'exptime' && data.recommended_exptime) {
       recBox.style.display = 'flex';
       recVal.textContent = data.recommended_exptime + ' s';
+      recNote.textContent = hasComps
+        ? 'conservative — keeps the target and comparison star(s) below the selected saturation limit'
+        : 'conservative — keeps every band below the selected saturation limit';
     } else {
       recBox.style.display = 'none';
     }
@@ -829,6 +964,7 @@
 
   // ---- Init ----
   loadState();
+  consumeFovHandoff();
   if (selInst.value) renderInstParams(selInst.value);
 })();
 </script>

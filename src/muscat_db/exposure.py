@@ -132,20 +132,32 @@ _NARROW_TO_BROADBAND = {
     "Na_D": "rp",
 }
 
-# Narrowband coefficient offsets relative to broadband parent.
-# log10(filter_width_ratio) — narrow filters collect fewer photons.
-# g_narrow ~10nm FWHM vs gp ~140nm → log10(10/140) ≈ -1.15
-# Na_D ~5nm vs rp ~100nm → log10(5/100) ≈ -1.30
-# i_narrow ~5nm vs ip ~100nm → log10(5/100) ≈ -1.30
-# z_narrow ~5nm vs zs ~100nm → log10(5/100) ≈ -1.30
-# r_narrow ~10nm vs rp ~100nm → log10(10/100) ≈ -1.00
-_NARROW_OFFSET = {
-    "g_narrow": -1.15,
-    "Na_D": -1.30,
-    "i_narrow": -1.30,
-    "z_narrow": -1.30,
-    "r_narrow": -1.00,
+# Approximate filter FWHM bandwidth, in nm. Placeholder values pending real
+# transmission-curve measurements; update here if exact filter specs become
+# available. Used to scale exposure time by filter width: a narrower filter
+# passes proportionally fewer photons/sec for the same source (assuming a
+# ~flat SED over the band), so it needs a proportionally longer exposure to
+# reach the same peak ADU. The star's *magnitude* does not change between
+# broad and narrow bands -- only the coefficient (photons/sec) does.
+_FILTER_WIDTH_NM = {
+    "gp": 140.0, "rp": 100.0, "ip": 100.0, "zs": 100.0,
+    "g_narrow": 10.0, "Na_D": 5.0, "i_narrow": 5.0, "z_narrow": 5.0, "r_narrow": 10.0,
 }
+
+
+def _narrowband_offset(band: str) -> float:
+    """log10(filter_width_ratio) to apply to a broadband coef for ``band``.
+
+    Returns 0.0 for broadband/unknown bands (no scaling).
+    """
+    parent = _NARROW_TO_BROADBAND.get(band)
+    if parent is None:
+        return 0.0
+    narrow_w = _FILTER_WIDTH_NM.get(band)
+    parent_w = _FILTER_WIDTH_NM.get(parent)
+    if not narrow_w or not parent_w:
+        return 0.0
+    return math.log10(narrow_w / parent_w)
 
 # Band → focus_idx converter
 _FOCUS_MM = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
@@ -174,7 +186,7 @@ def _muscat3_coef(band: str, focus_mm: float) -> tuple[float, float]:
         c = coefs[lo] + (coefs[hi] - coefs[lo]) * frac
         f = fwhms[lo] + (fwhms[hi] - fwhms[lo]) * frac
     # Apply narrowband offset
-    offset = _NARROW_OFFSET.get(band, 0.0)
+    offset = _narrowband_offset(band)
     return (c + offset, f)
 
 # ---------------------------------------------------------------------------
@@ -375,6 +387,84 @@ def lookup_magnitudes(
 
     logger.info("No griz photometry found for (%.4f, %.4f)", ra, dec)
     return _result(None, None)
+
+
+# ---------------------------------------------------------------------------
+# Gaia (G, BP-RP) -> griz fallback, for comparison stars with no PS1/SkyMapper match
+# ---------------------------------------------------------------------------
+
+# TODO(gaia-griz-transform, under development -- do not fill in from memory):
+# pending independently verified coefficients for a published Gaia G/BP-RP ->
+# SDSS-like griz color transform (e.g. Evans et al. 2018 Table 5, or the Gaia
+# EDR3/DR3 "photometric relationships with other photometric systems"
+# documentation). Two attempts to source this have both failed verification:
+# (1) an automated fetch of the ESA documentation table produced internally
+# inconsistent numbers across two retrievals (different polynomial degree for
+# the same relationship); (2) a coefficient table supplied for this feature
+# (data/gaia_ps1_color_transform.md) cites arXiv:2601.05486 as support, but
+# that paper is on an unrelated topic (an all-sky photometric standard-star
+# database), indicating the table's numbers cannot be trusted either. Until a
+# properly-cited copy of the real source table is verified, this always
+# returns None, and lookup_magnitudes_with_fallback degrades to reporting "no
+# photometry available" for stars with no direct catalog match rather than
+# silently approximating a saturation-relevant magnitude with unverified
+# numbers.
+def gaia_to_griz_transform(gmag: float, bp_rp: float | None) -> dict[str, float] | None:
+    """Approximate gp/rp/ip/zs from Gaia (G, BP-RP) via a published color transform.
+
+    NOT YET IMPLEMENTED -- always returns ``None``; see the TODO above.
+
+    Used only as a fallback when Pan-STARRS DR1 / SkyMapper DR2 have no match
+    for a star (see :func:`lookup_magnitudes_with_fallback`). Once
+    implemented, must return ``None`` if the transform isn't available
+    (missing color, or out of the fit's valid range) so the caller can report
+    "no photometry" rather than a bad estimate.
+    """
+    if bp_rp is None or not math.isfinite(bp_rp):
+        return None
+    return None
+
+
+def lookup_magnitudes_with_fallback(
+    ra: float,
+    dec: float,
+    gmag: float | None = None,
+    bp_rp: float | None = None,
+) -> tuple[dict[str, float] | None, str | None, bool]:
+    """Griz magnitudes for a star: real catalog first, Gaia-transform fallback second.
+
+    Tries the same Pan-STARRS DR1 / SkyMapper DR2 lookup used for the primary
+    target (:func:`lookup_magnitudes`). If that finds no match and a Gaia
+    ``(gmag, bp_rp)`` is supplied, falls back to
+    :func:`gaia_to_griz_transform`. Which path was used (or that neither
+    found anything) is always logged and returned explicitly via
+    ``is_approx`` / ``source``, since a UI showing this magnitude needs to be
+    able to tell real photometry from an approximation.
+
+    Returns ``(mags, source, is_approx)``; ``mags`` is ``None`` if neither
+    path found anything.
+    """
+    mags, source = lookup_magnitudes(ra, dec, return_source=True)
+    if mags:
+        logger.info("Griz for (%.4f, %.4f): real catalog match (%s)", ra, dec, source)
+        return mags, source, False
+
+    if gmag is not None:
+        transformed = gaia_to_griz_transform(gmag, bp_rp)
+        if transformed:
+            source = "Gaia DR3 color transform (approx)"
+            logger.info(
+                "Griz for (%.4f, %.4f): no catalog match, using %s (G=%.2f, BP-RP=%s)",
+                ra, dec, source, gmag, bp_rp,
+            )
+            return transformed, source, True
+
+    logger.info(
+        "Griz for (%.4f, %.4f): no catalog match; Gaia color-transform fallback is "
+        "under development (gaia_to_griz_transform) and not yet available",
+        ra, dec,
+    )
+    return None, None, False
 
 
 def resolve_target_coords(target_name: str) -> tuple[float, float] | None:
@@ -837,8 +927,9 @@ def calc_all_bands(
     exptime: float | None = None,
     target_adu: float | None = None,
     confmode: str | None = None,
+    extra_sources: list[dict] | None = None,
 ) -> dict:
-    """Calculate for all bands.
+    """Calculate for all bands, optionally across the target plus extra sources.
 
     mode="exptime": returns exposure time to reach sat_frac of full well.
     mode="peak": returns peak count for a given exptime.
@@ -848,6 +939,15 @@ def calc_all_bands(
 
     confmode: Sinistro readout mode ("central_2k_2x2" or "full_frame"), currently
     not used for calculation but may affect full well in future versions.
+
+    ``extra_sources`` is an optional list of ``{"label": str, "mags": {band: mag}}``
+    dicts (e.g. bright comparison stars from the FOV optimizer). MuSCAT
+    instruments expose every star in the field simultaneously, so a
+    comparison star that saturates before the target caps the usable
+    exposure just as much as a limiting band does. Each source's bands are
+    calculated the same way as the target's and tagged with ``source_label``
+    / ``is_target`` in the returned per-band dict; ``recommended_exptime`` is
+    the minimum across every (source, band) pair, not just the target's.
     """
     params = INSTRUMENT_PARAMS.get(instrument, {})
     full_well = params.get("full_well", 100000)
@@ -858,20 +958,33 @@ def calc_all_bands(
     else:
         target_adu = (full_well * sat_frac) / gain_val
 
+    sources = [{"label": "Target", "mags": mags}, *(extra_sources or [])]
+
+    # Sort by band order: gp, rp, ip, zs, then narrow; ties broken by source
+    # order (target first) so same-band rows from different sources stay
+    # grouped together in the output.
+    band_order = {"gp": 0, "rp": 1, "ip": 2, "zs": 3,
+                  "g_narrow": 4, "r_narrow": 5, "Na_D": 6, "i_narrow": 7, "z_narrow": 8}
+
     results: list[dict] = []
-    for band, mag in mags.items():
-        if mode == "exptime":
-            r = calc_exptime(instrument, band, mag, focus_mm, target_adu, airmass)
-        else:
-            r = calc_peak(instrument, band, mag, focus_mm, exptime or 30.0, airmass)
-        results.append(r)
+    for source_idx, source in enumerate(sources):
+        label = source.get("label") or ("Target" if source_idx == 0 else f"Comp {source_idx}")
+        for band, mag in source["mags"].items():
+            if mode == "exptime":
+                r = calc_exptime(instrument, band, mag, focus_mm, target_adu, airmass)
+            else:
+                r = calc_peak(instrument, band, mag, focus_mm, exptime or 30.0, airmass)
+            r["source_label"] = label
+            r["is_target"] = source_idx == 0
+            r["_sort_key"] = (band_order.get(band, 99), source_idx)
+            results.append(r)
 
-    # Sort by band order: gp, rp, ip, zs, then narrow
-    order = {"gp": 0, "rp": 1, "ip": 2, "zs": 3,
-             "g_narrow": 4, "r_narrow": 5, "Na_D": 6, "i_narrow": 7, "z_narrow": 8}
-    results.sort(key=lambda r: order.get(r["band"], 99))
+    results.sort(key=lambda r: r["_sort_key"])
+    for r in results:
+        del r["_sort_key"]
 
-    # Recommended exposure time: minimum among bands that keeps all below saturation
+    # Recommended exposure time: minimum among all (source, band) pairs that
+    # keeps everyone below saturation.
     if mode == "exptime":
         rec = min(r["exptime"] for r in results) if results else 0
     else:
