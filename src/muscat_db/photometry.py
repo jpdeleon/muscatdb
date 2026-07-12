@@ -1415,12 +1415,12 @@ def start_run(
                             pass
                 except OSError:
                     pass
+                if existing.run_type == "full":
+                    get_job_store().release_slot("photometry", key)
                 _JOBS.pop(key, None)
             else:
                 logger.info(f"start_run: reusing existing job for {key} (overwrite=False)")
                 return {"ok": True, "key": key, "already_running": True, "run_id": run_id}
-
-        at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
 
         if _reduction_products_exist(inst, date, target, run_id) and not overwrite:
             logger.info(f"start_run: refusing to overwrite existing reduction for {key} (overwrite=False)")
@@ -1428,6 +1428,13 @@ def start_run(
                 "ok": False,
                 "error": "reduction products already exist for this target; enable 'Overwrite existing products' to replace",
             }
+
+        # Claim a cross-process concurrency slot for full jobs (test jobs are
+        # never capacity-gated). Not yet claimed here just means queue below.
+        claimed_slot = False
+        if run_type == "full":
+            claimed_slot = get_job_store().claim_slot("photometry", key, _MAX_FULL_JOBS)
+        at_capacity = run_type == "full" and not claimed_slot
 
         # Queue full jobs when at capacity
         if at_capacity:
@@ -1449,10 +1456,14 @@ def start_run(
         try:
             rdir = run_output_dir(inst, date, target, run_id)
         except ValueError as exc:
+            if claimed_slot:
+                get_job_store().release_slot("photometry", key)
             return {"ok": False, "error": str(exc)}
         if overwrite:
             ok, removed, delete_error = _delete_reduction_files(inst, date, target, run_id)
             if not ok:
+                if claimed_slot:
+                    get_job_store().release_slot("photometry", key)
                 return {"ok": False, "error": delete_error or "failed to delete previous reduction products"}
             if removed:
                 logger.info(f"start_run: deleted {removed} previous product(s) for {key} before overwrite run")
@@ -1478,6 +1489,8 @@ def start_run(
                 env=env,
             )
         except (FileNotFoundError, OSError) as exc:
+            if claimed_slot:
+                get_job_store().release_slot("photometry", key)
             logf.write(f"\nfailed to launch pipeline: {exc}\n")
             logf.close()
             return {"ok": False, "error": f"failed to launch pipeline: {exc}"}
@@ -1506,6 +1519,8 @@ def start_run(
         except sqlite3.OperationalError as exc:
             # DB write failed (e.g. read-only database). Roll back the launched
             # process and job so we don't leak a running pipeline we can't track.
+            if claimed_slot:
+                get_job_store().release_slot("photometry", key)
             try:
                 proc.terminate()
             except OSError:
@@ -1975,18 +1990,31 @@ def sync_jobs() -> None:
             )
             database.refresh_target_status(target)
 
+        # Release any concurrency slot whose claimant's persisted job row is
+        # no longer 'running' (crashed/restarted without releasing cleanly).
+        # Checked against the durable jobs table, so this is safe to run from
+        # any process -- unlike the per-process _JOBS dict above, it does not
+        # assume this process is the one that held the slot.
+        store.reconcile_slots("photometry")
+
         # Launch pending full jobs if capacity allows
-        if _count_running_full() < _MAX_FULL_JOBS:
+        if store.count_claimed("photometry") < _MAX_FULL_JOBS:
             pending = store.pending("photometry")
             for entry in pending:
-                if _count_running_full() >= _MAX_FULL_JOBS:
+                if store.count_claimed("photometry") >= _MAX_FULL_JOBS:
                     break
                 run_id = entry.get("run_id") or ""
                 # The DB key is prefixed ("photometry:..."), so compare against the
                 # in-memory job key (unprefixed) to detect a job that is already
                 # running and must not be relaunched from its stale pending row.
-                if job_key(entry["inst"], entry["date"], entry["target"], run_id) in _JOBS:
+                candidate_key = job_key(entry["inst"], entry["date"], entry["target"], run_id)
+                if candidate_key in _JOBS:
                     store.save(type_="photometry", inst=entry["inst"], date=entry["date"], target=entry["target"], state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_id=run_id, run_name=entry.get("run_name", ""))
+                    continue
+                # Atomic: at most one process/caller ever wins this claim for a
+                # given key, so two workers draining the same pending row can
+                # never both launch it.
+                if not store.claim_slot("photometry", candidate_key, _MAX_FULL_JOBS):
                     continue
                 try:
                     p = json.loads(entry.get("params") or "{}")
@@ -2004,6 +2032,7 @@ def sync_jobs() -> None:
                 try:
                     rdir = run_output_dir(inst, date, target, run_id)
                 except ValueError as exc:
+                    store.release_slot("photometry", candidate_key)
                     store.save(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=str(exc), run_id=run_id, run_name=run_name)
                     continue
                 rdir.mkdir(parents=True, exist_ok=True)
@@ -2019,6 +2048,7 @@ def sync_jobs() -> None:
                 except (FileNotFoundError, OSError) as exc:
                     try: logf.close()
                     except OSError: pass
+                    store.release_slot("photometry", candidate_key)
                     store.save(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_id=run_id, run_name=run_name)
                     continue
                 _JOBS[key] = Job(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=pending_log_path, run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name)
@@ -2030,4 +2060,5 @@ def sync_jobs() -> None:
                     try: logf.close()
                     except OSError: pass
                     _JOBS.pop(key, None)
+                    store.release_slot("photometry", candidate_key)
                     store.save(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Database not writable: {exc}", run_id=run_id, run_name=run_name)

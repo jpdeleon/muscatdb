@@ -182,6 +182,18 @@ CREATE TABLE IF NOT EXISTS exofop_cache (
     confirmed_planets      TEXT NOT NULL DEFAULT '',
     updated_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Cross-process/cross-server concurrency gate for each pipeline's full-job
+-- cap (architecture audit finding: _MAX_FULL_JOBS was an in-memory-only
+-- per-process dict, already wrong under --workers N>1). One row per
+-- currently-claimed slot; a pipeline holds at most max_slots rows at once,
+-- enforced by job_store.DatabaseJobStore.claim_slot's atomic INSERT.
+CREATE TABLE IF NOT EXISTS job_concurrency_slots (
+    pipeline    TEXT NOT NULL,
+    holder_key  TEXT NOT NULL,
+    claimed_at  REAL NOT NULL,
+    PRIMARY KEY (pipeline, holder_key)
+);
 """
 
 
