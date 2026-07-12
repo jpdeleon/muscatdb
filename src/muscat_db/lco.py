@@ -8,6 +8,7 @@ import datetime
 import concurrent.futures
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -21,8 +22,25 @@ from pathlib import Path
 import threading
 import time
 import uuid
+from zoneinfo import ZoneInfo
 
-from muscat_db.database import UserSettingsError, get_user_lco_token, user_lco_token_configured
+from muscat_db.catalog import _angular_sep_arcsec, _normalize_target_name
+from muscat_db.coord import (
+    CoordRepr,
+    unpack as _unpack_coord,
+    clean_ra as _clean_ra,
+    clean_dec as _clean_dec,
+)
+from muscat_db.database import (
+    UserSettingsError,
+    db_path as _db_path,
+    get_conn,
+    get_user_lco_token,
+    user_lco_token_configured,
+)
+from muscat_db.instruments import INSTRUMENTS
+
+logger = logging.getLogger(__name__)
 
 # A frame filename / path segment: letters, digits and the punctuation LCO uses
 # in archive names. Excludes "/" and "\" so a crafted payload can't traverse.
@@ -265,6 +283,275 @@ def infer_archive_instrument(frame: dict) -> str:
         "Could not infer destination instrument",
         detail=f"site={site}, tel={tel}, instrume={instrume}, filename={filename}",
     )
+
+
+# IANA tz names for each LCO site, used to bucket frames into the same
+# "observing night" a human would use (local evening through local morning).
+_LCO_SITE_TZ = {
+    "ogg": "Pacific/Honolulu",
+    "coj": "Australia/Brisbane",
+    "lsc": "America/Santiago",
+    "cpt": "Africa/Johannesburg",
+    "elp": "America/Chicago",
+    "tfn": "Atlantic/Canary",
+    "tlv": "Asia/Jerusalem",
+}
+_LCO_DATASET_MATCH_ARCSEC = 60.0
+
+
+def _parse_lco_obs_dt(frame: dict) -> datetime.datetime | None:
+    raw = (
+        frame.get("DATE_OBS")
+        or frame.get("observation_date")
+        or frame.get("DAY_OBS")
+        or ""
+    )
+    raw = str(raw).strip()
+    if not raw:
+        return None
+    try:
+        if len(raw) == 10:
+            return datetime.datetime.fromisoformat(raw).replace(tzinfo=datetime.timezone.utc)
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt.astimezone(datetime.timezone.utc)
+    except ValueError:
+        return None
+
+
+def _lco_observing_date(frame: dict) -> str:
+    dt = _parse_lco_obs_dt(frame)
+    if dt is None:
+        day_obs = str(frame.get("DAY_OBS") or "").strip()
+        if day_obs:
+            return day_obs
+        return ""
+    site = str(frame.get("SITEID") or "").strip().lower()
+    tz_name = _LCO_SITE_TZ.get(site, "UTC")
+    local_dt = dt.astimezone(ZoneInfo(tz_name))
+    # Observing nights run through local midnight, so local post-midnight frames
+    # belong to the prior evening's dataset.
+    if local_dt.hour < 12:
+        local_dt = local_dt - datetime.timedelta(days=1)
+    return local_dt.date().isoformat()
+
+
+def _sexagesimal_to_deg(value: str, *, is_ra: bool) -> float | None:
+    parts = value.split(":")
+    if len(parts) != 3:
+        return None
+    sign = 1.0
+    head = parts[0]
+    if not is_ra and head.startswith("-"):
+        sign = -1.0
+    head = head.lstrip("+-")
+    try:
+        a = float(head)
+        b = float(parts[1])
+        c = float(parts[2])
+    except ValueError:
+        return None
+    base = abs(a) + b / 60.0 + c / 3600.0
+    if is_ra:
+        return base * 15.0
+    return sign * base
+
+
+def _coord_to_deg(value, *, is_ra: bool) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    clean = _clean_ra(s) if is_ra else _clean_dec(s)
+    if clean is None:
+        return None
+    return _sexagesimal_to_deg(clean, is_ra=is_ra)
+
+
+def _frame_coords_deg(frame: dict) -> tuple[float | None, float | None]:
+    ra = (
+        frame.get("RA")
+        or frame.get("ra")
+        or frame.get("ra_x")
+        or frame.get("target_ra")
+    )
+    dec = (
+        frame.get("DEC")
+        or frame.get("Dec")
+        or frame.get("declination")
+        or frame.get("dec_x")
+        or frame.get("target_dec")
+    )
+    return _coord_to_deg(ra, is_ra=True), _coord_to_deg(dec, is_ra=False)
+
+
+def _local_lco_datasets(inst: str, obsdate: str, site: str) -> list[dict]:
+    db = _db_path()
+    with get_conn(db) as conn:
+        conn.create_aggregate("coord_repr", 2, CoordRepr)
+        rows = conn.execute(
+            """
+            SELECT object, COUNT(*) AS nframes, coord_repr(ra, declination) AS coord
+            FROM frames
+            WHERE instrument = ?
+              AND obsdate = ?
+              AND filename LIKE ?
+            GROUP BY object
+            """,
+            (inst, obsdate, f"{site}%"),
+        ).fetchall()
+    out = []
+    for obj, nframes, packed in rows:
+        ra_raw, dec_raw = _unpack_coord(packed)
+        ra_deg = _coord_to_deg(ra_raw, is_ra=True)
+        dec_deg = _coord_to_deg(dec_raw, is_ra=False)
+        out.append(
+            {
+                "object": obj or "",
+                "nframes": int(nframes or 0),
+                "ra_deg": ra_deg,
+                "dec_deg": dec_deg,
+            }
+        )
+    return out
+
+
+def _annotate_lco_archive_results(inst: str, results: list[dict]) -> tuple[list[dict], int]:
+    if not results:
+        return [], 0
+
+    rows: list[dict] = [dict(r) for r in results]
+    rows.sort(
+        key=lambda r: (
+            _parse_lco_obs_dt(r) or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc),
+            str(r.get("filename") or r.get("basename") or ""),
+        )
+    )
+
+    filename_to_group: dict[str, str] = {}
+    dataset_meta: dict[str, dict] = {}
+    group_idx_by_key: dict[tuple[str, str, str], int] = {}
+
+    for row in rows:
+        observing_date = _lco_observing_date(row)
+        identity = (
+            observing_date,
+            str(row.get("OBJECT") or ""),
+            str(row.get("SITEID") or ""),
+        )
+        if identity not in group_idx_by_key:
+            group_idx_by_key[identity] = len(group_idx_by_key) + 1
+        group_id = f"{observing_date or 'unknown'}:{group_idx_by_key[identity]}"
+        if group_id not in dataset_meta:
+            inferred_inst = inst if inst in INSTRUMENTS else ""
+            if not inferred_inst:
+                try:
+                    inferred_inst = infer_archive_instrument(row)
+                except LcoError:
+                    inferred_inst = ""
+            dataset_meta[group_id] = {
+                "dataset_id": group_id,
+                "dataset_date": observing_date,
+                "instrument": inferred_inst,
+                "object": str(row.get("OBJECT") or ""),
+                "site": str(row.get("SITEID") or ""),
+                "telescope": str(row.get("TELID") or ""),
+                "instrument_header": str(row.get("INSTRUME") or ""),
+                "frame_count": 0,
+                "existing_count": 0,
+                "filenames": [],
+                "archive_ra_deg": None,
+                "archive_dec_deg": None,
+            }
+        meta = dataset_meta[group_id]
+        meta["frame_count"] += 1
+        fname = str(row.get("filename") or row.get("basename") or "")
+        if fname:
+            meta["filenames"].append(fname)
+            filename_to_group[fname] = group_id
+        if meta["archive_ra_deg"] is None or meta["archive_dec_deg"] is None:
+            ra_deg, dec_deg = _frame_coords_deg(row)
+            if ra_deg is not None and dec_deg is not None:
+                meta["archive_ra_deg"] = ra_deg
+                meta["archive_dec_deg"] = dec_deg
+
+    local_cache: dict[tuple[str, str, str], list[dict]] = {}
+    for meta in dataset_meta.values():
+        inst_name = str(meta.get("instrument") or "")
+        obsdate = (meta.get("dataset_date") or "").replace("-", "")[2:8]
+        site = str(meta.get("site") or "").lower()
+        if not inst_name or not obsdate or not site:
+            continue
+        key = (inst_name, obsdate, site)
+        if key not in local_cache:
+            local_cache[key] = _local_lco_datasets(inst_name, obsdate, site)
+
+        archive_ra = meta.get("archive_ra_deg")
+        archive_dec = meta.get("archive_dec_deg")
+        if archive_ra is None or archive_dec is None:
+            archive_name = _normalize_target_name(str(meta.get("object") or ""))
+            if not archive_name:
+                continue
+            for cand in local_cache[key]:
+                if _normalize_target_name(str(cand.get("object") or "")) == archive_name:
+                    meta["existing_count"] = int(cand.get("nframes") or 0)
+                    meta["matched_object"] = str(cand.get("object") or "")
+                    break
+            continue
+
+        best_match = None
+        best_sep = None
+        for cand in local_cache[key]:
+            ra2 = cand.get("ra_deg")
+            dec2 = cand.get("dec_deg")
+            if ra2 is None or dec2 is None:
+                continue
+            sep = _angular_sep_arcsec(archive_ra, archive_dec, ra2, dec2)
+            if best_sep is None or sep < best_sep:
+                best_sep = sep
+                best_match = cand
+        if best_match is not None and best_sep is not None and best_sep <= _LCO_DATASET_MATCH_ARCSEC:
+            meta["existing_count"] = int(best_match.get("nframes") or 0)
+            meta["matched_object"] = str(best_match.get("object") or "")
+            meta["match_sep_arcsec"] = round(best_sep, 2)
+
+    out: list[dict] = []
+    for row in rows:
+        fname = str(row.get("filename") or row.get("basename") or "")
+        gid = filename_to_group.get(fname, "")
+        meta = dataset_meta.get(gid, {})
+        row["dataset_id"] = gid
+        row["dataset_date"] = meta.get("dataset_date", "")
+        row["archive_instrument"] = meta.get("instrument", "")
+        row["dataset_exists"] = bool(meta.get("existing_count"))
+        row["dataset_existing_count"] = int(meta.get("existing_count", 0))
+        row["dataset_frame_count"] = int(meta.get("frame_count", 0))
+        row["dataset_matched_object"] = meta.get("matched_object", "")
+        row["dataset_match_sep_arcsec"] = meta.get("match_sep_arcsec")
+
+        # Check if frame is saved locally
+        inferred_inst = meta.get("instrument") or ""
+        obsdate = (meta.get("dataset_date") or "").replace("-", "")[2:8]
+        row["saved_locally"] = False
+        if inferred_inst and obsdate and fname:
+            try:
+                dest = frame_dest(inferred_inst, obsdate, fname)
+                if dest.exists() and dest.stat().st_size > 0:
+                    row["saved_locally"] = True
+            except Exception:
+                logger.debug("failed local saved-frame check for %s/%s/%s", inferred_inst, obsdate, fname, exc_info=True)
+        out.append(row)
+    return out, len(dataset_meta)
 
 
 def _safe_segment(value: str, kind: str) -> str:
