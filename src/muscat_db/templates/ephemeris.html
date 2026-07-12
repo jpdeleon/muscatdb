@@ -1146,20 +1146,20 @@
         </h3>
         <div class="opt-grid" style="grid-template-columns: 1fr; gap: 0.75rem;">
           <div class="opt">
-            <label>Reference Epoch T0 (BJD)</label>
-            <input type="number" class="planet-t0" step="any" value="${t0Val}" onchange="saveTargetOpts(); scheduleComputeFit()">
+            <label for="planet-t0-${p}">Reference Epoch T0 (BJD)</label>
+            <input id="planet-t0-${p}" type="number" class="planet-t0" step="any" value="${t0Val}" onchange="saveTargetOpts(); scheduleComputeFit()">
           </div>
           <div class="opt">
-            <label>Period (days)</label>
-            <input type="number" class="planet-period" step="any" value="${perVal}" onchange="saveTargetOpts(); scheduleComputeFit()">
+            <label for="planet-period-${p}">Period (days)</label>
+            <input id="planet-period-${p}" type="number" class="planet-period" step="any" value="${perVal}" onchange="saveTargetOpts(); scheduleComputeFit()">
           </div>
           <div class="opt">
-            <label>Transit Duration T14 (days)</label>
-            <input type="number" class="planet-duration" step="any" value="${parseFloat(durVal).toFixed(5)}" oninput="saveTargetOpts(); rebuildINI(true);" onchange="scheduleComputeFit()">
+            <label for="planet-duration-${p}">Transit Duration T14 (days)</label>
+            <input id="planet-duration-${p}" type="number" class="planet-duration" step="any" value="${parseFloat(durVal).toFixed(5)}" oninput="saveTargetOpts(); rebuildINI(true);" onchange="scheduleComputeFit()">
           </div>
           <div class="opt">
-            <label>Source</label>
-            <select class="planet-source-select select-sm" onchange="changePlanetSource(this, '${p}')" style="width: 100%; font-size: 0.85rem; padding: 0.35rem 0.5rem; background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; outline: none; cursor: pointer;">
+            <label for="planet-source-${p}">Source</label>
+            <select id="planet-source-${p}" class="planet-source-select select-sm" onchange="changePlanetSource(this, '${p}')" style="width: 100%; font-size: 0.85rem; padding: 0.35rem 0.5rem; background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; outline: none; cursor: pointer;">
               <option value="nasa"${selectedSource === 'nasa' ? ' selected' : ''}>NASA Catalog</option>
               <option value="toi"${selectedSource === 'toi' ? ' selected' : ''}>TOI Catalog</option>
               ${datasetOptions}
