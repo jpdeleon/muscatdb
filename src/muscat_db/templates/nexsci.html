@@ -7,6 +7,8 @@
   .nx-meta { color: var(--text-dim); font-size: 0.85rem; margin: 0.25rem 0 1rem; }
   .chip-bar { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.5rem; }
   .chip-bar .chip-label { font-size: 0.85rem; color: var(--text-dim); font-weight: 500; min-width: 6rem; }
+  .logic-indicator { font-size: 0.65rem; font-weight: 600; color: var(--accent); background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 4px; padding: 0.05rem 0.25rem; margin-left: 0.25rem; vertical-align: middle; }
   .nx-chip { cursor: pointer; }
   .nx-section > summary { cursor: pointer; padding: 0.5rem 0; color: var(--text-dim); font-size: 1rem; font-weight: 600; }
   #nx-table th, #nx-table td { white-space: nowrap; }
@@ -41,7 +43,7 @@
 </div>
 
 <div class="chip-bar">
-  <span class="chip-label">Disc. method:</span>
+  <span class="chip-label">Disc. method <span class="logic-indicator" title="Matching any of the checked discovery methods">OR</span>:</span>
   <span class="badge instrument-badge nx-chip" data-group="method" data-key="Transit">Transit</span>
   <span class="badge instrument-badge nx-chip" data-group="method" data-key="Radial Velocity">Radial Velocity</span>
   <span class="badge instrument-badge nx-chip" data-group="method" data-key="Imaging">Imaging</span>
@@ -50,7 +52,7 @@
   <span class="badge instrument-badge nx-chip" data-group="method" data-key="Other">Other</span>
 </div>
 <div class="chip-bar">
-  <span class="chip-label">Planet type:</span>
+  <span class="chip-label">Planet type <span class="logic-indicator" title="Matching any of the checked size classes">OR</span>:</span>
   <span class="badge instrument-badge nx-chip" data-group="size" data-key="Jupiter-size">Jupiter-size</span>
   <span class="badge instrument-badge nx-chip" data-group="size" data-key="Neptune-size">Neptune-size</span>
   <span class="badge instrument-badge nx-chip" data-group="size" data-key="Sub-Neptune">Sub-Neptune</span>
@@ -58,7 +60,7 @@
   <span class="badge instrument-badge nx-chip" data-group="size" data-key="Earth-size">Earth-size</span>
 </div>
 <div class="chip-bar">
-  <span class="chip-label">Host star:</span>
+  <span class="chip-label">Host star <span class="logic-indicator" title="Matching any of the checked spectral types">OR</span>:</span>
   <span class="badge instrument-badge nx-chip" data-group="star" data-key="M">M dwarf</span>
   <span class="badge instrument-badge nx-chip" data-group="star" data-key="K">K type</span>
   <span class="badge instrument-badge nx-chip" data-group="star" data-key="G">G type</span>
@@ -66,13 +68,13 @@
   <span class="badge instrument-badge nx-chip" data-group="star" data-key="A+">A / hotter</span>
 </div>
 <div class="chip-bar">
-  <span class="chip-label">Multiplicity:</span>
+  <span class="chip-label">Multiplicity <span class="logic-indicator" title="Matching all checked flags (AND)">AND</span>:</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="binary" title="Host system has exactly 2 stars (sy_snum = 2)">Binary</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="tertiary" title="Host system has 3+ stars (sy_snum ≥ 3)">Tertiary+</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="cb" title="Circumbinary planet — orbits both stars of a binary (cb_flag = 1)">Circumbinary</span>
 </div>
 <div class="chip-bar">
-  <span class="chip-label">System:</span>
+  <span class="chip-label">System <span class="logic-indicator" title="Matching all checked flags (AND)">AND</span>:</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="young" title="Upper bound of stellar age < 1 Gyr (st_age + st_ageerr1, respecting st_agelim)">Young (&lt;1 Gyr)</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="nearby" title="System distance < 100 pc (sy_dist)">Nearby (&lt;100 pc)</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="bright" title="Gaia magnitude < 12 (sy_gaiamag)">Bright (G&lt;12)</span>
@@ -81,14 +83,14 @@
 </div>
 
 <div class="chip-bar">
-  <span class="chip-label">External data:</span>
+  <span class="chip-label">External data <span class="logic-indicator" title="Matching all checked flags (AND)">AND</span>:</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="harps" title="Coordinate-matched to the public HARPS RVBank catalog">has HARPS RV</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="jwst" title="Only planets with JWST Atmospheric Observation List (NExoList) data">has JWST data</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="spectra" title="Has time-series spectra available in the Atmospheric Spectroscopy table">has time-series spectra</span>
 </div>
 
 <div class="chip-bar">
-  <span class="chip-label">muscat-db:</span>
+  <span class="chip-label">muscat-db <span class="logic-indicator" title="Matching checked flag (AND)">AND</span>:</span>
   <span class="badge instrument-badge nx-chip" data-group="indb" data-key="1" title="Only planets whose host star has data in muscat-db">★ In muscat-db</span>
 </div>
 
@@ -369,7 +371,21 @@
       const p = build(inp.value);
       inp.classList.remove('invalid');
       if (p === 'INVALID') { inp.classList.add('invalid'); return; }
-      if (p) preds.push({ key: c.key, fn: p });
+      if (p) {
+        if (c.key === 'tic') {
+          preds.push({
+            key: c.key,
+            fn: val => {
+              if (val == null) return false;
+              const s = String(val);
+              const clean = s.replace(/\D/g, '');
+              return p(s) || p('tic-' + clean) || p('tic ' + clean) || p('tic' + clean) || p(clean);
+            }
+          });
+        } else {
+          preds.push({ key: c.key, fn: p });
+        }
+      }
     });
     return preds;
   }
@@ -385,7 +401,9 @@
     const out = [];
     for (let i = 0; i < N; i++) {
       if (q) {
-        const hay = (NEXSCI.name[i] + ' ' + NEXSCI.host[i] + ' ' + NEXSCI.tic[i]).toLowerCase();
+        const ticRaw = NEXSCI.tic[i] || '';
+        const ticClean = ticRaw.replace(/\D/g, '');
+        const hay = (NEXSCI.name[i] + ' ' + NEXSCI.host[i] + ' ' + ticRaw + ' tic-' + ticClean + ' tic ' + ticClean + ' tic' + ticClean).toLowerCase();
         if (hay.indexOf(q) === -1) continue;
       }
       let ok = true;
