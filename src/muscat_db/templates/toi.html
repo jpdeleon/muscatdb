@@ -922,12 +922,14 @@
     }
 
     const dark = document.documentElement.getAttribute('data-theme') === 'dark';
-    const grid = dark ? '#30363d' : '#e1e4e8';
-    const minorGrid = dark ? '#21262d' : '#f0f1f2';
+    // Plotly layout options can't consume CSS custom properties, so these
+    // mirror the --border/--surface2/--text hex values from styles.css.
+    const grid = dark ? '#2e3348' : '#d8dce6';
+    const minorGrid = dark ? '#242838' : '#eef0f6';
     const layout = {
       margin: { l: 64, r: 20, t: 10, b: 52 },
       paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
-      font: { color: dark ? '#c9d1d9' : '#24292f', size: 12 },
+      font: { color: dark ? '#e1e4ed' : '#1a1d27', size: 12 },
       xaxis: {
         title: { text: xlabel },
         type: logx ? 'log' : 'linear',

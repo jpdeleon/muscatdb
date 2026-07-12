@@ -466,7 +466,7 @@ tr.filter-row th input::placeholder { color: var(--text-dim); font-style: italic
   cursor: pointer; font-size: 0.85rem; color: var(--text);
   white-space: nowrap;
 }
-.opt-check-item input { cursor: pointer; }
+.opt-check-item input, .opt-check-item select { cursor: pointer; }
 
 /* Heading that spans a full .opt-grid row. */
 .opt-section-title {
@@ -887,6 +887,29 @@ th.drag-over-right {
   gap: 0.5rem;
   justify-content: flex-end;
   flex-wrap: wrap;
+}
+
+/* ---------- Native <dialog> ---------- */
+/* The UA default for <dialog> is unthemed (canvas/canvastext colors, plain
+   border), so without this it's the only surface on the site that ignores
+   light/dark mode. Match the .modal-box treatment used by the custom overlay
+   modals above so every "popup" surface looks like one system. */
+dialog {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+dialog h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+  color: var(--text);
 }
 
 /* ---------- LCO Schedule page ---------- */

@@ -30,14 +30,14 @@
   }
   .fov-actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-top: 0.9rem; }
   button.fov-btn {
-    background: var(--accent); color: #06121b; border: none; border-radius: 8px;
+    background: var(--accent); color: var(--bg); border: none; border-radius: 8px;
     padding: 0.55rem 1.1rem; font-size: 0.9rem; font-weight: 600; cursor: pointer; font-family: inherit;
   }
   button.fov-btn[disabled] { opacity: 0.55; cursor: progress; }
   button.fov-btn.ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
   .fov-msg { font-size: 0.82rem; margin-top: 0.6rem; min-height: 1em; }
-  .fov-msg.err { color: #e07b53; }
-  .fov-msg.ok { color: #2ecc71; }
+  .fov-msg.err { color: var(--red); }
+  .fov-msg.ok { color: var(--green); }
 
   .fov-summary { display: grid; gap: 0.6rem 1rem; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   .fov-stat { display: flex; flex-direction: column; gap: 0.15rem; }
@@ -124,15 +124,15 @@
           </select>
         </div>
         <div class="fov-field" id="fov-mag-range-field">
-          <label for="fov-mag-range" title="Brighter and faint Gmag limits for comparison candidates, separated by a comma (min, max).">Gmag range (min, max)</label>
+          <label for="fov-mag-range">Gmag range (min, max) <span class="help-tooltip" title="Brighter and faint Gmag limits for comparison candidates, separated by a comma (min, max).">?</span></label>
           <input id="fov-mag-range" type="text" placeholder="e.g. 10, 18" value="10, 18">
         </div>
         <div class="fov-field" id="fov-mag-delta-field" style="display: none;">
-          <label for="fov-mag-delta" title="Keep comps within this delta magnitude of the target (target G ± delta).">Delta Gmag</label>
+          <label for="fov-mag-delta">Delta Gmag <span class="help-tooltip" title="Keep comps within this delta magnitude of the target (target G ± delta).">?</span></label>
           <input id="fov-mag-delta" type="number" step="any" value="3">
         </div>
         <div class="fov-field">
-          <label for="fov-avoid-mag" title="Reject any pointing whose footprint contains a star brighter than this Gmag (saturation, bleeding, scattered light). The science target is exempt. Leave empty to disable.">Avoid brighter than (Gmag)</label>
+          <label for="fov-avoid-mag">Avoid brighter than (Gmag) <span class="help-tooltip" title="Reject any pointing whose footprint contains a star brighter than this Gmag (saturation, bleeding, scattered light). The science target is exempt. Leave empty to disable.">?</span></label>
           <input id="fov-avoid-mag" type="number" step="any" placeholder="(off)">
         </div>
       </div>
