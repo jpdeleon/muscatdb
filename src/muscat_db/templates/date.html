@@ -34,7 +34,7 @@
     <td class="mono">{{ s.ut_start }}</td>
     <td class="mono">{{ s.ut_end }}</td>
     <td class="mono">{{ s.nframes }}</td>
-    <td><a href="/photometry?inst={{ instrument }}&date={{ obsdate }}&target={{ s.object | urlencode }}" title="View photometry">🔭</a></td>
+    <td><a href="/photometry?inst={{ instrument }}&date={{ obsdate }}&target={{ s.object | urlencode }}{% if instrument == 'sinistro' and s.telescope %}&site={{ s.telescope[:3] }}{% endif %}" title="View photometry">🔭</a></td>
   </tr>
 {% else %}
   <tr><td colspan="10">No data for this CCD.</td></tr>
