@@ -323,15 +323,57 @@ def _summary_rows(conn: sqlite3.Connection, *, instrument: str | None = None, ob
         params.append(obsdate)
     where_sql = f" WHERE {' AND '.join(where)}" if where else ""
     raw = conn.execute(
-        f"""SELECT instrument, obsdate, ccd, object, exptime, read_mode,
-                  MIN(filename), MAX(filename),
-                  MIN(ut_start), MAX(ut_start), COUNT(*),
-                  MAX(filter), coord_repr(ra, declination),
-                  MIN(NULLIF(airmass, 0)), MAX(NULLIF(airmass, 0))
-           FROM frames
-           {where_sql}
-           GROUP BY instrument, obsdate, ccd, object, exptime, read_mode""",
-        params,
+        f"""WITH ranked AS (
+               SELECT *,
+                      ROW_NUMBER() OVER (
+                          PARTITION BY instrument, obsdate, ccd, object, ROUND(exptime, 1), read_mode
+                          ORDER BY jd_start ASC
+                      ) as rn_asc,
+                      ROW_NUMBER() OVER (
+                          PARTITION BY instrument, obsdate, ccd, object, ROUND(exptime, 1), read_mode
+                          ORDER BY jd_start DESC
+                      ) as rn_desc
+               FROM frames
+               {where_sql}
+           )
+           SELECT 
+               f1.instrument, f1.obsdate, f1.ccd, f1.object, ROUND(f1.exptime, 1) as exptime, f1.read_mode,
+               f1.filename as frame_start,
+               f2.filename as frame_end,
+               f1.ut_start as ut_start,
+               f2.ut_start as ut_end,
+               stats.nframes,
+               stats.filter,
+               stats.coord,
+               stats.airmass_min,
+               stats.airmass_max
+           FROM ranked f1
+           JOIN ranked f2 ON 
+               f1.instrument = f2.instrument AND 
+               f1.obsdate = f2.obsdate AND 
+               f1.ccd = f2.ccd AND 
+               f1.object = f2.object AND 
+               ROUND(f1.exptime, 1) = ROUND(f2.exptime, 1) AND 
+               f1.read_mode = f2.read_mode AND 
+               f1.rn_asc = 1 AND f2.rn_desc = 1
+           JOIN (
+               SELECT instrument, obsdate, ccd, object, ROUND(exptime, 1) as exptime_grp, read_mode,
+                      COUNT(*) as nframes,
+                      MAX(filter) as filter,
+                      coord_repr(ra, declination) as coord,
+                      MIN(NULLIF(airmass, 0)) as airmass_min,
+                      MAX(NULLIF(airmass, 0)) as airmass_max
+               FROM frames
+               {where_sql}
+               GROUP BY instrument, obsdate, ccd, object, ROUND(exptime, 1), read_mode
+           ) stats ON 
+               f1.instrument = stats.instrument AND 
+               f1.obsdate = stats.obsdate AND 
+               f1.ccd = stats.ccd AND 
+               f1.object = stats.object AND 
+               ROUND(f1.exptime, 1) = stats.exptime_grp AND 
+               f1.read_mode = stats.read_mode""",
+        params * 2,
     ).fetchall()
     return [(*r[:12], *_unpack_coord(r[12]), r[13], r[14]) for r in raw]
 
