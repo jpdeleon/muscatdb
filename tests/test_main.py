@@ -844,7 +844,7 @@ class TestCLI:
 
     def test_all_commands_have_help(self):
         for cmd in ["scan", "scan-missing", "scan-all",
-                      "scan-yesterday-cmd", "summary",
+                      "scan-yesterday", "summary",
                       "ingest-date",
                       "build-db", "serve"]:
             r = self._invoke(cmd, "--help")

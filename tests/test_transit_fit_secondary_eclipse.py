@@ -36,6 +36,7 @@ def test_secondary_eclipse_written_to_fit_yaml(tmp_path):
     assert fit_yaml["secondary_eclipse"] is True
 
 
+@pytest.mark.slow
 def test_model_build_applies_secondary_eclipse_offset():
     # Arrange: get the python interpreter for the timer conda env
     timer_py = fit._conda_env_python("timer")

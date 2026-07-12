@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from unittest.mock import patch, MagicMock
+import datetime
 import io
 import os
 import socket
@@ -375,10 +376,17 @@ class LcoTest(unittest.TestCase):
         self.assertEqual(windows[2]["epoch"], 2)
 
     def test_generate_windows_preserves_precise_boundaries(self):
+        # 2026-07-01 00:01:00 UTC; the resulting boundaries must retain the
+        # one-minute offset rather than being rounded to 5 minutes. Computed
+        # as 1 minute past JD 2461222.5 (midnight) rather than a hardcoded
+        # decimal literal, but a JD at this magnitude (~2.46e6) only has
+        # float64 headroom for a handful of microseconds of precision in its
+        # fractional day regardless of how it's constructed, so the assertion
+        # below checks the real invariant (not snapped to a 5-minute grid)
+        # with a millisecond tolerance instead of an exact string match.
+        t0 = 2461222.5 + 1.0 / 1440.0
         windows = lco.generate_windows(
-            # 2026-07-01 00:01:00 UTC; the resulting boundaries must retain
-            # the one-minute offset rather than being rounded to 5 minutes.
-            t0=2461222.500694444,
+            t0=t0,
             period=1.0,
             duration_h=1.0,
             start_dt="2026-07-01",
@@ -387,8 +395,12 @@ class LcoTest(unittest.TestCase):
             pad_after_min=0,
         )
         self.assertEqual(len(windows), 1)
-        self.assertIn(":31:", windows[0]["start"])
-        self.assertIn(":31:", windows[0]["end"])
+        start = datetime.datetime.fromisoformat(windows[0]["start"].replace("Z", "+00:00"))
+        end = datetime.datetime.fromisoformat(windows[0]["end"].replace("Z", "+00:00"))
+        expected_start = datetime.datetime(2026, 6, 30, 23, 31, tzinfo=datetime.timezone.utc)
+        expected_end = datetime.datetime(2026, 7, 1, 0, 31, tzinfo=datetime.timezone.utc)
+        self.assertLess(abs((start - expected_start).total_seconds()), 0.001)
+        self.assertLess(abs((end - expected_end).total_seconds()), 0.001)
 
 class FrameDestSecurityTest(unittest.TestCase):
     """frame_dest / URL validation must block path traversal and SSRF."""
