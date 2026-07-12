@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import contextvars
 import json
@@ -18,6 +19,7 @@ import io
 from contextlib import asynccontextmanager
 from urllib.parse import quote
 
+import httpx
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -40,6 +42,7 @@ from muscat_db.lco import _annotate_lco_archive_results
 from muscat_db import transit_obs
 from muscat_db import fov as fov_opt
 from muscat_db import ephemeris_math
+from muscat_db import http_client
 from muscat_db.catalog import (
     _adql_literal,
     _ads_token_for_request,
@@ -137,11 +140,13 @@ async def _lifespan(app: FastAPI):
             "use --wcs_method twirl (no API key) or export the key."
         )
 
-    from muscat_db import proxy
+    from muscat_db import proxy, http_client
     await proxy.startup()
+    await http_client.startup()
     try:
         yield
     finally:
+        await http_client.shutdown()
         await proxy.shutdown()
 
 
@@ -246,6 +251,22 @@ def _wiki_url(inst: str, target: str) -> str | None:
 
 def _db_path() -> str:
     return str(pathlib.Path(os.environ.get("MUSCAT_DB_PATH", "muscat.db")).resolve())
+
+
+async def _async_get(url: str, *, headers: dict | None = None, timeout: float | None = None) -> httpx.Response:
+    """GET via the shared async httpx client, raising on non-2xx status
+    (mirrors urllib.request.urlopen's implicit HTTPError-on-bad-status).
+
+    Backs routes whose entire job is a single external archive call, so they
+    can be ``async def`` and free FastAPI's threadpool while awaiting; tests
+    monkeypatch this name directly."""
+    response = await http_client.get_async_client().get(
+        url,
+        headers=headers,
+        timeout=timeout if timeout is not None else http_client.DEFAULT_TIMEOUT_S,
+    )
+    response.raise_for_status()
+    return response
 
 
 _CURRENT_USER: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -504,11 +525,8 @@ def toi_page():
 
 
 @app.get("/api/exofop/check_confirmed")
-def check_confirmed_planets(tics: str):
-    import urllib.request
+async def check_confirmed_planets(tics: str):
     import urllib.parse
-    import json
-    from concurrent.futures import ThreadPoolExecutor
     from .database import get_conn, SCHEMA
 
     tic_list = [t.strip() for t in tics.split(",") if t.strip()]
@@ -536,24 +554,26 @@ def check_confirmed_planets(tics: str):
             missing_tics.append(t)
 
     if missing_tics:
-        def fetch_one(tic):
+        # Cap concurrent ExoFOP requests at 10, same as the previous
+        # ThreadPoolExecutor(max_workers=10).
+        semaphore = asyncio.Semaphore(10)
+
+        async def fetch_one(tic):
             encoded_tic = urllib.parse.quote(tic)
             url = f"https://exofop.ipac.caltech.edu/tess/target.php?id={encoded_tic}&json"
             try:
-                req = urllib.request.Request(url, headers={"User-Agent": "MuSCAT-db/0.1.0"})
-                with urllib.request.urlopen(req, timeout=10.0) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    bi = data.get("basic_info", {})
-                    confirmed_val = bi.get("confirmed_planets") or ""
-                    has_confirmed = len(confirmed_val.strip()) > 0
-                    return tic, has_confirmed, confirmed_val
+                async with semaphore:
+                    resp = await _async_get(url, headers={"User-Agent": "MuSCAT-db/0.1.0"})
+                data = resp.json()
+                bi = data.get("basic_info", {})
+                confirmed_val = bi.get("confirmed_planets") or ""
+                has_confirmed = len(confirmed_val.strip()) > 0
+                return tic, has_confirmed, confirmed_val
             except Exception as e:
                 logger.warning("Failed to fetch ExoFOP for TIC %s: %s", tic, e)
                 return tic, None, None
 
-        # Fetch in parallel with up to 10 workers
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            fetched_results = list(executor.map(fetch_one, missing_tics))
+        fetched_results = await asyncio.gather(*(fetch_one(tic) for tic in missing_tics))
 
         # 3. Write new entries to cache
         with get_conn() as conn:
@@ -571,15 +591,15 @@ def check_confirmed_planets(tics: str):
 
 
 @target_router.get("/jwst", response_class=JSONResponse)
-def api_target_jwst(name: str = ""):
+async def api_target_jwst(name: str = ""):
     norm_name = _normalize_target_name(name)
     if not norm_name:
         return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
-    
+
     db = _db_path()
     datasets, _last_updated = _get_datasets_for_normalized_target(db, norm_name)
     matched = _matched_jwst_targets(norm_name, datasets)
-    
+
     if not matched:
         return JSONResponse({
             "ok": True,
@@ -589,13 +609,12 @@ def api_target_jwst(name: str = ""):
                 "rows": []
             }
         })
-    
-    import urllib.request
+
     import urllib.parse
     import csv
     import io
     import datetime
-    
+
     names_str = ", ".join("'" + n.replace("'", "''") + "'" for n in matched)
     query = f"SELECT program, observation_num, instrument, observingmode, gratinggrism, event, status, starttime, observation_dur FROM nexolist WHERE pl_name IN ({names_str})"
     params = {
@@ -603,78 +622,75 @@ def api_target_jwst(name: str = ""):
         "format": "csv"
     }
     url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={
-        "User-Agent": "MuSCAT-db/0.1.0"
-    })
-    
+
     try:
-        with urllib.request.urlopen(req, timeout=15.0) as response:
-            content = response.read().decode("utf-8")
-            f = io.StringIO(content)
-            reader = csv.DictReader(f)
-            col_map = {
-                "program": "Program",
-                "observation_num": "Obs #",
-                "instrument": "Instrument",
-                "observingmode": "Observing Mode",
-                "gratinggrism": "Grating/Grism",
-                "event": "Event",
-                "status": "Status",
-                "starttime": "Start Time (UTC)",
-                "observation_dur": "Duration (h)"
+        response = await _async_get(url, headers={"User-Agent": "MuSCAT-db/0.1.0"})
+        content = response.text
+        f = io.StringIO(content)
+        reader = csv.DictReader(f)
+        col_map = {
+            "program": "Program",
+            "observation_num": "Obs #",
+            "instrument": "Instrument",
+            "observingmode": "Observing Mode",
+            "gratinggrism": "Grating/Grism",
+            "event": "Event",
+            "status": "Status",
+            "starttime": "Start Time (UTC)",
+            "observation_dur": "Duration (h)"
+        }
+        columns = ["Program", "Obs #", "Instrument", "Observing Mode", "Grating/Grism", "Event", "Status", "Start Time (UTC)", "Duration (h)"]
+        rows = []
+        for row in reader:
+            if not row or "ERROR" in row:
+                continue
+            mapped_row = {}
+            for orig_col, new_col in col_map.items():
+                val = row.get(orig_col)
+                if val is None:
+                    val = ""
+                else:
+                    val = val.strip()
+                    if orig_col == "observation_dur":
+                        try:
+                            float_val = float(val)
+                            val = f"{float_val:.2f}"
+                        except ValueError:
+                            pass
+                mapped_row[new_col] = val
+            rows.append(mapped_row)
+
+        def get_start_time(r):
+            t_str = r.get("Start Time (UTC)", "")
+            try:
+                return datetime.datetime.strptime(t_str, "%b %d, %Y %H:%M:%S")
+            except Exception:
+                return datetime.datetime.min
+
+        rows.sort(key=get_start_time, reverse=True)
+
+        return JSONResponse({
+            "ok": True,
+            "target": norm_name,
+            "jwst": {
+                "columns": columns,
+                "rows": rows
             }
-            columns = ["Program", "Obs #", "Instrument", "Observing Mode", "Grating/Grism", "Event", "Status", "Start Time (UTC)", "Duration (h)"]
-            rows = []
-            for row in reader:
-                if not row or "ERROR" in row:
-                    continue
-                mapped_row = {}
-                for orig_col, new_col in col_map.items():
-                    val = row.get(orig_col)
-                    if val is None:
-                        val = ""
-                    else:
-                        val = val.strip()
-                        if orig_col == "observation_dur":
-                            try:
-                                float_val = float(val)
-                                val = f"{float_val:.2f}"
-                            except ValueError:
-                                pass
-                    mapped_row[new_col] = val
-                rows.append(mapped_row)
-            
-            def get_start_time(r):
-                t_str = r.get("Start Time (UTC)", "")
-                try:
-                    return datetime.datetime.strptime(t_str, "%b %d, %Y %H:%M:%S")
-                except Exception:
-                    return datetime.datetime.min
-            
-            rows.sort(key=get_start_time, reverse=True)
-            
-            return JSONResponse({
-                "ok": True,
-                "target": norm_name,
-                "jwst": {
-                    "columns": columns,
-                    "rows": rows
-                }
-            })
+        })
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"Failed to query JWST observations: {str(e)}"}, status_code=500)
 
 
 @target_router.get("/spectra", response_class=JSONResponse)
-def api_target_spectra(name: str = ""):
+async def api_target_spectra(name: str = ""):
     norm_name = _normalize_target_name(name)
     if not norm_name:
         return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
-    
+
     db = _db_path()
     datasets, _last_updated = _get_datasets_for_normalized_target(db, norm_name)
     matched = _matched_spectra_targets(norm_name, datasets)
-    
+
     if not matched:
         return JSONResponse({
             "ok": True,
@@ -684,12 +700,11 @@ def api_target_spectra(name: str = ""):
                 "rows": []
             }
         })
-    
-    import urllib.request
+
     import urllib.parse
     import csv
     import io
-    
+
     names_str = ", ".join("'" + n.replace("'", "''") + "'" for n in matched)
     query = f"SELECT spec_type, facility, instrument, minwavelng, maxwavelng, num_datapoints, authors, bibcode FROM spectra WHERE pl_name IN ({names_str})"
     params = {
@@ -697,56 +712,53 @@ def api_target_spectra(name: str = ""):
         "format": "csv"
     }
     url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={
-        "User-Agent": "MuSCAT-db/0.1.0"
-    })
-    
+
     try:
-        with urllib.request.urlopen(req, timeout=15.0) as response:
-            content = response.read().decode("utf-8")
-            f = io.StringIO(content)
-            reader = csv.DictReader(f)
-            col_map = {
-                "spec_type": "Type",
-                "facility": "Facility",
-                "instrument": "Instrument",
-                "minwavelng": "Min Wavelng (μm)",
-                "maxwavelng": "Max Wavelng (μm)",
-                "num_datapoints": "# Points",
-                "authors": "Authors",
-                "bibcode": "Bibcode"
+        response = await _async_get(url, headers={"User-Agent": "MuSCAT-db/0.1.0"})
+        content = response.text
+        f = io.StringIO(content)
+        reader = csv.DictReader(f)
+        col_map = {
+            "spec_type": "Type",
+            "facility": "Facility",
+            "instrument": "Instrument",
+            "minwavelng": "Min Wavelng (μm)",
+            "maxwavelng": "Max Wavelng (μm)",
+            "num_datapoints": "# Points",
+            "authors": "Authors",
+            "bibcode": "Bibcode"
+        }
+        columns = ["Type", "Facility", "Instrument", "Min Wavelng (μm)", "Max Wavelng (μm)", "# Points", "Authors", "Bibcode"]
+        rows = []
+        for row in reader:
+            if not row or "ERROR" in row:
+                continue
+            mapped_row = {}
+            for orig_col, new_col in col_map.items():
+                val = row.get(orig_col)
+                if val is None:
+                    val = ""
+                else:
+                    val = val.strip()
+                    if orig_col in ("minwavelng", "maxwavelng"):
+                        try:
+                            float_val = float(val)
+                            val = f"{float_val:.4f}"
+                        except ValueError:
+                            pass
+                mapped_row[new_col] = val
+            rows.append(mapped_row)
+
+        rows.sort(key=lambda r: (r.get("Type", ""), r.get("Authors", "")))
+
+        return JSONResponse({
+            "ok": True,
+            "target": norm_name,
+            "spectra": {
+                "columns": columns,
+                "rows": rows
             }
-            columns = ["Type", "Facility", "Instrument", "Min Wavelng (μm)", "Max Wavelng (μm)", "# Points", "Authors", "Bibcode"]
-            rows = []
-            for row in reader:
-                if not row or "ERROR" in row:
-                    continue
-                mapped_row = {}
-                for orig_col, new_col in col_map.items():
-                    val = row.get(orig_col)
-                    if val is None:
-                        val = ""
-                    else:
-                        val = val.strip()
-                        if orig_col in ("minwavelng", "maxwavelng"):
-                            try:
-                                float_val = float(val)
-                                val = f"{float_val:.4f}"
-                            except ValueError:
-                                pass
-                    mapped_row[new_col] = val
-                rows.append(mapped_row)
-            
-            rows.sort(key=lambda r: (r.get("Type", ""), r.get("Authors", "")))
-            
-            return JSONResponse({
-                "ok": True,
-                "target": norm_name,
-                "spectra": {
-                    "columns": columns,
-                    "rows": rows
-                }
-            })
+        })
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"Failed to query spectra observations: {str(e)}"}, status_code=500)
 
@@ -1130,13 +1142,11 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
 
 
 @transit_fit_router.get("/query-archive")
-def transit_fit_query_archive(target: str, source: str = "nasa"):
+async def transit_fit_query_archive(target: str, source: str = "nasa"):
     if not (target or "").strip():
         return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
 
-    import urllib.request
     import urllib.parse
-    import json
     import csv
     import pathlib
     import re
@@ -1351,7 +1361,7 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
                 params[k] = ""
         return {"params": params, "pl_name": pl_name}
 
-    urlopen_is_mocked = hasattr(urllib.request.urlopen, "called")
+    urlopen_is_mocked = hasattr(_async_get, "called")
 
     if source == "toi":
         if not urlopen_is_mocked:
@@ -1377,31 +1387,30 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
         q = f"SELECT {col_str} FROM toi WHERE toi = {target_lit} OR toidisplay LIKE {target_like} OR toi LIKE {clean_like}"
         data = []
         url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         try:
-            with urllib.request.urlopen(req, timeout=5) as response:
-                res = json.loads(response.read().decode())
-                if res:
-                    # Sort to prioritize: toi = clean_target (3), toidisplay LIKE target (2), toi LIKE clean_target (1)
-                    best_row = None
-                    best_score = -1
-                    for row in res:
-                        r_toi = str(row.get("toi", "")).strip()
-                        r_toidisplay = str(row.get("toidisplay", "")).strip()
-                        
-                        score = -1
-                        if r_toi == clean_target:
-                            score = 3
-                        elif target.lower() in r_toidisplay.lower():
-                            score = 2
-                        elif clean_target in r_toi:
-                            score = 1
-                            
-                        if score > best_score:
-                            best_score = score
-                            best_row = row
-                    if best_row:
-                        data = [best_row]
+            response = await _async_get(url, headers={'User-Agent': 'Mozilla/5.0'})
+            res = response.json()
+            if res:
+                # Sort to prioritize: toi = clean_target (3), toidisplay LIKE target (2), toi LIKE clean_target (1)
+                best_row = None
+                best_score = -1
+                for row in res:
+                    r_toi = str(row.get("toi", "")).strip()
+                    r_toidisplay = str(row.get("toidisplay", "")).strip()
+
+                    score = -1
+                    if r_toi == clean_target:
+                        score = 3
+                    elif target.lower() in r_toidisplay.lower():
+                        score = 2
+                    elif clean_target in r_toi:
+                        score = 1
+
+                    if score > best_score:
+                        best_score = score
+                        best_row = row
+                if best_row:
+                    data = [best_row]
         except Exception:
             pass
 
@@ -1485,42 +1494,41 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
 
         data = []
         url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         try:
-            with urllib.request.urlopen(req, timeout=5) as response:
-                res = json.loads(response.read().decode())
-                if res:
-                    # Score and rank matching rows in memory
-                    target_clean = re.sub(r"[^0-9a-zA-Z]", "", target).lower()
-                    best_row = None
-                    best_score = -1
-                    clean_re = re.compile(r"[^0-9a-zA-Z]")
-                    
-                    for row in res:
-                        pl_name = (row.get("pl_name") or "").strip()
-                        hostname = (row.get("hostname") or "").strip()
-                        hip_name = (row.get("hip_name") or "").strip()
-                        hd_name = (row.get("hd_name") or "").strip()
-                        
-                        pl_clean = clean_re.sub('', pl_name).lower()
-                        host_clean = clean_re.sub('', hostname).lower()
-                        hip_clean = clean_re.sub('', hip_name).lower()
-                        hd_clean = clean_re.sub('', hd_name).lower()
-                        
-                        score = -1
-                        if target_clean == pl_clean:
-                            score = 3
-                        elif target_clean in (host_clean, hip_clean, hd_clean):
-                            score = 2
-                        elif (pl_clean and target_clean in pl_clean) or (host_clean and target_clean in host_clean):
-                            score = 1
-                            
-                        if score > best_score:
-                            best_score = score
-                            best_row = row
-                    
-                    if best_row:
-                        data = [best_row]
+            response = await _async_get(url, headers={'User-Agent': 'Mozilla/5.0'})
+            res = response.json()
+            if res:
+                # Score and rank matching rows in memory
+                target_clean = re.sub(r"[^0-9a-zA-Z]", "", target).lower()
+                best_row = None
+                best_score = -1
+                clean_re = re.compile(r"[^0-9a-zA-Z]")
+
+                for row in res:
+                    pl_name = (row.get("pl_name") or "").strip()
+                    hostname = (row.get("hostname") or "").strip()
+                    hip_name = (row.get("hip_name") or "").strip()
+                    hd_name = (row.get("hd_name") or "").strip()
+
+                    pl_clean = clean_re.sub('', pl_name).lower()
+                    host_clean = clean_re.sub('', hostname).lower()
+                    hip_clean = clean_re.sub('', hip_name).lower()
+                    hd_clean = clean_re.sub('', hd_name).lower()
+
+                    score = -1
+                    if target_clean == pl_clean:
+                        score = 3
+                    elif target_clean in (host_clean, hip_clean, hd_clean):
+                        score = 2
+                    elif (pl_clean and target_clean in pl_clean) or (host_clean and target_clean in host_clean):
+                        score = 1
+
+                    if score > best_score:
+                        best_score = score
+                        best_row = row
+
+                if best_row:
+                    data = [best_row]
         except Exception:
             pass
 
@@ -2819,15 +2827,13 @@ def api_ads_config(request: Request):
 
 
 @target_router.get("/publications", response_class=JSONResponse)
-def api_target_publications(request: Request, q: str):
-    import urllib.request
+async def api_target_publications(request: Request, q: str):
     import urllib.parse
-    import json
-    
+
     q = (q or "").strip()
     if not q:
         return JSONResponse({"ok": False, "error": "Query parameter q is required"}, status_code=400)
-        
+
     token, _source = _ads_token_for_request(request)
     if not token:
         return JSONResponse({
@@ -2835,7 +2841,7 @@ def api_target_publications(request: Request, q: str):
             "error": "ADS API token is not configured. Save your token in Settings.",
             "token_missing": True
         }, status_code=400)
-        
+
     params = {
         "q": q,
         "fq": "collection:astronomy",
@@ -2844,24 +2850,21 @@ def api_target_publications(request: Request, q: str):
         "rows": 20
     }
     url = "https://api.adsabs.harvard.edu/v1/search/query?" + urllib.parse.urlencode(params)
-    
-    req = urllib.request.Request(url, headers={
-        "Authorization": f"Bearer {token}",
-        "User-Agent": "MuSCAT-db/0.1.0"
-    })
-    
+
     try:
-        with urllib.request.urlopen(req, timeout=10.0) as response:
-            data = json.loads(response.read().decode("utf-8"))
-            docs = data.get("response", {}).get("docs", [])
-            return JSONResponse({"ok": True, "papers": docs})
-    except urllib.error.HTTPError as e:
+        response = await _async_get(url, headers={
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "MuSCAT-db/0.1.0"
+        })
+        data = response.json()
+        docs = data.get("response", {}).get("docs", [])
+        return JSONResponse({"ok": True, "papers": docs})
+    except httpx.HTTPStatusError as e:
         try:
-            err_body = e.read().decode("utf-8")
-            err_msg = json.loads(err_body).get("error", {}).get("message", str(e))
+            err_msg = e.response.json().get("error", {}).get("message", str(e))
         except Exception:
             err_msg = str(e)
-        return JSONResponse({"ok": False, "error": f"ADS API returned error: {err_msg}"}, status_code=e.code)
+        return JSONResponse({"ok": False, "error": f"ADS API returned error: {err_msg}"}, status_code=e.response.status_code)
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"Failed to query ADS: {str(e)}"}, status_code=500)
 

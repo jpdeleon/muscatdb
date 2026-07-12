@@ -1735,11 +1735,15 @@ class TestRoutes:
         assert r.status_code == 404
 
     def test_transit_fit_query_archive_success(self, client, mocker):
-        mock_response = mocker.MagicMock()
-        mock_response.__enter__.return_value = mock_response
-        mock_response.read.return_value = b'[{"pl_name": "WASP-104 b", "st_teff": 5475.0, "st_tefferr1": 127.0, "st_tefferr2": -127.0}]'
-        mocker.patch("urllib.request.urlopen", return_value=mock_response)
-        
+        import httpx
+
+        mock_response = httpx.Response(
+            200,
+            content=b'[{"pl_name": "WASP-104 b", "st_teff": 5475.0, "st_tefferr1": 127.0, "st_tefferr2": -127.0}]',
+            request=httpx.Request("GET", "https://example.invalid"),
+        )
+        mocker.patch("muscat_db.web._async_get", return_value=mock_response)
+
         r = client.get("/api/transit-fit/query-archive?target=WASP-104")
         assert r.status_code == 200
         data = r.json()
@@ -1748,18 +1752,16 @@ class TestRoutes:
         assert data["params"]["teff"] == 5475.0
 
     def test_transit_fit_query_archive_escapes_adql_literals(self, client, mocker):
+        import httpx
+
         seen_queries = []
 
-        def side_effect(req, *args, **kwargs):
+        async def side_effect(url, **kwargs):
             from urllib.parse import parse_qs, urlparse
-            url_str = req.get_full_url() if hasattr(req, "get_full_url") else str(req)
-            seen_queries.append(parse_qs(urlparse(url_str).query).get("query", [""])[0])
-            mock_resp = mocker.MagicMock()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_resp.read.return_value = b"[]"
-            return mock_resp
+            seen_queries.append(parse_qs(urlparse(url).query).get("query", [""])[0])
+            return httpx.Response(200, content=b"[]", request=httpx.Request("GET", url))
 
-        mocker.patch("urllib.request.urlopen", side_effect=side_effect)
+        mocker.patch("muscat_db.web._async_get", side_effect=side_effect)
 
         r = client.get("/api/transit-fit/query-archive", params={"target": "WASP-104' OR 'x'='x"})
         assert r.status_code == 200
@@ -1767,18 +1769,16 @@ class TestRoutes:
         assert "WASP-104'' OR ''x''=''x" in seen_queries[0]
 
     def test_transit_fit_query_archive_escapes_toi_literals(self, client, mocker):
+        import httpx
+
         seen_queries = []
 
-        def side_effect(req, *args, **kwargs):
+        async def side_effect(url, **kwargs):
             from urllib.parse import parse_qs, urlparse
-            url_str = req.get_full_url() if hasattr(req, "get_full_url") else str(req)
-            seen_queries.append(parse_qs(urlparse(url_str).query).get("query", [""])[0])
-            mock_resp = mocker.MagicMock()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_resp.read.return_value = b"[]"
-            return mock_resp
+            seen_queries.append(parse_qs(urlparse(url).query).get("query", [""])[0])
+            return httpx.Response(200, content=b"[]", request=httpx.Request("GET", url))
 
-        mocker.patch("urllib.request.urlopen", side_effect=side_effect)
+        mocker.patch("muscat_db.web._async_get", side_effect=side_effect)
 
         r = client.get("/api/transit-fit/query-archive", params={"target": "TOI' OR '1'='1", "source": "toi"})
         assert r.status_code == 200
@@ -1786,24 +1786,23 @@ class TestRoutes:
         assert "TOI'' OR ''1''=''1" in seen_queries[0]
 
     def test_transit_fit_query_archive_hip_target(self, client, mocker):
+        import httpx
+
         hip_data = b'[{"pl_name": "HIP 67522 b", "hostname": "HIP 67522", "hip_name": "HIP 67522", "st_teff": 5675.0, "st_tefferr1": 75.0, "st_tefferr2": -75.0, "st_logg": 4.0, "st_loggerr1": null, "st_loggerr2": null, "st_met": 0.0, "st_meterr1": null, "st_meterr2": null, "pl_orbper": 6.9594731, "pl_orbpererr1": 2.2e-06, "pl_orbpererr2": -2.2e-06, "pl_tranmid": 2458604.02376, "pl_tranmiderr1": 0.00033, "pl_tranmiderr2": -0.00032, "pl_trandur": 4.85, "pl_trandurerr1": 1.13, "pl_trandurerr2": -0.36, "pl_ratror": 0.06644, "pl_ratrorerr1": 0.0015, "pl_ratrorerr2": -0.0014, "pl_imppar": 0.03, "pl_impparerr1": 0.19, "pl_impparerr2": -0.22, "st_teff_reflink": "", "pl_orbper_reflink": ""}]'
 
         seen_urls = []
 
-        def side_effect(req, *args, **kwargs):
+        async def side_effect(url, **kwargs):
             from urllib.parse import urlparse, parse_qs
-            url_str = req.get_full_url() if hasattr(req, 'get_full_url') else str(req)
-            q = parse_qs(urlparse(url_str).query).get("query", [""])[0]
+            q = parse_qs(urlparse(url).query).get("query", [""])[0]
             seen_urls.append(q)
-            mock_resp = mocker.MagicMock()
-            mock_resp.__enter__.return_value = mock_resp
             if "hip_name = 'HIP 67522'" in q or "hostname = 'HIP 67522'" in q:
-                mock_resp.read.return_value = hip_data
+                content = hip_data
             else:
-                mock_resp.read.return_value = b'[]'
-            return mock_resp
+                content = b'[]'
+            return httpx.Response(200, content=content, request=httpx.Request("GET", url))
 
-        mocker.patch("urllib.request.urlopen", side_effect=side_effect)
+        mocker.patch("muscat_db.web._async_get", side_effect=side_effect)
 
         r = client.get("/api/transit-fit/query-archive?target=HIP67522")
         assert r.status_code == 200

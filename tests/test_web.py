@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import os
 import sqlite3
 import tempfile
@@ -1470,14 +1469,8 @@ def test_harps_rvbank_rows_read_from_local_zip(monkeypatch, tmp_path):
 
 
 def test_harps_rvbank_rows_fall_back_to_online_stream(monkeypatch, tmp_path):
+    import httpx
     from muscat_db import catalog, web
-
-    class FakeResponse(io.BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            self.close()
 
     csv_text = (
         "target,ra,dec,BJD,RV_mlc_nzp\n"
@@ -1487,7 +1480,11 @@ def test_harps_rvbank_rows_fall_back_to_online_stream(monkeypatch, tmp_path):
     monkeypatch.setattr(catalog, "_HARPS_RVBANK_ZIP_PATH", tmp_path / "missing.csv.zip")
     monkeypatch.setattr(catalog, "_HARPS_TARGETS_PATH", tmp_path / "missing_targets.csv")
     monkeypatch.setattr(catalog, "_HARPS_RVBANK_URL", "https://example.invalid/HARPS_RVBank_ver02.csv")
-    monkeypatch.setattr(catalog, "urlopen", lambda req, timeout: FakeResponse(csv_text.encode("utf-8")))
+    monkeypatch.setattr(
+        catalog,
+        "_sync_get",
+        lambda url, **kw: httpx.Response(200, text=csv_text, request=httpx.Request("GET", url)),
+    )
     web._harps_cache.clear()
 
     res = catalog._query_harps_rvbank_rows(
@@ -1891,18 +1888,18 @@ def test_api_target_publications_token_missing(monkeypatch):
 
 
 def test_api_target_publications_success(monkeypatch, mocker):
+    import httpx
+
     monkeypatch.setenv("ADS_API_TOKEN", "fake_token")
-    
-    mock_response = mocker.MagicMock()
-    mock_response.__enter__.return_value = mock_response
-    mock_response.read.return_value = b'{"response": {"docs": [{"bibcode": "2020ApJ...123..456A", "title": ["A Great Paper"], "author": ["Astronomer, A."], "pubdate": "2020-01-00", "pub": "ApJ", "citation_count": 10}]}}'
-    mock_urlopen = mocker.patch("urllib.request.urlopen", return_value=mock_response)
-    
+
+    mock_content = b'{"response": {"docs": [{"bibcode": "2020ApJ...123..456A", "title": ["A Great Paper"], "author": ["Astronomer, A."], "pubdate": "2020-01-00", "pub": "ApJ", "citation_count": 10}]}}'
+    mock_response = httpx.Response(200, content=mock_content, request=httpx.Request("GET", "https://example.invalid"))
+    mock_async_get = mocker.patch("muscat_db.web._async_get", return_value=mock_response)
+
     r = TestClient(app).get("/api/targets/publications", params={"q": "WASP-12"})
     assert r.status_code == 200
-    
-    called_req = mock_urlopen.call_args[0][0]
-    called_url = called_req.get_full_url() if hasattr(called_req, "get_full_url") else str(called_req)
+
+    called_url = mock_async_get.call_args[0][0]
     assert "fq=collection%3Aastronomy" in called_url
     assert "q=WASP-12" in called_url
 
@@ -1926,16 +1923,16 @@ def test_api_target_publications_uses_saved_ads_token(mock_db, monkeypatch, mock
     saved = client.post("/api/settings/ads-token", headers=post_headers, json={"token": "alice-ads-token"})
     assert saved.status_code == 200
 
-    mock_response = mocker.MagicMock()
-    mock_response.__enter__.return_value = mock_response
-    mock_response.read.return_value = b'{"response": {"docs": []}}'
-    mock_urlopen = mocker.patch("urllib.request.urlopen", return_value=mock_response)
+    import httpx
+
+    mock_response = httpx.Response(200, content=b'{"response": {"docs": []}}', request=httpx.Request("GET", "https://example.invalid"))
+    mock_async_get = mocker.patch("muscat_db.web._async_get", return_value=mock_response)
 
     r = client.get("/api/targets/publications", headers=headers, params={"q": "WASP-12"})
 
     assert r.status_code == 200
-    called_req = mock_urlopen.call_args[0][0]
-    assert called_req.headers["Authorization"] == "Bearer alice-ads-token"
+    called_headers = mock_async_get.call_args.kwargs["headers"]
+    assert called_headers["Authorization"] == "Bearer alice-ads-token"
     assert "alice-ads-token" not in r.text
 
 
@@ -1962,14 +1959,14 @@ def test_api_ads_config_not_configured(monkeypatch):
 
 
 def test_api_target_jwst(mocker):
+    import httpx
+
     mock_csv = (
         b"program,observation_num,instrument,observingmode,gratinggrism,event,status,starttime,observation_dur\n"
         b'"COM 2734",2,"NIRISS","SOSS","N/A","Transit","Archived","Jun 21, 2022 02:41:18",7.51\n'
     )
-    mock_response = mocker.MagicMock()
-    mock_response.__enter__.return_value = mock_response
-    mock_response.read.return_value = mock_csv
-    mocker.patch("urllib.request.urlopen", return_value=mock_response)
+    mock_response = httpx.Response(200, content=mock_csv, request=httpx.Request("GET", "https://example.invalid"))
+    mocker.patch("muscat_db.web._async_get", return_value=mock_response)
 
     mocker.patch("muscat_db.web._matched_jwst_targets", return_value=["WASP-96 b"])
 
@@ -1987,14 +1984,14 @@ def test_api_target_jwst(mocker):
 
 
 def test_api_target_spectra(mocker):
+    import httpx
+
     mock_csv = (
         b"spec_type,facility,instrument,minwavelng,maxwavelng,num_datapoints,authors,bibcode\n"
         b'Transmission,"Spitzer Space Telescope satellite","Infrared Array Camera (IRAC)",4.5000,4.5000,1,"Desert et al. 2015",2015ApJ...804...59D\n'
     )
-    mock_response = mocker.MagicMock()
-    mock_response.__enter__.return_value = mock_response
-    mock_response.read.return_value = mock_csv
-    mocker.patch("urllib.request.urlopen", return_value=mock_response)
+    mock_response = httpx.Response(200, content=mock_csv, request=httpx.Request("GET", "https://example.invalid"))
+    mocker.patch("muscat_db.web._async_get", return_value=mock_response)
 
     mocker.patch("muscat_db.web._matched_spectra_targets", return_value=["Kepler-20 c"])
 
@@ -2013,37 +2010,29 @@ def test_api_target_spectra(mocker):
 
 
 def test_api_exofop_check_confirmed(monkeypatch, tmp_path):
+    import httpx
+    from muscat_db import web
+
     # Use a temporary database path to avoid polluting the actual db
     db_file = tmp_path / "test_muscat.db"
     monkeypatch.setenv("MUSCAT_DB_PATH", str(db_file))
 
-    # Mock urllib.request.urlopen to simulate ExoFOP responses
+    # Mock web._async_get to simulate ExoFOP responses
     url_calls = []
 
-    class MockResponse:
-        def __init__(self, data):
-            self.data = data
-        def read(self):
-            return self.data
-        def __enter__(self):
-            return self
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            pass
-
-    def mock_urlopen(req, *args, **kwargs):
-        url = req.full_url if hasattr(req, "full_url") else req
+    async def mock_async_get(url, **kwargs):
         url_calls.append(url)
         if "79748331" in url:
             # Confirmed target
-            return MockResponse(b'{"basic_info": {"confirmed_planets": "TOI-1064 b, TOI-1064 c"}}')
+            content = b'{"basic_info": {"confirmed_planets": "TOI-1064 b, TOI-1064 c"}}'
         elif "25155310" in url:
             # Unconfirmed target
-            return MockResponse(b'{"basic_info": {"confirmed_planets": ""}}')
+            content = b'{"basic_info": {"confirmed_planets": ""}}'
         else:
-            return MockResponse(b'{"basic_info": {}}')
+            content = b'{"basic_info": {}}'
+        return httpx.Response(200, content=content, request=httpx.Request("GET", url))
 
-    import urllib.request
-    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+    monkeypatch.setattr(web, "_async_get", mock_async_get)
 
     from fastapi.testclient import TestClient
     from muscat_db.web import app
