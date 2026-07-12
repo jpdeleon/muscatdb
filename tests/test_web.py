@@ -659,6 +659,54 @@ def test_validate_no_duplicate_datasets():
     assert "Multiple lightcurves selected for the same dataset: band 'g' (site: cpt)" in err2
 
 
+def _insert_frame(conn, filename, obsdate="260101", target="TOI-1", read_mode="central_2k_2x2"):
+    conn.execute(
+        "INSERT INTO frames (instrument, obsdate, ccd, filename, object, jd_start, ut_start, "
+        "exptime, read_mode, filter, ra, declination, airmass, focus, pa) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("sinistro", obsdate, 0, filename, target, 0.0, "00:00:00", 30.0, read_mode, "gp", "", "", 1.0, 0.0, 0.0),
+    )
+
+
+def test_sinistro_obslog_choices_derives_sites_and_telescopes(mock_db):
+    from muscat_db.web import _sinistro_obslog_choices
+
+    conn = sqlite3.connect(mock_db)
+    _insert_frame(conn, "lsc1m005-fa15-20260101-0001-e91")
+    _insert_frame(conn, "lsc1m009-fa15-20260101-0002-e91")
+    _insert_frame(conn, "cpt1m010-fa16-20260101-0003-e91")
+    conn.commit()
+    conn.close()
+
+    sites, telescopes, modes = _sinistro_obslog_choices(mock_db, "sinistro", "260101", "TOI-1")
+    assert sites == ["cpt", "lsc"]
+    assert telescopes == ["1m0-05", "1m0-09", "1m0-10"]
+    assert modes == ["central_2k_2x2"]
+
+    # Scoped to site="lsc": only lsc's own two telescopes, not cpt's.
+    _sites, lsc_telescopes, _modes = _sinistro_obslog_choices(mock_db, "sinistro", "260101", "TOI-1", site="lsc")
+    assert lsc_telescopes == ["1m0-05", "1m0-09"]
+
+
+def test_telescope_required_error_blocks_ambiguous_selection(mock_db):
+    from muscat_db.web import _telescope_required_error
+
+    conn = sqlite3.connect(mock_db)
+    _insert_frame(conn, "lsc1m005-fa15-20260101-0001-e91")
+    _insert_frame(conn, "lsc1m009-fa15-20260101-0002-e91")
+    conn.commit()
+    conn.close()
+
+    err = _telescope_required_error(mock_db, "sinistro", "260101", "TOI-1", {"site": "lsc"})
+    assert err is not None
+    assert "telescope" in err and "1m0-05" in err and "1m0-09" in err
+
+    ok = _telescope_required_error(mock_db, "sinistro", "260101", "TOI-1", {"site": "lsc", "telescope": "1m0-05"})
+    assert ok is None
+
+    # Non-sinistro instruments are never blocked.
+    assert _telescope_required_error(mock_db, "muscat4", "260101", "TOI-1", {}) is None
+
 
 # --------------------------------------------------------------------------- #
 # LCO scheduling & archive endpoints (HTTP mocked — no live LCO calls)

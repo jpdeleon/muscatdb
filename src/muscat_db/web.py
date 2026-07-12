@@ -827,31 +827,48 @@ def export_targets_csv():
     )
 
 
-def _sinistro_obslog_choices(db: str, inst: str, date: str, target: str) -> tuple[list[str], list[str]]:
-    """``(sites, modes)`` present in the obslog for a sinistro target+date.
+_LCO_TELESCOPE_FILENAME_RE = re.compile(r"^[a-z]{3}1m0(\d{2})-")
 
-    The LCO site is the 3-char filename prefix (e.g. ``cpt1m010-...``); the mode
-    is ``read_mode`` (CONFMODE). Both are intersected with the known valid sets
-    so a stray prefix or non-canonical read_mode (MUSCAT_FAST/SLOW) can't leak
-    in. Empty lists for non-sinistro or on error.
+
+def _sinistro_obslog_choices(
+    db: str, inst: str, date: str, target: str, site: str = ""
+) -> tuple[list[str], list[str], list[str]]:
+    """``(sites, telescopes, modes)`` present in the obslog for a sinistro
+    target+date, optionally scoping the telescope list to one ``site``.
+
+    The LCO site is the 3-char filename prefix (e.g. ``cpt1m010-...``); the
+    physical telescope is the 2-digit unit number right after ``1m0`` in that
+    same prefix (e.g. ``cpt1m010-`` -> unit ``10``, reconstructed as the
+    canonical TELESCOP-style value ``'1m0-10'``); the mode is ``read_mode``
+    (CONFMODE). Site/mode are intersected with the known valid sets so a stray
+    prefix or non-canonical read_mode (MUSCAT_FAST/SLOW) can't leak in;
+    telescope is open-ended (LCO's 1m fleet changes over time) so only the
+    filename shape is validated. Empty lists for non-sinistro or on error.
     """
     if inst != "sinistro" or not (date and target):
-        return [], []
+        return [], [], []
     try:
         with get_conn(db) as conn:
             cur = conn.execute(
-                "SELECT DISTINCT substr(filename, 1, 3) FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND filename IS NOT NULL AND filename != ''",
+                "SELECT DISTINCT filename FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND filename IS NOT NULL AND filename != ''",
                 (inst, date, target),
             )
-            sites = sorted({row[0].lower() for row in cur.fetchall() if row[0]} & set(phot.SINISTRO_SITES))
+            filenames = [row[0].lower() for row in cur.fetchall() if row[0]]
+            sites = sorted({fn[:3] for fn in filenames} & set(phot.SINISTRO_SITES))
+            scoped = [fn for fn in filenames if not site or fn.startswith(site)]
+            telescopes = sorted({
+                f"1m0-{m.group(1)}"
+                for fn in scoped
+                if (m := _LCO_TELESCOPE_FILENAME_RE.match(fn))
+            })
             cur = conn.execute(
                 "SELECT DISTINCT read_mode FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND read_mode IS NOT NULL AND read_mode != ''",
                 (inst, date, target),
             )
             modes = sorted({row[0].lower() for row in cur.fetchall() if row[0]} & set(phot.SINISTRO_MODES))
-        return sites, modes
+        return sites, telescopes, modes
     except Exception:
-        return [], []
+        return [], [], []
 
 
 def _site_required_error(db: str, inst: str, date: str, target: str, options: dict) -> str | None:
@@ -865,24 +882,49 @@ def _site_required_error(db: str, inst: str, date: str, target: str, options: di
         return None
     if (options.get("site") or "").strip():
         return None
-    sites, _modes = _sinistro_obslog_choices(db, inst, date, target)
+    sites, _telescopes, _modes = _sinistro_obslog_choices(db, inst, date, target)
     if len(sites) > 1:
         return f"select a site to run — {date} has {len(sites)} sites ({', '.join(sites)})"
     return None
 
 
+def _telescope_required_error(db: str, inst: str, date: str, target: str, options: dict) -> str | None:
+    """Block a sinistro run that would silently merge multiple physical telescopes.
+
+    Mirrors :func:`_site_required_error`: when the obslog (scoped to the chosen
+    site, if any) holds more than one physical 1m telescope for this
+    target+date and none is chosen, prose would combine frames from different
+    telescopes into one mislabeled reduction (prose2 aborts on this too).
+    """
+    if inst != "sinistro":
+        return None
+    if (options.get("telescope") or "").strip():
+        return None
+    site = (options.get("site") or "").strip().lower()
+    _sites, telescopes, _modes = _sinistro_obslog_choices(db, inst, date, target, site=site)
+    if len(telescopes) > 1:
+        return f"select a telescope to run — {date} has {len(telescopes)} telescopes ({', '.join(telescopes)})"
+    return None
+
+
 @app.get("/photometry", response_class=HTMLResponse)
-def photometry_page(inst: str = "", date: str = "", target: str = "", site: str = "", mode: str = "", run: str = "", overwrite: str = ""):
+def photometry_page(inst: str = "", date: str = "", target: str = "", site: str = "", telescope: str = "", mode: str = "", run: str = "", overwrite: str = ""):
     db = _db_path()
     inst = inst if inst in INSTRUMENTS else ""
     date = date if phot.valid_date(date) else ""
     target = (target or "").strip()
-    # Site/mode are sinistro-only view filters (which LCO site / readout mode's
-    # products to show). They are validated against the known sets here; whether
-    # they are actually present is decided by list_outputs from the filenames.
+    # Site/telescope/mode are sinistro-only view filters (which LCO
+    # site/physical telescope/readout mode's products to show). Site/mode are
+    # validated against the known sets here; telescope is open-ended (no fixed
+    # whitelist, LCO's 1m fleet changes over time) so only its shape is
+    # checked. Whether any of them are actually present is decided by
+    # list_outputs from the filenames.
     site = site.strip().lower()
     if inst != "sinistro" or site not in phot.SINISTRO_SITES:
         site = ""
+    telescope = telescope.strip().lower()
+    if inst != "sinistro" or not phot.TELESCOPE_RE.match(telescope):
+        telescope = ""
     mode = mode.strip().lower()
     if inst != "sinistro" or mode not in phot.SINISTRO_MODES:
         mode = ""
@@ -897,6 +939,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
     dates: list[str] = []
     targets: list[str] = []
     available_sites: list[str] = ["lsc", "cpt", "coj", "tfn", "elp"]
+    available_telescopes: list[str] = []
     available_modes: list[str] = ["central_2k_2x2", "full_frame"]
     outputs = None
     runs: list = []
@@ -920,6 +963,8 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         if inst == "sinistro":
             if site:
                 runs = [r for r in runs if r.is_legacy or r.site == site or not r.site]
+            if telescope:
+                runs = [r for r in runs if r.is_legacy or r.telescope == telescope or not r.telescope]
             if mode:
                 runs = [r for r in runs if r.is_legacy or r.mode == mode or not r.mode]
         run_ids = {r.run_id for r in runs}
@@ -939,15 +984,15 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
 
         if sel_run is not None:
             run_key = sel_run or None  # "" → None for legacy
-            if not (site or mode) and run_key in run_outputs:
+            if not (site or telescope or mode) and run_key in run_outputs:
                 # Reuse the outputs already computed by list_photometry_runs.
-                # Only skip the cache when sinistro site/mode filters are active,
-                # since those affect which files are selected.
+                # Only skip the cache when sinistro site/telescope/mode filters
+                # are active, since those affect which files are selected.
                 outputs = run_outputs[run_key]
             else:
-                outputs = phot.list_outputs(inst, date, target, site=site or None, mode=mode or None, run_id=sel_run or None)
+                outputs = phot.list_outputs(inst, date, target, site=site or None, telescope=telescope or None, mode=mode or None, run_id=sel_run or None)
         else:
-            outputs = phot.list_outputs(inst, date, target, site=site or None, mode=mode or None)
+            outputs = phot.list_outputs(inst, date, target, site=site or None, telescope=telescope or None, mode=mode or None)
         command = phot.command_str(inst, date, target, test_run=False)
         raw_missing = not phot.raw_data_dir(inst, date).is_dir()
 
@@ -973,12 +1018,14 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         except Exception:
             logger.debug("failed to load obs metadata for photometry page %s/%s/%s", inst, date, target, exc_info=True)
 
-        # Restrict the site/mode run-option dropdowns to what the obslog actually
-        # holds for this target+date, so you can't launch a reduction for a
-        # site/mode with no frames.
-        db_sites, db_modes = _sinistro_obslog_choices(db, inst, date, target)
+        # Restrict the site/telescope/mode run-option dropdowns to what the
+        # obslog actually holds for this target+date, so you can't launch a
+        # reduction for a site/telescope/mode with no frames.
+        db_sites, db_telescopes, db_modes = _sinistro_obslog_choices(db, inst, date, target, site=site)
         if db_sites:
             available_sites = db_sites
+        if db_telescopes:
+            available_telescopes = db_telescopes
         if db_modes:
             available_modes = db_modes
 
@@ -1003,6 +1050,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         instruments=list(INSTRUMENTS),
         sel_inst=inst, sel_date=date, sel_target=target,
         sel_site=(outputs.get("site") if outputs else "") or "",
+        sel_telescope=(outputs.get("telescope") if outputs else "") or "",
         sel_mode=(outputs.get("mode") if outputs else "") or "",
         runs=runs,
         sel_run=sel_run or "",
@@ -1019,6 +1067,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         is_narrowband=is_narrowband,
         available_bands=available_bands,
         available_sites=available_sites,
+        available_telescopes=available_telescopes,
         available_modes=available_modes,
     )
     # The run buttons' enabled/disabled state is JavaScript-driven and reflects
@@ -1030,15 +1079,20 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
 
 
 @app.get("/transit-fit", response_class=HTMLResponse)
-def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str = "", mode: str = "", run: str = ""):
+def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str = "", telescope: str = "", mode: str = "", run: str = ""):
     db = _db_path()
     inst = inst if inst in INSTRUMENTS else ""
     date = date if phot.valid_date(date) else ""
     target = (target or "").strip()
-    # Sinistro-only view filters (which site / readout mode's lightcurves to list).
+    # Sinistro-only view filters (which site / physical telescope / readout
+    # mode's lightcurves to list). Telescope is open-ended (no fixed whitelist)
+    # so only its shape is checked.
     site = site.strip().lower()
     if inst != "sinistro" or site not in phot.SINISTRO_SITES:
         site = ""
+    telescope = telescope.strip().lower()
+    if inst != "sinistro" or not phot.TELESCOPE_RE.match(telescope):
+        telescope = ""
     mode = mode.strip().lower()
     if inst != "sinistro" or mode not in phot.SINISTRO_MODES:
         mode = ""
@@ -1051,8 +1105,10 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
     csvs = []
     target_params = {}
     csv_sites: list[str] = []
+    csv_telescopes: list[str] = []
     csv_modes: list[str] = []
     sel_site = ""
+    sel_telescope = ""
     sel_mode = ""
     runs: list = []
     sel_run = ""
@@ -1074,26 +1130,34 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
                 created_at = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
             except Exception:
                 mtime, created_at = 0.0, "Unknown"
-            csite, cmode = fit.csv_site_mode(c.name) if inst == "sinistro" else (None, None)
+            csite, ctelescope, cmode = fit.csv_site_mode(c.name) if inst == "sinistro" else (None, None, None)
             crun = c.parent.name if "_runs" in c.parts else ""
             rows.append({"path": str(c), "name": c.name, "created_at": created_at,
-                         "_mtime": mtime, "_site": csite, "_mode": cmode, "run_id": crun})
+                         "_mtime": mtime, "_site": csite, "_telescope": ctelescope, "_mode": cmode, "run_id": crun})
 
         if inst == "sinistro":
-            # A sinistro date+target can hold multiple sites / readout modes with
-            # identical bands. The picker defaults to showing ALL lightcurves (so
-            # the user can fit one site or deliberately combine several); the
-            # Site/Mode chips optionally narrow the list. The run's identity is
-            # derived from whatever is actually selected at launch.
+            # A sinistro date+target can hold multiple sites / physical
+            # telescopes / readout modes with identical bands. The picker
+            # defaults to showing ALL lightcurves (so the user can fit one
+            # site/telescope or deliberately combine several); the
+            # Site/Telescope/Mode chips optionally narrow the list. The run's
+            # identity is derived from whatever is actually selected at launch.
             csv_sites = sorted({r["_site"] for r in rows if r["_site"]})
             sel_site = site  # validated against SINISTRO_SITES above; "" == all
+            csv_telescopes = sorted({
+                r["_telescope"] for r in rows
+                if r["_telescope"] and (not sel_site or r["_site"] == sel_site)
+            })
+            sel_telescope = telescope  # "" == all
             csv_modes = sorted({
                 r["_mode"] for r in rows
                 if r["_mode"] and (not sel_site or r["_site"] == sel_site)
+                and (not sel_telescope or r["_telescope"] == sel_telescope)
             })
             sel_mode = mode  # "" == all
             rows = [r for r in rows
                     if (not sel_site or r["_site"] == sel_site)
+                    and (not sel_telescope or r["_telescope"] == sel_telescope)
                     and (not sel_mode or r["_mode"] == sel_mode)]
 
         csvs = [{"path": r["path"], "name": r["name"], "created_at": r["created_at"], "run_id": r["run_id"]} for r in rows]
@@ -1106,6 +1170,8 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
         if inst == "sinistro":
             if sel_site:
                 runs = [r for r in runs if r.is_legacy or r.site == sel_site or not r.site]
+            if sel_telescope:
+                runs = [r for r in runs if r.is_legacy or r.telescope == sel_telescope or not r.telescope]
             if sel_mode:
                 runs = [r for r in runs if r.is_legacy or r.mode == sel_mode or not r.mode]
 
@@ -1132,8 +1198,8 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
         "transit_fit.html",
         instruments=list(INSTRUMENTS),
         sel_inst=inst, sel_date=date, sel_target=target,
-        sel_site=sel_site, sel_mode=sel_mode,
-        csv_sites=csv_sites, csv_modes=csv_modes,
+        sel_site=sel_site, sel_telescope=sel_telescope, sel_mode=sel_mode,
+        csv_sites=csv_sites, csv_telescopes=csv_telescopes, csv_modes=csv_modes,
         runs=runs, sel_run=sel_run,
         dates=dates, targets=targets,
         csvs=csvs, outputs=outputs,
@@ -3585,7 +3651,7 @@ def jobs_rerun(request: Request, payload: dict = Body(...)):
     except (json.JSONDecodeError, TypeError):
         p = {}
     options = dict(p.get("options") or {})
-    for field in ("run_name", "site", "mode"):
+    for field in ("run_name", "site", "telescope", "mode"):
         value = p.get(field) or job.get(field)
         if value and not options.get(field):
             options[field] = value
@@ -3712,10 +3778,14 @@ def photometry_run(request: Request, payload: dict = Body(...)):
     options = payload.get("options") or {}
     test_run = bool(payload.get("test_run", True))
     user_name = request.state.user
-    # Hard block: never launch a sinistro run that would merge multiple sites.
+    # Hard block: never launch a sinistro run that would merge multiple sites
+    # or multiple physical telescopes.
     site_err = _site_required_error(_db_path(), inst, date, target, options)
     if site_err:
         return JSONResponse({"ok": False, "error": site_err}, status_code=400)
+    telescope_err = _telescope_required_error(_db_path(), inst, date, target, options)
+    if telescope_err:
+        return JSONResponse({"ok": False, "error": telescope_err}, status_code=400)
     result = phot.start_run(inst, date, target, options=options, test_run=test_run, user_name=user_name)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
@@ -3731,10 +3801,12 @@ def photometry_command(payload: dict = Body(...)):
     options = payload.get("options") or {}
     test_run = bool(payload.get("test_run", False))
     error = phot.validate_run_options(phot.normalize_run_options(options), inst=inst)
-    # Surface the multi-site block as a command error so the page disables the
-    # run buttons and shows why until a site is chosen.
+    # Surface the multi-site/multi-telescope block as a command error so the
+    # page disables the run buttons and shows why until a choice is made.
     if not error:
         error = _site_required_error(_db_path(), inst, date, target, options)
+    if not error:
+        error = _telescope_required_error(_db_path(), inst, date, target, options)
     command = phot.command_str(inst, date, target, options=options, test_run=test_run)
     return JSONResponse({"command": command, "error": error})
 

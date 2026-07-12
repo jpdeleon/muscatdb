@@ -36,23 +36,35 @@ class TestRunId:
         assert fit.build_run_id("", "", "") == "default"
 
     def test_csv_site_mode(self):
-        assert fit.csv_site_mode("HIP67522_sinistro_lsc_gp_250710_full.csv") == ("lsc", "full_frame")
-        assert fit.csv_site_mode("HIP67522_sinistro_cpt_gp_250710.csv") == ("cpt", "central_2k_2x2")
-        assert fit.csv_site_mode("TOI-6_muscat4_gp_250512.csv") == (None, "central_2k_2x2")
+        assert fit.csv_site_mode("HIP67522_sinistro_lsc_gp_250710_full.csv") == ("lsc", None, "full_frame")
+        assert fit.csv_site_mode("HIP67522_sinistro_cpt_gp_250710.csv") == ("cpt", None, "central_2k_2x2")
+        assert fit.csv_site_mode("TOI-6_muscat4_gp_250512.csv") == (None, None, "central_2k_2x2")
+        assert fit.csv_site_mode("HIP67522_sinistro_lsc_tel05_gp_250710.csv") == ("lsc", "1m0-05", "central_2k_2x2")
+        assert fit.csv_site_mode("HIP67522_sinistro_tel09_gp_250710.csv") == (None, "1m0-09", "central_2k_2x2")
 
     def test_selected_site_mode_mixed_and_single(self):
         names = ["HIP_sinistro_lsc_gp_250710.csv", "HIP_sinistro_cpt_gp_250710.csv"]
-        assert fit.selected_site_mode("sinistro", names) == ("mixed", "central_2k_2x2")
-        assert fit.selected_site_mode("sinistro", names[:1]) == ("lsc", "central_2k_2x2")
-        assert fit.selected_site_mode("muscat4", ["x_muscat4_gp_250512.csv"]) == ("", "")
+        assert fit.selected_site_mode("sinistro", names) == ("mixed", "", "central_2k_2x2")
+        assert fit.selected_site_mode("sinistro", names[:1]) == ("lsc", "", "central_2k_2x2")
+        assert fit.selected_site_mode("muscat4", ["x_muscat4_gp_250512.csv"]) == ("", "", "")
+
+    def test_selected_site_mode_telescope_mixed_and_single(self):
+        names = ["HIP_sinistro_lsc_tel04_gp_250710.csv", "HIP_sinistro_lsc_tel05_gp_250710.csv"]
+        assert fit.selected_site_mode("sinistro", names) == ("lsc", "mixed", "central_2k_2x2")
+        assert fit.selected_site_mode("sinistro", names[:1]) == ("lsc", "1m0-04", "central_2k_2x2")
 
     def test_fit_job_key_run_aware(self):
         assert fit.fit_job_key("sinistro", "250710", "HIP 67522", "lsc-x-g") == "sinistro/250710/HIP67522/lsc-x-g"
         assert fit.fit_job_key("sinistro", "250710", "HIP 67522") == "sinistro/250710/HIP67522"
 
     def test_parse_short_sinistro_run_id_defaults_mode(self):
-        assert fit._parse_run_dir_name("lsc-g") == ("lsc", "central_2k_2x2", "g")
-        assert fit._parse_run_dir_name("lsc-full_frame-g") == ("lsc", "full_frame", "g")
+        assert fit._parse_run_dir_name("lsc-g") == ("lsc", "", "central_2k_2x2", "g")
+        assert fit._parse_run_dir_name("lsc-full_frame-g") == ("lsc", "", "full_frame", "g")
+
+    def test_parse_run_id_with_telescope(self):
+        assert fit._parse_run_dir_name("lsc-tel05-g") == ("lsc", "tel05", "central_2k_2x2", "g")
+        assert fit._parse_run_dir_name("lsc-tel05-full_frame-g") == ("lsc", "tel05", "full_frame", "g")
+        assert fit._parse_run_dir_name("tel09-g") == ("", "tel09", "central_2k_2x2", "g")
 
     def test_csv_discovery_allows_header_date_mismatch(self, monkeypatch, tmp_path):
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))

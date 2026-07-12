@@ -32,6 +32,26 @@ class TestRunIdHelpers:
         assert jobs.build_run_id("", "", "uniform") == "uniform"
         assert jobs.build_run_id("", "", "") == "default"
 
+    def test_slugify_telescope(self):
+        assert jobs.slugify_telescope("1m0-05") == "tel05"
+        assert jobs.slugify_telescope("1M0-09") == "tel09"
+        assert jobs.slugify_telescope("mixed") == "mixed"
+        assert jobs.slugify_telescope("tel05") == "tel05"  # idempotent
+        assert jobs.slugify_telescope("") == ""
+        assert jobs.slugify_telescope(None) == ""
+
+    def test_build_run_id_includes_telescope_between_site_and_mode(self):
+        assert (
+            jobs.build_run_id("lsc", "central_2k_2x2", "gaussian priors", telescope="1m0-05")
+            == "lsc-tel05-gaussian_priors"
+        )
+        assert (
+            jobs.build_run_id("lsc", "full_frame", "gaussian priors", telescope="1m0-05")
+            == "lsc-tel05-full_frame-gaussian_priors"
+        )
+        assert jobs.build_run_id("", "", "uniform", telescope="1m0-05") == "tel05-uniform"
+        assert jobs.build_run_id("lsc", "", "", telescope="mixed") == "lsc-mixed-default"
+
     def test_target_dir_name_rejects_traversal(self):
         assert jobs.target_dir_name("TOI 1234") == "TOI1234"
         for bad in ("", "   ", "..", ".", "a/b", "a\\b", "../x"):
