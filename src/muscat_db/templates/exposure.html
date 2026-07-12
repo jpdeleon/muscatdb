@@ -801,7 +801,8 @@
     colPrimary.textContent = mode === 'exptime' ? 'Exp (s)' : 'Exp (s)';
 
     // Remove any existing note divs (narrowband and muscat2)
-    var existingNotes = resultsBody.parentElement.querySelectorAll('[data-note="true"]');
+    var resultsTableWrap = resultsTable.parentElement;
+    var existingNotes = resultsTableWrap.querySelectorAll('[data-note="true"]');
     existingNotes.forEach(function (n) { n.remove(); });
 
     var rows = data.results || [];
@@ -857,11 +858,13 @@
       note.style.borderRadius = '6px';
       note.style.fontSize = '0.75rem';
       note.style.color = 'var(--text-dim)';
+      note.style.width = '100%';
+      note.style.boxSizing = 'border-box';
       note.innerHTML = '<strong style="color:var(--text);">Narrowband filter width ratios:</strong><br>' +
         'g_narrow: 10nm / 140nm ≈ 0.07  •  i_narrow: 5nm / 100nm = 0.05  •  ' +
         'z_narrow: 5nm / 100nm = 0.05  •  Na_D: 5nm / 100nm = 0.05<br>' +
         '<span style="margin-top:0.3rem; display:block;">Narrower filters transmit fewer photons, requiring longer exposures or brighter targets to reach the same peak counts.</span>';
-      resultsBody.parentElement.appendChild(note);
+      resultsTableWrap.appendChild(note);
     }
 
     // Add muscat2 note if selected
@@ -878,7 +881,7 @@
       note2.style.fontSize = '0.8rem';
       note2.style.color = 'var(--text-dim)';
       note2.textContent = 'MuSCAT2 vs MuSCAT3: ~10× longer exposures (smaller aperture 1.52m vs 2.0m, lower gain 1.0 vs 1.8, larger pixels 0.44 vs 0.267). Example: gp=12.9 → MuSCAT3: 7.4s vs MuSCAT2: ~70s.';
-      resultsBody.parentElement.appendChild(note2);
+      resultsTableWrap.appendChild(note2);
     }
 
     if (mode === 'exptime' && data.recommended_exptime) {
@@ -931,8 +934,13 @@
     var p = INST_PARAMS[inst];
     var html = '';
     if (p) {
+      var fwChips = (typeof p.full_well === 'object' && p.full_well !== null)
+        ? Object.keys(p.full_well).map(function (b) {
+            return chip('Full well (' + b + ')', Number(p.full_well[b]).toLocaleString() + ' e⁻');
+          }).join('')
+        : chip('Full well', Number(p.full_well).toLocaleString() + ' e⁻');
       html += '<div class="chip-row">' +
-        chip('Full well', Number(p.full_well).toLocaleString() + ' e⁻') +
+        fwChips +
         chip('Gain', p.gain + ' e⁻/ADU') +
         chip('Pixel scale', p.pixel_scale + '"/px') +
         chip('Aperture', p.aperture_m + ' m') +

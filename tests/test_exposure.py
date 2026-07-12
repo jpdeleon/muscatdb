@@ -7,9 +7,29 @@ used to resolve comparison-star photometry.
 
 from unittest.mock import patch
 
+import numpy as np
 import pytest
+from astropy.io import fits
 
 from muscat_db import exposure
+
+
+def test_measure_header_fwhm_pix_converts_banzai_arcsec_to_pixels(tmp_path):
+    fits_path = tmp_path / "frame.fits"
+    fits.writeto(fits_path, np.zeros((2, 2)), header=fits.Header({"L1FWHM": 2.67}))
+
+    assert exposure._measure_header_fwhm_pix(str(fits_path), "muscat3") == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize("value", [None, -1.0, 0.0, "nan"])
+def test_measure_header_fwhm_pix_rejects_missing_or_invalid_values(tmp_path, value):
+    fits_path = tmp_path / "frame.fits"
+    header = fits.Header()
+    if value is not None:
+        header["L1FWHM"] = value
+    fits.writeto(fits_path, np.zeros((2, 2)), header=header)
+
+    assert exposure._measure_header_fwhm_pix(str(fits_path), "muscat4") is None
 
 
 # ── calc_all_bands with extra_sources ────────────────────────────────────────

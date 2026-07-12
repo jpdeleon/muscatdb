@@ -88,15 +88,40 @@ _VIZIER_RETRIES = 3
 _VIZIER_BACKOFF_SEC = 1.0
 
 # Telescope reference values used to scale the MuSCAT3 calibration and set
-# saturation limits. Values mirror prose2's .telescope files; full_well is in
-# electrons, gain in electrons/ADU, pixel_scale in arcsec/pixel, and aperture_m
-# in metres. Individual CCDs may differ.
+# saturation limits. gain is in electrons/ADU, pixel_scale in arcsec/pixel,
+# and aperture_m in metres. full_well is in electrons.
+#
+# muscat/muscat2 saturate at the same level in every band (prose2's
+# muscat_*.telescope / muscat2_*.telescope files all agree per instrument),
+# so one full_well constant per instrument is accurate for them.
+#
+# muscat3/muscat4 do NOT: prose2's muscat3_*.telescope / muscat4_*.telescope
+# files give a different `saturation` (ADU) per band, and live BANZAI headers
+# confirm the same ordering (ip/zs saturate well before gp/rp). full_well is
+# therefore per band here: telescope-file saturation[ADU] x gain[e-/ADU].
+# Narrowband filters (g_narrow, i_narrow, ...) fall back to their broadband
+# parent via _NARROW_TO_BROADBAND (see _full_well_gain below).
+#
+# sinistro has no per-band saturation in its .telescope file (site/camera
+# dependent -- LCO runs a dozen+ physical Sinistro units across sites) and
+# BANZAI headers show real full wells of ~217,000-299,000 e- with gain
+# already normalized to 1.0. full_well below is the median MAXLIN sampled
+# from 9 distinct Sinistro telescopes (coj/cpt/elp/lsc/tfn); MAXLIN (onset of
+# non-linearity) is used rather than the sometimes-higher SATURATE keyword
+# since it's the safer threshold for precision photometry. This remains a
+# per-instrument approximation -- individual sites can differ.
 INSTRUMENT_PARAMS = {
     "muscat":  {"full_well": 55000, "gain": 1.0, "pixel_scale": 0.358, "aperture_m": 1.88},
     "muscat2": {"full_well": 62000, "gain": 1.0, "pixel_scale": 0.44, "aperture_m": 1.52},
-    "muscat3": {"full_well": 99000, "gain": 1.8, "pixel_scale": 0.267, "aperture_m": 2.0},
-    "muscat4": {"full_well": 99000, "gain": 1.8, "pixel_scale": 0.267, "aperture_m": 2.0},
-    "sinistro": {"full_well": 100000, "gain": 1.5, "pixel_scale": 0.39, "aperture_m": 1.0},
+    "muscat3": {
+        "full_well": {"gp": 113684, "rp": 114894, "ip": 82001, "zs": 90000},
+        "gain": 1.8, "pixel_scale": 0.267, "aperture_m": 2.0,
+    },
+    "muscat4": {
+        "full_well": {"gp": 115200, "rp": 115200, "ip": 82800, "zs": 115200},
+        "gain": 1.8, "pixel_scale": 0.267, "aperture_m": 2.0,
+    },
+    "sinistro": {"full_well": 246400, "gain": 1.0, "pixel_scale": 0.39, "aperture_m": 1.0},
 }
 
 # Empirical coefficients for MuSCAT3 from peak_count_estimator.
@@ -131,6 +156,26 @@ _NARROW_TO_BROADBAND = {
     "z_narrow": "zs",
     "Na_D": "rp",
 }
+
+
+def _full_well_gain(instrument: str, band: str) -> tuple[float, float]:
+    """Full well [e-] and gain [e-/ADU] for one instrument+band.
+
+    muscat3/muscat4 store full_well per band (see INSTRUMENT_PARAMS); every
+    other instrument shares one saturation level across all its bands.
+    Narrowband filters resolve to their broadband parent; an unrecognized
+    band falls back to the lowest (most conservative) band on record rather
+    than raising, since a band variant we don't yet know about should be
+    treated as if it could saturate first.
+    """
+    params = INSTRUMENT_PARAMS.get(instrument, {})
+    gain = float(params.get("gain", 1.0))
+    full_well = params.get("full_well", 100000)
+    if isinstance(full_well, dict):
+        key = band if band in full_well else _NARROW_TO_BROADBAND.get(band, band)
+        full_well = full_well.get(key, min(full_well.values()))
+    return float(full_well), gain
+
 
 # Approximate filter FWHM bandwidth, in nm. Placeholder values pending real
 # transmission-curve measurements; update here if exact filter specs become
@@ -252,6 +297,25 @@ def _measure_peak(fits_path: str) -> float | None:
     except Exception as exc:
         logger.debug("Failed to read peak from %s: %s", fits_path, exc)
         return None
+
+
+def _measure_header_fwhm_pix(fits_path: str, instrument: str) -> float | None:
+    """Read BANZAI's FWHM estimate and convert arcseconds to pixels.
+
+    ``L1FWHM`` is the BANZAI per-frame seeing estimate in arcseconds.  A
+    missing, non-finite, or non-positive value is not a measurement and must
+    not be replaced by a plausible-looking constant during calibration.
+    """
+    pixel_scale = INSTRUMENT_PARAMS.get(instrument, {}).get("pixel_scale")
+    if not pixel_scale or pixel_scale <= 0:
+        return None
+    try:
+        value = float(fits.getheader(fits_path, 0).get("L1FWHM"))
+    except (OSError, TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return value / float(pixel_scale)
 
 
 # ---------------------------------------------------------------------------
@@ -738,6 +802,7 @@ def calibrate_instrument(
         peak_adu = _measure_peak(fits_path)
         if peak_adu is None or peak_adu <= 0:
             return None
+        fwhm_pix = _measure_header_fwhm_pix(fits_path, instrument)
 
         # Resolve target name via SIMBAD (cached) and look up Pan-STARRS mags
         coords = _resolve(item)
@@ -754,6 +819,7 @@ def calibrate_instrument(
 
         item["mags"] = mags
         item["peak_adu"] = peak_adu
+        item["fwhm_pix"] = fwhm_pix
         return item
 
     processed = []
@@ -794,14 +860,8 @@ def calibrate_instrument(
         agg[key].append(c)
         mag_used[key].append(mag)
 
-        # Estimate FWHM from the peak relative to total counts
-        # FWHM ~ 2.355 * pixel_scale * sqrt(1 / (2*pi*peak_fraction))
-        # peak_fraction = peak_ADU * gain * exptime_sec / total_electrons_estimate
-        # For a rough FWHM estimate, use peak/total ratio
-        # A star of mag 0 gives ~10^10 ph/s/m² in V
-        # For a rough estimate, just store the measured peak
-        fwhm_pix = 3.0  # placeholder; FWHM needs centroid measurement
-        fwhm_data[key].append(fwhm_pix)
+        if item["fwhm_pix"] is not None:
+            fwhm_data[key].append(item["fwhm_pix"])
 
     bands_calibrated = 0
     total_calib_frames = 0
@@ -809,7 +869,13 @@ def calibrate_instrument(
     for (band, focus_bin), coefs in agg.items():
         coef_mean = float(np.mean(coefs))
         n = len(coefs)
-        avg_fwhm = float(np.mean(fwhm_data.get((band, focus_bin), [3.0])))
+        measured_fwhms = fwhm_data.get((band, focus_bin))
+        if measured_fwhms:
+            avg_fwhm = float(np.mean(measured_fwhms))
+        elif instrument == "muscat3":
+            avg_fwhm = _muscat3_coef(band, focus_bin)[1]
+        else:
+            avg_fwhm = _DEFAULT_FWHM
         save_coeff(instrument, band, focus_bin, coef_mean, avg_fwhm, n)
         bands_calibrated += 1
         total_calib_frames += n
@@ -857,10 +923,9 @@ def calc_peak(
     logpeak = coef - 0.4 * mag_eff + math.log10(exptime / 60.0)
     peak_adu = 10.0 ** logpeak
     params = INSTRUMENT_PARAMS.get(instrument, {})
-    gain_val = params.get("gain", 1.0)
     pixel_scale = params.get("pixel_scale", 0.4)
+    full_well, gain_val = _full_well_gain(instrument, band)
     peak_electrons = peak_adu * gain_val
-    full_well = params.get("full_well", 100000)
     pct_full_well = (peak_electrons / full_well) * 100.0 if full_well > 0 else 0.0
     return {
         "band": band,
@@ -897,10 +962,9 @@ def calc_exptime(
     # → exp = target_ADU * 60 / (10^coef * 10^(-0.4*mag_eff))
     exptime = target_adu * 60.0 / (10.0 ** (coef - 0.4 * mag_eff))
     params = INSTRUMENT_PARAMS.get(instrument, {})
-    gain_val = params.get("gain", 1.0)
     pixel_scale = params.get("pixel_scale", 0.4)
+    full_well, gain_val = _full_well_gain(instrument, band)
     peak_electrons = target_adu * gain_val
-    full_well = params.get("full_well", 100000)
     pct_full_well = (peak_electrons / full_well) * 100.0 if full_well > 0 else 0.0
     return {
         "band": band,
@@ -934,8 +998,11 @@ def calc_all_bands(
     mode="exptime": returns exposure time to reach sat_frac of full well.
     mode="peak": returns peak count for a given exptime.
 
-    When ``target_adu`` is provided (custom ADU mode), it overrides the
-    sat_frac-derived target.
+    Full well is looked up per band (see ``_full_well_gain``): muscat3/muscat4
+    saturate at meaningfully different levels per band, so the sat_frac-derived
+    target ADU is computed separately for each band rather than once for the
+    whole instrument. When ``target_adu`` is provided (custom ADU mode), it
+    overrides the sat_frac-derived target uniformly across all bands.
 
     confmode: Sinistro readout mode ("central_2k_2x2" or "full_frame"), currently
     not used for calculation but may affect full well in future versions.
@@ -949,15 +1016,6 @@ def calc_all_bands(
     / ``is_target`` in the returned per-band dict; ``recommended_exptime`` is
     the minimum across every (source, band) pair, not just the target's.
     """
-    params = INSTRUMENT_PARAMS.get(instrument, {})
-    full_well = params.get("full_well", 100000)
-    gain_val = params.get("gain", 1.0)
-
-    if target_adu is not None:
-        pass  # use caller-supplied value
-    else:
-        target_adu = (full_well * sat_frac) / gain_val
-
     sources = [{"label": "Target", "mags": mags}, *(extra_sources or [])]
 
     # Sort by band order: gp, rp, ip, zs, then narrow; ties broken by source
@@ -971,7 +1029,12 @@ def calc_all_bands(
         label = source.get("label") or ("Target" if source_idx == 0 else f"Comp {source_idx}")
         for band, mag in source["mags"].items():
             if mode == "exptime":
-                r = calc_exptime(instrument, band, mag, focus_mm, target_adu, airmass)
+                if target_adu is not None:
+                    band_target_adu = target_adu
+                else:
+                    full_well_b, gain_b = _full_well_gain(instrument, band)
+                    band_target_adu = (full_well_b * sat_frac) / gain_b
+                r = calc_exptime(instrument, band, mag, focus_mm, band_target_adu, airmass)
             else:
                 r = calc_peak(instrument, band, mag, focus_mm, exptime or 30.0, airmass)
             r["source_label"] = label

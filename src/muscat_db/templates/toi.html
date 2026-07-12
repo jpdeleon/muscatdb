@@ -7,6 +7,8 @@
   .toi-meta { color: var(--text-dim); font-size: 0.85rem; margin: 0.25rem 0 1rem; }
   .chip-bar { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.5rem; }
   .chip-bar .chip-label { font-size: 0.85rem; color: var(--text-dim); font-weight: 500; min-width: 6rem; }
+  .logic-indicator { font-size: 0.65rem; font-weight: 600; color: var(--accent); background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 4px; padding: 0.05rem 0.25rem; margin-left: 0.25rem; vertical-align: middle; }
   .toi-chip { cursor: pointer; }
   .toi-section > summary { cursor: pointer; padding: 0.5rem 0; color: var(--text-dim); font-size: 1rem; font-weight: 600; }
   #toi-table th, #toi-table td { white-space: nowrap; }
@@ -38,7 +40,7 @@
 </div>
 
 <div class="chip-bar">
-  <span class="chip-label">Planet type:</span>
+  <span class="chip-label">Planet type <span class="logic-indicator" title="Size classes are ORed; depth limit is ANDed on top">OR / AND</span>:</span>
   <span class="badge instrument-badge toi-chip" data-group="planet" data-key="USP">USP</span>
   <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Hot Jupiter">Hot Jupiter</span>
   <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Jupiter-size">Jupiter-size</span>
@@ -49,7 +51,7 @@
   <span class="badge instrument-badge toi-chip" data-group="planet" data-key="depth>1ppt" title="Transit depth > 1 ppt (1,000 ppm)">depth &gt; 1ppt</span>
 </div>
 <div class="chip-bar">
-  <span class="chip-label">Host star:</span>
+  <span class="chip-label">Host star <span class="logic-indicator" title="Spectral types are ORed; magnitude limit is ANDed on top">OR / AND</span>:</span>
   <span class="badge instrument-badge toi-chip" data-group="star" data-key="M">M dwarf</span>
   <span class="badge instrument-badge toi-chip" data-group="star" data-key="K">K type</span>
   <span class="badge instrument-badge toi-chip" data-group="star" data-key="G">G type</span>
@@ -58,7 +60,7 @@
   <span class="badge instrument-badge toi-chip" data-group="star" data-key="Tmag<=12" title="TESS magnitude ≤ 12">Tmag ≤ 12</span>
 </div>
 <div class="chip-bar">
-  <span class="chip-label">Candidate type:</span>
+  <span class="chip-label">Candidate type <span class="logic-indicator" title="Candidate dispositions are ORed; NASA confirmation is ANDed on top">OR / AND</span>:</span>
   <span class="badge instrument-badge toi-chip" data-group="disp" data-key="PC"  title="Planet Candidate">PC</span>
   <span class="badge instrument-badge toi-chip" data-group="disp" data-key="CP"  title="Confirmed Planet">CP</span>
   <span class="badge instrument-badge toi-chip" data-group="disp" data-key="KP"  title="Known Planet">KP</span>
@@ -69,7 +71,7 @@
   <span class="badge instrument-badge toi-chip" data-group="nasa" data-key="0" title="Only TOIs NOT matched to the NASA confirmed-planet composite catalog by TIC ID and period">not NASA confirmed</span>
 </div>
 <div class="chip-bar">
-  <span class="chip-label">Multiplicity:</span>
+  <span class="chip-label">Multiplicity <span class="logic-indicator" title="Matching any of the checked multiplicities">OR</span>:</span>
   <span class="badge instrument-badge toi-chip" data-group="multi" data-key="1">Single</span>
   <span class="badge instrument-badge toi-chip" data-group="multi" data-key="2">2-planet</span>
   <span class="badge instrument-badge toi-chip" data-group="multi" data-key="3">3-planet</span>
@@ -77,16 +79,16 @@
   <span class="badge instrument-badge toi-chip" data-group="multi" data-key="5+">5+ planet</span>
 </div>
 <div class="chip-bar">
-  <span class="chip-label">Rotation:</span>
+  <span class="chip-label">Rotation <span class="logic-indicator" title="Matching checked flag (AND)">AND</span>:</span>
   <span class="badge instrument-badge toi-chip" data-group="rot" data-key="fast" title="Host-star rotation period P_rot < 10 days (Boyle+2026)">Fast rotator (P<sub>rot</sub> &lt; 10 d)</span>
 </div>
 <p class="toi-meta" id="toi-rot-note" style="margin-top:0.25rem;"></p>
 <div class="chip-bar">
-  <span class="chip-label">muscat-db:</span>
+  <span class="chip-label">muscat-db <span class="logic-indicator" title="Matching checked flag (AND)">AND</span>:</span>
   <span class="badge instrument-badge toi-chip" data-group="indb" data-key="1" title="Only TOIs whose host star has data in muscat-db">★ In muscat-db</span>
 </div>
 <div class="chip-bar">
-  <span class="chip-label">RV data:</span>
+  <span class="chip-label">RV data <span class="logic-indicator" title="Matching checked flag (AND)">AND</span>:</span>
   <span class="badge instrument-badge toi-chip" data-group="harps" data-key="1" title="Only TOIs coordinate-matched to the public HARPS RVBank catalog">has HARPS RV</span>
 </div>
 
@@ -380,7 +382,29 @@
       const p = build(inp.value);
       inp.classList.remove('invalid');
       if (p === 'INVALID') { inp.classList.add('invalid'); return; }
-      if (p) preds.push({ key: c.key, fn: p });
+      if (p) {
+        if (c.key === 'toi') {
+          preds.push({
+            key: c.key,
+            fn: val => {
+              if (val == null) return false;
+              const s = String(val);
+              return p(s) || p('toi-' + s) || p('toi ' + s);
+            }
+          });
+        } else if (c.key === 'tic') {
+          preds.push({
+            key: c.key,
+            fn: val => {
+              if (val == null) return false;
+              const s = String(val);
+              return p(s) || p('tic-' + s) || p('tic ' + s);
+            }
+          });
+        } else {
+          preds.push({ key: c.key, fn: p });
+        }
+      }
     });
     return preds;
   }
@@ -399,7 +423,7 @@
     const out = [];
     for (let i = 0; i < N; i++) {
       if (q) {
-        const hay = (TOI.toi[i] + ' ' + TOI.tic[i] + ' ' + TOI.name[i]).toLowerCase();
+        const hay = ('toi-' + TOI.toi[i] + ' ' + TOI.toi[i] + ' ' + TOI.tic[i] + ' tic-' + TOI.tic[i] + ' tic ' + TOI.tic[i] + ' ' + TOI.name[i]).toLowerCase();
         if (hay.indexOf(q) === -1) continue;
       }
       let ok = true;
@@ -409,17 +433,28 @@
       if (!ok) continue;
       if (usePlanet) {
         const tags = planetTags[i];
-        let hit = false;
-        for (let t = 0; t < tags.length; t++) { if (selectedPlanet.has(tags[t])) { hit = true; break; } }
+        const hasCategoryFilter = selectedPlanet.has('USP') || selectedPlanet.has('Hot Jupiter') ||
+          selectedPlanet.has('Jupiter-size') || selectedPlanet.has('Neptune-size') ||
+          selectedPlanet.has('Sub-Neptune') || selectedPlanet.has('Super-Earth') ||
+          selectedPlanet.has('Earth-size');
+        let catMatch = !hasCategoryFilter;
+        if (hasCategoryFilter) {
+          for (let t = 0; t < tags.length; t++) {
+            if (selectedPlanet.has(tags[t])) { catMatch = true; break; }
+          }
+        }
+        const hasDepthFilter = selectedPlanet.has('depth>1ppt');
         const depthVal = TOI.depth[i];
-        if (selectedPlanet.has('depth>1ppt') && depthVal != null && depthVal > 1000) hit = true;
-        if (!hit) continue;
+        let depthMatch = !hasDepthFilter || (depthVal != null && depthVal > 1000);
+        if (!catMatch || !depthMatch) continue;
       }
       if (useStar) {
-        let hit = selectedStar.has(starClass[i]);
+        const hasSpectralFilter = selectedStar.has('M') || selectedStar.has('K') || selectedStar.has('G') || selectedStar.has('F') || selectedStar.has('A+');
+        let starMatch = !hasSpectralFilter || selectedStar.has(starClass[i]);
+        const hasMagFilter = selectedStar.has('Tmag<=12');
         const tmagVal = TOI.tmag[i];
-        if (selectedStar.has('Tmag<=12') && tmagVal != null && tmagVal <= 12) hit = true;
-        if (!hit) continue;
+        let magMatch = !hasMagFilter || (tmagVal != null && tmagVal <= 12);
+        if (!starMatch || !magMatch) continue;
       }
       if (useDisp) {
         if (!selectedDisp.has((TOI.disp[i] || '').toUpperCase())) continue;
