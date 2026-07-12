@@ -1013,7 +1013,7 @@ def get_frames(db_path: str, instrument: str, obsdate: str, ccd: int) -> list[di
         cur = conn.execute(
             """SELECT * FROM frames
                WHERE instrument = ? AND obsdate = ? AND ccd = ?
-               ORDER BY filename""",
+               ORDER BY jd_start, filename""",
             (instrument, obsdate, ccd),
         )
         columns = [d[0] for d in cur.description]
