@@ -42,6 +42,7 @@ from muscat_db.lco import _annotate_lco_archive_results
 from muscat_db import transit_obs
 from muscat_db import fov as fov_opt
 from muscat_db import ephemeris_math
+from muscat_db import test_observations
 from muscat_db import http_client
 from muscat_db.catalog import (
     _adql_literal,
@@ -2474,6 +2475,90 @@ def api_lco_ipp(request: Request, payload: dict = Body(...)):
         )
     except lco.LcoError as e:
         return _lco_error_response(e)
+
+
+@lco_router.post("/test-observations/plan", response_class=JSONResponse)
+def api_lco_test_plan(payload: dict = Body(...)):
+    """Generate and persist a deterministic, observer-reviewable test plan."""
+    try:
+        if not payload.get("fov_candidates"):
+            result = fov_opt.optimize(
+                payload.get("kind"), target=payload.get("target_name") or "",
+                ra=payload.get("ra"), dec=payload.get("dec"),
+                sinistro_mode=payload.get("readout_mode"),
+            )
+            if not result.ok:
+                raise test_observations.TestObservationError(result.error or "FOV optimization failed")
+            best = result.to_dict()
+            payload["fov_candidates"] = [
+                {"center_ra": best["center_ra"], "center_dec": best["center_dec"], "pa_deg": best["pa_deg"],
+                 "comparisons": best.get("comps", []), "edge_margin_arcsec": best.get("margin_arcsec")},
+                {"center_ra": best["ra"], "center_dec": best["dec"], "pa_deg": 0,
+                 "comparisons": best.get("brightest_in_field", []), "edge_margin_arcsec": best.get("margin_arcsec"),
+                 "fallback_reason": "target-centered conservative pointing"},
+            ]
+            payload.setdefault("provenance", {})["fov_optimizer"] = {
+                "catalog": best.get("catalog"), "fov_arcsec": best.get("fov_arcsec"),
+                "margin_arcsec": best.get("margin_arcsec"), "software": test_observations.ANALYSIS_VERSION,
+            }
+        plan = test_observations.generate_plan(payload)
+        record = test_observations.create_record(plan)
+        return JSONResponse({"ok": True, "record": record})
+    except test_observations.TestObservationError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+def _test_request(record: dict, params: dict) -> dict:
+    plan = record["plan"]
+    base = {**params, "kind": plan["kind"]}
+    base["name"] = str(base.get("name") or f"TEST {plan.get('target') or record['id']}")
+    if not base["name"].upper().startswith("TEST"):
+        base["name"] = "TEST " + base["name"]
+    configs = test_observations.request_configurations(plan, base)
+    return lco.build_requestgroup(plan["kind"], base, configurations=configs)
+
+
+@lco_router.post("/test-observations/{observation_id}/ipp", response_class=JSONResponse)
+def api_lco_test_ipp(observation_id: str, request: Request, payload: dict = Body(...)):
+    try:
+        record = test_observations.get_record(observation_id)
+        rg = _test_request(record, payload)
+        ipp = lco.max_allowable_ipp(rg, _request_user(request))
+        digest = lco.payload_hash(rg)
+        record = test_observations.update_record(observation_id, state="validated", payload_hash=digest)
+        return JSONResponse({"ok": True, "payload": rg, "payload_hash": digest, "ipp": ipp, "record": record})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "test observation not found"}, status_code=404)
+    except lco.LcoError as exc:
+        return _lco_error_response(exc)
+
+
+@lco_router.post("/test-observations/{observation_id}/submit", response_class=JSONResponse)
+def api_lco_test_submit(observation_id: str, request: Request, payload: dict = Body(...)):
+    if not payload.get("confirm"):
+        return JSONResponse({"ok": False, "error": "submission requires explicit confirm"}, status_code=400)
+    try:
+        record = test_observations.get_record(observation_id)
+        rg = _test_request(record, payload)
+        digest = lco.payload_hash(rg)
+        if not payload.get("dry_run_hash") or payload["dry_run_hash"] != digest or record["payload_hash"] != digest:
+            return JSONResponse({"ok": False, "error": "no matching test-observation dry-run; run the dry-run again"}, status_code=409)
+        result = lco.submit_requestgroup(rg, _request_user(request))
+        ids = result.get("requests") or result.get("request_ids") or ([result["id"]] if result.get("id") is not None else [])
+        record = test_observations.update_record(observation_id, state="submitted", request_ids=ids)
+        return JSONResponse({"ok": True, "result": result, "record": record})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "test observation not found"}, status_code=404)
+    except lco.LcoError as exc:
+        return _lco_error_response(exc)
+
+
+@lco_router.get("/test-observations/{observation_id}", response_class=JSONResponse)
+def api_lco_test_status(observation_id: str):
+    try:
+        return JSONResponse({"ok": True, "record": test_observations.get_record(observation_id)})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "test observation not found"}, status_code=404)
 
 
 @lco_router.post("/submit", response_class=JSONResponse)
