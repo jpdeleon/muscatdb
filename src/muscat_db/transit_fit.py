@@ -1262,7 +1262,12 @@ def start_fit(
         if existing is not None and existing.proc.poll() is None:
             return {"ok": True, "key": key, "already_running": True, "run_id": run_id}
 
-        at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
+        # Claim a cross-process concurrency slot for full jobs (test jobs are
+        # never capacity-gated). Not yet claimed here just means queue below.
+        claimed_slot = False
+        if run_type == "full":
+            claimed_slot = get_job_store().claim_slot("transit_fit", key, _MAX_FULL_JOBS)
+        at_capacity = run_type == "full" and not claimed_slot
 
         # Queue full jobs when at capacity
         if at_capacity:
@@ -1320,6 +1325,8 @@ def start_fit(
         except Exception:
             logger.debug("failed to write timer-fit.pid in %s", rdir, exc_info=True)
     except (FileNotFoundError, OSError) as exc:
+        if claimed_slot:
+            get_job_store().release_slot("transit_fit", key)
         logf.write(f"\nfailed to launch fitting: {exc}\n")
         logf.close()
         return {"ok": False, "error": f"failed to launch fitting: {exc}"}
@@ -2092,11 +2099,18 @@ def sync_jobs() -> None:
                 )
                 database.refresh_target_status(target)
 
+        # Release any concurrency slot whose claimant's persisted job row is
+        # no longer 'running' (crashed/restarted without releasing cleanly).
+        # Checked against the durable jobs table, so this is safe to run from
+        # any process -- unlike the per-process _FIT_JOBS dict above, it does
+        # not assume this process is the one that held the slot.
+        store.reconcile_slots("transit_fit")
+
         # Launch pending full jobs if capacity allows
-        if _count_running_full() < _MAX_FULL_JOBS:
+        if store.count_claimed("transit_fit") < _MAX_FULL_JOBS:
             pending = store.pending("transit_fit")
             for entry in pending:
-                if _count_running_full() >= _MAX_FULL_JOBS:
+                if store.count_claimed("transit_fit") >= _MAX_FULL_JOBS:
                     break
                 # The DB key is prefixed ("transit_fit:..."), so compare against the
                 # in-memory job key (unprefixed) to detect a job that is already
@@ -2142,6 +2156,11 @@ def sync_jobs() -> None:
                     run_name=run_name,
                 )
                     continue
+                # Atomic: at most one process/caller ever wins this claim for a
+                # given key, so two workers draining the same pending row can
+                # never both launch it.
+                if not store.claim_slot("transit_fit", key, _MAX_FULL_JOBS):
+                    continue
                 rdir.mkdir(parents=True, exist_ok=True)
                 csvs = get_csv_lightcurves(inst, date, target)
                 if selected_csvs is not None:
@@ -2168,6 +2187,7 @@ def sync_jobs() -> None:
                 except (FileNotFoundError, OSError) as exc:
                     try: logf.close()
                     except OSError: pass
+                    store.release_slot("transit_fit", key)
                     store.save(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_name=run_name)
                     continue
                 run_type = "test" if test_run else "full"
@@ -2181,4 +2201,5 @@ def sync_jobs() -> None:
                     try: logf.close()
                     except OSError: pass
                     _FIT_JOBS.pop(key, None)
+                    store.release_slot("transit_fit", key)
                     store.save(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Database error", run_name=run_name)

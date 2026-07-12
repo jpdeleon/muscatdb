@@ -395,7 +395,10 @@ def start_ttv_fit(
         if existing is not None and existing.proc.poll() is None:
             return {"ok": True, "key": key, "already_running": True}
 
-        at_capacity = _count_running_full() >= _MAX_FULL_JOBS
+        # Every ttv_fit job is "full" (no test-run concept here), so always
+        # claim a cross-process concurrency slot before launching.
+        claimed_slot = get_job_store().claim_slot("ttv_fit", key, _MAX_FULL_JOBS)
+        at_capacity = not claimed_slot
         if at_capacity:
             try:
                 get_job_store().enqueue(
@@ -484,6 +487,7 @@ def start_ttv_fit(
         except Exception:
             logger.debug("failed to write harmonic.pid in %s", rdir, exc_info=True)
     except (FileNotFoundError, OSError) as exc:
+        get_job_store().release_slot("ttv_fit", key)
         logf.write(f"\nfailed to launch harmonic: {exc}\n")
         logf.close()
         return {"ok": False, "error": f"failed to launch harmonic: {exc}"}
@@ -936,10 +940,17 @@ def sync_jobs() -> None:
                 )
                 database.refresh_target_status(target)
 
-        if _count_running_full() < _MAX_FULL_JOBS:
+        # Release any concurrency slot whose claimant's persisted job row is
+        # no longer 'running' (crashed/restarted without releasing cleanly).
+        # Checked against the durable jobs table, so this is safe to run from
+        # any process -- unlike the per-process _TTV_JOBS dict above, it does
+        # not assume this process is the one that held the slot.
+        store.reconcile_slots("ttv_fit")
+
+        if store.count_claimed("ttv_fit") < _MAX_FULL_JOBS:
             pending = store.pending("ttv_fit")
             for entry in pending:
-                if _count_running_full() >= _MAX_FULL_JOBS:
+                if store.count_claimed("ttv_fit") >= _MAX_FULL_JOBS:
                     break
                 try:
                     p = json.loads(entry.get("params") or "{}")
@@ -961,6 +972,11 @@ def sync_jobs() -> None:
                     rdir = ttv_output_dir(target, run_name)
                 except ValueError:
                     store.save(type_="ttv_fit", inst="_", date="_", target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Invalid target", run_id=run_seg, run_name=run_name)
+                    continue
+                # Atomic: at most one process/caller ever wins this claim for a
+                # given key, so two workers draining the same pending row can
+                # never both launch it.
+                if not store.claim_slot("ttv_fit", key, _MAX_FULL_JOBS):
                     continue
                 rdir.mkdir(parents=True, exist_ok=True)
                 csv_content = opts.get("csv_content", "")
@@ -1027,6 +1043,7 @@ def sync_jobs() -> None:
                         logf.close()
                     except OSError:
                         pass
+                    store.release_slot("ttv_fit", key)
                     store.save(type_="ttv_fit", inst="_", date="_", target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_id=run_seg, run_name=run_name)
                     continue
                 _TTV_JOBS[key] = TTVFitJob(key=key, inst="_", date="_", target=target, cmd=cmd, proc=proc, logf=logf, log_path=log_path, run_type="full", run_id=run_seg, run_name=run_name)
@@ -1043,4 +1060,5 @@ def sync_jobs() -> None:
                     except OSError:
                         pass
                     _TTV_JOBS.pop(key, None)
+                    store.release_slot("ttv_fit", key)
                     store.save(type_="ttv_fit", inst="_", date="_", target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Database error", run_id=run_seg, run_name=run_name)
