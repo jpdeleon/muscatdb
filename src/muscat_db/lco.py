@@ -1193,8 +1193,14 @@ def _validate_repeat_window_observability(kind: str, params: dict, max_airmass, 
         raise LcoError("Selected LCO window is not fully observable", status=400, detail=detail)
 
 
-def build_requestgroup(kind: str, params: dict) -> dict:
-    """Construct the requestgroup payload for an observation."""
+def build_requestgroup(kind: str, params: dict, configurations: list[dict] | None = None) -> dict:
+    """Construct the requestgroup payload for an observation.
+
+    ``configurations`` is an ordered list of parameter overrides used by short
+    test observations.  Each item is passed through the same instrument-specific
+    builder and validation as a normal request.  Omitting it preserves the
+    historical single-configuration payload exactly.
+    """
     # Name the specific empty field(s) so the UI can point the user at what to
     # fill (a generic "missing parameters" error hides, e.g., an unset proposal).
     _REQUIRED_LABELS = {
@@ -1211,6 +1217,7 @@ def build_requestgroup(kind: str, params: dict) -> dict:
             status=400,
         )
 
+    supplied_configurations = configurations
     target = {
         "name": params["target_name"],
         "type": "ICRS",
@@ -1346,6 +1353,22 @@ def build_requestgroup(kind: str, params: dict) -> dict:
         location["site"] = params["site"]
     
     obs_type = "NORMAL"
+
+    if supplied_configurations is not None:
+        if not supplied_configurations:
+            raise LcoError("Test observations require at least one configuration", status=400)
+        ordered = []
+        for index, overrides in enumerate(supplied_configurations):
+            if not isinstance(overrides, dict):
+                raise LcoError(f"Configuration {index + 1} must be an object", status=400)
+            child_params = {**params, **overrides}
+            child_params.pop("configurations", None)
+            child = build_requestgroup(kind, child_params)
+            child_configs = child["requests"][0]["configurations"]
+            if len(child_configs) != 1:
+                raise LcoError(f"Configuration {index + 1} did not produce one LCO configuration", status=400)
+            ordered.append(child_configs[0])
+        configurations = ordered
 
     return {
         "name": params["name"],

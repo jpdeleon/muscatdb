@@ -212,9 +212,23 @@
   </div>
   <div class="lco-actions">
     <button class="btn" type="button" id="btn-exp" title="Calculate exposure times for this target">Show Exp</button>
+    <button class="btn" type="button" id="btn-test-observation" title="Plan a guarded closed-loop test observation">Test observation</button>
+    <div class="lco-field" style="max-width: 150px;"><label for="sch-test-budget">Test budget (s) <span class="help-tooltip" title="Maximum cumulative exposure time for the test observation, in seconds. Candidate exposures beyond this budget are dropped from the plan. Excludes acquisition/readout.">?</span></label><input id="sch-test-budget" type="number" min="1" step="1" value="600"></div>
   </div>
   <p class="lco-note">These scheduling inputs are separate from the archive page.</p>
 </div>
+
+<dialog id="test-observation-dialog" style="max-width: 850px; width: 92%;">
+  <h3>Test observation review</h3>
+  <p class="lco-note">Exposure budget excludes acquisition/readout. Review all removed combinations and warnings before validation.</p>
+  <pre id="test-observation-summary" class="lco-pre" style="max-height: 55vh; overflow: auto; white-space: pre-wrap;"></pre>
+  <div class="lco-msg" id="msg-test-observation"></div>
+  <div class="lco-actions">
+    <button class="btn primary" type="button" id="btn-test-dry-run">Check settings</button>
+    <button class="btn danger" type="button" id="btn-test-submit" disabled>Submit TEST</button>
+    <button class="btn" type="button" id="btn-test-close">Close</button>
+  </div>
+</dialog>
 
 <div class="lco-section" id="split-section" style="display: none;">
   <h3>Split Request (two-site relay)</h3>
@@ -402,7 +416,7 @@
     'sch-sin-count','sch-site','sch-site-a','sch-site-b',
     'sch-type','sch-observation-type','sch-guiding-config','sch-defocus',
     'sch-effective-filter','sch-effective-exptime','sch-effective-mode',
-    'sch-obs-airmass','sch-moon-sep','sch-ipp'
+    'sch-obs-airmass','sch-moon-sep','sch-ipp','sch-test-budget'
   ];
 
   var CHECK_IDS = ['sch-include-padding'];
@@ -1935,6 +1949,66 @@
     if (!inst) { showMessageModal('Missing instrument', 'Please select an instrument'); return; }
     var url = '/exposure?target=' + encodeURIComponent(target) + '&inst=' + encodeURIComponent(inst);
     window.location.href = url;
+  });
+
+  var currentTestRecord = null;
+  var currentTestHash = null;
+  function testKind(params) {
+    if (params.kind === 'sinistro') return 'sinistro';
+    if (params.site === 'ogg') return 'muscat3';
+    if (params.site === 'coj') return 'muscat4';
+    return '';
+  }
+  el('btn-test-observation').addEventListener('click', function () {
+    var p = buildParams();
+    p.kind = testKind(p);
+    if (!p.kind) { showMessageModal('Unsupported test', 'Select MuSCAT site OGG (MuSCAT3), COJ (MuSCAT4), or Sinistro.'); return; }
+    if (!p.target_name || p.ra === null || p.dec === null || !p.windows.length) {
+      showMessageModal('Incomplete schedule', 'Enter a target and coordinates, then select a transit window.'); return;
+    }
+    p.exposure_budget_s = num('sch-test-budget') || 600;
+    p.defocus_mm = p.defocus;
+    p.test_window = p.windows[0];
+    p.transit = { planet: val('sch-planet'), t0: val('sch-t0'), period: val('sch-period'), duration_h: val('sch-duration') };
+    p.provenance = { schedule_state: 'lco_schedule', assumed_airmass: p.max_airmass, lunar_distance_deg: p.min_lunar_distance };
+    msg('msg-test-observation', 'Optimizing FOV and generating plan…');
+    fetch('/api/lco/test-observations/plan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(p) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) throw new Error(d.error || 'Could not generate test plan');
+        currentTestRecord = d.record; currentTestHash = null;
+        el('btn-test-submit').disabled = true;
+        el('test-observation-summary').textContent = JSON.stringify(d.record.plan, null, 2);
+        msg('msg-test-observation', 'Draft generated. Review before checking settings.');
+        el('test-observation-dialog').showModal();
+      }).catch(function (e) { showMessageModal('Test plan failed', String(e)); });
+  });
+  el('btn-test-close').addEventListener('click', function () { el('test-observation-dialog').close(); });
+  // Clicking the backdrop hits the <dialog> element itself (its content sits
+  // in child elements), so a click whose target is the dialog itself is
+  // outside the visible panel.
+  el('test-observation-dialog').addEventListener('click', function (e) {
+    if (e.target === e.currentTarget) e.currentTarget.close();
+  });
+  el('btn-test-dry-run').addEventListener('click', function () {
+    if (!currentTestRecord) return;
+    var p = buildParams(); p.kind = currentTestRecord.instrument;
+    msg('msg-test-observation', 'Running guarded LCO dry-run…');
+    fetch('/api/lco/test-observations/' + encodeURIComponent(currentTestRecord.id) + '/ipp', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(p) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) throw new Error(d.error || 'Validation failed');
+        currentTestHash = d.payload_hash; el('btn-test-submit').disabled = false;
+        msg('msg-test-observation', 'Validated · hash ' + currentTestHash.slice(0, 12));
+      }).catch(function (e) { currentTestHash = null; el('btn-test-submit').disabled = true; msg('msg-test-observation', String(e), 'err'); });
+  });
+  el('btn-test-submit').addEventListener('click', function () {
+    if (!currentTestRecord || !currentTestHash) return;
+    showConfirmModal('Submit TEST observation?', 'This books the displayed telescope time and requires server-side live submission to be enabled.', {confirmLabel: 'Submit TEST', confirmClass: 'btn danger'}).then(function (confirmed) {
+      if (!confirmed) return;
+      var p = buildParams(); p.kind = currentTestRecord.instrument; p.confirm = true; p.dry_run_hash = currentTestHash;
+      fetch('/api/lco/test-observations/' + encodeURIComponent(currentTestRecord.id) + '/submit', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(p) })
+        .then(function (r) { return r.json(); }).then(function (d) { if (!d.ok) throw new Error(d.error || 'Submission failed'); msg('msg-test-observation', 'Submitted successfully.'); el('btn-test-submit').disabled = true; })
+        .catch(function (e) { msg('msg-test-observation', String(e), 'err'); });
+    });
   });
 
   // An explicit ?target= is a deliberate navigation from another page (ephemeris,

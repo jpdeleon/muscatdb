@@ -167,6 +167,26 @@ CREATE TABLE IF NOT EXISTS exposure_jobs (
     updated_at  REAL NOT NULL
 );
 
+-- App-owned closed-loop observation records are intentionally outside the
+-- frames/summaries/targets rebuild set and therefore survive daily rescans.
+CREATE TABLE IF NOT EXISTS test_observations (
+    id                  TEXT PRIMARY KEY,
+    target              TEXT NOT NULL,
+    instrument          TEXT NOT NULL,
+    site                TEXT NOT NULL,
+    transit_json        TEXT NOT NULL DEFAULT '{}',
+    plan_json           TEXT NOT NULL,
+    result_json         TEXT NOT NULL DEFAULT '{}',
+    request_ids_json    TEXT NOT NULL DEFAULT '[]',
+    payload_hash        TEXT NOT NULL DEFAULT '',
+    state               TEXT NOT NULL DEFAULT 'draft',
+    analysis_version    TEXT NOT NULL,
+    recommendation_json TEXT NOT NULL DEFAULT '{}',
+    failure_detail      TEXT NOT NULL DEFAULT '',
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS ephemeris_views (
     slug         TEXT PRIMARY KEY,
     state_hash   TEXT NOT NULL,
