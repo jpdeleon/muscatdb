@@ -24,11 +24,11 @@ import pathlib
 import re
 import zipfile
 from contextlib import contextmanager
-from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import Request
 
 from muscat_db import exposure as exp_calc
+from muscat_db import http_client
 from muscat_db.auth import request_user as _request_user
 from muscat_db.cache import LRUCache
 from muscat_db.database import (
@@ -40,6 +40,22 @@ from muscat_db.database import (
 logger = logging.getLogger(__name__)
 
 HERE = pathlib.Path(__file__).parent
+
+
+def _sync_get(url: str, *, headers: dict | None = None, timeout: float | None = None):
+    """GET via the shared sync httpx client, raising on non-2xx status
+    (mirrors urllib.request.urlopen's implicit HTTPError-on-bad-status).
+
+    Used by call sites embedded in routes that also do synchronous local
+    DB/job-store work and must stay plain ``def`` (see http_client.py); tests
+    monkeypatch this name directly."""
+    response = http_client.get_sync_client().get(
+        url,
+        headers=headers,
+        timeout=timeout if timeout is not None else http_client.DEFAULT_TIMEOUT_S,
+    )
+    response.raise_for_status()
+    return response
 
 
 def _db_mtime(db: str):
@@ -344,10 +360,15 @@ def _open_harps_rvbank_csv():
             yield ("local", str(_HARPS_RVBANK_ZIP_PATH), f)
         return
 
-    req = UrlRequest(_HARPS_RVBANK_URL, headers={"User-Agent": "muscat-db/harps-rvbank"})
-    with urlopen(req, timeout=_HARPS_ONLINE_TIMEOUT_S) as raw:
-        with io.TextIOWrapper(raw, encoding="utf-8", newline="") as text:
-            yield ("online", _HARPS_RVBANK_URL, text)
+    # csv.DictReader always consumes the whole file (it counts total_rows
+    # past max_rows), so buffering the full response body loses no streaming
+    # benefit that urlopen's chunk-by-chunk TextIOWrapper had here.
+    response = _sync_get(
+        _HARPS_RVBANK_URL,
+        headers={"User-Agent": "muscat-db/harps-rvbank"},
+        timeout=_HARPS_ONLINE_TIMEOUT_S,
+    )
+    yield ("online", _HARPS_RVBANK_URL, io.StringIO(response.text))
 
 
 def _harps_coord_membership(cat_data: dict) -> tuple[list[int], int]:
@@ -972,17 +993,15 @@ def _load_spectra_targets() -> set[str]:
     if not path.is_file():
         logger.info("data/spectra_targets.csv not found, downloading from NASA Exoplanet Archive...")
         try:
-            import urllib.request
             import urllib.parse
             query = "SELECT distinct pl_name FROM spectra"
             params = {"query": query, "format": "csv"}
             url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?" + urllib.parse.urlencode(params)
-            req = urllib.request.Request(url, headers={"User-Agent": "MuSCAT-db/0.1.0"})
-            with urllib.request.urlopen(req, timeout=15.0) as response:
-                content = response.read().decode("utf-8")
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(content)
+            response = _sync_get(url, headers={"User-Agent": "MuSCAT-db/0.1.0"})
+            content = response.text
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
         except Exception as e:
             logger.warning("failed to download spectra targets from TAP: %s", e)
             return set()
@@ -1324,9 +1343,7 @@ def _adql_literal(value: str) -> str:
 
 
 def _query_target_planets_nasa(target: str) -> dict:
-    import urllib.request
     import urllib.parse
-    import json
 
     target_clean = target.strip().upper()
     cache_key = "nasa_" + target_clean
@@ -1450,32 +1467,30 @@ def _query_target_planets_nasa(target: str) -> dict:
         col_str = ", ".join(cols)
         q = f"SELECT {col_str} FROM pscomppars WHERE hostname = {_adql_literal(host)} OR hostname LIKE {_adql_literal(host + '%')}"
         url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         try:
-            with urllib.request.urlopen(req, timeout=1.0) as response:
-                data = json.loads(response.read().decode())
-                for row in data:
-                    pl_name = row.get("pl_name", "")
-                    if pl_name and len(pl_name) > 2 and pl_name[-2] == " ":
-                        letter = pl_name[-1].lower()
-                        t0 = row.get("pl_tranmid")
-                        per = row.get("pl_orbper")
-                        if letter and t0 is not None and per is not None:
-                            entry = {"t0": float(t0), "period": float(per)}
-                            dur = _safe_float(row.get("pl_trandur"))  # hours
-                            if dur is not None:
-                                entry["duration"] = dur
-                            # Extract uncertainties
-                            t0_unc = _get_err(row, "pl_tranmid")
-                            per_unc = _get_err(row, "pl_orbper")
-                            dur_unc = _get_err(row, "pl_trandur")
-                            if t0_unc is not None:
-                                entry["t0_unc"] = t0_unc
-                            if per_unc is not None:
-                                entry["period_unc"] = per_unc
-                            if dur_unc is not None:
-                                entry["duration_unc"] = dur_unc
-                            results[letter] = entry
+            data = _sync_get(url, headers={'User-Agent': 'Mozilla/5.0'}).json()
+            for row in data:
+                pl_name = row.get("pl_name", "")
+                if pl_name and len(pl_name) > 2 and pl_name[-2] == " ":
+                    letter = pl_name[-1].lower()
+                    t0 = row.get("pl_tranmid")
+                    per = row.get("pl_orbper")
+                    if letter and t0 is not None and per is not None:
+                        entry = {"t0": float(t0), "period": float(per)}
+                        dur = _safe_float(row.get("pl_trandur"))  # hours
+                        if dur is not None:
+                            entry["duration"] = dur
+                        # Extract uncertainties
+                        t0_unc = _get_err(row, "pl_tranmid")
+                        per_unc = _get_err(row, "pl_orbper")
+                        dur_unc = _get_err(row, "pl_trandur")
+                        if t0_unc is not None:
+                            entry["t0_unc"] = t0_unc
+                        if per_unc is not None:
+                            entry["period_unc"] = per_unc
+                        if dur_unc is not None:
+                            entry["duration_unc"] = dur_unc
+                        results[letter] = entry
         except Exception:
             logger.debug("failed online NASA ephemeris lookup for %s", target, exc_info=True)
 
@@ -1587,9 +1602,7 @@ def _resolve_archive_coords(target: str) -> tuple[float, float, str] | None:
 
 
 def _query_target_planets_toi(target: str) -> dict:
-    import urllib.request
     import urllib.parse
-    import json
 
     target_clean = target.strip().upper()
     cache_key = "toi_" + target_clean
@@ -1662,41 +1675,39 @@ def _query_target_planets_toi(target: str) -> dict:
             host = host[:-2].strip()
         q = f"SELECT toidisplay, pl_tranmid, pl_tranmiderr1, pl_tranmiderr2, pl_orbper, pl_orbpererr1, pl_orbpererr2, pl_trandurh, pl_trandurherr1, pl_trandurherr2 FROM toi WHERE toidisplay LIKE {_adql_literal(host + '%')}"
         url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         try:
-            with urllib.request.urlopen(req, timeout=5.0) as response:
-                data = json.loads(response.read().decode())
-                for row in data:
-                    toidisplay = row.get("toidisplay", "")
-                    if toidisplay:
-                        base_name = toidisplay.split(".")[0].strip()
-                        if _normalize_target_name(base_name) != target_norm:
+            data = _sync_get(url, headers={'User-Agent': 'Mozilla/5.0'}).json()
+            for row in data:
+                toidisplay = row.get("toidisplay", "")
+                if toidisplay:
+                    base_name = toidisplay.split(".")[0].strip()
+                    if _normalize_target_name(base_name) != target_norm:
+                        continue
+                t0 = row.get("pl_tranmid")
+                per = row.get("pl_orbper")
+                if toidisplay and t0 is not None and per is not None:
+                    parts = toidisplay.split(".")
+                    if len(parts) == 2:
+                        try:
+                            candidate_num = int(parts[1])
+                            letter = chr(ord('b') + candidate_num - 1)
+                            entry = {"t0": float(t0), "period": float(per)}
+                        except Exception:
                             continue
-                    t0 = row.get("pl_tranmid")
-                    per = row.get("pl_orbper")
-                    if toidisplay and t0 is not None and per is not None:
-                        parts = toidisplay.split(".")
-                        if len(parts) == 2:
-                            try:
-                                candidate_num = int(parts[1])
-                                letter = chr(ord('b') + candidate_num - 1)
-                                entry = {"t0": float(t0), "period": float(per)}
-                            except Exception:
-                                continue
-                            dur = _safe_float(row.get("pl_trandurh"))  # hours
-                            if dur is not None:
-                                entry["duration"] = dur
-                            # Extract uncertainties
-                            t0_unc = _get_err(row, "pl_tranmid")
-                            per_unc = _get_err(row, "pl_orbper")
-                            dur_unc = _get_err(row, "pl_trandurh")
-                            if t0_unc is not None:
-                                entry["t0_unc"] = t0_unc
-                            if per_unc is not None:
-                                entry["period_unc"] = per_unc
-                            if dur_unc is not None:
-                                entry["duration_unc"] = dur_unc
-                            results[letter] = entry
+                        dur = _safe_float(row.get("pl_trandurh"))  # hours
+                        if dur is not None:
+                            entry["duration"] = dur
+                        # Extract uncertainties
+                        t0_unc = _get_err(row, "pl_tranmid")
+                        per_unc = _get_err(row, "pl_orbper")
+                        dur_unc = _get_err(row, "pl_trandurh")
+                        if t0_unc is not None:
+                            entry["t0_unc"] = t0_unc
+                        if per_unc is not None:
+                            entry["period_unc"] = per_unc
+                        if dur_unc is not None:
+                            entry["duration_unc"] = dur_unc
+                        results[letter] = entry
         except Exception:
             logger.debug("failed online TOI ephemeris lookup for %s", target, exc_info=True)
 
