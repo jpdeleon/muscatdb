@@ -91,6 +91,18 @@ class TestPaths:
         assert phot.build_run_id("sinistro", "lsc", "full_frame", "default") == "lsc-full_frame-default"
         assert phot.build_run_id("muscat4", "", "", "default") == "default"
 
+    def test_photometry_run_id_includes_telescope(self):
+        assert (
+            phot.build_run_id("sinistro", "lsc", "central_2k_2x2", "default", telescope="1m0-05")
+            == "lsc-tel05-default"
+        )
+        assert (
+            phot.build_run_id("sinistro", "lsc", "full_frame", "default", telescope="1m0-05")
+            == "lsc-tel05-full_frame-default"
+        )
+        # Telescope is ignored (forced blank) for non-sinistro instruments.
+        assert phot.build_run_id("muscat4", "", "", "default", telescope="1m0-05") == "default"
+
     def test_raw_data_dir_uses_instrument_config(self):
         # MUSCAT4.data_dir == /data/MuSCAT4
         assert phot.raw_data_dir(INST, DATE) == Path("/data/MuSCAT4") / DATE
@@ -276,6 +288,61 @@ class TestListOutputs:
         assert out_cpt["npz"] == "HIP67522_sinistro_cpt_250710.npz"
         assert out_cpt["bands"]["zs"]["csv"]["file"] == "HIP67522_sinistro_cpt_zs_250710.csv"
         assert phot.discovered_targets("sinistro", "250710") == ["HIP67522"]
+
+    def test_multi_telescope_detects_and_filters(self, monkeypatch, tmp_path):
+        # A single sinistro site+date can hold products from more than one
+        # physical 1m telescope (e.g. lsc has units 04, 05, 09). The telescope
+        # token sits right after the site token in the filename.
+        import os
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "250710"
+        rdir.mkdir(parents=True)
+        bands = ("gp", "zs")
+        # Write tel04 first (older), then tel05 (newer) so newest-wins would
+        # pick tel05 by default.
+        for i, tel in enumerate(("tel04", "tel05")):
+            sstem = f"HIP67522_sinistro_lsc_{tel}_250710"
+            for suf in ("_lightcurves.png", "_covariates.png", "_stacks.png"):
+                (rdir / (sstem + suf)).write_bytes(b"\x89PNG\r\n")
+            (rdir / (sstem + ".npz")).write_bytes(b"npz")
+            for b in bands:
+                bstem = f"HIP67522_sinistro_lsc_{tel}_{b}_250710"
+                (rdir / (bstem + ".csv")).write_text("BJD_TDB,Flux\n1,1\n")
+                (rdir / (bstem + "_ref.png")).write_bytes(b"\x89PNG\r\n")
+            for p in rdir.glob(f"HIP67522_sinistro_lsc_{tel}_*"):
+                os.utime(p, (1_000_000 + i, 1_000_000 + i))
+
+        out = phot.list_outputs("sinistro", "250710", "HIP67522")
+        assert out["site"] == "lsc"
+        assert out["telescopes"] == ["1m0-04", "1m0-05"]
+        assert out["telescope"] == "1m0-05"
+        assert out["npz"] == "HIP67522_sinistro_lsc_tel05_250710.npz"
+        assert out["bands"]["gp"]["csv"]["file"] == "HIP67522_sinistro_lsc_tel05_gp_250710.csv"
+
+        out_04 = phot.list_outputs("sinistro", "250710", "HIP67522", telescope="1m0-04")
+        assert out_04["telescope"] == "1m0-04"
+        assert out_04["npz"] == "HIP67522_sinistro_lsc_tel04_250710.npz"
+        assert out_04["bands"]["zs"]["csv"]["file"] == "HIP67522_sinistro_lsc_tel04_zs_250710.csv"
+
+    def test_telescope_without_site_still_classifies(self, monkeypatch, tmp_path):
+        # A telescope token can appear without a site token (prose's --telescope
+        # without --site).
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "240101"
+        rdir.mkdir(parents=True)
+        (rdir / "TOI-1234_sinistro_tel09_240101_lightcurves.png").write_bytes(b"\x89PNG\r\n")
+        (rdir / "TOI-1234_sinistro_tel09_R_240101.csv").write_text("BJD_TDB,Flux\n1,1\n")
+
+        out = phot.list_outputs("sinistro", "240101", "TOI-1234")
+        assert out["site"] is None
+        assert out["telescopes"] == ["1m0-09"]
+        assert out["telescope"] == "1m0-09"
+        assert set(out["summary"]) == {"lightcurves"}
+        assert set(out["bands"]) == {"R"}
 
     def test_single_site_has_no_chips(self, monkeypatch, tmp_path):
         # One site only -> sites has a single entry so the template shows no chips.

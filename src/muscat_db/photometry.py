@@ -108,11 +108,18 @@ RUN_DEFAULTS: dict = {
     "calib_dir": "",
     "site": "",                # sinistro only: "" -> all sites; else one of SINISTRO_SITES
     "mode": "",                # sinistro only: "" -> all modes; else one of SINISTRO_MODES
+    "telescope": "",           # sinistro only: "" -> all telescopes; else a TELESCOP
+                               # header value, e.g. "1m0-05" (open-ended: LCO's 1m
+                               # fleet changes over time, unlike the 5 fixed sites).
 }
 
 # Valid sinistro --site / --mode values, mirrored from prose2's run_photometry.py.
 SINISTRO_SITES = ("lsc", "cpt", "coj", "tfn", "elp")
 SINISTRO_MODES = ("central_2k_2x2", "full_frame")
+
+# --telescope is open-ended (no whitelist): format-validated only, against the
+# TELESCOP header shape ("1m0-05") or a lowercase alnum/hyphen token generally.
+TELESCOPE_RE = re.compile(r"^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$")
 
 # Colormaps offered for image-display plots (--cmap). run_photometry.py accepts
 # any matplotlib name, so this curated set is the GUI/validation allowlist and
@@ -278,16 +285,23 @@ _run_dir_name = jobs.run_dir_name
 slugify_run_name = jobs.slugify_run_name
 
 
-def build_run_id(inst: str, site: str | None, mode: str | None, run_name: str | None) -> str:
+def build_run_id(
+    inst: str,
+    site: str | None,
+    mode: str | None,
+    run_name: str | None,
+    telescope: str | None = None,
+) -> str:
     """Compose a photometry run id using the shared run-id convention.
 
-    Non-sinistro runs are identified by the run-name slug only, so site/mode are
-    forced blank; sinistro runs include site and only the non-default readout
-    mode. See :func:`muscat_db.jobs.build_run_id` for the canonical join rules.
+    Non-sinistro runs are identified by the run-name slug only, so
+    site/telescope/mode are forced blank; sinistro runs include site, telescope
+    and only the non-default readout mode. See :func:`muscat_db.jobs.build_run_id`
+    for the canonical join rules.
     """
     if inst != "sinistro":
         return jobs.build_run_id("", "", run_name)
-    return jobs.build_run_id(site, mode, run_name)
+    return jobs.build_run_id(site, mode, run_name, telescope=telescope)
 
 
 def run_output_dir(inst: str, date: str, target: str, run_id: str | None = None) -> Path:
@@ -298,19 +312,21 @@ def run_output_dir(inst: str, date: str, target: str, run_id: str | None = None)
     return base / _RUNS_DIR_NAME / _target_dir_name(target) / _run_dir_name(run_id)
 
 
-def _parse_run_dir_name(inst: str, name: str) -> tuple[str, str, str]:
-    """Best-effort split of a run-id dir name into (site, mode, run_name)."""
+def _parse_run_dir_name(inst: str, name: str) -> tuple[str, str, str, str]:
+    """Best-effort split of a run-id dir name into (site, telescope, mode, run_name)."""
     if inst != "sinistro":
-        return "", "", name
+        return "", "", "", name
     parts = name.split("-")
-    site = mode = ""
+    site = telescope = mode = ""
     if parts and parts[0] in SINISTRO_SITES:
         site, parts = parts[0], parts[1:]
+    if parts and parts[0].startswith("tel") and parts[0][3:].isdigit():
+        telescope, parts = parts[0], parts[1:]
     if parts and parts[0] in SINISTRO_MODES:
         mode, parts = parts[0], parts[1:]
-    elif site:
+    elif site or telescope:
         mode = "central_2k_2x2"
-    return site, mode, "-".join(parts)
+    return site, telescope, mode, "-".join(parts)
 
 
 def raw_data_dir(inst: str, date: str) -> Path:
@@ -370,6 +386,13 @@ def discovered_targets(inst: str, date: str) -> list[str]:
     return sorted(found)
 
 
+def _telescope_token_to_value(digits: str | None) -> str | None:
+    """Reconstruct the canonical TELESCOP-style value from a filename token's
+    captured digits, e.g. ``'05'`` -> ``'1m0-05'`` (the inverse of
+    ``jobs.slugify_telescope``). ``None``/blank input -> ``None``."""
+    return f"1m0-{digits}" if digits else None
+
+
 def list_outputs(
     inst: str,
     date: str,
@@ -377,25 +400,31 @@ def list_outputs(
     site: str | None = None,
     mode: str | None = None,
     run_id: str | None = None,
+    telescope: str | None = None,
 ) -> dict:
     """Classify the existing products for one (inst, date, target).
 
     Returns a dict with ``summary`` (key->filename), ``bands``
     (band->{ref,apertures,alignment,gif,csv}), ``npz``, ``log`` (newest),
-    ``has_any``, ``sites``/``modes`` (distinct sinistro sites/readout modes
-    present, for the filter chips), ``site``/``mode`` (the ones actually shown),
-    ``ref_header`` (the reference-frame header sidecar, site/mode-scoped), and
+    ``has_any``, ``sites``/``modes``/``telescopes`` (distinct sinistro
+    sites/readout modes/telescopes present, for the filter chips),
+    ``site``/``mode``/``telescope`` (the ones actually shown), ``ref_header``
+    (the reference-frame header sidecar, site/telescope/mode-scoped), and
     ``ref_selection`` (the ``--ref_select quality`` audit report, if present).
     Only filenames are returned; serve them via the file route.
 
-    A single sinistro date+target can hold products from more than one LCO site
-    and more than one readout mode (identical bands per combination). To avoid
-    silently collapsing them via newest-wins, products are restricted to one
-    (site, mode) at a time: ``site``/``mode`` select them when given and present,
-    otherwise the newest reduction is shown by default. Mode is read from the
-    ``_full`` filename token prose appends for ``full_frame`` (``central_2k_2x2``
-    has no token). For non-sinistro instruments there is no site/mode dimension
-    and ``sites``/``modes`` stay empty.
+    A single sinistro date+target can hold products from more than one LCO
+    site, physical telescope (multiple 1m units can share a site), and readout
+    mode (identical bands per combination). To avoid silently collapsing them
+    via newest-wins, products are restricted to one (site, telescope, mode) at
+    a time: ``site``/``telescope``/``mode`` select them when given and present,
+    otherwise the newest reduction is shown by default. Telescope choices are
+    scoped to the chosen site, and mode choices to the chosen (site,
+    telescope), so switching a coarser filter never lands on an empty
+    combination by default. Mode is read from the ``_full`` filename token
+    prose appends for ``full_frame`` (``central_2k_2x2`` has no token). For
+    non-sinistro instruments there is no site/telescope/mode dimension and
+    ``sites``/``telescopes``/``modes`` stay empty.
 
     The date token embedded in filenames by the pipeline is taken from the FITS
     header and may differ from the directory name (obs-night vs UT date). We
@@ -412,6 +441,8 @@ def list_outputs(
         "masters": [],
         "sites": [],
         "site": None,
+        "telescopes": [],
+        "telescope": None,
         "modes": [],
         "mode": None,
         "ref_header": None,
@@ -438,32 +469,43 @@ def list_outputs(
     site_opt = (
         rf"(?:(?P<site>{'|'.join(SINISTRO_SITES)})_)?" if inst == "sinistro" else ""
     )
+    # Sinistro filenames optionally carry a telescope token right after the
+    # site (prose ``build_stem``, ``_telescope_stem_token``): the physical LCO
+    # 1m unit id compacted from the TELESCOP header, e.g. '1m0-05' -> 'tel05'.
+    # The 'tel' prefix keeps it unambiguous against band names.
+    telescope_opt = (
+        r"(?:tel(?P<telescope>[0-9]+)_)?" if inst == "sinistro" else ""
+    )
     # Prose appends ``_full`` after the date for full_frame; central_2k_2x2 has
     # no token. Captured between the date and the product suffix (e.g.
     # ..._250710_full_lightcurves.png, ..._250710_full.npz, ..._gp_250710_full.csv).
     mode_opt = r"(?P<mode>_full)?" if inst == "sinistro" else ""
 
     # Summary stems exist in two generations:
-    #   <target>_<inst>_[<site>_]<date6>[_full]                (legacy)
-    #   <target>_<inst>_[<site>_]<bands>_<date6>[_full]        (band-set scoped)
+    #   <target>_<inst>_[<site>_][<tel>_]<date6>[_full]                (legacy)
+    #   <target>_<inst>_[<site>_][<tel>_]<bands>_<date6>[_full]        (band-set scoped)
     # Allow any 6-digit date so obs-night and UT-date both match.
     summary_re = re.compile(
-        rf"^{t_esc}_{inst_esc}_{site_opt}(?P<file_date>\d{{6}}){mode_opt}(?P<rest>.*)$"
+        rf"^{t_esc}_{inst_esc}_{site_opt}{telescope_opt}(?P<file_date>\d{{6}}){mode_opt}(?P<rest>.*)$"
     )
     summary_bandset_re = re.compile(
-        rf"^{t_esc}_{inst_esc}_{site_opt}(?P<bands>[A-Za-z0-9_]+?)_(?P<file_date>\d{{6}}){mode_opt}(?P<rest>.*)$"
+        rf"^{t_esc}_{inst_esc}_{site_opt}{telescope_opt}(?P<bands>[A-Za-z0-9_]+?)_(?P<file_date>\d{{6}}){mode_opt}(?P<rest>.*)$"
     )
-    # Per-band stem: <target>_<inst>_[<site>_]<band>_<date6>[_full]. The band
-    # token may itself contain underscores (narrow-band/Johnson filters:
+    # Per-band stem: <target>_<inst>_[<site>_][<tel>_]<band>_<date6>[_full]. The
+    # band token may itself contain underscores (narrow-band/Johnson filters:
     # g_narrow, Na_D, z_s), so allow ``_`` in the band and match it lazily up to
     # the 6-digit date.
     band_re = re.compile(
-        rf"^{t_esc}_{inst_esc}_{site_opt}(?P<band>[A-Za-z0-9_]+?)_(?P<file_date>\d{{6}}){mode_opt}(?P<rest>.*)$"
+        rf"^{t_esc}_{inst_esc}_{site_opt}{telescope_opt}(?P<band>[A-Za-z0-9_]+?)_(?P<file_date>\d{{6}}){mode_opt}(?P<rest>.*)$"
     )
 
     def _mode_of(m: re.Match) -> str:
         """Canonical readout mode for a matched product file."""
         return "full_frame" if m.groupdict().get("mode") else "central_2k_2x2"
+
+    def _telescope_of(m: re.Match) -> str | None:
+        """Canonical TELESCOP-style value for a matched product file."""
+        return _telescope_token_to_value(m.groupdict().get("telescope"))
 
     # First pass (sinistro only): discover which sites and readout modes are
     # present so multi-site/multi-mode dates expose one chip per value and default
@@ -471,10 +513,11 @@ def list_outputs(
     # Mode chips are scoped to the chosen site (each site may carry its own modes),
     # so switching site never lands on an empty (site, mode) pairing by default.
     effective_site: str | None = None
+    effective_telescope: str | None = None
     effective_mode: str | None = None
     if inst == "sinistro":
-        # records: (site_or_None, canonical_mode, mtime)
-        records: list[tuple[str | None, str, float]] = []
+        # records: (site_or_None, telescope_or_None, canonical_mode, mtime)
+        records: list[tuple[str | None, str | None, str, float]] = []
         for p in rdir.iterdir():
             if not p.is_file() or p.suffix == ".log":
                 continue
@@ -485,10 +528,10 @@ def list_outputs(
                 mt = p.stat().st_mtime
             except OSError:
                 mt = 0.0
-            records.append((m.groupdict().get("site"), _mode_of(m), mt))
+            records.append((m.groupdict().get("site"), _telescope_of(m), _mode_of(m), mt))
 
         site_mtime: dict[str, float] = {}
-        for s, _m, mt in records:
+        for s, _tel, _m, mt in records:
             if s and mt > site_mtime.get(s, -1.0):
                 site_mtime[s] = mt
         out["sites"] = sorted(site_mtime)
@@ -498,10 +541,27 @@ def list_outputs(
             effective_site = max(site_mtime, key=site_mtime.get)  # newest wins
         out["site"] = effective_site
 
-        # Modes available for the chosen site (or all records when no site token).
-        mode_mtime: dict[str, float] = {}
-        for s, md, mt in records:
+        # Telescopes available for the chosen site (or all records when no
+        # site token).
+        telescope_mtime: dict[str, float] = {}
+        for s, tel, _m, mt in records:
             if effective_site is not None and s != effective_site:
+                continue
+            if tel and mt > telescope_mtime.get(tel, -1.0):
+                telescope_mtime[tel] = mt
+        out["telescopes"] = sorted(telescope_mtime)
+        if telescope and telescope in telescope_mtime:
+            effective_telescope = telescope
+        elif telescope_mtime:
+            effective_telescope = max(telescope_mtime, key=telescope_mtime.get)  # newest wins
+        out["telescope"] = effective_telescope
+
+        # Modes available for the chosen (site, telescope).
+        mode_mtime: dict[str, float] = {}
+        for s, tel, md, mt in records:
+            if effective_site is not None and s != effective_site:
+                continue
+            if effective_telescope is not None and tel != effective_telescope:
                 continue
             if mt > mode_mtime.get(md, -1.0):
                 mode_mtime[md] = mt
@@ -535,8 +595,10 @@ def list_outputs(
         # Try summary suffixes first, including band-set-scoped summary stems.
         ms = summary_re.match(name) or summary_bandset_re.match(name)
         if ms:
-            # When a site/mode is in force, only that combination is shown.
+            # When a site/telescope/mode is in force, only that combination is shown.
             if effective_site is not None and ms.group("site") != effective_site:
+                continue
+            if effective_telescope is not None and _telescope_of(ms) != effective_telescope:
                 continue
             if effective_mode is not None and _mode_of(ms) != effective_mode:
                 continue
@@ -581,6 +643,8 @@ def list_outputs(
         if not mb:
             continue
         if effective_site is not None and mb.group("site") != effective_site:
+            continue
+        if effective_telescope is not None and _telescope_of(mb) != effective_telescope:
             continue
         if effective_mode is not None and _mode_of(mb) != effective_mode:
             continue
@@ -667,6 +731,7 @@ def csv_preview(path: Path, n: int = 8) -> tuple[list[str], list[list[str]]]:
 class RunDescriptor:
     run_id: str
     site: str = ""
+    telescope: str = ""
     mode: str = ""
     run_name: str = ""
     mtime: float = 0.0
@@ -688,13 +753,14 @@ def _dir_mtime(d: Path) -> float:
         return 0.0
 
 
-def _write_run_meta(d: Path, *, inst: str, date: str, target: str, run_id: str, site: str, mode: str, run_name: str, run_type: str) -> None:
+def _write_run_meta(d: Path, *, inst: str, date: str, target: str, run_id: str, site: str, mode: str, run_name: str, run_type: str, telescope: str = "") -> None:
     meta = {
         "inst": inst,
         "date": date,
         "target": target,
         "run_id": run_id,
         "site": site,
+        "telescope": telescope,
         "mode": mode,
         "run_name": run_name,
         "run_type": run_type,
@@ -727,6 +793,7 @@ def list_photometry_runs(
         runs.append(RunDescriptor(
             run_id="",
             site="",
+            telescope="",
             mode="",
             run_name="legacy",
             mtime=_dir_mtime(legacy_dir),
@@ -749,15 +816,17 @@ def list_photometry_runs(
             meta = _read_run_meta(d)
             if meta.get("run_id") or meta.get("run_name"):
                 site = str(meta.get("site") or "")
+                telescope = str(meta.get("telescope") or "")
                 mode = str(meta.get("mode") or "")
                 run_name = str(meta.get("run_name") or "")
                 run_type = str(meta.get("run_type") or "full")
             else:
-                site, mode, run_name = _parse_run_dir_name(inst, d.name)
+                site, telescope, mode, run_name = _parse_run_dir_name(inst, d.name)
                 run_type = "full"
             runs.append(RunDescriptor(
                 run_id=d.name,
                 site=site,
+                telescope=telescope,
                 mode=mode,
                 run_name=run_name or d.name,
                 mtime=_dir_mtime(d),
@@ -994,7 +1063,7 @@ def normalize_run_options(raw: dict | None) -> dict:
     if "bands" in raw:  # present-but-empty must surface as an error, not default
         o["bands"] = [str(b).strip() for b in (bands or []) if str(b).strip()]
 
-    for key in ("run_name", "ref_band", "ref_select", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "avoid_nearby_star_mode", "avoid_nearby_star", "target_coord", "wcs_method", "centroid_method", "calib_dir", "site", "mode", "cmap", "nan_imputation_method"):
+    for key in ("run_name", "ref_band", "ref_select", "aper_radii", "annulus", "aper_unit", "ccd_trim", "target_id", "comparison_ids", "avoid_comparison_ids", "avoid_nearby_star_mode", "avoid_nearby_star", "target_coord", "wcs_method", "centroid_method", "calib_dir", "site", "telescope", "mode", "cmap", "nan_imputation_method"):
         if raw.get(key) is not None:
             o[key] = str(raw[key]).strip()
 
@@ -1098,6 +1167,9 @@ def validate_run_options(o: dict, inst: str | None = None) -> str | None:
     site = (o.get("site") or "").strip().lower()
     if site and site not in SINISTRO_SITES:
         return f"site must be one of {', '.join(SINISTRO_SITES)}"
+    telescope = (o.get("telescope") or "").strip()
+    if telescope and not TELESCOPE_RE.match(telescope):
+        return "telescope id may only contain letters, digits and hyphens"
     mode = (o.get("mode") or "").strip()
     if mode and mode not in SINISTRO_MODES:
         return f"mode must be one of {', '.join(SINISTRO_MODES)}"
@@ -1197,11 +1269,15 @@ def build_command(
         args += ["--wcs_method", o["wcs_method"]]
     if o.get("centroid_method", "auto") != "auto":
         args += ["--centroid_method", o["centroid_method"]]
-    # --site / --mode are sinistro-only filters; ignore for other instruments.
+    # --site / --telescope / --mode are sinistro-only filters; ignore for other
+    # instruments.
     if inst == "sinistro":
         site = (o.get("site") or "").strip()
         if site:
             args += ["--site", site]
+        telescope = (o.get("telescope") or "").strip()
+        if telescope:
+            args += ["--telescope", telescope]
         mode = (o.get("mode") or "").strip()
         if mode:
             args += ["--mode", mode]
@@ -1242,7 +1318,10 @@ def command_str(
 ) -> str:
     if run_id is None:
         opts = normalize_run_options(options)
-        run_id = build_run_id(inst, opts.get("site"), opts.get("mode"), opts.get("run_name"))
+        run_id = build_run_id(
+            inst, opts.get("site"), opts.get("mode"), opts.get("run_name"),
+            telescope=opts.get("telescope"),
+        )
     return shlex.join(build_command(inst, date, target, options, test_run=test_run, run_id=run_id))
 
 
@@ -1392,8 +1471,9 @@ def start_run(
 
     run_name = str(opts.get("run_name") or "").strip()
     site = (opts.get("site") or "").strip().lower() if inst == "sinistro" else ""
+    telescope = (opts.get("telescope") or "").strip().lower() if inst == "sinistro" else ""
     mode = (opts.get("mode") or "").strip().lower() if inst == "sinistro" else ""
-    run_id = build_run_id(inst, site, mode, run_name)
+    run_id = build_run_id(inst, site, mode, run_name, telescope=telescope)
     key = job_key(inst, date, target, run_id)
     run_type = "test" if test_run else "full"
 
@@ -1444,7 +1524,7 @@ def start_run(
                     inst=inst, date=date, target=target,
                     started_at=time.time(),
                     run_type=run_type,
-                    params=json.dumps({"test_run": test_run, "options": opts, "run_id": run_id, "site": site, "mode": mode, "run_name": run_name}, separators=(",", ":")),
+                    params=json.dumps({"test_run": test_run, "options": opts, "run_id": run_id, "site": site, "telescope": telescope, "mode": mode, "run_name": run_name}, separators=(",", ":")),
                     run_id=run_id,
                     run_name=run_name,
                     user_name=user_name,
@@ -1469,7 +1549,7 @@ def start_run(
                 logger.info(f"start_run: deleted {removed} previous product(s) for {key} before overwrite run")
         rdir.mkdir(parents=True, exist_ok=True)
 
-        _write_run_meta(rdir, inst=inst, date=date, target=target, run_id=run_id, site=site, mode=mode, run_name=run_name, run_type=run_type)
+        _write_run_meta(rdir, inst=inst, date=date, target=target, run_id=run_id, site=site, telescope=telescope, mode=mode, run_name=run_name, run_type=run_type)
         cmd = build_command(inst, date, target, opts, test_run=test_run, run_id=run_id)
         log_path = _run_log_path(rdir, inst, date, target, run_id)
         logf = open(log_path, "w")
@@ -1497,7 +1577,7 @@ def start_run(
         _JOBS[key] = Job(
             key=key, inst=inst, date=date, target=target,
             cmd=cmd, proc=proc, logf=logf, log_path=log_path,
-            run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name,
+            run_type=run_type, run_id=run_id, site=site, telescope=telescope, mode=mode, run_name=run_name,
         )
         # Record new job in the database
         try:
@@ -1511,7 +1591,7 @@ def start_run(
                 elapsed=0,
                 started_at=_JOBS[key].started_at,
                 run_type=run_type,
-                params=json.dumps({"test_run": test_run, "options": opts, "run_id": run_id, "site": site, "mode": mode, "run_name": run_name}, separators=(",", ":")),
+                params=json.dumps({"test_run": test_run, "options": opts, "run_id": run_id, "site": site, "telescope": telescope, "mode": mode, "run_name": run_name}, separators=(",", ":")),
                 run_id=run_id,
                 run_name=run_name,
                 user_name=user_name,
@@ -2023,8 +2103,12 @@ def sync_jobs() -> None:
                 opts = p.get("options", {})
                 test_run = p.get("test_run", True)
                 inst, date, target = entry["inst"], entry["date"], entry["target"]
-                run_id = p.get("run_id") or entry.get("run_id") or build_run_id(inst, opts.get("site"), opts.get("mode"), opts.get("run_name"))
+                run_id = p.get("run_id") or entry.get("run_id") or build_run_id(
+                    inst, opts.get("site"), opts.get("mode"), opts.get("run_name"),
+                    telescope=opts.get("telescope"),
+                )
                 site = p.get("site", opts.get("site", "")) if inst == "sinistro" else ""
+                telescope = p.get("telescope", opts.get("telescope", "")) if inst == "sinistro" else ""
                 mode = p.get("mode", opts.get("mode", "")) if inst == "sinistro" else ""
                 run_name = p.get("run_name", opts.get("run_name", ""))
                 key = job_key(inst, date, target, run_id)
@@ -2037,7 +2121,7 @@ def sync_jobs() -> None:
                     continue
                 rdir.mkdir(parents=True, exist_ok=True)
                 run_type = "test" if test_run else "full"
-                _write_run_meta(rdir, inst=inst, date=date, target=target, run_id=run_id, site=site, mode=mode, run_name=run_name, run_type=run_type)
+                _write_run_meta(rdir, inst=inst, date=date, target=target, run_id=run_id, site=site, telescope=telescope, mode=mode, run_name=run_name, run_type=run_type)
                 pending_log_path = _run_log_path(rdir, inst, date, target, run_id)
                 try:
                     logf = open(pending_log_path, "w")
@@ -2051,7 +2135,7 @@ def sync_jobs() -> None:
                     store.release_slot("photometry", candidate_key)
                     store.save(type_="photometry", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_id=run_id, run_name=run_name)
                     continue
-                _JOBS[key] = Job(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=pending_log_path, run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name)
+                _JOBS[key] = Job(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=pending_log_path, run_type=run_type, run_id=run_id, site=site, telescope=telescope, mode=mode, run_name=run_name)
                 try:
                     store.save(type_="photometry", inst=inst, date=date, target=target, state="running", returncode=None, elapsed=0, started_at=_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""), run_id=run_id, run_name=run_name)
                 except sqlite3.OperationalError as exc:

@@ -196,14 +196,28 @@
     {# Build each href as one expression with plain '&'; autoescape emits a
        single '&amp;' (writing '&amp;' here would double-escape to '&amp;amp;'). #}
     {% set base_qs = '/transit-fit?inst=' ~ sel_inst ~ '&date=' ~ sel_date ~ '&target=' ~ (sel_target | urlencode) %}
+    {% set site_qs = ('&site=' ~ sel_site if sel_site else '') %}
+    {% set telescope_qs = ('&telescope=' ~ sel_telescope if sel_telescope else '') %}
+    {% set mode_qs = ('&mode=' ~ sel_mode if sel_mode else '') %}
     {% if csv_sites | length > 1 %}
     <div class="site-chips">
       <span class="site-label">Site:</span>
       <a class="site-chip {% if not sel_site %}active{% endif %}"
-         href="{{ base_qs ~ ('&mode=' ~ sel_mode if sel_mode else '') }}">all</a>
+         href="{{ base_qs ~ telescope_qs ~ mode_qs }}">all</a>
       {% for s in csv_sites %}
       <a class="site-chip {% if s == sel_site %}active{% endif %}"
-         href="{{ base_qs ~ '&site=' ~ s ~ ('&mode=' ~ sel_mode if sel_mode else '') }}">{{ s }}</a>
+         href="{{ base_qs ~ '&site=' ~ s ~ telescope_qs ~ mode_qs }}">{{ s }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if csv_telescopes | length > 1 %}
+    <div class="site-chips">
+      <span class="site-label">Telescope:</span>
+      <a class="site-chip {% if not sel_telescope %}active{% endif %}"
+         href="{{ base_qs ~ site_qs ~ mode_qs }}">all</a>
+      {% for tel in csv_telescopes %}
+      <a class="site-chip {% if tel == sel_telescope %}active{% endif %}"
+         href="{{ base_qs ~ site_qs ~ '&telescope=' ~ tel ~ mode_qs }}">{{ tel }}</a>
       {% endfor %}
     </div>
     {% endif %}
@@ -211,10 +225,10 @@
     <div class="site-chips">
       <span class="site-label">Mode:</span>
       <a class="site-chip {% if not sel_mode %}active{% endif %}"
-         href="{{ base_qs ~ ('&site=' ~ sel_site if sel_site else '') }}">all</a>
+         href="{{ base_qs ~ site_qs ~ telescope_qs }}">all</a>
       {% for m in csv_modes %}
       <a class="site-chip {% if m == sel_mode %}active{% endif %}"
-         href="{{ base_qs ~ ('&site=' ~ sel_site if sel_site else '') ~ '&mode=' ~ m }}">{{ m }}</a>
+         href="{{ base_qs ~ site_qs ~ telescope_qs ~ '&mode=' ~ m }}">{{ m }}</a>
       {% endfor %}
     </div>
     {% endif %}
