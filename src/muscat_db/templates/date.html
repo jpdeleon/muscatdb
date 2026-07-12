@@ -13,6 +13,7 @@
     <th>OBJECT</th>
     <th>EXPTIME</th>
     <th>READ_MODE</th>
+    <th>TELESCOPE</th>
     <th>FRAME#1</th>
     <th>FRAME#2</th>
     <th>UT-STRT1</th>
@@ -27,6 +28,7 @@
     <td><a href="/{{ instrument }}/{{ obsdate }}/ccd{{ ccd }}">{{ s.object }}</a></td>
     <td class="mono">{{ s.exptime }}</td>
     <td><span class="badge badge-blue">{{ s.read_mode }}</span></td>
+    <td class="mono">{{ s.telescope or '' }}</td>
     <td class="mono">{{ s.frame_start }}</td>
     <td class="mono">{{ s.frame_end }}</td>
     <td class="mono">{{ s.ut_start }}</td>
@@ -35,9 +37,10 @@
     <td><a href="/photometry?inst={{ instrument }}&date={{ obsdate }}&target={{ s.object | urlencode }}" title="View photometry">🔭</a></td>
   </tr>
 {% else %}
-  <tr><td colspan="9">No data for this CCD.</td></tr>
+  <tr><td colspan="10">No data for this CCD.</td></tr>
 {% endfor %}
 </tbody>
 </table>
 {% endfor %}
 {% endblock %}
+
