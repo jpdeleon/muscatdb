@@ -189,21 +189,52 @@ the exact view.
 
 For a shared server with multiple observers, `muscat-db` can run behind an
 nginx reverse proxy that performs HTTP Basic Auth and forwards the
-authenticated username so jobs and settings are attributed per user:
+authenticated username so jobs and settings are attributed per user. The
+intended local port layout is:
 
-```bash
-muscat-db serve --nginx   # binds uvicorn to 127.0.0.1:8001; nginx listens on :8000
+```text
+browser/SSH tunnel -> nginx 127.0.0.1:8000
+                   -> muscat-db 127.0.0.1:8001
+                   -> companion apps such as TESS quicklook 127.0.0.1:5000
 ```
 
-`deploy/setup-nginx.sh` installs the site config (`deploy/nginx.conf`) for a
-first-time setup. Manage the HTTP Basic Auth users with the built-in CLI
-(never edit the htpasswd file by hand):
+For a first-time setup, run the installer from the repository root. It installs
+nginx and OpenSSL, enables `deploy/nginx.conf`, creates the protected htpasswd
+file, and starts nginx:
 
 ```bash
-muscat-db htpasswd add <username>                    # prompts for a password
-muscat-db htpasswd add <username> --password-stdin   # for scripting
-muscat-db htpasswd delete <username>
-muscat-db htpasswd list
+sudo bash deploy/setup-nginx.sh
+```
+
+The installer creates an empty htpasswd file, so add at least one user before
+opening the site. Otherwise, the browser will repeatedly ask for credentials
+because nginx cannot accept any login. Use the built-in CLI rather than editing
+the file by hand:
+
+```bash
+sudo env "PATH=$PATH" uv run muscat-db htpasswd add <username>
+sudo env "PATH=$PATH" uv run muscat-db htpasswd add <username> --password-stdin
+sudo env "PATH=$PATH" uv run muscat-db htpasswd delete <username>
+sudo env "PATH=$PATH" uv run muscat-db htpasswd list
+```
+
+Launch the application in the `muscatdbgui` tmux session so it remains attached
+to the server's normal operational session:
+
+```bash
+tmux new-session -s muscatdbgui       # omit if the session already exists
+# Run inside the tmux session, from the repository root:
+uv run muscat-db restart --nginx --reload
+```
+
+`--nginx` binds uvicorn to `127.0.0.1:8001`; nginx owns port `8000`. Do not add
+`--port 8000`, because nginx mode deliberately overrides the application port.
+Verify the listeners and connect through an SSH tunnel:
+
+```bash
+ss -ltn | grep -E ':8000|:8001'
+ssh -L 8000:localhost:8000 <user>@<server>
+# Then open http://localhost:8000 in a browser.
 ```
 
 The auth middleware only honors the `X-Forwarded-User` header nginx sets
