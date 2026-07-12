@@ -1391,7 +1391,7 @@ def _boyle_cat_data(tics):
 
 
 def test_merge_boyle_columns_joins_by_tic_id(monkeypatch):
-    from muscat_db import web
+    from muscat_db import catalog, web
     cols = {k: [] for k, _ in web._BOYLE_COLUMNS}
     cols["ruwe"] = [1.5, 2.5]
     cols["non_single_star"] = [0, 1]
@@ -1406,7 +1406,10 @@ def test_merge_boyle_columns_joins_by_tic_id(monkeypatch):
     cols["median_amplitude"] = [0.94, 1.7]
     cols["sectors"] = ["38,65", "1,2"]
     cols["sector_periods"] = ["3.25,3.28", "9.9,9.8"]
-    monkeypatch.setattr(web, "_load_boyle_catalog", lambda: (cols, {358: 0, 529: 1}))
+    # _merge_boyle_columns now lives in muscat_db.catalog and reads
+    # _load_boyle_catalog from that module's own globals, so the monkeypatch
+    # must target catalog, not the web.py alias.
+    monkeypatch.setattr(catalog, "_load_boyle_catalog", lambda: (cols, {358: 0, 529: 1}))
 
     merged, n = web._merge_boyle_columns(_boyle_cat_data(["358", "999", "TIC 529"]))
     assert n == 2
@@ -1417,8 +1420,8 @@ def test_merge_boyle_columns_joins_by_tic_id(monkeypatch):
 
 
 def test_merge_boyle_columns_degrades_without_catalog(monkeypatch, tmp_path):
-    from muscat_db import web
-    monkeypatch.setattr(web, "_BOYLE_PATH", tmp_path / "missing.feather")
+    from muscat_db import catalog, web
+    monkeypatch.setattr(catalog, "_BOYLE_PATH", tmp_path / "missing.feather")
     web._boyle_cache.clear()
     merged, n = web._merge_boyle_columns(_boyle_cat_data(["358", ""]))
     assert n == 0
@@ -1427,9 +1430,9 @@ def test_merge_boyle_columns_degrades_without_catalog(monkeypatch, tmp_path):
 
 
 def test_harps_coord_membership_matches_by_coordinate(monkeypatch):
-    from muscat_db import web
-    monkeypatch.setattr(web, "_HARPS_MATCH_ARCSEC", 5.0)
-    monkeypatch.setattr(web, "_load_harps_coords", lambda: ([(10.0, -20.0)], "2026-07-08"))
+    from muscat_db import catalog, web
+    monkeypatch.setattr(catalog, "_HARPS_MATCH_ARCSEC", 5.0)
+    monkeypatch.setattr(catalog, "_load_harps_coords", lambda: ([(10.0, -20.0)], "2026-07-08"))
     flags, n = web._harps_coord_membership({
         "ra": [10.0, 10.01, None],
         "dec": [-20.0, -20.0, -20.0],
@@ -1439,7 +1442,7 @@ def test_harps_coord_membership_matches_by_coordinate(monkeypatch):
 
 
 def test_harps_rvbank_rows_read_from_local_zip(monkeypatch, tmp_path):
-    from muscat_db import web
+    from muscat_db import catalog, web
     csv_text = (
         "target,ra,dec,BJD,RV_mlc_nzp\n"
         "HD209458,330.794883,18.884319,2451000.123456789,-2.5000001\n"
@@ -1449,12 +1452,12 @@ def test_harps_rvbank_rows_read_from_local_zip(monkeypatch, tmp_path):
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.writestr("HARPS_RVBank_ver02.csv", csv_text)
 
-    monkeypatch.setattr(web, "_HARPS_RVBANK_PATH", tmp_path / "missing.csv")
-    monkeypatch.setattr(web, "_HARPS_RVBANK_ZIP_PATH", zip_path)
-    monkeypatch.setattr(web, "_HARPS_TARGETS_PATH", tmp_path / "missing_targets.csv")
+    monkeypatch.setattr(catalog, "_HARPS_RVBANK_PATH", tmp_path / "missing.csv")
+    monkeypatch.setattr(catalog, "_HARPS_RVBANK_ZIP_PATH", zip_path)
+    monkeypatch.setattr(catalog, "_HARPS_TARGETS_PATH", tmp_path / "missing_targets.csv")
     web._harps_cache.clear()
 
-    res = web._query_harps_rvbank_rows(
+    res = catalog._query_harps_rvbank_rows(
         coords=[],
         matching_targets=[{"target": "HD209458", "ra": 330.794883, "dec": 18.884319, "n_rv": 1}],
         max_rows=10,
@@ -1467,7 +1470,7 @@ def test_harps_rvbank_rows_read_from_local_zip(monkeypatch, tmp_path):
 
 
 def test_harps_rvbank_rows_fall_back_to_online_stream(monkeypatch, tmp_path):
-    from muscat_db import web
+    from muscat_db import catalog, web
 
     class FakeResponse(io.BytesIO):
         def __enter__(self):
@@ -1480,14 +1483,14 @@ def test_harps_rvbank_rows_fall_back_to_online_stream(monkeypatch, tmp_path):
         "target,ra,dec,BJD,RV_mlc_nzp\n"
         "HD209458,330.794883,18.884319,2451000.5,-3.25\n"
     )
-    monkeypatch.setattr(web, "_HARPS_RVBANK_PATH", tmp_path / "missing.csv")
-    monkeypatch.setattr(web, "_HARPS_RVBANK_ZIP_PATH", tmp_path / "missing.csv.zip")
-    monkeypatch.setattr(web, "_HARPS_TARGETS_PATH", tmp_path / "missing_targets.csv")
-    monkeypatch.setattr(web, "_HARPS_RVBANK_URL", "https://example.invalid/HARPS_RVBank_ver02.csv")
-    monkeypatch.setattr(web, "urlopen", lambda req, timeout: FakeResponse(csv_text.encode("utf-8")))
+    monkeypatch.setattr(catalog, "_HARPS_RVBANK_PATH", tmp_path / "missing.csv")
+    monkeypatch.setattr(catalog, "_HARPS_RVBANK_ZIP_PATH", tmp_path / "missing.csv.zip")
+    monkeypatch.setattr(catalog, "_HARPS_TARGETS_PATH", tmp_path / "missing_targets.csv")
+    monkeypatch.setattr(catalog, "_HARPS_RVBANK_URL", "https://example.invalid/HARPS_RVBank_ver02.csv")
+    monkeypatch.setattr(catalog, "urlopen", lambda req, timeout: FakeResponse(csv_text.encode("utf-8")))
     web._harps_cache.clear()
 
-    res = web._query_harps_rvbank_rows(
+    res = catalog._query_harps_rvbank_rows(
         coords=[(330.794883, 18.884319)],
         matching_targets=[],
         max_rows=10,
@@ -1500,16 +1503,16 @@ def test_harps_rvbank_rows_fall_back_to_online_stream(monkeypatch, tmp_path):
 
 
 def test_harps_target_lookup_uses_toi_catalog_coords_after_db_miss(monkeypatch):
-    from muscat_db import web
+    from muscat_db import catalog, web
 
-    monkeypatch.setattr(web, "_HARPS_MATCH_ARCSEC", 5.0)
+    monkeypatch.setattr(catalog, "_HARPS_MATCH_ARCSEC", 5.0)
     monkeypatch.setattr(
-        web,
+        catalog,
         "_load_harps_targets",
         lambda: ([{"target": "GJ3473", "ra": 120.592808, "dec": 3.33695, "n_rv": 32}], "2026-07-08"),
     )
     monkeypatch.setattr(
-        web,
+        catalog,
         "_load_toi_catalog",
         lambda: {
             "data": {
@@ -1524,7 +1527,7 @@ def test_harps_target_lookup_uses_toi_catalog_coords_after_db_miss(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        web,
+        catalog,
         "_load_nexsci_catalog",
         lambda: {"data": _nexsci_cat_data([], [], []), "n": 0, "updated": "2026-07-01"},
     )
@@ -1545,7 +1548,7 @@ def test_harps_target_lookup_uses_toi_catalog_coords_after_db_miss(monkeypatch):
             "error": "",
         }
 
-    monkeypatch.setattr(web, "_query_harps_rvbank_rows", fake_query)
+    monkeypatch.setattr(catalog, "_query_harps_rvbank_rows", fake_query)
 
     result = web._harps_data_for_target(
         [{"ra": "8:03:21", "dec": "+3:20:46"}],
@@ -1558,12 +1561,12 @@ def test_harps_target_lookup_uses_toi_catalog_coords_after_db_miss(monkeypatch):
 
 
 def test_nasa_confirmed_toi_membership_matches_tic_and_period(monkeypatch):
-    from muscat_db import web
+    from muscat_db import catalog, web
 
-    monkeypatch.setattr(web, "_TOI_CONFIRMED_PERIOD_REL_TOL", 0.01)
-    monkeypatch.setattr(web, "_TOI_CONFIRMED_PERIOD_ABS_TOL_D", 0.001)
+    monkeypatch.setattr(catalog, "_TOI_CONFIRMED_PERIOD_REL_TOL", 0.01)
+    monkeypatch.setattr(catalog, "_TOI_CONFIRMED_PERIOD_ABS_TOL_D", 0.001)
     monkeypatch.setattr(
-        web,
+        catalog,
         "_load_nexsci_catalog",
         lambda: {
             "data": {
@@ -1589,15 +1592,15 @@ def test_nasa_confirmed_toi_membership_matches_tic_and_period(monkeypatch):
 
 
 def test_toi_page_includes_boyle_payload(monkeypatch):
-    from muscat_db import web
+    from muscat_db import catalog, web
     cols = {k: [None] for k, _ in web._BOYLE_COLUMNS}
     cols["ruwe"] = [1.01]
     cols["sectors"] = ["38,65"]
     cols["sector_periods"] = ["2.19,2.19"]
-    monkeypatch.setattr(web, "_load_boyle_catalog", lambda: (cols, {50365310: 0}))
-    monkeypatch.setattr(web, "_load_harps_coords", lambda: ([(10.0, -20.0)], "2026-07-08"))
+    monkeypatch.setattr(catalog, "_load_boyle_catalog", lambda: (cols, {50365310: 0}))
+    monkeypatch.setattr(catalog, "_load_harps_coords", lambda: ([(10.0, -20.0)], "2026-07-08"))
     monkeypatch.setattr(
-        web,
+        catalog,
         "_load_nexsci_catalog",
         lambda: {
             "data": {
@@ -1664,7 +1667,7 @@ def _nexsci_cat_data(names, hosts, tics):
 
 
 def test_nexsci_page_renders_with_payload_and_archive_link(mock_db, monkeypatch):
-    from muscat_db import web
+    from muscat_db import catalog, web
     web._toi_db_cache.clear()
     data = _nexsci_cat_data(
         ["TOI-2000 b", "Kepler-999 b"],
@@ -1676,7 +1679,10 @@ def test_nexsci_page_renders_with_payload_and_archive_link(mock_db, monkeypatch)
     data["period"] = [3.1, 400.0]
     data["ra"] = [20.0, 30.0]
     data["dec"] = [-10.0, -5.0]
-    monkeypatch.setattr(web, "_load_harps_coords", lambda: ([(20.0, -10.0)], "2026-07-08"))
+    # nexsci_page() calls _harps_coord_membership() directly (which now lives
+    # in muscat_db.catalog and reads _load_harps_coords from that module's own
+    # globals), so this monkeypatch must target catalog, not the web.py alias.
+    monkeypatch.setattr(catalog, "_load_harps_coords", lambda: ([(20.0, -10.0)], "2026-07-08"))
     monkeypatch.setattr(web, "_load_spectra_targets", lambda: {"TOI-2000 b"})
     monkeypatch.setattr(
         web, "_load_nexsci_catalog", lambda: {"data": data, "n": 2, "updated": "2026-07-05"}
