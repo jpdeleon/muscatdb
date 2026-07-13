@@ -1749,13 +1749,19 @@ def _get_fit_outputs_mtime(
                 outputs["plots"].append(plot_info)
             outputs["has_any"] = True
 
-    # Collect any other output files for download (exclude plots already shown
-    # and files that get their own dedicated link below).
+    # Collect any other output files for individual download (exclude plots,
+    # dedicated links, and internal correlation/pickle artifacts).
     _linked = {"summary.csv"}
     for p in sorted(out_dir.iterdir()):
         if not p.is_file():
             continue
-        if p.suffix.lower() == ".png" or p.name in _linked:
+        name_lower = p.name.lower()
+        if (
+            p.suffix.lower() == ".png"
+            or p.name in _linked
+            or name_lower.endswith("-cor.csv")
+            or p.suffix.lower() == ".pkl"
+        ):
             continue
         outputs["extra_files"].append(p.name)
         outputs["has_any"] = True

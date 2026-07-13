@@ -1819,6 +1819,22 @@ class TestRoutes:
         r = client.get("/api/transit-fit/file/muscat3/250717/evil..target/timer-fit.log")
         assert r.status_code == 400
 
+    @pytest.mark.parametrize("filename", ["fit.yaml", "sys.yaml"])
+    def test_transit_fit_yaml_opens_as_plain_text(self, client, monkeypatch, tmp_path, filename):
+        """Fit configuration links are for inspection; only explicit download links save files."""
+        monkeypatch.setenv("MUSCAT_TIMER_DIR", str(tmp_path))
+        rdir = tmp_path / "muscat3" / "250717" / "TOI-1234" / "lsc-default"
+        rdir.mkdir(parents=True)
+        (rdir / filename).write_text("key: value\n")
+
+        response = client.get(
+            f"/api/transit-fit/file/muscat3/250717/TOI-1234/run/lsc-default/{filename}"
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/plain")
+        assert "attachment" not in (response.headers.get("content-disposition") or "")
+
     def test_transit_fit_log_rejects_bad_target(self, client):
         r = client.get("/api/jobs/log/transit_fit/muscat3/250717/evil..target")
         assert r.status_code == 404

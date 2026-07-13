@@ -1732,7 +1732,13 @@ def _serve_transit_file(inst: str, date: str, target: str, name: str, run_id: st
         path = rdir / name
     if not path.is_file():
         raise HTTPException(404, "file not found")
-    return FileResponse(str(path), headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
+    # Configuration links are inspection views.  Explicit download links remain
+    # separate, so force a browser-renderable type instead of application/yaml.
+    media_type = "text/plain; charset=utf-8" if name in {"fit.yaml", "sys.yaml"} else None
+    return FileResponse(
+        str(path), media_type=media_type,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+    )
 
 
 @transit_fit_router.get("/file/{inst}/{date}/{target}/run/{run_id}/{name}")

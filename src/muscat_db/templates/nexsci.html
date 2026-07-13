@@ -39,7 +39,7 @@
   <input id="nx-search" type="text" placeholder="Search planet, host, or TIC ID…" autocomplete="off">
   <span id="nx-count" class="hint"></span>
   <button id="nx-clear" type="button" class="csv-btn" style="display: none; background: var(--border); color: var(--text); border: none; cursor: pointer; margin-right: 0.25rem;">✕ Clear filters</button>
-  <a id="nx-export" href="#" class="csv-btn" download="nexsci_filtered.csv">⬇ CSV (filtered)</a>
+  <a id="nx-export" href="#" class="csv-btn" download="nexsci_filtered.csv">CSV (filtered)</a>
 </div>
 
 <div class="chip-bar">
@@ -83,10 +83,11 @@
 </div>
 
 <div class="chip-bar">
-  <span class="chip-label">Observability <span class="logic-indicator" title="Matching checked limits (AND)">AND</span>:</span>
+  <span class="chip-label">Observability <span class="logic-indicator" title="Depth and TESS-magnitude limits are ANDed; declination hemispheres are ORed">AND / OR</span>:</span>
   <span class="badge instrument-badge nx-chip" data-group="obs" data-key="depth" title="Transit depth > 1 ppt (0.1%)">depth &gt; 1ppt</span>
   <span class="badge instrument-badge nx-chip" data-group="obs" data-key="tmag" title="TESS magnitude < 12">Tmag &lt; 12</span>
   <span class="badge instrument-badge nx-chip" data-group="obs" data-key="north" title="Declination > 0°">Dec &gt; 0</span>
+  <span class="badge instrument-badge nx-chip" data-group="obs" data-key="south" title="Declination < 0°">Dec &lt; 0</span>
 </div>
 
 <div class="chip-bar">
@@ -409,7 +410,7 @@
     const flagList = Array.from(selectedFlags);
     const useDepth = selectedObservability.has('depth');
     const useTmag = selectedObservability.has('tmag');
-    const useNorth = selectedObservability.has('north');
+    const hemisphereFilters = ['north', 'south'].filter(k => selectedObservability.has(k));
     const out = [];
     for (let i = 0; i < N; i++) {
       if (q) {
@@ -431,7 +432,9 @@
       // NExScI pl_trandep is expressed as percent, so 1 ppt = 0.1%.
       if (useDepth && !(NEXSCI.trandep[i] != null && NEXSCI.trandep[i] > 0.1)) continue;
       if (useTmag && !(NEXSCI.tmag[i] != null && NEXSCI.tmag[i] < 12)) continue;
-      if (useNorth && !(NEXSCI.dec[i] != null && NEXSCI.dec[i] > 0)) continue;
+      if (hemisphereFilters.length && !hemisphereFilters.some(h =>
+        h === 'north' ? NEXSCI.dec[i] > 0 : NEXSCI.dec[i] < 0
+      )) continue;
       out.push(i);
     }
     if (sortState.key) applySort(out);
@@ -1006,9 +1009,11 @@
     (s.star || []).forEach(k => selectedStar.add(k));
     (s.indb || []).forEach(k => selectedIndb.add(k));
     (s.flags || []).forEach(k => selectedFlags.add(k));
-    // Ignore the retired southern-declination key in saved/bookmarked state.
-    (s.obs || []).filter(k => ['depth', 'tmag', 'north'].includes(k))
-      .forEach(k => selectedObservability.add(k));
+    const restoredObservability = (s.obs || []).filter(k => ['depth', 'tmag', 'north', 'south'].includes(k));
+    restoredObservability.filter(k => k !== 'north' && k !== 'south').forEach(k => selectedObservability.add(k));
+    // North wins if a legacy URL or saved setting selected both hemispheres.
+    if (restoredObservability.includes('north')) selectedObservability.add('north');
+    else if (restoredObservability.includes('south')) selectedObservability.add('south');
     chips.forEach(ch => {
       if (setForGroup(ch.dataset.group).has(ch.dataset.key)) ch.classList.add('active');
     });
@@ -1102,6 +1107,13 @@
   chips.forEach(ch => ch.addEventListener('click', function () {
     const set = setForGroup(ch.dataset.group);
     const key = ch.dataset.key;
+    // The two declination chips are alternatives, not cumulative filters.
+    if (ch.dataset.group === 'obs' && (key === 'north' || key === 'south')) {
+      const other = key === 'north' ? 'south' : 'north';
+      set.delete(other);
+      chips.filter(c => c.dataset.group === 'obs' && c.dataset.key === other)
+        .forEach(c => c.classList.remove('active'));
+    }
     if (set.has(key)) { set.delete(key); ch.classList.remove('active'); }
     else { set.add(key); ch.classList.add('active'); }
     apply();

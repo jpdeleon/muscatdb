@@ -48,6 +48,13 @@ body {
 }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
+/* Bare links advertise whether their destination downloads or opens separately.
+   Buttons are excluded: their label/icon is part of the control design. */
+a:not(.btn)[download]::before { content: "⬇ "; }
+a:not(.btn)[target="_blank"]::after { content: " ↗"; }
+/* Figure previews already communicate their destination visually. */
+figure a[download]::before,
+figure a[target="_blank"]::after { content: none; }
 h1 { font-size: 1.5rem; font-weight: 600; margin-bottom: 1.5rem; }
 h2 { font-size: 1.15rem; font-weight: 500; margin-bottom: 1rem; color: var(--text-dim); }
 .mono { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.8rem; }
