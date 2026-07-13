@@ -4,13 +4,11 @@
 #[![Documentation](https://readthedocs.org/projects/quicklook/badge/?version=latest)](https://quicklook.readthedocs.io/en/latest/)
 #[![PyPI](https://img.shields.io/pypi/v/muscat-db)](https://pypi.org/project/muscatdb/)
 #[![Python](https://img.shields.io/pypi/pyversions/muscat-db)](https://pypi.org/project/muscatdb/)
--->
 [![CI](https://github.com/jpdeleon/muscat-db/actions/workflows/ci.yml/badge.svg)](https://github.com/jpdeleon/muscatdb/actions/workflows/ci.yml)
+-->
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/jpdeleon/muscatdb)
 
-MuSCAT observation log pipeline — scan FITS files, build a fast SQLite database, and browse results in a web UI.
-
-Converted from the original Perl scripts (`mkobslog*.pl`, `auto_mkobslog.pl`, `show_obslog_summary.pl`) into a single Python project with a modern backend + frontend.
+MuSCAT observation log pipeline — scan FITS files, build a fast SQLite database, and browse results in a modern web UI.
 
 ## Pipeline engines
 
