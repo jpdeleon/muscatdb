@@ -40,24 +40,22 @@
 </div>
 
 <div class="chip-bar">
-  <span class="chip-label">Planet type <span class="logic-indicator" title="Size classes are ORed; depth limit is ANDed on top">OR / AND</span>:</span>
-  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="USP">USP</span>
-  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Hot Jupiter">Hot Jupiter</span>
-  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Jupiter-size">Jupiter-size</span>
-  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Neptune-size">Neptune-size</span>
-  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Sub-Neptune">Sub-Neptune</span>
-  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Super-Earth">Super-Earth</span>
-  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Earth-size">Earth-size</span>
-  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="depth>1ppt" title="Transit depth > 1 ppt (1,000 ppm)">depth &gt; 1ppt</span>
+  <span class="chip-label">Planet type <span class="logic-indicator" title="Size classes are ORed">OR</span>:</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="USP" title="Period &lt; 1 day">USP</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Hot Jupiter" title="Rₚ &gt; 8 R⊕ and period &lt; 10 days">Hot Jupiter</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Jupiter-size" title="Rₚ ≥ 8 R⊕">Jupiter-size</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Neptune-size" title="4 ≤ Rₚ &lt; 8 R⊕">Neptune-size</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Sub-Neptune" title="2 ≤ Rₚ &lt; 4 R⊕">Sub-Neptune</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Super-Earth" title="1.25 ≤ Rₚ &lt; 2 R⊕">Super-Earth</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="Earth-size" title="Rₚ &lt; 1.25 R⊕">Earth-size</span>
 </div>
 <div class="chip-bar">
-  <span class="chip-label">Host star <span class="logic-indicator" title="Spectral types are ORed; magnitude limit is ANDed on top">OR / AND</span>:</span>
-  <span class="badge instrument-badge toi-chip" data-group="star" data-key="M">M dwarf</span>
-  <span class="badge instrument-badge toi-chip" data-group="star" data-key="K">K type</span>
-  <span class="badge instrument-badge toi-chip" data-group="star" data-key="G">G type</span>
-  <span class="badge instrument-badge toi-chip" data-group="star" data-key="F">F type</span>
-  <span class="badge instrument-badge toi-chip" data-group="star" data-key="A+">A / hotter</span>
-  <span class="badge instrument-badge toi-chip" data-group="star" data-key="Tmag<=12" title="TESS magnitude ≤ 12">Tmag ≤ 12</span>
+  <span class="chip-label">Host star <span class="logic-indicator" title="Spectral types are ORed">OR</span>:</span>
+  <span class="badge instrument-badge toi-chip" data-group="star" data-key="M" title="T_eff &lt; 3900 K">M dwarf</span>
+  <span class="badge instrument-badge toi-chip" data-group="star" data-key="K" title="3900 ≤ T_eff &lt; 5300 K">K type</span>
+  <span class="badge instrument-badge toi-chip" data-group="star" data-key="G" title="5300 ≤ T_eff &lt; 6000 K">G type</span>
+  <span class="badge instrument-badge toi-chip" data-group="star" data-key="F" title="6000 ≤ T_eff &lt; 7300 K">F type</span>
+  <span class="badge instrument-badge toi-chip" data-group="star" data-key="A+" title="T_eff ≥ 7300 K">A / hotter</span>
 </div>
 <div class="chip-bar">
   <span class="chip-label">Candidate type <span class="logic-indicator" title="Candidate dispositions are ORed; NASA confirmation is ANDed on top">OR / AND</span>:</span>
@@ -83,6 +81,12 @@
   <span class="badge instrument-badge toi-chip" data-group="rot" data-key="fast" title="Host-star rotation period P_rot < 10 days (Boyle+2026)">Fast rotator (P<sub>rot</sub> &lt; 10 d)</span>
 </div>
 <p class="toi-meta" id="toi-rot-note" style="margin-top:0.25rem;"></p>
+<div class="chip-bar">
+  <span class="chip-label">Observability <span class="logic-indicator" title="Matching checked limits (AND)">AND</span>:</span>
+  <span class="badge instrument-badge toi-chip" data-group="planet" data-key="depth>1ppt" title="Transit depth > 1 ppt (1,000 ppm)">depth &gt; 1ppt</span>
+  <span class="badge instrument-badge toi-chip" data-group="star" data-key="Tmag<=12" title="TESS magnitude ≤ 12">Tmag ≤ 12</span>
+  <span class="badge instrument-badge toi-chip" data-group="obs" data-key="north" title="Declination > 0°">Dec &gt; 0</span>
+</div>
 <div class="chip-bar">
   <span class="chip-label">muscat-db <span class="logic-indicator" title="Matching checked flag (AND)">AND</span>:</span>
   <span class="badge instrument-badge toi-chip" data-group="indb" data-key="1" title="Only TOIs whose host star has data in muscat-db">★ In muscat-db</span>
@@ -371,6 +375,7 @@
   const selectedIndb = new Set();          // '1' = only targets present in muscat-db
   const selectedHarps = new Set();         // '1' = coordinate match in HARPS RVBank
   const selectedNasa = new Set();          // '1' = matched to NASA confirmed-planet catalog, '0' = not matched
+  const selectedObservability = new Set(); // 'north' = declination > 0 degrees
   let sortState = { key: null, dir: 0 };   // dir: 1 asc, -1 desc
 
   function buildColPredicates() {
@@ -420,6 +425,7 @@
     const useIndb = selectedIndb.size > 0;
     const useHarps = selectedHarps.size > 0;
     const useNasa = selectedNasa.size > 0;
+    const useNorth = selectedObservability.has('north');
     const out = [];
     for (let i = 0; i < N; i++) {
       if (q) {
@@ -471,6 +477,7 @@
         if (selectedNasa.has('1') && !TOI.nasa_confirmed[i]) continue;
         if (selectedNasa.has('0') && TOI.nasa_confirmed[i]) continue;
       }
+      if (useNorth && !(TOI.dec[i] != null && TOI.dec[i] > 0)) continue;
       out.push(i);
     }
     if (sortState.key) applySort(out);
@@ -1021,6 +1028,7 @@
     if (state.indb && state.indb.length) parts.push('indb=' + state.indb.join(','));
     if (state.harps && state.harps.length) parts.push('harps=' + state.harps.join(','));
     if (state.nasa && state.nasa.length) parts.push('nasa=' + state.nasa.join(','));
+    if (state.obs && state.obs.length) parts.push('obs=' + state.obs.join(','));
     if (state.sort && state.sort.key) parts.push('sort=' + state.sort.key + ':' + state.sort.dir);
     if (state.plot) {
       if (state.plot.x) parts.push('x=' + state.plot.x);
@@ -1049,7 +1057,7 @@
     const state = {};
     const params = new URLSearchParams(hash);
     if (params.has('q')) searchEl.value = decodeURIComponent(params.get('q'));
-    ['planet', 'star', 'disp', 'multi', 'rot', 'indb', 'harps', 'nasa'].forEach(k => {
+    ['planet', 'star', 'disp', 'multi', 'rot', 'indb', 'harps', 'nasa', 'obs'].forEach(k => {
       if (params.has(k)) state[k] = params.get(k).split(',');
     });
     if (params.has('sort')) {
@@ -1089,6 +1097,7 @@
       indb: Array.from(selectedIndb),
       harps: Array.from(selectedHarps),
       nasa: Array.from(selectedNasa),
+      obs: Array.from(selectedObservability),
       sort: sortState,
       plot: { x: selX.value, y: selY.value, color: selColor.value,
               logx: logXEl.checked, logy: logYEl.checked,
@@ -1126,6 +1135,7 @@
     (s.indb || []).forEach(k => selectedIndb.add(k));
     (s.harps || []).forEach(k => selectedHarps.add(k));
     (s.nasa || []).forEach(k => selectedNasa.add(k));
+    (s.obs || []).filter(k => k === 'north').forEach(k => selectedObservability.add(k));
     chips.forEach(ch => {
       if (setForGroup(ch.dataset.group).has(keyForChip(ch))) ch.classList.add('active');
     });
@@ -1177,7 +1187,7 @@
     if (!clearEl) return;
     const hasSearch = !!searchEl.value.trim();
     const hasColFilters = colInputs.some(inp => !!inp.value.trim());
-    const hasChips = selectedPlanet.size > 0 || selectedStar.size > 0 || selectedDisp.size > 0 || selectedMulti.size > 0 || selectedRot.size > 0 || selectedIndb.size > 0 || selectedHarps.size > 0 || selectedNasa.size > 0;
+    const hasChips = selectedPlanet.size > 0 || selectedStar.size > 0 || selectedDisp.size > 0 || selectedMulti.size > 0 || selectedRot.size > 0 || selectedIndb.size > 0 || selectedHarps.size > 0 || selectedNasa.size > 0 || selectedObservability.size > 0;
     clearEl.style.display = (hasSearch || hasColFilters || hasChips) ? 'inline-flex' : 'none';
   }
 
@@ -1193,6 +1203,7 @@
       selectedIndb.clear();
       selectedHarps.clear();
       selectedNasa.clear();
+      selectedObservability.clear();
       chips.forEach(ch => ch.classList.remove('active'));
       apply();
     });
@@ -1226,7 +1237,7 @@
   searchEl.addEventListener('input', applySoon);
   colInputs.forEach(inp => inp.addEventListener('input', applySoon));
   function setForGroup(group) {
-    return group === 'planet' ? selectedPlanet : group === 'star' ? selectedStar : group === 'multi' ? selectedMulti : group === 'rot' ? selectedRot : group === 'indb' ? selectedIndb : group === 'harps' ? selectedHarps : group === 'nasa' ? selectedNasa : selectedDisp;
+    return group === 'planet' ? selectedPlanet : group === 'star' ? selectedStar : group === 'multi' ? selectedMulti : group === 'rot' ? selectedRot : group === 'indb' ? selectedIndb : group === 'harps' ? selectedHarps : group === 'nasa' ? selectedNasa : group === 'obs' ? selectedObservability : selectedDisp;
   }
   function keyForChip(ch) {
     // The "Unset" disposition chip uses a sentinel so the attribute is non-empty.

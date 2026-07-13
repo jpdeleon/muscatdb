@@ -2258,26 +2258,42 @@
           showMessageModal('No Transit Time Data', 'No transit time data. Please check at least one dataset to fit.');
           return;
         }
-        
-        if (runBtn) runBtn.disabled = true;
-        const logEl = document.getElementById('run-log');
-        logEl.style.display = 'block';
-        logEl.textContent = 'Launching TTV fitting run…';
-        
+
         const runNameVal = (document.getElementById('opt-run_name')?.value || '').trim();
-        const job = { target: target, run_name: runNameVal };
-        localStorage.setItem(JOB_KEY, JSON.stringify(job));
-        
-        fetch('/api/ttv-fit/start', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            target: target,
-            options: options
-          })
-        })
+        const outputQs = 'target=' + encodeURIComponent(target) +
+          '&run_name=' + encodeURIComponent(runNameVal);
+        if (runBtn) runBtn.disabled = true;
+
+        // Check the server immediately before launch: an existing result must
+        // never be overwritten accidentally, even if another tab created it
+        // after this page was loaded.
+        fetch('/api/ttv-fit/outputs?' + outputQs)
         .then(r => r.json())
+        .then(existing => {
+          if (existing.ok && existing.outputs && existing.outputs.has_any && !options.clobber) {
+            if (runBtn) runBtn.disabled = false;
+            showMessageModal(
+              'Existing TTV fit',
+              'A fit already exists for run "' + (runNameVal || 'default') +
+              '". Check Overwrite before running a new fit with this run name.'
+            );
+            return null;
+          }
+
+          const logEl = document.getElementById('run-log');
+          logEl.style.display = 'block';
+          logEl.textContent = 'Launching TTV fitting run…';
+          localStorage.setItem(JOB_KEY, JSON.stringify({ target: target, run_name: runNameVal }));
+          return fetch('/api/ttv-fit/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target: target, options: options })
+          });
+        })
+        .then(response => response ? response.json() : null)
         .then(res => {
+          if (!res) return;
+          const logEl = document.getElementById('run-log');
           if (!res.ok) {
             localStorage.removeItem(JOB_KEY);
             if (runBtn) runBtn.disabled = false;
@@ -2289,13 +2305,13 @@
           }
           poller.stop();
           pollTTVStatus();
-          // Light up the site-wide loading indicator immediately for this run.
           if (window.MuscatJobIndicator) window.MuscatJobIndicator.refresh();
         })
         .catch(err => {
           localStorage.removeItem(JOB_KEY);
           if (runBtn) runBtn.disabled = false;
-          logEl.textContent = 'Error: ' + err.message;
+          const logEl = document.getElementById('run-log');
+          if (logEl) logEl.textContent = 'Error: ' + err.message;
           if (window.MuscatJobIndicator) window.MuscatJobIndicator.refresh();
         });
       });
