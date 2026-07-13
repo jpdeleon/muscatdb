@@ -149,6 +149,20 @@ class TestRunDiscovery:
         empty = fit.get_fit_outputs("sinistro", "250710", "HIP67522", run_id="does-not-exist")
         assert empty["has_any"] is False
 
+    def test_get_fit_outputs_hides_internal_bare_download_artifacts(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_TIMER_DIR", str(tmp_path))
+        tdir = tmp_path / "sinistro" / "250710" / "HIP67522"
+        _make_run(tdir, "lsc-g", "lsc", "central_2k_2x2", "g", 1_000_100)
+        out_dir = tdir / "lsc-g" / "out"
+        (out_dir / "samples-cor.csv").write_text("x,y\n1,2\n")
+        (out_dir / "trace.pkl").write_bytes(b"pickle")
+        (out_dir / "posterior.nc").write_bytes(b"netcdf")
+
+        fit._fit_outputs_cache.clear()
+        outputs = fit.get_fit_outputs("sinistro", "250710", "HIP67522", run_id="lsc-g")
+
+        assert outputs["extra_files"] == ["posterior.nc"]
+
     def test_has_fit_outputs_detects_run_scoped_only(self, monkeypatch, tmp_path):
         """Regression: a fit written only to ``{target}/{run_id}/out/`` (no legacy
         ``{target}/out/``) must be reported present. ``get_fit_outputs(None)``

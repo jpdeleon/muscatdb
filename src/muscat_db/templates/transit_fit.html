@@ -330,8 +330,8 @@
       {% if outputs.has_log %}<a href="{{ file_base }}/timer-fit.log" target="_blank">📄 fit run log</a>{% endif %}
       {% if outputs.has_fit_yaml %}<a href="{{ file_base }}/fit.yaml" target="_blank">⚙ fit.yaml</a>{% endif %}
       {% if outputs.has_sys_yaml %}<a href="{{ file_base }}/sys.yaml" target="_blank">🪐 sys.yaml</a>{% endif %}
-      {% if outputs.summary %}<a href="{{ file_base }}/summary.csv" download>⬇ download summary (.csv)</a>{% endif %}
-      {% for f in outputs.extra_files %}<a href="{{ file_base }}/{{ f }}" download>⬇ {{ f }}</a>{% endfor %}
+      {% if outputs.summary %}<a href="{{ file_base }}/summary.csv" download>download summary (.csv)</a>{% endif %}
+      {% for f in outputs.extra_files %}<a href="{{ file_base }}/{{ f }}" download>{{ f }}</a>{% endfor %}
     </div>
   </div>
   {% endif %}
@@ -340,7 +340,7 @@
   <div class="phot-section run-panel">
     <h2>Configure &amp; Run Transit Fitting</h2>
     <div style="margin-bottom: 1rem;">
-      <a href="https://exoplanetarchive.ipac.caltech.edu/overview/{{ sel_target }}" target="_blank" style="font-size: 0.9rem; color: var(--accent); text-decoration: none; font-weight: 500;">View NASA Exoplanet Archive ↗</a>
+      <a href="https://exoplanetarchive.ipac.caltech.edu/overview/{{ sel_target }}" target="_blank" style="font-size: 0.9rem; color: var(--accent); text-decoration: none; font-weight: 500;">View NASA Exoplanet Archive</a>
     </div>
 
     <details class="adv" id="opt-panel">

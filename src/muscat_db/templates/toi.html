@@ -36,7 +36,7 @@
   <input id="toi-search" type="text" placeholder="Search TOI, TIC ID, or planet name…" autocomplete="off">
   <span id="toi-count" class="hint"></span>
   <button id="toi-clear" type="button" class="csv-btn" style="display: none; background: var(--border); color: var(--text); border: none; cursor: pointer; margin-right: 0.25rem;">✕ Clear filters</button>
-  <a id="toi-export" href="#" class="csv-btn" download="tois_filtered.csv">⬇ CSV (filtered)</a>
+  <a id="toi-export" href="#" class="csv-btn" download="tois_filtered.csv">CSV (filtered)</a>
 </div>
 
 <div class="chip-bar">
@@ -82,10 +82,11 @@
 </div>
 <p class="toi-meta" id="toi-rot-note" style="margin-top:0.25rem;"></p>
 <div class="chip-bar">
-  <span class="chip-label">Observability <span class="logic-indicator" title="Matching checked limits (AND)">AND</span>:</span>
+  <span class="chip-label">Observability <span class="logic-indicator" title="Depth and TESS-magnitude limits are ANDed; declination hemispheres are ORed">AND / OR</span>:</span>
   <span class="badge instrument-badge toi-chip" data-group="planet" data-key="depth>1ppt" title="Transit depth > 1 ppt (1,000 ppm)">depth &gt; 1ppt</span>
   <span class="badge instrument-badge toi-chip" data-group="star" data-key="Tmag<=12" title="TESS magnitude ≤ 12">Tmag ≤ 12</span>
   <span class="badge instrument-badge toi-chip" data-group="obs" data-key="north" title="Declination > 0°">Dec &gt; 0</span>
+  <span class="badge instrument-badge toi-chip" data-group="obs" data-key="south" title="Declination < 0°">Dec &lt; 0</span>
 </div>
 <div class="chip-bar">
   <span class="chip-label">muscat-db <span class="logic-indicator" title="Matching checked flag (AND)">AND</span>:</span>
@@ -425,7 +426,7 @@
     const useIndb = selectedIndb.size > 0;
     const useHarps = selectedHarps.size > 0;
     const useNasa = selectedNasa.size > 0;
-    const useNorth = selectedObservability.has('north');
+    const hemisphereFilters = ['north', 'south'].filter(k => selectedObservability.has(k));
     const out = [];
     for (let i = 0; i < N; i++) {
       if (q) {
@@ -477,7 +478,9 @@
         if (selectedNasa.has('1') && !TOI.nasa_confirmed[i]) continue;
         if (selectedNasa.has('0') && TOI.nasa_confirmed[i]) continue;
       }
-      if (useNorth && !(TOI.dec[i] != null && TOI.dec[i] > 0)) continue;
+      if (hemisphereFilters.length && !hemisphereFilters.some(h =>
+        h === 'north' ? TOI.dec[i] > 0 : TOI.dec[i] < 0
+      )) continue;
       out.push(i);
     }
     if (sortState.key) applySort(out);
@@ -1135,7 +1138,10 @@
     (s.indb || []).forEach(k => selectedIndb.add(k));
     (s.harps || []).forEach(k => selectedHarps.add(k));
     (s.nasa || []).forEach(k => selectedNasa.add(k));
-    (s.obs || []).filter(k => k === 'north').forEach(k => selectedObservability.add(k));
+    const restoredObservability = (s.obs || []).filter(k => k === 'north' || k === 'south');
+    // North wins if a legacy URL or saved setting selected both hemispheres.
+    if (restoredObservability.includes('north')) selectedObservability.add('north');
+    else if (restoredObservability.includes('south')) selectedObservability.add('south');
     chips.forEach(ch => {
       if (setForGroup(ch.dataset.group).has(keyForChip(ch))) ch.classList.add('active');
     });
@@ -1246,6 +1252,13 @@
   chips.forEach(ch => ch.addEventListener('click', function () {
     const set = setForGroup(ch.dataset.group);
     const key = keyForChip(ch);
+    // The two declination chips are alternatives, not cumulative filters.
+    if (ch.dataset.group === 'obs' && (key === 'north' || key === 'south')) {
+      const other = key === 'north' ? 'south' : 'north';
+      set.delete(other);
+      chips.filter(c => c.dataset.group === 'obs' && keyForChip(c) === other)
+        .forEach(c => c.classList.remove('active'));
+    }
     if (set.has(key)) { set.delete(key); ch.classList.remove('active'); }
     else { set.add(key); ch.classList.add('active'); }
     apply();

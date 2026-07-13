@@ -14,7 +14,7 @@
   <label><input id="regex-toggle" type="checkbox"> Regex</label>
   <label><input id="case-toggle" type="checkbox"> Case-sensitive</label>
   <span id="search-status" class="hint"></span>
-  <a href="/api/targets/export.csv" class="csv-btn" download>⬇ CSV</a>
+  <a href="/api/targets/export.csv" class="csv-btn" download>CSV</a>
 </div>
 
 {% set unique_instruments = targets | map(attribute='instruments') | sum(start=[]) | unique | sort %}

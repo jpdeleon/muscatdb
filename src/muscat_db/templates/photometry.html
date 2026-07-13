@@ -167,7 +167,7 @@
         {% endif %}
         <a href="/fov?inst={{ sel_inst | urlencode }}&target={{ sel_target | urlencode }}" target="_blank" rel="noopener" style="color: inherit; text-decoration: underline; text-underline-offset: 2px; margin-left: 0.75rem;">Show FOV</a>
       </span>
-      {% if wiki_url %}<a href="{{ wiki_url }}" target="_blank" rel="noopener" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">MuSCAT2 wiki ↗</a>{% endif %}
+      {% if wiki_url %}<a href="{{ wiki_url }}" target="_blank" rel="noopener" style="color: inherit; text-decoration: underline; text-underline-offset: 2px;">MuSCAT2 wiki</a>{% endif %}
     </h2>
     {# Build each href as one expression with plain '&'; autoescape turns it into
        a single '&amp;' (writing '&amp;' here would double-escape to '&amp;amp;'). #}
@@ -229,7 +229,7 @@
           Download csv:
           {% for band, prods in outputs.bands.items() %}
             {% if prods.get('csv') %}
-          <a href="{{ file_base }}/{{ prods['csv']['file'] }}?v={{ prods['csv']['version'] }}" download class="csv-link">⬇ {{ band }}</a>
+          <a href="{{ file_base }}/{{ prods['csv']['file'] }}?v={{ prods['csv']['version'] }}" download class="csv-link">{{ band }}</a>
             {% endif %}
           {% endfor %}
           <a href="#" id="dl-all-csv" style="color: var(--accent2); font-weight: 600;">⬇ all</a>
@@ -285,7 +285,7 @@
       </div>
       {% if outputs.summary.get('nearby_stars') %}
       <span class="dl-row" style="font-size: 0.85rem; font-weight: 400; margin-top: 0.5rem; display: block;">
-        Download CSV: <a href="{{ file_base }}/{{ outputs.summary['nearby_stars']['file'] }}?v={{ outputs.summary['nearby_stars']['version'] }}" download class="csv-link">⬇ Nearby stars</a>
+        Download CSV: <a href="{{ file_base }}/{{ outputs.summary['nearby_stars']['file'] }}?v={{ outputs.summary['nearby_stars']['version'] }}" download class="csv-link">Nearby stars</a>
       </span>
       {% endif %}
       {% else %}
@@ -340,7 +340,7 @@
       <div class="dl-row">
         {% set dl_all_url = '/api/photometry/download-all/' ~ sel_inst ~ '/' ~ sel_date ~ '/' ~ sel_target ~ (('/run/' ~ sel_run) if sel_run else '') %}
         <a href="{{ dl_all_url }}" download style="font-weight: 600; color: var(--accent2);">📦 Download all output (.zip)</a>
-        {% if outputs.npz %}<a href="{{ file_base }}/{{ outputs.npz }}" download>⬇ data archive (.npz)</a>{% endif %}
+        {% if outputs.npz %}<a href="{{ file_base }}/{{ outputs.npz }}" download>data archive (.npz)</a>{% endif %}
         {% if outputs.log %}<a href="{{ file_base }}/{{ outputs.log }}" target="_blank">📄 pipeline log</a>{% endif %}
         {% if outputs.ref_header %}<a href="{{ file_base }}/{{ outputs.ref_header }}" target="_blank">🧾 view ref header</a>{% endif %}
         {% if outputs.ref_selection %}<a href="{{ file_base }}/{{ outputs.ref_selection }}" target="_blank">🔍 view ref selection</a>{% endif %}
