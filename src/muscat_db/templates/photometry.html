@@ -1145,12 +1145,42 @@
     panel.addEventListener('input', debounce(refreshCmd, 400));
   }
 
-  // site/telescope/mode (sinistro only) live in the selector row, not the run
-  // panel, so wire them explicitly to persist + refresh the previewed command
-  // on change.
+  // Site/telescope/mode are both reduction options and URL view filters.  A
+  // normal reload would retain the old query string, so navigate with the
+  // current filter values instead.
+  function navigateSinistroFilters() {
+    saveOptions();
+    var qs = new URLSearchParams();
+    if (inst) qs.set('inst', inst);
+    if (date) qs.set('date', date);
+    if (target) qs.set('target', target);
+    if (siteSel && siteSel.value) qs.set('site', siteSel.value);
+    if (telescopeSel && telescopeSel.value) qs.set('telescope', telescopeSel.value);
+    if (modeSel && modeSel.value) qs.set('mode', modeSel.value);
+    if (runId) qs.set('run', runId);
+    if (typeof window.showLoading === 'function') {
+      window.showLoading('Updating…');
+    }
+    window.location.href = '/photometry?' + qs.toString();
+  }
   ['opt-site', 'opt-telescope', 'opt-mode'].forEach(function (id) {
     var el = document.getElementById(id);
-    if (el) el.addEventListener('change', function () { saveOptions(); refreshCmd(); });
+    if (el) el.addEventListener('change', navigateSinistroFilters);
+  });
+
+  // Top-level selectors already navigate to the appropriate inst/date/target
+  // route above. Every other dropdown changes the active reduction options:
+  // persist it, then reload so the page is immediately reconciled with the
+  // newly selected configuration (including dependent controls and previews).
+  document.querySelectorAll('select[id^="opt-"]').forEach(function (el) {
+    if (el.id === 'opt-site' || el.id === 'opt-telescope' || el.id === 'opt-mode') return;
+    el.addEventListener('change', function () {
+      saveOptions();
+      if (typeof window.showLoading === 'function') {
+        window.showLoading('Updating…');
+      }
+      window.location.reload();
+    });
   });
 
   // ----- copy command -----

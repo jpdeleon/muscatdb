@@ -1043,7 +1043,17 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
                 nearby_preview = {"headers": nb_headers, "rows": nb_rows}
 
     # Merge URL parameter overrides with defaults
-    merged_defaults = {**phot.RUN_DEFAULTS, **run_defaults_override}
+    # Sinistro's site/telescope/mode selectors double as page view filters and
+    # reduction options.  Seed the option controls from the validated URL so a
+    # route reached through one of those selectors remains visibly selected on
+    # reload, rather than being overwritten by the generic defaults.
+    merged_defaults = {
+        **phot.RUN_DEFAULTS,
+        **run_defaults_override,
+        "site": site,
+        "telescope": telescope,
+        "mode": mode,
+    }
 
     resp = _render(
         "photometry.html",

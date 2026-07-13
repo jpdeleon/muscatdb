@@ -1585,6 +1585,28 @@ class TestRoutes:
         assert 'id="opt-mode"' not in html
         assert 'value="full_frame"' not in html
 
+    def test_photometry_url_filter_seeds_sinistro_option(self, client, tmp_path):
+        """A Sinistro telescope selected in the URL remains selected after reload."""
+        import sqlite3
+        conn = sqlite3.connect(tmp_path / "muscat.db")
+        conn.executemany(
+            """INSERT INTO frames (instrument, obsdate, ccd, filename, object, read_mode)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [
+                ("sinistro", "250710", 0, "lsc1m005-fa15-20250710-0082-e91", "HIP67522", "central_2k_2x2"),
+                ("sinistro", "250710", 0, "lsc1m009-fa15-20250710-0083-e91", "HIP67522", "central_2k_2x2"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        r = client.get(
+            "/photometry?inst=sinistro&date=250710&target=HIP67522"
+            "&site=lsc&telescope=1m0-05&mode=central_2k_2x2"
+        )
+        assert r.status_code == 200
+        assert '<option value="1m0-05" selected>1m0-05</option>' in r.text
+
     def _insert_two_sites(self, tmp_path):
         import sqlite3
         conn = sqlite3.connect(tmp_path / "muscat.db")
