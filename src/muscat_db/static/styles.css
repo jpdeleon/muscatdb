@@ -101,9 +101,25 @@ nav .spacer { flex: 1; }
 .card .meta  { font-size: 0.85rem; color: var(--text-dim); margin-top: 0.35rem; }
 
 /* ---------- Tables ---------- */
-table {
+table:not(#toi-table):not(#nx-table) {
   width: 100%; border-collapse: collapse; margin: 1rem 0;
   font-size: 0.85rem;
+}
+/* Catalog tables should use their intrinsic column widths. Their .csv-wrap
+   containers provide horizontal scrolling instead of squeezing/truncating
+   headers and values into the viewport width. */
+#toi-table, #nx-table {
+  width: max-content;
+  table-layout: auto;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 0.85rem;
+}
+#toi-table th, #toi-table td,
+#nx-table th, #nx-table td {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
 }
 table.resizable-init { table-layout: fixed; }
 .csv-wrap { overflow-x: auto; margin-top: 0.5rem; }
