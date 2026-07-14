@@ -49,7 +49,8 @@ the science lives in the packages themselves.
 ## Requirements
 
 - Python ≥ 3.12
-- FITS files on the standard data directories (`/data/MuSCAT*`, `/data/Sinistro`)
+- FITS files below the common data root (`MUSCAT_DATA_DIR`, default `/data`) in
+  `MuSCAT`, `MuSCAT2`, `MuSCAT3`, `MuSCAT4`, and `Sinistro` subdirectories
 - Obslog output directories (`/ut2/muscat/obslog/`)
 
 ## Installation and usage
@@ -122,6 +123,10 @@ token encryption), `MUSCAT_NGINX_GROUP` (htpasswd file group ownership), and
 `ADS_API_TOKEN`/`ADS_DEV_KEY` (target-page NASA ADS publication search) (see
 below). At startup the server prints each variable's status
 (`set` / `default` / `unset`).
+
+`MUSCAT_DATA_DIR` is the common raw-data root, not one instrument's directory.
+Each instrument resolves below it using its canonical case-sensitive directory
+name, for example `$MUSCAT_DATA_DIR/MuSCAT3/<yymmdd>/`.
 
 `MUSCAT_TMPDIR` (default `$HOME/temp`) routes the temp files of
 spawned pipeline jobs (`TMPDIR`/`TMP`/`TEMP`) onto a roomy raid-backed directory,

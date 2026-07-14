@@ -326,11 +326,10 @@ def _parse_run_dir_name(inst: str, name: str) -> tuple[str, str, str, str]:
 
 
 def raw_data_dir(inst: str, date: str) -> Path:
-    base = os.environ.get("MUSCAT_DATA_DIR")
-    if not base:
-        cfg = INSTRUMENTS.get(inst)
-        base = cfg.data_dir if cfg is not None else f"/data/{inst}"
-    return Path(base) / date
+    cfg = INSTRUMENTS.get(inst)
+    if cfg is None:
+        raise ValueError(f"unknown instrument: {inst}")
+    return Path(cfg.data_dir) / date
 
 
 def _stem(target: str, inst: str, date: str, band: str | None = None) -> str:

@@ -38,7 +38,11 @@ ENV_VARS: tuple[EnvVar, ...] = (
         "Keep stable across restarts; changing it makes stored tokens unreadable.",
         secret=True,
     ),
-    EnvVar("MUSCAT_DATA_DIR", None, "Raw FITS data base directory"),
+    EnvVar(
+        "MUSCAT_DATA_DIR",
+        "/data",
+        "Common raw FITS root containing MuSCAT, MuSCAT2, MuSCAT3, MuSCAT4, and Sinistro",
+    ),
     EnvVar("MUSCAT_OBSLOG_DIR", "/ut2/muscat/obslog", "Shared obslog CSV base (muscat-db + prose2)"),
     EnvVar(
         "MUSCAT_PROSE_DIR",

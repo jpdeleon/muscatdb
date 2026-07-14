@@ -126,7 +126,9 @@ def config_state(user_name: str | None = None) -> dict:
     user_token_configured = user_lco_token_configured(user_name)
     global_token_configured = bool(os.environ.get("LCO_API_TOKEN"))
     token_configured = user_token_configured or global_token_configured
-    download_root_configured = bool(os.environ.get("MUSCAT_LCO_DIR"))
+    download_root_configured = bool(
+        os.environ.get("MUSCAT_LCO_DIR") or os.environ.get("MUSCAT_DATA_DIR")
+    )
     submit_flag_enabled = os.environ.get("MUSCAT_LCO_ALLOW_SUBMIT") == "1"
     root = download_root()
     return {
@@ -586,7 +588,7 @@ def download_root() -> Path | None:
         return Path(lco_dir)
     data_dir = os.environ.get("MUSCAT_DATA_DIR")
     if data_dir:
-        return Path(data_dir)
+        return Path(data_dir).expanduser()
     return None
 
 
