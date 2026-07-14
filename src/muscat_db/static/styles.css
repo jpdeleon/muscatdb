@@ -462,6 +462,20 @@ tr.filter-row th input::placeholder { color: var(--text-dim); font-style: italic
 /* Interactive controls in the summary (csv download links) must not toggle. */
 .phot-fold > summary a { cursor: pointer; }
 
+/* Foldable card section: a <details> whose <summary> carries an <h3>. */
+.section-fold > summary {
+  list-style: none; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 0.5rem;
+}
+.section-fold > summary::-webkit-details-marker { display: none; }
+.section-fold > summary::before {
+  content: '\25B8'; color: var(--text-dim); font-size: 0.9rem;
+  transition: transform 0.15s ease; flex-shrink: 0;
+}
+.section-fold[open] > summary::before { transform: rotate(90deg); }
+.section-fold > summary h3 { margin: 0; }
+.section-fold[open] > summary { margin-bottom: 0.85rem; }
+
 /* ---------- Options form ---------- */
 .opt-grid {
   display: grid; gap: 0.75rem 1.25rem;
@@ -523,6 +537,19 @@ details.adv > summary {
   padding: 0.35rem 0; user-select: none;
 }
 details.adv[open] > summary { color: var(--text); margin-bottom: 0.5rem; }
+
+/* Keep every Ephemeris disclosure indicator the same readable size. */
+.ephemeris-fold > summary {
+  list-style: none; display: flex; align-items: center; gap: 0.5rem;
+}
+.ephemeris-fold > summary::-webkit-details-marker { display: none; }
+.ephemeris-fold > summary::before {
+  content: '\25B8'; color: var(--text-dim); font-size: 1rem; line-height: 1;
+  transition: transform 0.15s ease; flex-shrink: 0;
+}
+.ephemeris-fold[open] > summary::before { transform: rotate(90deg); }
+/* Top-level folds sit beside an h2 and need a larger optical glyph. */
+.ephemeris-fold.phot-fold > summary::before { font-size: 1.35rem; }
 
 /* ---------- Run panel ---------- */
 .run-panel { border-top: 1px solid var(--border); padding-top: 1.25rem; margin-top: 2rem; }
