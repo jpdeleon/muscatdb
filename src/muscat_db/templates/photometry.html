@@ -1169,21 +1169,6 @@
     if (el) el.addEventListener('change', navigateSinistroFilters);
   });
 
-  // Top-level selectors already navigate to the appropriate inst/date/target
-  // route above. Every other dropdown changes the active reduction options:
-  // persist it, then reload so the page is immediately reconciled with the
-  // newly selected configuration (including dependent controls and previews).
-  document.querySelectorAll('select[id^="opt-"]').forEach(function (el) {
-    if (el.id === 'opt-site' || el.id === 'opt-telescope' || el.id === 'opt-mode') return;
-    el.addEventListener('change', function () {
-      saveOptions();
-      if (typeof window.showLoading === 'function') {
-        window.showLoading('Updating…');
-      }
-      window.location.reload();
-    });
-  });
-
   // ----- copy command -----
   var copyBtn = document.getElementById('copy-cmd');
   if (copyBtn) {

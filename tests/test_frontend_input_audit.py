@@ -186,6 +186,24 @@ def test_every_input_has_a_default(page, btn):
     )
 
 
+def test_photometry_run_options_update_without_reloading_page():
+    """Pipeline options are live form state, not server-rendered view filters."""
+    html = _read_template("photometry.html")
+    options = html[
+        html.index("// ----- options form -----"):
+        html.index("// ----- copy command -----")
+    ]
+
+    assert "window.location.reload()" not in options
+    assert "panel.addEventListener('change', debounce(refreshCmd, 150))" in options
+    assert "saveOptions();" in _function_body(html, "refreshCmd")
+
+    # Sinistro site/telescope/mode controls are the deliberate exception: they
+    # filter server-rendered runs and outputs, so they navigate with URL state.
+    sinistro_navigation = _function_body(html, "navigateSinistroFilters")
+    assert "window.location.href = '/photometry?'" in sinistro_navigation
+
+
 # --------------------------------------------------------------------------- #
 # LCO schedule: inputs must be registered for persistence, and buildParams must
 # supply every field build_requestgroup requires.
