@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS summaries (
     object      TEXT,
     exptime     REAL,
     read_mode   TEXT,
+    telescope   TEXT,
     frame_start TEXT,
     frame_end   TEXT,
     ut_start    TEXT,
@@ -167,6 +168,26 @@ CREATE TABLE IF NOT EXISTS exposure_jobs (
     updated_at  REAL NOT NULL
 );
 
+-- App-owned closed-loop observation records are intentionally outside the
+-- frames/summaries/targets rebuild set and therefore survive daily rescans.
+CREATE TABLE IF NOT EXISTS test_observations (
+    id                  TEXT PRIMARY KEY,
+    target              TEXT NOT NULL,
+    instrument          TEXT NOT NULL,
+    site                TEXT NOT NULL,
+    transit_json        TEXT NOT NULL DEFAULT '{}',
+    plan_json           TEXT NOT NULL,
+    result_json         TEXT NOT NULL DEFAULT '{}',
+    request_ids_json    TEXT NOT NULL DEFAULT '[]',
+    payload_hash        TEXT NOT NULL DEFAULT '',
+    state               TEXT NOT NULL DEFAULT 'draft',
+    analysis_version    TEXT NOT NULL,
+    recommendation_json TEXT NOT NULL DEFAULT '{}',
+    failure_detail      TEXT NOT NULL DEFAULT '',
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS ephemeris_views (
     slug         TEXT PRIMARY KEY,
     state_hash   TEXT NOT NULL,
@@ -182,7 +203,42 @@ CREATE TABLE IF NOT EXISTS exofop_cache (
     confirmed_planets      TEXT NOT NULL DEFAULT '',
     updated_at             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Cross-process/cross-server concurrency gate for each pipeline's full-job
+-- cap (architecture audit finding: _MAX_FULL_JOBS was an in-memory-only
+-- per-process dict, already wrong under --workers N>1). One row per
+-- currently-claimed slot; a pipeline holds at most max_slots rows at once,
+-- enforced by job_store.DatabaseJobStore.claim_slot's atomic INSERT.
+CREATE TABLE IF NOT EXISTS job_concurrency_slots (
+    pipeline    TEXT NOT NULL,
+    holder_key  TEXT NOT NULL,
+    claimed_at  REAL NOT NULL,
+    PRIMARY KEY (pipeline, holder_key)
+);
 """
+
+# Idempotent schema migrations for columns added after initial deployment.
+# Each migration is attempted unconditionally; "duplicate column" errors are
+# silently swallowed so the function is safe to call multiple times.
+_MIGRATIONS = [
+    # 2026-07-12: group simultaneous multi-telescope sinistro nights separately
+    "ALTER TABLE summaries ADD COLUMN telescope TEXT",
+]
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Apply any pending schema migrations idempotently."""
+    for sql in _MIGRATIONS:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+
+def _apply_schema(conn: sqlite3.Connection) -> None:
+    """Create all tables (idempotent) then apply any pending column migrations."""
+    conn.executescript(SCHEMA)
+    _migrate_schema(conn)
 
 
 def _canonical_json(value) -> str:
@@ -290,18 +346,90 @@ def _summary_rows(conn: sqlite3.Connection, *, instrument: str | None = None, ob
         where.append("obsdate = ?")
         params.append(obsdate)
     where_sql = f" WHERE {' AND '.join(where)}" if where else ""
+    # Extract the telescope/camera prefix from the LCO frame filename
+    # (e.g. 'lsc1m005' from 'lsc1m005-fa15-20250806-0058-e91').
+    # For non-LCO instruments the filename has no '-', so the whole name is used.
     raw = conn.execute(
-        f"""SELECT instrument, obsdate, ccd, object, exptime, read_mode,
-                  MIN(filename), MAX(filename),
-                  MIN(ut_start), MAX(ut_start), COUNT(*),
-                  MAX(filter), coord_repr(ra, declination),
-                  MIN(NULLIF(airmass, 0)), MAX(NULLIF(airmass, 0))
-           FROM frames
-           {where_sql}
-           GROUP BY instrument, obsdate, ccd, object, exptime, read_mode""",
-        params,
+        f"""WITH ranked AS (
+               SELECT *,
+                      CASE
+                          WHEN INSTR(filename, '-') > 0
+                          THEN SUBSTR(filename, 1, INSTR(filename, '-') - 1)
+                          ELSE filename
+                      END AS telescope,
+                      ROW_NUMBER() OVER (
+                          PARTITION BY instrument, obsdate, ccd, object,
+                                       ROUND(exptime, 1), read_mode,
+                                       CASE WHEN INSTR(filename, '-') > 0
+                                            THEN SUBSTR(filename, 1, INSTR(filename, '-') - 1)
+                                            ELSE filename END
+                          ORDER BY jd_start ASC
+                      ) as rn_asc,
+                      ROW_NUMBER() OVER (
+                          PARTITION BY instrument, obsdate, ccd, object,
+                                       ROUND(exptime, 1), read_mode,
+                                       CASE WHEN INSTR(filename, '-') > 0
+                                            THEN SUBSTR(filename, 1, INSTR(filename, '-') - 1)
+                                            ELSE filename END
+                          ORDER BY jd_start DESC
+                      ) as rn_desc
+               FROM frames
+               {where_sql}
+           )
+           SELECT
+               f1.instrument, f1.obsdate, f1.ccd, f1.object, ROUND(f1.exptime, 1) AS exptime, f1.read_mode,
+               f1.telescope,
+               f1.filename AS frame_start,
+               f2.filename AS frame_end,
+               f1.ut_start AS ut_start,
+               f2.ut_start AS ut_end,
+               stats.nframes,
+               stats.filter,
+               stats.coord,
+               stats.airmass_min,
+               stats.airmass_max
+           FROM ranked f1
+           JOIN ranked f2 ON
+               f1.instrument = f2.instrument AND
+               f1.obsdate    = f2.obsdate    AND
+               f1.ccd        = f2.ccd        AND
+               f1.object     = f2.object     AND
+               ROUND(f1.exptime, 1) = ROUND(f2.exptime, 1) AND
+               f1.read_mode  = f2.read_mode  AND
+               f1.telescope  = f2.telescope  AND
+               f1.rn_asc = 1 AND f2.rn_desc = 1
+           JOIN (
+               SELECT instrument, obsdate, ccd, object,
+                      ROUND(exptime, 1) AS exptime_grp, read_mode,
+                      CASE WHEN INSTR(filename, '-') > 0
+                           THEN SUBSTR(filename, 1, INSTR(filename, '-') - 1)
+                           ELSE filename END AS telescope,
+                      COUNT(*) AS nframes,
+                      MAX(filter) AS filter,
+                      coord_repr(ra, declination) AS coord,
+                      MIN(NULLIF(airmass, 0)) AS airmass_min,
+                      MAX(NULLIF(airmass, 0)) AS airmass_max
+               FROM frames
+               {where_sql}
+               GROUP BY instrument, obsdate, ccd, object,
+                        ROUND(exptime, 1), read_mode,
+                        CASE WHEN INSTR(filename, '-') > 0
+                             THEN SUBSTR(filename, 1, INSTR(filename, '-') - 1)
+                             ELSE filename END
+           ) stats ON
+               f1.instrument = stats.instrument AND
+               f1.obsdate    = stats.obsdate    AND
+               f1.ccd        = stats.ccd        AND
+               f1.object     = stats.object     AND
+               ROUND(f1.exptime, 1) = stats.exptime_grp AND
+               f1.read_mode  = stats.read_mode  AND
+               f1.telescope  = stats.telescope""",
+        params * 2,
     ).fetchall()
-    return [(*r[:12], *_unpack_coord(r[12]), r[13], r[14]) for r in raw]
+    # columns: instrument, obsdate, ccd, object, exptime, read_mode,
+    #          telescope, frame_start, frame_end, ut_start, ut_end,
+    #          nframes, filter, coord, airmass_min, airmass_max  (16 cols)
+    return [(*r[:13], *_unpack_coord(r[13]), r[14], r[15]) for r in raw]
 
 
 def _insert_summary_rows(conn: sqlite3.Connection, rows: list[tuple]) -> None:
@@ -310,9 +438,9 @@ def _insert_summary_rows(conn: sqlite3.Connection, rows: list[tuple]) -> None:
     conn.executemany(
         """INSERT INTO summaries
            (instrument, obsdate, ccd, object, exptime, read_mode,
-            frame_start, frame_end, ut_start, ut_end, nframes,
+            telescope, frame_start, frame_end, ut_start, ut_end, nframes,
             filter, ra, declination, airmass_min, airmass_max)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         rows,
     )
 
@@ -514,7 +642,7 @@ def build_db(db_path: str, progress=None) -> int:
     if os.path.exists(db_path):
         try:
             with get_conn(db_path, row_factory=sqlite3.Row) as old_conn:
-                old_conn.executescript(SCHEMA)
+                _apply_schema(old_conn)
                 for table in _APP_OWNED_TABLES:
                     try:
                         rows = old_conn.execute(f"SELECT * FROM {table}").fetchall()
@@ -538,7 +666,7 @@ def build_db(db_path: str, progress=None) -> int:
         # Keep GROUP BY / sort spills on the DB's own (roomy) volume, not /tmp.
         _set_temp_store_dir(conn, tmp_path)
         conn.executescript("DROP TABLE IF EXISTS frames; DROP TABLE IF EXISTS summaries; DROP TABLE IF EXISTS targets;")
-        conn.executescript(SCHEMA)
+        _apply_schema(conn)
         conn.execute("DROP INDEX IF EXISTS idx_frames_inst_date;")
         conn.execute("DROP INDEX IF EXISTS idx_frames_object;")
         conn.execute("DROP INDEX IF EXISTS idx_summaries_inst_date;")
@@ -638,7 +766,7 @@ def ingest_date(db_path: str, instrument: str, obsdate: str, progress=None) -> i
         conn.execute("PRAGMA cache_size=100000;")
         # Keep GROUP BY / sort spills on the DB's own (roomy) volume, not /tmp.
         _set_temp_store_dir(conn, db_path)
-        conn.executescript(SCHEMA)
+        _apply_schema(conn)
 
         old_objects = {
             row[0] for row in conn.execute(
@@ -779,10 +907,10 @@ def get_summaries(db_path: str, instrument: str, obsdate: str) -> list[dict]:
     with get_conn(db_path, row_factory=sqlite3.Row) as conn:
         cur = conn.execute(
             """SELECT ccd, object, exptime, read_mode,
-                      frame_start, frame_end, ut_start, ut_end, nframes
+                      telescope, frame_start, frame_end, ut_start, ut_end, nframes
                FROM summaries
                WHERE instrument = ? AND obsdate = ?
-               ORDER BY ccd, object, ut_start""",
+               ORDER BY ccd, object, telescope, ut_start""",
             (instrument, obsdate),
         )
         return [dict(r) for r in cur.fetchall()]
@@ -829,7 +957,7 @@ def _is_obsdate(token: str) -> bool:
 def get_targets(db_path: str) -> list[dict]:
     """Return the per-target summary materialized at build_db time."""
     with get_conn(db_path) as conn:
-        conn.executescript(SCHEMA)  # ensure target_notes exists on first read
+        _apply_schema(conn)  # ensure target_notes exists on first read
         return _targets_from_conn(conn)
 
 
@@ -932,7 +1060,7 @@ def set_note(db_path: str, obj: str, note: str) -> None:
     """Upsert a per-target note. Empty/whitespace `note` deletes the row."""
     note = (note or "").strip()
     with get_conn(db_path) as conn:
-        conn.executescript(SCHEMA)
+        _apply_schema(conn)
         if not note:
             conn.execute("DELETE FROM target_notes WHERE object = ?", (obj,))
         else:
@@ -949,7 +1077,7 @@ def set_note(db_path: str, obj: str, note: str) -> None:
 
 def delete_note(db_path: str, obj: str) -> None:
     with get_conn(db_path) as conn:
-        conn.executescript(SCHEMA)
+        _apply_schema(conn)
         conn.execute("DELETE FROM target_notes WHERE object = ?", (obj,))
         conn.commit()
     clear_all_caches()
@@ -957,7 +1085,7 @@ def delete_note(db_path: str, obj: str) -> None:
 
 def set_identified(db_path: str, obj: str, is_identified: int) -> None:
     with get_conn(db_path) as conn:
-        conn.executescript(SCHEMA)
+        _apply_schema(conn)
         conn.execute(
             """INSERT INTO target_overrides(object, is_identified, updated_at)
                VALUES (?, ?, CURRENT_TIMESTAMP)
@@ -971,7 +1099,7 @@ def set_identified(db_path: str, obj: str, is_identified: int) -> None:
 
 def get_identified_overrides(db_path: str) -> dict[str, bool]:
     with get_conn(db_path) as conn:
-        conn.executescript(SCHEMA)
+        _apply_schema(conn)
         cur = conn.execute("SELECT object, is_identified FROM target_overrides")
         return {row[0]: bool(row[1]) for row in cur.fetchall()}
 
@@ -981,7 +1109,7 @@ def get_frames(db_path: str, instrument: str, obsdate: str, ccd: int) -> list[di
         cur = conn.execute(
             """SELECT * FROM frames
                WHERE instrument = ? AND obsdate = ? AND ccd = ?
-               ORDER BY filename""",
+               ORDER BY jd_start, filename""",
             (instrument, obsdate, ccd),
         )
         columns = [d[0] for d in cur.description]
@@ -1045,7 +1173,7 @@ def _decrypt_token(ciphertext: str) -> str:
 
 
 def _ensure_users_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(SCHEMA)
+    _apply_schema(conn)
 
 
 def _clean_username(username: str | None) -> str:
@@ -1150,7 +1278,7 @@ def user_ads_token_configured(username: str | None) -> bool:
 
 
 def _ensure_jobs_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(SCHEMA)
+    _apply_schema(conn)
     # Migrations for databases created before these columns existed.
     for col, col_type in [
         ("run_type", "TEXT NOT NULL DEFAULT ''"),
@@ -1289,7 +1417,7 @@ def save_ephemeris_view(state: dict) -> dict:
     targets_json = _canonical_json([str(t) for t in targets])
 
     with get_conn(path) as conn:
-        conn.executescript(SCHEMA)
+        _apply_schema(conn)
         conn.execute(
             """INSERT INTO ephemeris_views
                (slug, state_hash, state_json, targets_json, created_at, updated_at)
@@ -1305,7 +1433,7 @@ def save_ephemeris_view(state: dict) -> dict:
 def get_ephemeris_view(slug: str) -> dict | None:
     path = db_path()
     with get_conn(path, row_factory=sqlite3.Row) as conn:
-        conn.executescript(SCHEMA)
+        _apply_schema(conn)
         row = conn.execute(
             "SELECT slug, state_hash, state_json, targets_json, created_at, updated_at FROM ephemeris_views WHERE slug = ?",
             (slug,),

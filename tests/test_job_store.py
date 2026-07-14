@@ -11,6 +11,7 @@ import pytest
 from muscat_db import job_store
 from muscat_db.job_store import (
     DatabaseJobStore,
+    JobConcurrency,
     JobQueue,
     JobRepository,
     get_job_store,
@@ -84,6 +85,72 @@ class TestDatabaseJobStore:
         assert [r["target"] for r in pend] == ["P1", "P2"]  # oldest-first, photometry only
 
 
+class TestConcurrencySlots:
+    """Cross-process job-concurrency gate (architecture audit: _MAX_FULL_JOBS
+    was an in-memory-only per-process dict, already wrong under --workers N>1).
+    """
+
+    def test_claim_slot_grants_up_to_capacity(self, store):
+        assert store.claim_slot("photometry", "inst/date/A", 2) is True
+        assert store.claim_slot("photometry", "inst/date/B", 2) is True
+        assert store.count_claimed("photometry") == 2
+
+    def test_claim_slot_rejects_beyond_capacity(self, store):
+        assert store.claim_slot("photometry", "inst/date/A", 1) is True
+        assert store.claim_slot("photometry", "inst/date/B", 1) is False
+        assert store.count_claimed("photometry") == 1
+
+    def test_claim_slot_is_not_idempotently_true(self, store):
+        """A repeat claim for a key already held returns False, not True --
+        this is what stops two racing callers from both thinking they won and
+        launching the same job twice."""
+        assert store.claim_slot("photometry", "inst/date/A", 2) is True
+        assert store.claim_slot("photometry", "inst/date/A", 2) is False
+        assert store.count_claimed("photometry") == 1
+
+    def test_release_slot_frees_capacity(self, store):
+        store.claim_slot("photometry", "inst/date/A", 1)
+        store.release_slot("photometry", "inst/date/A")
+        assert store.count_claimed("photometry") == 0
+        assert store.claim_slot("photometry", "inst/date/B", 1) is True
+
+    def test_release_slot_missing_key_is_noop(self, store):
+        store.release_slot("photometry", "inst/date/gone")  # must not raise
+        assert store.count_claimed("photometry") == 0
+
+    def test_slots_are_isolated_per_pipeline(self, store):
+        assert store.claim_slot("photometry", "inst/date/A", 1) is True
+        # Same holder_key, different pipeline: its own independent capacity.
+        assert store.claim_slot("transit_fit", "inst/date/A", 1) is True
+        assert store.count_claimed("photometry") == 1
+        assert store.count_claimed("transit_fit") == 1
+
+    def test_reconcile_releases_claim_with_no_matching_job_row(self, store):
+        """A claim whose launch attempt never reached the jobs table (e.g. it
+        failed before the first store.save) is stale and must be released."""
+        store.claim_slot("photometry", "inst/date/A", 1)
+        released = store.reconcile_slots("photometry")
+        assert released == 1
+        assert store.count_claimed("photometry") == 0
+
+    def test_reconcile_releases_claim_whose_job_finished(self, store):
+        store.claim_slot("photometry", "muscat4/260101/HIP1", 1)
+        _save(store, target="HIP1", state="done", started_at=100.0)
+        released = store.reconcile_slots("photometry")
+        assert released == 1
+        assert store.count_claimed("photometry") == 0
+
+    def test_reconcile_keeps_claim_whose_job_is_still_running(self, store):
+        store.claim_slot("photometry", "muscat4/260101/HIP1", 1)
+        _save(store, target="HIP1", state="running", started_at=100.0)
+        released = store.reconcile_slots("photometry")
+        assert released == 0
+        assert store.count_claimed("photometry") == 1
+
+    def test_reconcile_on_empty_pipeline_is_noop(self, store):
+        assert store.reconcile_slots("photometry") == 0
+
+
 class TestSeamSwap:
     def test_get_returns_installed_store(self):
         original = get_job_store()
@@ -98,6 +165,7 @@ class TestSeamSwap:
         s = DatabaseJobStore()
         assert isinstance(s, JobRepository)
         assert isinstance(s, JobQueue)
+        assert isinstance(s, JobConcurrency)
 
     def test_default_store_is_database_backed(self):
         assert isinstance(job_store.get_job_store(), DatabaseJobStore)

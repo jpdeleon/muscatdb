@@ -1,27 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 import datetime
 import contextvars
 import json
 import logging
-import math
 import os
 import pathlib
 import re
 import sqlite3
 import threading
 import time
-from zoneinfo import ZoneInfo
 
 _DB_LOCK = threading.Lock()
 
 import csv
 import io
-import zipfile
-from contextlib import asynccontextmanager, contextmanager
-from urllib.parse import quote, urlsplit
-from urllib.request import Request as UrlRequest, urlopen
+from contextlib import asynccontextmanager
+from urllib.parse import quote
 
+import httpx
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -30,11 +28,62 @@ from jinja2 import Environment, FileSystemLoader
 
 from muscat_db import photometry as phot
 from muscat_db import exposure as exp_calc
+from muscat_db.auth import (
+    trusted_forwarded_user,
+    request_user as _request_user,
+    settings_auth_error as _settings_auth_error,
+    is_same_origin as _is_same_origin,
+    csrf_error as _csrf_error,
+)
 from muscat_db import transit_fit as fit
 from muscat_db import ttv_fit as ttv
 from muscat_db import lco
+from muscat_db.lco import _annotate_lco_archive_results
 from muscat_db import transit_obs
 from muscat_db import fov as fov_opt
+from muscat_db import ephemeris_math
+from muscat_db import test_observations
+from muscat_db import http_client
+from muscat_db.catalog import (
+    _adql_literal,
+    _ads_token_for_request,
+    _catalog_source_cache_key,
+    _db_mtime,
+    _global_ads_token,
+    _harps_coord_membership,
+    _harps_data_for_target,
+    _HARPS_MATCH_ARCSEC,
+    _load_jwst_targets,
+    _load_jwst_targets_aliases,
+    _load_nexsci_catalog,
+    _load_spectra_targets,
+    _load_spectra_targets_aliases,
+    _load_toi_catalog,
+    _matched_jwst_targets,
+    _matched_spectra_targets,
+    _merge_boyle_columns,
+    _nasa_confirmed_toi_membership,
+    _nexsci_db_membership,
+    _normalize_target_name,
+    _query_target_coordinates,
+    _query_target_planets_catalog,
+    _query_target_planets_nasa,
+    _query_target_planets_toi,
+    _resolve_all_aliases,
+    _resolve_archive_coords,
+    _target_tic_id,
+    _toi_db_membership,
+    # Test-only compatibility: tests.test_web reach into these via
+    # `web.<name>` (e.g. `web._boyle_cache.clear()`) even though no route
+    # handler here reads them directly any more; they're the same dict/list
+    # objects catalog.py's functions read, so mutating them in place (not
+    # reassigning) still works through this alias.
+    _BOYLE_COLUMNS,  # noqa: F401 -- tests read web._BOYLE_COLUMNS
+    _NEXSCI_COLUMNS,  # noqa: F401 -- tests import web._NEXSCI_COLUMNS
+    _boyle_cache,  # noqa: F401 -- tests call web._boyle_cache.clear()
+    _harps_cache,  # noqa: F401 -- tests call web._harps_cache.clear()
+    _toi_db_cache,  # noqa: F401 -- tests call web._toi_db_cache.clear()
+)
 from muscat_db.database import (
     SCHEMA,
     UserSettingsError,
@@ -64,12 +113,6 @@ from muscat_db.database import (
 from muscat_db.job_store import get_job_store
 from muscat_db.cache import LRUCache
 from muscat_db.instruments import INSTRUMENTS
-from muscat_db.coord import (
-    CoordRepr,
-    unpack as _unpack_coord,
-    clean_ra as _clean_ra,
-    clean_dec as _clean_dec,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +140,15 @@ async def _lifespan(app: FastAPI):
             "muscat/muscat2 calibration with --wcs_method astrometry.net will fail; "
             "use --wcs_method twirl (no API key) or export the key."
         )
-    yield
+
+    from muscat_db import proxy, http_client
+    await proxy.startup()
+    await http_client.startup()
+    try:
+        yield
+    finally:
+        await http_client.shutdown()
+        await proxy.shutdown()
 
 
 app = FastAPI(title="MuSCAT Observation Log", lifespan=_lifespan)
@@ -106,6 +157,7 @@ app = FastAPI(title="MuSCAT Observation Log", lifespan=_lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 from fastapi import APIRouter
+from muscat_db.proxy import router as proxy_router
 
 photometry_router = APIRouter(prefix="/api/photometry", tags=["photometry"])
 transit_fit_router = APIRouter(prefix="/api/transit-fit", tags=["transit-fit"])
@@ -119,30 +171,23 @@ lco_router = APIRouter(prefix="/api/lco", tags=["lco"])
 settings_router = APIRouter(prefix="/api/settings", tags=["settings"])
 ads_router = APIRouter(prefix="/api/ads", tags=["ads"])
 
-# Middleware: extract authenticated user from nginx reverse proxy.
-# nginx sets X-Forwarded-User after HTTP Basic Auth. Trusting that header is
-# ONLY safe for connections that actually came from nginx's own loopback
-# socket, so we verify the immediate TCP peer is loopback before honoring it
-# -- rather than relying on the operator having remembered --nginx at start
-# time (uvicorn's default bind is 0.0.0.0, which would otherwise let any
-# network client set this header and impersonate a user). This does not
-# defend against another local account on the same host connecting straight
-# to uvicorn's loopback port; that requires a shared-secret header between
-# nginx and uvicorn, which is not implemented yet.
-_TRUSTED_PROXY_HOSTS = frozenset({"127.0.0.1", "::1"})
+_MAX_STATUS_BATCH = 100
+_MAX_STATUS_FIELD_LEN = 256
 
-
+# Middleware: extract the authenticated user from the nginx reverse proxy.
+# The trust rule (only honor X-Forwarded-User from a loopback proxy peer) lives
+# in muscat_db.auth so the companion-app gateway applies it identically.
 @app.middleware("http")
 async def _nginx_auth_middleware(request: Request, call_next):
     client_host = request.client.host if request.client else None
-    user = request.headers.get("X-Forwarded-User") or None
-    if user and client_host not in _TRUSTED_PROXY_HOSTS:
+    forwarded = request.headers.get("X-Forwarded-User")
+    user = trusted_forwarded_user(forwarded, client_host)
+    if forwarded and user is None:
         logger.warning(
             "ignoring X-Forwarded-User=%r from non-loopback peer %s "
             "(request did not arrive via the nginx proxy)",
-            user, client_host,
+            forwarded, client_host,
         )
-        user = None
     request.state.user = user
     token = _CURRENT_USER.set(user)
     try:
@@ -155,6 +200,13 @@ async def _nginx_auth_middleware(request: Request, call_next):
         return response
     finally:
         _CURRENT_USER.reset(token)
+
+# Register the companion-application gateway before the broad observation-page
+# routes below (``/{instrument}``, ``/{instrument}/{obsdate}``, ...). Starlette
+# resolves routes in registration order, so adding this router at the end makes
+# a request such as ``/tess-quicklook/available-sectors`` look like an
+# instrument/date page and returns HTML where the QuickLook client expects JSON.
+app.include_router(proxy_router)
 
 # Mount static assets (shared stylesheet, etc.) before the dynamic routes so a
 # request like /static/styles.css is not captured by the /{inst}/{date} route.
@@ -184,11 +236,6 @@ def _static_url(name: str) -> str:
 jinja.globals["static_url"] = _static_url
 
 
-def _adql_literal(value: str) -> str:
-    """Quote a string as an ADQL literal, escaping embedded apostrophes."""
-    return "'" + value.replace("'", "''") + "'"
-
-
 def _datetime_from_timestamp(ts: int) -> str:
     dt = datetime.datetime.fromtimestamp(ts)
     now = datetime.datetime.now()
@@ -214,16 +261,22 @@ def _db_path() -> str:
     return str(pathlib.Path(os.environ.get("MUSCAT_DB_PATH", "muscat.db")).resolve())
 
 
-_LCO_SITE_TZ = {
-    "ogg": "Pacific/Honolulu",
-    "coj": "Australia/Brisbane",
-    "lsc": "America/Santiago",
-    "cpt": "Africa/Johannesburg",
-    "elp": "America/Chicago",
-    "tfn": "Atlantic/Canary",
-    "tlv": "Asia/Jerusalem",
-}
-_LCO_DATASET_MATCH_ARCSEC = 60.0
+async def _async_get(url: str, *, headers: dict | None = None, timeout: float | None = None) -> httpx.Response:
+    """GET via the shared async httpx client, raising on non-2xx status
+    (mirrors urllib.request.urlopen's implicit HTTPError-on-bad-status).
+
+    Backs routes whose entire job is a single external archive call, so they
+    can be ``async def`` and free FastAPI's threadpool while awaiting; tests
+    monkeypatch this name directly."""
+    response = await http_client.get_async_client().get(
+        url,
+        headers=headers,
+        timeout=timeout if timeout is not None else http_client.DEFAULT_TIMEOUT_S,
+    )
+    response.raise_for_status()
+    return response
+
+
 _CURRENT_USER: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "current_user",
     default=None,
@@ -236,41 +289,12 @@ def _render(name: str, **kwargs) -> str:
     return HTMLResponse(tpl.render(**kwargs))
 
 
-def _db_mtime(db: str):
-    """Cache key for the DB file. Note edits and `build-db` both rewrite the
-    SQLite file, bumping its mtime, so this auto-invalidates the index cache.
-
-    The DB runs in WAL mode, where a commit is durable once it lands in the
-    `-wal` sidecar file; the main file's mtime only advances when SQLite
-    happens to checkpoint the WAL back into it (e.g. on the last connection
-    closing), which frequently does not happen while the server has
-    concurrent requests open. Folding the `-wal` file's mtime/size into the
-    key ensures every commit invalidates the cache, not just checkpoints."""
-    try:
-        stat = os.stat(db)
-        key = (stat.st_mtime_ns, stat.st_size)
-    except OSError:
-        return None
-    try:
-        wal_stat = os.stat(db + "-wal")
-        key = (*key, wal_stat.st_mtime_ns, wal_stat.st_size)
-    except OSError:
-        pass
-    return key
-
-
 # Rendering the ~2.85 MB targets page costs ~1.3s. Cache the rendered HTML
 # keyed on the DB mtime so repeat loads are instant until the data changes.
 # Each entry is a multi-MB HTML blob, so the cache is bounded (LRU) to keep
 # memory flat over a long-lived server; sizes are env-overridable for tuning.
 _INDEX_CACHE_MAX = int(os.environ.get("MUSCAT_INDEX_CACHE_MAX", "64"))
-_CATALOG_CACHE_MAX = int(os.environ.get("MUSCAT_CATALOG_CACHE_MAX", "512"))
 _index_cache = LRUCache(maxsize=_INDEX_CACHE_MAX)
-# Per-target catalog lookups (NASA/TOI archive + local CSV). Bounded + locked:
-# keyed per distinct query string, it otherwise grows once per unique target.
-_CATALOG_CACHE = LRUCache(maxsize=_CATALOG_CACHE_MAX)
-# Distinguishes "absent" from a legitimately cached None (see _query_target_coordinates).
-_CACHE_MISS = object()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -437,6 +461,22 @@ def target_page(name: str = ""):
         return HTMLResponse(html)
 
 
+@target_router.get("/harps-rv", response_class=JSONResponse)
+def api_target_harps_rv(name: str = ""):
+    norm_name = _normalize_target_name(name)
+    if not norm_name:
+        return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
+    datasets, _last_updated = _get_datasets_for_normalized_target(_db_path(), norm_name)
+    harps_rv = _harps_data_for_target(datasets, norm_name)
+    return JSONResponse({
+        "ok": True,
+        "target": norm_name,
+        "match_arcsec": _HARPS_MATCH_ARCSEC,
+        "has_data": bool(harps_rv.get("total_rows")),
+        "harps_rv": harps_rv,
+    })
+
+
 @app.get("/logs", response_class=HTMLResponse)
 def logs_page(min_frames: int = 1000):
     db = _db_path()
@@ -462,896 +502,6 @@ def guide_page():
 @app.get("/workflow", response_class=RedirectResponse)
 def workflow_redirect():
     return RedirectResponse(url="/guide", status_code=301)
-
-
-# --------------------------- TOI catalog page ------------------------------
-
-# (csv header, json key, kind) — kind "s" keeps the raw string, "f" parses a
-# float (or null). Only this subset of the 69 raw columns is surfaced on the
-# /toi page; it drives both the preview table and the interactive plot.
-_TOI_COLUMNS: list[tuple[str, str, str]] = [
-    ("TOI", "toi", "s"),
-    ("TIC ID", "tic", "s"),
-    ("Planet Name", "name", "s"),
-    ("TFOPWG Disposition", "disp", "s"),
-    ("Period (days)", "period", "f"),
-    ("Duration (hours)", "duration", "f"),
-    ("Depth (ppm)", "depth", "f"),
-    ("Planet Radius (R_Earth)", "radius", "f"),
-    ("Planet Equil Temp (K)", "teq", "f"),
-    ("Planet Insolation (Earth Flux)", "insol", "f"),
-    ("TESS Mag", "tmag", "f"),
-    ("Stellar Eff Temp (K)", "steff", "f"),
-    ("Stellar Radius (R_Sun)", "srad", "f"),
-    ("Stellar Distance (pc)", "dist", "f"),
-    ("ra_deg", "ra", "f"),
-    ("dec_deg", "dec", "f"),
-    # 1-sigma uncertainties for axes that carry them (drive the plot error bars).
-    ("Period (days) err", "period_err", "f"),
-    ("Duration (hours) err", "duration_err", "f"),
-    ("Depth (ppm) err", "depth_err", "f"),
-    ("Planet Radius (R_Earth) err", "radius_err", "f"),
-    ("TESS Mag err", "tmag_err", "f"),
-    ("Stellar Eff Temp (K) err", "steff_err", "f"),
-    ("Stellar Radius (R_Sun) err", "srad_err", "f"),
-    ("Stellar Distance (pc) err", "dist_err", "f"),
-]
-
-_toi_cache: dict = {}
-
-
-def _toi_float(v) -> float | None:
-    """Parse a finite float from a raw CSV cell, or None."""
-    if v is None:
-        return None
-    s = str(v).strip()
-    if not s:
-        return None
-    try:
-        x = float(s)
-    except ValueError:
-        return None
-    # Reject NaN/inf so the JSON stays strict (allow_nan=False).
-    if x != x or x in (float("inf"), float("-inf")):
-        return None
-    return x
-
-
-_HARPS_TARGETS_PATH = pathlib.Path(os.environ.get(
-    "MUSCAT_HARPS_TARGETS_CSV",
-    str(HERE.parent.parent / "data" / "HARPS_RVBank_targets.csv"),
-))
-_HARPS_RVBANK_PATH = pathlib.Path(os.environ.get(
-    "MUSCAT_HARPS_RVBANK_CSV",
-    str(HERE.parent.parent / "data" / "HARPS_RVBank_ver02.csv"),
-))
-_HARPS_RVBANK_ZIP_PATH = pathlib.Path(os.environ.get(
-    "MUSCAT_HARPS_RVBANK_ZIP",
-    str(HERE.parent.parent / "data" / "HARPS_RVBank_ver02.csv.zip"),
-))
-_HARPS_RVBANK_URL = os.environ.get(
-    "MUSCAT_HARPS_RVBANK_URL",
-    "https://raw.githubusercontent.com/3fon3fonov/HARPS_RVBank/master/HARPS_RVBank_ver02.csv",
-)
-_HARPS_MATCH_ARCSEC = float(os.environ.get("MUSCAT_HARPS_MATCH_ARCSEC", "5.0"))
-_HARPS_TARGET_TABLE_MAX_ROWS = int(os.environ.get("MUSCAT_HARPS_TARGET_TABLE_MAX_ROWS", "2000"))
-_HARPS_ONLINE_TIMEOUT_S = float(os.environ.get("MUSCAT_HARPS_ONLINE_TIMEOUT_S", "60"))
-_HARPS_BUCKET_DEG = 0.05
-_harps_cache: dict = {}
-
-
-def _coord_deg(value, *, is_ra: bool) -> float | None:
-    """Parse decimal degrees or sexagesimal coordinates into degrees."""
-    x = _toi_float(value)
-    if x is not None:
-        return x % 360.0 if is_ra else x
-    if value is None:
-        return None
-    s = str(value).strip()
-    if not s or ":" not in s:
-        return None
-    sign = 1.0
-    if not is_ra and s[0] in "+-":
-        sign = -1.0 if s[0] == "-" else 1.0
-        s = s[1:]
-    parts = s.split(":")
-    if len(parts) != 3:
-        return None
-    try:
-        a, b, c = int(parts[0]), int(parts[1]), float(parts[2])
-    except ValueError:
-        return None
-    if b < 0 or b >= 60 or c < 0 or c >= 60:
-        return None
-    deg = a + b / 60.0 + c / 3600.0
-    if is_ra:
-        return (deg * 15.0) % 360.0
-    return sign * deg
-
-
-def _angular_sep_arcsec(ra1: float, dec1: float, ra2: float, dec2: float) -> float:
-    r1, d1, r2, d2 = map(math.radians, (ra1, dec1, ra2, dec2))
-    sd = math.sin((d2 - d1) / 2.0)
-    sr = math.sin((r2 - r1) / 2.0)
-    a = sd * sd + math.cos(d1) * math.cos(d2) * sr * sr
-    a = min(1.0, max(0.0, a))
-    return math.degrees(2.0 * math.asin(math.sqrt(a))) * 3600.0
-
-
-def _load_harps_coords() -> tuple[list[tuple[float, float]], str]:
-    """Load unique HARPS RVBank target coordinates.
-
-    Prefer the compact per-target CSV produced from the RVBank, but accept the
-    full observation-level RVBank CSV as a fallback. Both expose ``ra`` and
-    ``dec`` columns in degrees; the HTML table uses sexagesimal coordinates, so
-    the parser also accepts that form for hand-built target lists.
-    """
-    if _HARPS_TARGETS_PATH.is_file():
-        path = _HARPS_TARGETS_PATH
-    elif _HARPS_RVBANK_PATH.is_file():
-        path = _HARPS_RVBANK_PATH
-    else:
-        path = _HARPS_RVBANK_ZIP_PATH
-    empty: tuple[list[tuple[float, float]], str] = ([], "")
-    try:
-        mtime = path.stat().st_mtime_ns
-    except OSError:
-        return empty
-
-    cached = _harps_cache.get("coords")
-    cache_key = (str(path), mtime)
-    if cached is not None and cached[0] == cache_key:
-        return cached[1]
-
-    seen: set[tuple[float, float]] = set()
-    coords: list[tuple[float, float]] = []
-    try:
-        with _open_harps_csv_path(path) as f:
-            reader = csv.DictReader(f)
-            col_map = {h.strip().lower(): h for h in (reader.fieldnames or [])}
-            ra_col = col_map.get("ra")
-            dec_col = col_map.get("dec")
-            if not ra_col or not dec_col:
-                logger.warning("HARPS RVBank catalog %s lacks ra/dec columns", path)
-                return empty
-            for row in reader:
-                ra = _coord_deg(row.get(ra_col), is_ra=True)
-                dec = _coord_deg(row.get(dec_col), is_ra=False)
-                if ra is None or dec is None or not (-90.0 <= dec <= 90.0):
-                    continue
-                key = (round(ra, 8), round(dec, 8))
-                if key in seen:
-                    continue
-                seen.add(key)
-                coords.append((ra, dec))
-    except Exception:
-        logger.warning("failed to read HARPS RVBank catalog %s", path, exc_info=True)
-        return empty
-
-    result = (coords, datetime.date.fromtimestamp(mtime / 1e9).isoformat())
-    _harps_cache["coords"] = (cache_key, result)
-    return result
-
-
-def _harps_source_cache_key() -> tuple:
-    """Cache component for HARPS data used by rendered target/catalog pages."""
-    parts = [_HARPS_MATCH_ARCSEC]
-    for path in (_HARPS_TARGETS_PATH, _HARPS_RVBANK_PATH, _HARPS_RVBANK_ZIP_PATH):
-        try:
-            st = path.stat()
-        except OSError:
-            parts.append((str(path), None))
-        else:
-            parts.append((str(path), st.st_mtime_ns, st.st_size))
-    return tuple(parts)
-
-
-_TOI_CATALOG_PATH = HERE.parent.parent / "data" / "TOIs.csv"
-_NEXSCI_CATALOG_PATH = HERE.parent.parent / "data" / "nexsci_pscomppars.csv"
-_JWST_TARGETS_PATH = HERE.parent.parent / "data" / "jwst_targets.csv"
-_SPECTRA_TARGETS_PATH = HERE.parent.parent / "data" / "spectra_targets.csv"
-
-
-def _path_cache_part(path: pathlib.Path) -> tuple:
-    try:
-        st = path.stat()
-    except OSError:
-        return (str(path), None)
-    return (str(path), st.st_mtime_ns, st.st_size)
-
-
-def _catalog_source_cache_key() -> tuple:
-    """Cache component for target-page catalog-coordinate fallbacks."""
-    return (_path_cache_part(_TOI_CATALOG_PATH), _path_cache_part(_NEXSCI_CATALOG_PATH), _path_cache_part(_JWST_TARGETS_PATH), _path_cache_part(_SPECTRA_TARGETS_PATH))
-
-
-def _load_harps_targets() -> tuple[list[dict], str]:
-    """Load unique HARPS targets with coordinates and optional RV counts."""
-    path = _HARPS_TARGETS_PATH
-    if not path.is_file():
-        path = _HARPS_RVBANK_PATH if _HARPS_RVBANK_PATH.is_file() else _HARPS_RVBANK_ZIP_PATH
-    empty: tuple[list[dict], str] = ([], "")
-    try:
-        mtime = path.stat().st_mtime_ns
-    except OSError:
-        return empty
-
-    cache_key = ("targets", str(path), mtime)
-    cached = _harps_cache.get("targets")
-    if cached is not None and cached[0] == cache_key:
-        return cached[1]
-
-    targets: dict[tuple[str, float, float], dict] = {}
-    try:
-        with _open_harps_csv_path(path) as f:
-            reader = csv.DictReader(f)
-            col_map = {h.strip().lower(): h for h in (reader.fieldnames or [])}
-            target_col = col_map.get("target")
-            ra_col = col_map.get("ra")
-            dec_col = col_map.get("dec")
-            n_col = col_map.get("n_rv")
-            if not target_col or not ra_col or not dec_col:
-                logger.warning("HARPS target catalog %s lacks target/ra/dec columns", path)
-                return empty
-            for row in reader:
-                target = (row.get(target_col) or "").strip()
-                ra = _coord_deg(row.get(ra_col), is_ra=True)
-                dec = _coord_deg(row.get(dec_col), is_ra=False)
-                if not target or ra is None or dec is None or not (-90.0 <= dec <= 90.0):
-                    continue
-                key = (target, round(ra, 8), round(dec, 8))
-                entry = targets.setdefault(key, {"target": target, "ra": ra, "dec": dec, "n_rv": 0})
-                if n_col:
-                    try:
-                        entry["n_rv"] = max(entry["n_rv"], int(float(row.get(n_col) or 0)))
-                    except ValueError:
-                        pass
-                else:
-                    entry["n_rv"] += 1
-    except Exception:
-        logger.warning("failed to read HARPS target catalog %s", path, exc_info=True)
-        return empty
-
-    result = (list(targets.values()), datetime.date.fromtimestamp(mtime / 1e9).isoformat())
-    _harps_cache["targets"] = (cache_key, result)
-    return result
-
-
-@contextmanager
-def _open_harps_csv_path(path: pathlib.Path):
-    if path.suffix.lower() == ".zip":
-        with zipfile.ZipFile(path) as zf:
-            names = [n for n in zf.namelist() if n.lower().endswith(".csv")]
-            if not names:
-                raise FileNotFoundError(f"{path} contains no CSV file")
-            with zf.open(names[0]) as raw:
-                with io.TextIOWrapper(raw, encoding="utf-8", newline="") as text:
-                    yield text
-    else:
-        with open(path, encoding="utf-8", newline="") as f:
-            yield f
-
-
-@contextmanager
-def _open_harps_rvbank_csv():
-    if _HARPS_RVBANK_PATH.is_file():
-        with _open_harps_csv_path(_HARPS_RVBANK_PATH) as f:
-            yield ("local", str(_HARPS_RVBANK_PATH), f)
-        return
-    if _HARPS_RVBANK_ZIP_PATH.is_file():
-        with _open_harps_csv_path(_HARPS_RVBANK_ZIP_PATH) as f:
-            yield ("local", str(_HARPS_RVBANK_ZIP_PATH), f)
-        return
-
-    req = UrlRequest(_HARPS_RVBANK_URL, headers={"User-Agent": "muscat-db/harps-rvbank"})
-    with urlopen(req, timeout=_HARPS_ONLINE_TIMEOUT_S) as raw:
-        with io.TextIOWrapper(raw, encoding="utf-8", newline="") as text:
-            yield ("online", _HARPS_RVBANK_URL, text)
-
-
-def _harps_coord_membership(cat_data: dict) -> tuple[list[int], int]:
-    """Return RV counts (or 0) for catalog rows positionally matched to HARPS RVBank."""
-    harps_coords, _updated = _load_harps_coords()
-    n = len(cat_data.get("ra") or [])
-    out = [0] * n
-    if not harps_coords:
-        return out, 0
-
-    tol = max(0.0, _HARPS_MATCH_ARCSEC)
-    if tol <= 0:
-        return out, 0
-    bucket = max(_HARPS_BUCKET_DEG, tol / 3600.0)
-    ra_bins = max(1, int(math.ceil(360.0 / bucket)))
-
-    # Attempt to load target-level counts to resolve coordinate-level RV counts.
-    harps_targets, _ = _load_harps_targets()
-    counts_map = {}
-    for t in harps_targets:
-        counts_map[(round(t["ra"], 8), round(t["dec"], 8))] = t.get("n_rv", 0)
-
-    index: dict[tuple[int, int], list[tuple[float, float, int]]] = {}
-    for ra, dec in harps_coords:
-        key = (round(ra, 8), round(dec, 8))
-        n_rv = counts_map.get(key, 1)
-        rb = int((ra % 360.0) / bucket) % ra_bins
-        db = int((dec + 90.0) / bucket)
-        index.setdefault((rb, db), []).append((ra, dec, n_rv))
-
-    ras, decs = cat_data.get("ra") or [], cat_data.get("dec") or []
-    matched = 0
-    for i, (ra, dec) in enumerate(zip(ras, decs)):
-        if ra is None or dec is None:
-            continue
-        rb = int((ra % 360.0) / bucket) % ra_bins
-        db = int((dec + 90.0) / bucket)
-        hit_count = 0
-        hit = False
-        for dra in (-1, 0, 1):
-            for ddec in (-1, 0, 1):
-                for hra, hdec, hn_rv in index.get(((rb + dra) % ra_bins, db + ddec), ()):
-                    if _angular_sep_arcsec(float(ra), float(dec), hra, hdec) <= tol:
-                        hit = True
-                        hit_count = max(hit_count, hn_rv)
-        if hit:
-            out[i] = hit_count if hit_count > 0 else 1
-            matched += 1
-    return out, matched
-
-
-def _matching_harps_targets(coords: list[tuple[float, float]]) -> list[dict]:
-    if not coords:
-        return []
-    harps_targets, _updated = _load_harps_targets()
-    if not harps_targets:
-        return []
-    tol = max(0.0, _HARPS_MATCH_ARCSEC)
-    matches = []
-    seen = set()
-    for entry in harps_targets:
-        for ra, dec in coords:
-            if _angular_sep_arcsec(ra, dec, entry["ra"], entry["dec"]) <= tol:
-                key = (entry["target"], round(entry["ra"], 8), round(entry["dec"], 8))
-                if key not in seen:
-                    seen.add(key)
-                    matches.append(entry)
-                break
-    return sorted(matches, key=lambda r: (r["target"].lower(), r["ra"], r["dec"]))
-
-
-def _format_harps_cell(value: str | None) -> str:
-    s = (value or "").strip()
-    x = _toi_float(s)
-    if x is None:
-        return s
-    return f"{x:.6f}".rstrip("0").rstrip(".")
-
-
-def _row_matches_harps_query(
-    row: dict,
-    target_col: str,
-    ra_col: str,
-    dec_col: str,
-    target_names: set[str],
-    coords: list[tuple[float, float]],
-) -> bool:
-    if target_names and (row.get(target_col) or "").strip() in target_names:
-        return True
-    if not coords:
-        return False
-    ra = _coord_deg(row.get(ra_col), is_ra=True)
-    dec = _coord_deg(row.get(dec_col), is_ra=False)
-    if ra is None or dec is None:
-        return False
-    tol = max(0.0, _HARPS_MATCH_ARCSEC)
-    return any(_angular_sep_arcsec(ra, dec, cra, cdec) <= tol for cra, cdec in coords)
-
-
-def _query_harps_rvbank_rows(
-    coords: list[tuple[float, float]],
-    matching_targets: list[dict],
-    max_rows: int | None = None,
-) -> dict:
-    """Return HARPS RVBank rows for matched target coordinates.
-
-    Local CSV/ZIP is used first. If unavailable, the GitHub-hosted raw CSV is
-    streamed and filtered online. ``total_rows`` is counted even when display
-    rows are capped.
-    """
-    if max_rows is None:
-        max_rows = _HARPS_TARGET_TABLE_MAX_ROWS
-    target_names = {(m.get("target") or "").strip() for m in matching_targets if m.get("target")}
-    cache_key = (
-        "rows",
-        tuple(sorted(target_names)),
-        tuple((round(ra, 8), round(dec, 8)) for ra, dec in coords),
-        max_rows,
-        _harps_source_cache_key(),
-    )
-    cached = _harps_cache.get(cache_key)
-    if cached is not None:
-        return cached
-
-    columns: list[str] = []
-    rows: list[dict] = []
-    total = 0
-    source_kind = ""
-    source_label = ""
-    error = ""
-    try:
-        with _open_harps_rvbank_csv() as (source_kind, source_label, f):
-            reader = csv.DictReader(f)
-            columns = [c.strip() for c in (reader.fieldnames or []) if c is not None]
-            col_map = {h.strip().lower(): h for h in (reader.fieldnames or [])}
-            target_col = col_map.get("target")
-            ra_col = col_map.get("ra")
-            dec_col = col_map.get("dec")
-            if not target_col or not ra_col or not dec_col:
-                raise ValueError("HARPS RVBank CSV lacks target/ra/dec columns")
-            for row in reader:
-                if not _row_matches_harps_query(row, target_col, ra_col, dec_col, target_names, coords):
-                    continue
-                total += 1
-                if len(rows) < max_rows:
-                    rows.append({c: _format_harps_cell(row.get(c)) for c in columns})
-    except Exception as exc:
-        logger.warning("failed to query HARPS RVBank rows", exc_info=True)
-        error = str(exc)
-
-    result = {
-        "columns": columns,
-        "rows": rows,
-        "total_rows": total,
-        "display_rows": len(rows),
-        "truncated": total > len(rows),
-        "matched_targets": matching_targets,
-        "source_kind": source_kind,
-        "source": source_label,
-        "error": error,
-    }
-    _harps_cache[cache_key] = result
-    return result
-
-
-def _target_lookup_aliases(name: str) -> set[str]:
-    norm = _normalize_target_name(str(name or ""))
-    aliases = {norm} if norm else set()
-    m = re.fullmatch(r"TOI0*(\d+)(?:\.\d+)?", norm)
-    if m:
-        aliases.add(f"TOI{int(m.group(1))}")
-    return aliases
-
-
-def _target_tic_id(target_name: str, datasets: list[dict] | None = None) -> str:
-    """Return a TIC identifier for target-page external links when available."""
-    names = [target_name]
-    names.extend(str(ds.get("object") or "") for ds in (datasets or []))
-    for name in names:
-        m = re.search(r"TIC[\s_-]*0*(\d+)", str(name or ""), flags=re.IGNORECASE)
-        if m:
-            return m.group(1)
-
-    aliases: set[str] = set()
-    for name in names:
-        aliases.update(_target_lookup_aliases(name))
-    if not aliases:
-        return ""
-
-    try:
-        cat = _load_toi_catalog()["data"]
-        n = len(cat.get("toi", []))
-        for i in range(n):
-            toi = str((cat.get("toi") or [""])[i] or "").strip()
-            name = str((cat.get("name") or [""])[i] or "")
-            row_aliases = _target_lookup_aliases(name)
-            if toi:
-                toi_num = _toi_float(toi)
-                if toi_num is not None:
-                    row_aliases.add(f"TOI{int(toi_num)}")
-                row_aliases.add(_normalize_target_name(f"TOI-{toi}"))
-            if not (aliases & row_aliases):
-                continue
-            tic = str((cat.get("tic") or [""])[i] or "")
-            digits = re.sub(r"\D", "", tic)
-            if digits:
-                return digits
-    except Exception:
-        logger.warning("failed to resolve TIC ID from TOI catalog for %s", target_name, exc_info=True)
-
-    try:
-        cat = _load_nexsci_catalog()["data"]
-        n = len(cat.get("name", []))
-        for i in range(n):
-            row_aliases = (
-                _target_lookup_aliases((cat.get("name") or [""])[i])
-                | _target_lookup_aliases((cat.get("host") or [""])[i])
-            )
-            if not (aliases & row_aliases):
-                continue
-            tic = str((cat.get("tic") or [""])[i] or "")
-            digits = re.sub(r"\D", "", tic)
-            if digits:
-                return digits
-    except Exception:
-        logger.warning("failed to resolve TIC ID from NExScI catalog for %s", target_name, exc_info=True)
-
-    return ""
-
-
-def _target_catalog_coord_candidates(normalized_name: str) -> list[tuple[float, float]]:
-    """Return TOI/NExScI catalog coordinates for a normalized target name.
-
-    The target database can contain historical or header-derived coordinates.
-    Catalog pages already use current catalog RA/Dec for HARPS matching, so the
-    target page uses the same coordinates as a fallback when DB coordinates do
-    not find a HARPS match.
-    """
-    aliases = _target_lookup_aliases(normalized_name)
-    coords: list[tuple[float, float]] = []
-    seen: set[tuple[float, float]] = set()
-
-    def add_coord(ra_value, dec_value) -> None:
-        ra = _coord_deg(ra_value, is_ra=True)
-        dec = _coord_deg(dec_value, is_ra=False)
-        if ra is None or dec is None or not (-90.0 <= dec <= 90.0):
-            return
-        key = (round(ra, 8), round(dec, 8))
-        if key in seen:
-            return
-        seen.add(key)
-        coords.append((ra, dec))
-
-    def row_matches_toi_catalog(cat_data: dict, i: int) -> bool:
-        toi = str((cat_data.get("toi") or [""])[i] or "").strip()
-        if toi:
-            toi_num = _toi_float(toi)
-            if toi_num is not None and f"TOI{int(toi_num)}" in aliases:
-                return True
-            if _normalize_target_name(f"TOI-{toi}") in aliases:
-                return True
-        name = str((cat_data.get("name") or [""])[i] or "")
-        return bool(_target_lookup_aliases(name) & aliases)
-
-    try:
-        cat = _load_toi_catalog()["data"]
-        n = len(cat.get("toi", []))
-        for i in range(n):
-            if row_matches_toi_catalog(cat, i):
-                add_coord(cat.get("ra", [None] * n)[i], cat.get("dec", [None] * n)[i])
-    except Exception:
-        logger.warning("failed to read TOI catalog coordinates for %s", normalized_name, exc_info=True)
-
-    try:
-        cat = _load_nexsci_catalog()["data"]
-        n = len(cat.get("name", []))
-        for i in range(n):
-            name_aliases = _target_lookup_aliases((cat.get("name") or [""])[i])
-            host_aliases = _target_lookup_aliases((cat.get("host") or [""])[i])
-            if aliases & (name_aliases | host_aliases):
-                add_coord(cat.get("ra", [None] * n)[i], cat.get("dec", [None] * n)[i])
-    except Exception:
-        logger.warning("failed to read NExScI catalog coordinates for %s", normalized_name, exc_info=True)
-
-    return coords
-
-
-def _harps_data_for_target(datasets: list[dict], target_name: str | None = None) -> dict:
-    coords = []
-    seen = set()
-    def add_coord(ra_value, dec_value) -> None:
-        ra = _coord_deg(ra_value, is_ra=True)
-        dec = _coord_deg(dec_value, is_ra=False)
-        if ra is None or dec is None:
-            return
-        key = (round(ra, 8), round(dec, 8))
-        if key in seen:
-            return
-        seen.add(key)
-        coords.append((ra, dec))
-
-    for ds in datasets:
-        add_coord(ds.get("ra"), ds.get("dec"))
-    matches = _matching_harps_targets(coords)
-    if target_name and not matches:
-        for ra, dec in _target_catalog_coord_candidates(target_name):
-            add_coord(ra, dec)
-        matches = _matching_harps_targets(coords)
-    if not matches and not coords:
-        return {
-            "columns": [],
-            "rows": [],
-            "total_rows": 0,
-            "display_rows": 0,
-            "truncated": False,
-            "matched_targets": [],
-            "source_kind": "",
-            "source": "",
-            "error": "",
-        }
-    return _query_harps_rvbank_rows(coords, matches)
-
-
-@target_router.get("/harps-rv", response_class=JSONResponse)
-def api_target_harps_rv(name: str = ""):
-    norm_name = _normalize_target_name(name)
-    if not norm_name:
-        return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
-    datasets, _last_updated = _get_datasets_for_normalized_target(_db_path(), norm_name)
-    harps_rv = _harps_data_for_target(datasets, norm_name)
-    return JSONResponse({
-        "ok": True,
-        "target": norm_name,
-        "match_arcsec": _HARPS_MATCH_ARCSEC,
-        "has_data": bool(harps_rv.get("total_rows")),
-        "harps_rv": harps_rv,
-    })
-
-
-def _load_toi_catalog() -> dict:
-    """Read ``data/TOIs.csv`` into column-oriented arrays for the /toi page.
-    All rows (every TFOPWG disposition, including FP/FA) are included so the
-    candidate-type chips can filter them client-side. Cached by file mtime so
-    the 8k-row CSV is parsed at most once per update."""
-    path = _TOI_CATALOG_PATH
-    empty = {"data": {k: [] for _, k, _ in _TOI_COLUMNS}, "n": 0, "updated": ""}
-    try:
-        mtime = path.stat().st_mtime_ns
-    except OSError:
-        return empty
-
-    cached = _toi_cache.get("catalog")
-    if cached is not None and cached[0] == mtime:
-        return cached[1]
-
-    data: dict[str, list] = {key: [] for _, key, _ in _TOI_COLUMNS}
-    updated = ""
-    with open(path, encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        # Build case-insensitive header lookup (TAP API folds identifiers to lowercase)
-        col_map = {h.strip().lower(): h for h in (reader.fieldnames or [])}
-        for row in reader:
-            for header, key, kind in _TOI_COLUMNS:
-                raw = row.get(col_map.get(header.strip().lower()))
-                data[key].append(_toi_float(raw) if kind == "f" else (raw or "").strip())
-            u = (row.get("Date TOI Updated (UTC)") or "").strip()
-            if u > updated:
-                updated = u
-
-    result = {"data": data, "n": len(data["toi"]), "updated": updated}
-    _toi_cache["catalog"] = (mtime, result)
-    return result
-
-
-# Boyle2026 stellar-rotation catalog (feather), merged onto TOIs by TIC ID.
-# Path overridable so a refreshed/moved catalog doesn't require a code change.
-_BOYLE_PATH = pathlib.Path(os.environ.get(
-    "MUSCAT_BOYLE_CATALOG",
-    "/ut2/jerome/github/research/project/wakai/data/Boyle2026/final_catalog.feather",
-))
-
-# (feather column == json key, kind) — kind "f" float, "i" int, "b" bool→0/1,
-# "s" string. Only this subset is merged onto the /toi payload.
-_BOYLE_COLUMNS: list[tuple[str, str]] = [
-    ("ruwe", "f"),
-    ("non_single_star", "i"),
-    ("adopted_period", "f"),
-    ("adopted_period_unc", "f"),
-    ("flag_multiple_periods", "b"),
-    ("flag_possible_binary", "b"),
-    ("final_n_contams", "f"),
-    ("flag_doubled_period", "b"),
-    ("n_secs", "i"),
-    ("n_sec_ratio", "f"),
-    ("median_amplitude", "f"),
-    ("sectors", "s"),
-    ("sector_periods", "s"),
-]
-
-_boyle_cache: dict = {}
-_TOI_CONFIRMED_PERIOD_REL_TOL = float(os.environ.get("MUSCAT_TOI_CONFIRMED_PERIOD_REL_TOL", "0.01"))
-_TOI_CONFIRMED_PERIOD_ABS_TOL_D = float(os.environ.get("MUSCAT_TOI_CONFIRMED_PERIOD_ABS_TOL_D", "0.001"))
-
-
-def _load_boyle_catalog() -> tuple[dict[str, list], dict[int, int]]:
-    """Read the Boyle2026 catalog into ``(columns, tic_to_row)`` where
-    ``columns`` holds JSON-safe per-column arrays (floats sanitized against
-    NaN/inf, bools as 0/1) and ``tic_to_row`` maps TIC ID → row index.
-    Cached by file mtime; returns empty structures when the file is absent
-    or unreadable so the /toi page degrades gracefully."""
-    empty: tuple[dict[str, list], dict[int, int]] = ({k: [] for k, _ in _BOYLE_COLUMNS}, {})
-    try:
-        mtime = _BOYLE_PATH.stat().st_mtime_ns
-    except OSError:
-        logger.warning("Boyle2026 catalog not found at %s; /toi merge columns will be empty", _BOYLE_PATH)
-        return empty
-
-    cached = _boyle_cache.get("catalog")
-    if cached is not None and cached[0] == mtime:
-        return cached[1]
-
-    try:
-        from pyarrow import feather
-
-        table = feather.read_table(_BOYLE_PATH, columns=["TICID"] + [k for k, _ in _BOYLE_COLUMNS])
-        raw = table.to_pydict()
-    except Exception:
-        logger.warning("failed to read Boyle2026 catalog %s", _BOYLE_PATH, exc_info=True)
-        return empty
-
-    cols: dict[str, list] = {}
-    for key, kind in _BOYLE_COLUMNS:
-        vals = raw[key]
-        if kind == "f":
-            cols[key] = [_toi_float(v) for v in vals]
-        elif kind == "i":
-            cols[key] = [None if v is None else int(v) for v in vals]
-        elif kind == "b":
-            cols[key] = [None if v is None else int(bool(v)) for v in vals]
-        else:
-            cols[key] = [(v or "").strip() if isinstance(v, str) else "" for v in vals]
-    tic_to_row = {int(t): i for i, t in enumerate(raw["TICID"]) if t is not None}
-
-    result = (cols, tic_to_row)
-    _boyle_cache["catalog"] = (mtime, result)
-    return result
-
-
-def _merge_boyle_columns(cat_data: dict) -> tuple[dict[str, list], int]:
-    """Left-join the Boyle2026 columns onto the TOI catalog rows by TIC ID.
-    Returns ``(columns, n_matched)`` with one aligned array per Boyle column;
-    unmatched rows get None (numeric) / "" (string)."""
-    cols, tic_to_row = _load_boyle_catalog()
-    tics = cat_data["tic"]
-    n = len(tics)
-    merged: dict[str, list] = {}
-    for key, kind in _BOYLE_COLUMNS:
-        merged[key] = ["" if kind == "s" else None] * n
-    n_matched = 0
-    for i in range(n):
-        digits = re.sub(r"\D", "", tics[i]) if tics[i] else ""
-        j = tic_to_row.get(int(digits)) if digits else None
-        if j is None:
-            continue
-        n_matched += 1
-        for key, _ in _BOYLE_COLUMNS:
-            merged[key][i] = cols[key][j]
-    return merged, n_matched
-
-
-def _periods_match(a: float | None, b: float | None) -> bool:
-    if a is None or b is None or a <= 0 or b <= 0:
-        return False
-    tol = max(_TOI_CONFIRMED_PERIOD_ABS_TOL_D, _TOI_CONFIRMED_PERIOD_REL_TOL * max(abs(a), abs(b)))
-    return abs(a - b) <= tol
-
-
-def _nasa_confirmed_toi_membership(cat_data: dict) -> tuple[list[int], list[str], int]:
-    """Mark TOI rows that appear in the NASA confirmed-planet catalog.
-
-    The TOI disposition remains the raw TFOPWG value. This overlay uses
-    PSCompPars/NExScI as the confirmed-planet source and matches planet-level
-    rows by TIC ID plus period. Exact normalized planet-name matches are kept as
-    a fallback for rows where a confirmed planet carries a TOI-like name.
-    """
-    n = len(cat_data.get("toi", []))
-    confirmed = [0] * n
-    planet_names = [""] * n
-    try:
-        nx = _load_nexsci_catalog()["data"]
-    except Exception:
-        logger.warning("failed to read NExScI catalog for TOI confirmation overlay", exc_info=True)
-        return confirmed, planet_names, 0
-
-    by_tic: dict[int, list[tuple[float | None, str]]] = {}
-    by_name: dict[str, str] = {}
-    nx_names = nx.get("name", [])
-    nx_periods = nx.get("period", [])
-    nx_tics = nx.get("tic", [])
-    for i, name in enumerate(nx_names):
-        planet_name = str(name or "").strip()
-        if planet_name:
-            by_name.setdefault(_normalize_target_name(planet_name), planet_name)
-        tic_digits = re.sub(r"\D", "", str(nx_tics[i] if i < len(nx_tics) else "") or "")
-        if not tic_digits:
-            continue
-        period = nx_periods[i] if i < len(nx_periods) else None
-        by_tic.setdefault(int(tic_digits), []).append((period, planet_name))
-
-    n_matched = 0
-    tois = cat_data.get("toi", [])
-    names = cat_data.get("name", [])
-    tics = cat_data.get("tic", [])
-    periods = cat_data.get("period", [])
-    for i in range(n):
-        match_name = ""
-        row_names = []
-        if i < len(names) and names[i]:
-            row_names.append(str(names[i]))
-        if i < len(tois) and tois[i]:
-            row_names.append(f"TOI-{tois[i]}")
-        for row_name in row_names:
-            match_name = by_name.get(_normalize_target_name(row_name), "")
-            if match_name:
-                break
-
-        if not match_name:
-            tic_digits = re.sub(r"\D", "", str(tics[i] if i < len(tics) else "") or "")
-            period = periods[i] if i < len(periods) else None
-            if tic_digits:
-                for nx_period, nx_name in by_tic.get(int(tic_digits), []):
-                    if _periods_match(period, nx_period):
-                        match_name = nx_name
-                        break
-
-        if match_name:
-            confirmed[i] = 1
-            planet_names[i] = match_name
-            n_matched += 1
-
-    return confirmed, planet_names, n_matched
-
-
-_toi_db_cache: dict = {}
-
-
-def _db_target_identifiers(db: str) -> dict:
-    """Index muscat-db target OBJECT names by the identifiers a TOI can be
-    matched on — TIC id, TOI number (full and integer part), and normalized
-    name — each mapped back to the DB target's normalized name (used as the
-    target-page link). Cached by DB mtime."""
-    key = _db_mtime(db)
-    cached = _toi_db_cache.get("ids")
-    if cached is not None and cached[0] == key:
-        return cached[1]
-
-    tic_to_norm: dict[int, str] = {}
-    toi_to_norm: dict[str, str] = {}
-    names: set[str] = set()
-    for t in _get_targets(db):
-        obj = t.get("object") or ""
-        norm = _normalize_target_name(obj)
-        names.add(norm)
-        up = obj.upper()
-        for m in re.finditer(r"TIC[\s_-]*0*(\d+)", up):
-            tic_to_norm.setdefault(int(m.group(1)), norm)
-        for m in re.finditer(r"TOI[\s_-]*0*(\d+(?:\.\d+)?)", up):
-            num = m.group(1)
-            toi_to_norm.setdefault(num, norm)
-            toi_to_norm.setdefault(num.split(".")[0], norm)
-
-    ids = {"tic": tic_to_norm, "toi": toi_to_norm, "names": names}
-    _toi_db_cache["ids"] = (key, ids)
-    return ids
-
-
-def _toi_db_membership(cat_data: dict, db: str) -> tuple[list[int], list[str]]:
-    """Return ``(indb, tname)`` per TOI row: ``indb`` is 1 when the object is in
-    muscat-db, ``tname`` is the target-page link name (the matched DB target's
-    normalized name, or a best-effort TOI/name fallback when not in the DB)."""
-    ids = _db_target_identifiers(db)
-    tic_map, toi_map, names = ids["tic"], ids["toi"], ids["names"]
-    tics, tois, nms = cat_data["tic"], cat_data["toi"], cat_data["name"]
-    n = len(tois)
-    indb = [0] * n
-    tname = [""] * n
-    for i in range(n):
-        link = None
-        digits = re.sub(r"\D", "", tics[i]) if tics[i] else ""
-        if digits:
-            link = tic_map.get(int(digits))
-        if link is None and tois[i]:
-            link = toi_map.get(tois[i]) or toi_map.get(tois[i].split(".")[0])
-        if link is None and nms[i]:
-            nn = _normalize_target_name(nms[i])
-            if nn in names:
-                link = nn
-        if link is not None:
-            indb[i] = 1
-            tname[i] = link
-        elif tois[i]:
-            tname[i] = _normalize_target_name(f"TOI-{tois[i]}")
-        elif nms[i]:
-            tname[i] = _normalize_target_name(nms[i])
-    return indb, tname
 
 
 @app.get("/toi", response_class=HTMLResponse)
@@ -1383,11 +533,8 @@ def toi_page():
 
 
 @app.get("/api/exofop/check_confirmed")
-def check_confirmed_planets(tics: str):
-    import urllib.request
+async def check_confirmed_planets(tics: str):
     import urllib.parse
-    import json
-    from concurrent.futures import ThreadPoolExecutor
     from .database import get_conn, SCHEMA
 
     tic_list = [t.strip() for t in tics.split(",") if t.strip()]
@@ -1415,24 +562,26 @@ def check_confirmed_planets(tics: str):
             missing_tics.append(t)
 
     if missing_tics:
-        def fetch_one(tic):
+        # Cap concurrent ExoFOP requests at 10, same as the previous
+        # ThreadPoolExecutor(max_workers=10).
+        semaphore = asyncio.Semaphore(10)
+
+        async def fetch_one(tic):
             encoded_tic = urllib.parse.quote(tic)
             url = f"https://exofop.ipac.caltech.edu/tess/target.php?id={encoded_tic}&json"
             try:
-                req = urllib.request.Request(url, headers={"User-Agent": "MuSCAT-db/0.1.0"})
-                with urllib.request.urlopen(req, timeout=10.0) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    bi = data.get("basic_info", {})
-                    confirmed_val = bi.get("confirmed_planets") or ""
-                    has_confirmed = len(confirmed_val.strip()) > 0
-                    return tic, has_confirmed, confirmed_val
+                async with semaphore:
+                    resp = await _async_get(url, headers={"User-Agent": "MuSCAT-db/0.1.0"})
+                data = resp.json()
+                bi = data.get("basic_info", {})
+                confirmed_val = bi.get("confirmed_planets") or ""
+                has_confirmed = len(confirmed_val.strip()) > 0
+                return tic, has_confirmed, confirmed_val
             except Exception as e:
                 logger.warning("Failed to fetch ExoFOP for TIC %s: %s", tic, e)
                 return tic, None, None
 
-        # Fetch in parallel with up to 10 workers
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            fetched_results = list(executor.map(fetch_one, missing_tics))
+        fetched_results = await asyncio.gather(*(fetch_one(tic) for tic in missing_tics))
 
         # 3. Write new entries to cache
         with get_conn() as conn:
@@ -1449,179 +598,16 @@ def check_confirmed_planets(tics: str):
     return results
 
 
-_jwst_targets_cache: set[str] = set()
-
-
-def _load_jwst_targets() -> set[str]:
-    """Load unique JWST target names from data/jwst_targets.csv."""
-    global _jwst_targets_cache
-    if _jwst_targets_cache:
-        return _jwst_targets_cache
-    path = _JWST_TARGETS_PATH
-    if not path.is_file():
-        return set()
-    try:
-        with open(path, encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            _jwst_targets_cache = {row["pl_name"].strip() for row in reader if row.get("pl_name")}
-    except Exception:
-        logger.warning("failed to read JWST targets catalog %s", path, exc_info=True)
-        return set()
-    return _jwst_targets_cache
-
-
-_spectra_targets_cache: set[str] = set()
-
-
-def _load_spectra_targets() -> set[str]:
-    """Load unique spectra target names from data/spectra_targets.csv or fetch from TAP if missing."""
-    global _spectra_targets_cache
-    if _spectra_targets_cache:
-        return _spectra_targets_cache
-    path = _SPECTRA_TARGETS_PATH
-    if not path.is_file():
-        logger.info("data/spectra_targets.csv not found, downloading from NASA Exoplanet Archive...")
-        try:
-            import urllib.request
-            import urllib.parse
-            query = "SELECT distinct pl_name FROM spectra"
-            params = {"query": query, "format": "csv"}
-            url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?" + urllib.parse.urlencode(params)
-            req = urllib.request.Request(url, headers={"User-Agent": "MuSCAT-db/0.1.0"})
-            with urllib.request.urlopen(req, timeout=15.0) as response:
-                content = response.read().decode("utf-8")
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(content)
-        except Exception as e:
-            logger.warning("failed to download spectra targets from TAP: %s", e)
-            return set()
-            
-    try:
-        with open(path, encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            _spectra_targets_cache = {row["pl_name"].strip() for row in reader if row.get("pl_name")}
-    except Exception:
-        logger.warning("failed to read spectra targets catalog %s", path, exc_info=True)
-        return set()
-    return _spectra_targets_cache
-
-
-_jwst_aliases_cache: set[str] = set()
-
-
-def _load_jwst_targets_aliases() -> set[str]:
-    """Load all aliases for the JWST targets."""
-    global _jwst_aliases_cache
-    if _jwst_aliases_cache:
-        return _jwst_aliases_cache
-    targets = _load_jwst_targets()
-    aliases = set()
-    for t in targets:
-        aliases.update(_target_lookup_aliases(t))
-    _jwst_aliases_cache = aliases
-    return _jwst_aliases_cache
-
-
-def _resolve_all_aliases(target_name: str, datasets: list[dict] | None = None) -> set[str]:
-    """Resolve all possible aliases for a given target name, using TOI and NExScI catalogs."""
-    names = [target_name]
-    names.extend(str(ds.get("object") or "") for ds in (datasets or []))
-    aliases: set[str] = set()
-    for name in names:
-        aliases.update(_target_lookup_aliases(name))
-        
-    try:
-        cat = _load_toi_catalog()["data"]
-        n = len(cat.get("toi", []))
-        for i in range(n):
-            toi = str((cat.get("toi") or [""])[i] or "").strip()
-            name = str((cat.get("name") or [""])[i] or "")
-            row_aliases = _target_lookup_aliases(name)
-            if toi:
-                toi_num = _toi_float(toi)
-                if toi_num is not None:
-                    row_aliases.add(f"TOI{int(toi_num)}")
-                row_aliases.add(_normalize_target_name(f"TOI-{toi}"))
-            if aliases & row_aliases:
-                aliases.update(row_aliases)
-                tic = str((cat.get("tic") or [""])[i] or "")
-                digits = re.sub(r"\D", "", tic)
-                if digits:
-                    aliases.add(f"TIC{digits}")
-                    aliases.add(f"TIC {digits}")
-    except Exception:
-        pass
-
-    try:
-        cat = _load_nexsci_catalog()["data"]
-        n = len(cat.get("name", []))
-        for i in range(n):
-            name = str((cat.get("name") or [""])[i] or "")
-            host = str((cat.get("host") or [""])[i] or "")
-            tic = str((cat.get("tic") or [""])[i] or "")
-            row_aliases = _target_lookup_aliases(name) | _target_lookup_aliases(host)
-            if tic:
-                digits = re.sub(r"\D", "", tic)
-                if digits:
-                    row_aliases.add(f"TIC{digits}")
-                    row_aliases.add(f"TIC {digits}")
-            if aliases & row_aliases:
-                aliases.update(row_aliases)
-    except Exception:
-        pass
-        
-    return aliases
-
-
-def _matched_jwst_targets(target_name: str, datasets: list[dict] | None = None) -> list[str]:
-    """Return actual pl_name values from jwst_targets.csv matching target's aliases."""
-    target_aliases = _resolve_all_aliases(target_name, datasets)
-    jwst_targets = _load_jwst_targets()
-    matched = []
-    for t in jwst_targets:
-        if _target_lookup_aliases(t) & target_aliases:
-            matched.append(t)
-    return matched
-
-
-_spectra_aliases_cache: set[str] = set()
-
-
-def _load_spectra_targets_aliases() -> set[str]:
-    """Load all aliases for the spectra targets."""
-    global _spectra_aliases_cache
-    if _spectra_aliases_cache:
-        return _spectra_aliases_cache
-    targets = _load_spectra_targets()
-    aliases = set()
-    for t in targets:
-        aliases.update(_target_lookup_aliases(t))
-    _spectra_aliases_cache = aliases
-    return _spectra_aliases_cache
-
-
-def _matched_spectra_targets(target_name: str, datasets: list[dict] | None = None) -> list[str]:
-    """Return actual pl_name values from spectra_targets.csv matching target's aliases."""
-    target_aliases = _resolve_all_aliases(target_name, datasets)
-    spectra_targets = _load_spectra_targets()
-    matched = []
-    for t in spectra_targets:
-        if _target_lookup_aliases(t) & target_aliases:
-            matched.append(t)
-    return matched
-
-
 @target_router.get("/jwst", response_class=JSONResponse)
-def api_target_jwst(name: str = ""):
+async def api_target_jwst(name: str = ""):
     norm_name = _normalize_target_name(name)
     if not norm_name:
         return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
-    
+
     db = _db_path()
     datasets, _last_updated = _get_datasets_for_normalized_target(db, norm_name)
     matched = _matched_jwst_targets(norm_name, datasets)
-    
+
     if not matched:
         return JSONResponse({
             "ok": True,
@@ -1631,13 +617,12 @@ def api_target_jwst(name: str = ""):
                 "rows": []
             }
         })
-    
-    import urllib.request
+
     import urllib.parse
     import csv
     import io
     import datetime
-    
+
     names_str = ", ".join("'" + n.replace("'", "''") + "'" for n in matched)
     query = f"SELECT program, observation_num, instrument, observingmode, gratinggrism, event, status, starttime, observation_dur FROM nexolist WHERE pl_name IN ({names_str})"
     params = {
@@ -1645,78 +630,75 @@ def api_target_jwst(name: str = ""):
         "format": "csv"
     }
     url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={
-        "User-Agent": "MuSCAT-db/0.1.0"
-    })
-    
+
     try:
-        with urllib.request.urlopen(req, timeout=15.0) as response:
-            content = response.read().decode("utf-8")
-            f = io.StringIO(content)
-            reader = csv.DictReader(f)
-            col_map = {
-                "program": "Program",
-                "observation_num": "Obs #",
-                "instrument": "Instrument",
-                "observingmode": "Observing Mode",
-                "gratinggrism": "Grating/Grism",
-                "event": "Event",
-                "status": "Status",
-                "starttime": "Start Time (UTC)",
-                "observation_dur": "Duration (h)"
+        response = await _async_get(url, headers={"User-Agent": "MuSCAT-db/0.1.0"})
+        content = response.text
+        f = io.StringIO(content)
+        reader = csv.DictReader(f)
+        col_map = {
+            "program": "Program",
+            "observation_num": "Obs #",
+            "instrument": "Instrument",
+            "observingmode": "Observing Mode",
+            "gratinggrism": "Grating/Grism",
+            "event": "Event",
+            "status": "Status",
+            "starttime": "Start Time (UTC)",
+            "observation_dur": "Duration (h)"
+        }
+        columns = ["Program", "Obs #", "Instrument", "Observing Mode", "Grating/Grism", "Event", "Status", "Start Time (UTC)", "Duration (h)"]
+        rows = []
+        for row in reader:
+            if not row or "ERROR" in row:
+                continue
+            mapped_row = {}
+            for orig_col, new_col in col_map.items():
+                val = row.get(orig_col)
+                if val is None:
+                    val = ""
+                else:
+                    val = val.strip()
+                    if orig_col == "observation_dur":
+                        try:
+                            float_val = float(val)
+                            val = f"{float_val:.2f}"
+                        except ValueError:
+                            pass
+                mapped_row[new_col] = val
+            rows.append(mapped_row)
+
+        def get_start_time(r):
+            t_str = r.get("Start Time (UTC)", "")
+            try:
+                return datetime.datetime.strptime(t_str, "%b %d, %Y %H:%M:%S")
+            except Exception:
+                return datetime.datetime.min
+
+        rows.sort(key=get_start_time, reverse=True)
+
+        return JSONResponse({
+            "ok": True,
+            "target": norm_name,
+            "jwst": {
+                "columns": columns,
+                "rows": rows
             }
-            columns = ["Program", "Obs #", "Instrument", "Observing Mode", "Grating/Grism", "Event", "Status", "Start Time (UTC)", "Duration (h)"]
-            rows = []
-            for row in reader:
-                if not row or "ERROR" in row:
-                    continue
-                mapped_row = {}
-                for orig_col, new_col in col_map.items():
-                    val = row.get(orig_col)
-                    if val is None:
-                        val = ""
-                    else:
-                        val = val.strip()
-                        if orig_col == "observation_dur":
-                            try:
-                                float_val = float(val)
-                                val = f"{float_val:.2f}"
-                            except ValueError:
-                                pass
-                    mapped_row[new_col] = val
-                rows.append(mapped_row)
-            
-            def get_start_time(r):
-                t_str = r.get("Start Time (UTC)", "")
-                try:
-                    return datetime.datetime.strptime(t_str, "%b %d, %Y %H:%M:%S")
-                except Exception:
-                    return datetime.datetime.min
-            
-            rows.sort(key=get_start_time, reverse=True)
-            
-            return JSONResponse({
-                "ok": True,
-                "target": norm_name,
-                "jwst": {
-                    "columns": columns,
-                    "rows": rows
-                }
-            })
+        })
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"Failed to query JWST observations: {str(e)}"}, status_code=500)
 
 
 @target_router.get("/spectra", response_class=JSONResponse)
-def api_target_spectra(name: str = ""):
+async def api_target_spectra(name: str = ""):
     norm_name = _normalize_target_name(name)
     if not norm_name:
         return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
-    
+
     db = _db_path()
     datasets, _last_updated = _get_datasets_for_normalized_target(db, norm_name)
     matched = _matched_spectra_targets(norm_name, datasets)
-    
+
     if not matched:
         return JSONResponse({
             "ok": True,
@@ -1726,12 +708,11 @@ def api_target_spectra(name: str = ""):
                 "rows": []
             }
         })
-    
-    import urllib.request
+
     import urllib.parse
     import csv
     import io
-    
+
     names_str = ", ".join("'" + n.replace("'", "''") + "'" for n in matched)
     query = f"SELECT spec_type, facility, instrument, minwavelng, maxwavelng, num_datapoints, authors, bibcode FROM spectra WHERE pl_name IN ({names_str})"
     params = {
@@ -1739,219 +720,55 @@ def api_target_spectra(name: str = ""):
         "format": "csv"
     }
     url = "https://exoplanetarchive.ipac.caltech.edu/TAP/sync?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={
-        "User-Agent": "MuSCAT-db/0.1.0"
-    })
-    
+
     try:
-        with urllib.request.urlopen(req, timeout=15.0) as response:
-            content = response.read().decode("utf-8")
-            f = io.StringIO(content)
-            reader = csv.DictReader(f)
-            col_map = {
-                "spec_type": "Type",
-                "facility": "Facility",
-                "instrument": "Instrument",
-                "minwavelng": "Min Wavelng (μm)",
-                "maxwavelng": "Max Wavelng (μm)",
-                "num_datapoints": "# Points",
-                "authors": "Authors",
-                "bibcode": "Bibcode"
+        response = await _async_get(url, headers={"User-Agent": "MuSCAT-db/0.1.0"})
+        content = response.text
+        f = io.StringIO(content)
+        reader = csv.DictReader(f)
+        col_map = {
+            "spec_type": "Type",
+            "facility": "Facility",
+            "instrument": "Instrument",
+            "minwavelng": "Min Wavelng (μm)",
+            "maxwavelng": "Max Wavelng (μm)",
+            "num_datapoints": "# Points",
+            "authors": "Authors",
+            "bibcode": "Bibcode"
+        }
+        columns = ["Type", "Facility", "Instrument", "Min Wavelng (μm)", "Max Wavelng (μm)", "# Points", "Authors", "Bibcode"]
+        rows = []
+        for row in reader:
+            if not row or "ERROR" in row:
+                continue
+            mapped_row = {}
+            for orig_col, new_col in col_map.items():
+                val = row.get(orig_col)
+                if val is None:
+                    val = ""
+                else:
+                    val = val.strip()
+                    if orig_col in ("minwavelng", "maxwavelng"):
+                        try:
+                            float_val = float(val)
+                            val = f"{float_val:.4f}"
+                        except ValueError:
+                            pass
+                mapped_row[new_col] = val
+            rows.append(mapped_row)
+
+        rows.sort(key=lambda r: (r.get("Type", ""), r.get("Authors", "")))
+
+        return JSONResponse({
+            "ok": True,
+            "target": norm_name,
+            "spectra": {
+                "columns": columns,
+                "rows": rows
             }
-            columns = ["Type", "Facility", "Instrument", "Min Wavelng (μm)", "Max Wavelng (μm)", "# Points", "Authors", "Bibcode"]
-            rows = []
-            for row in reader:
-                if not row or "ERROR" in row:
-                    continue
-                mapped_row = {}
-                for orig_col, new_col in col_map.items():
-                    val = row.get(orig_col)
-                    if val is None:
-                        val = ""
-                    else:
-                        val = val.strip()
-                        if orig_col in ("minwavelng", "maxwavelng"):
-                            try:
-                                float_val = float(val)
-                                val = f"{float_val:.4f}"
-                            except ValueError:
-                                pass
-                    mapped_row[new_col] = val
-                rows.append(mapped_row)
-            
-            rows.sort(key=lambda r: (r.get("Type", ""), r.get("Authors", "")))
-            
-            return JSONResponse({
-                "ok": True,
-                "target": norm_name,
-                "spectra": {
-                    "columns": columns,
-                    "rows": rows
-                }
-            })
+        })
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"Failed to query spectra observations: {str(e)}"}, status_code=500)
-
-
-# ── NASA Exoplanet Archive (NExScI) composite catalog ──────────────────────
-# Column map for the /nexsci page: (csv header, json key, kind). "s" keeps the
-# raw string, "f" parses a finite float (or null) via _toi_float. Header names
-# verified against data/nexsci_pscomppars.csv — note the ra_x/dec_x suffixes.
-_NEXSCI_COLUMNS: list[tuple[str, str, str]] = [
-    ("pl_name", "name", "s"),
-    ("hostname", "host", "s"),
-    ("tic_id", "tic", "s"),
-    ("discoverymethod", "method", "s"),
-    ("disc_facility", "facility", "s"),
-    ("st_spectype", "spectype", "s"),
-    ("disc_year", "year", "f"),
-    ("disc_pubdate", "pubdate", "s"),
-    ("ra_x", "ra", "f"),
-    ("dec_x", "dec", "f"),
-    ("pl_orbper", "period", "f"),
-    ("pl_orbsmax", "sma", "f"),
-    ("pl_rade", "radius", "f"),
-    ("pl_radj", "radj", "f"),
-    ("pl_bmasse", "mass", "f"),
-    ("pl_bmassj", "massj", "f"),
-    ("pl_bmassprov", "bmassprov", "s"),
-    ("pl_eqt", "teq", "f"),
-    ("pl_insol", "insol", "f"),
-    ("pl_ratror", "ratror", "f"),
-    ("pl_trandep", "trandep", "f"),
-    ("pl_trandur", "trandur", "f"),
-    ("pl_imppar", "imppar", "f"),
-    ("pl_orbincl", "incl", "f"),
-    ("pl_orbeccen", "ecc", "f"),
-    ("pl_dens", "pdens", "f"),
-    ("st_teff", "steff", "f"),
-    ("st_rad", "srad", "f"),
-    ("st_mass", "smass", "f"),
-    ("st_logg", "slogg", "f"),
-    ("st_met", "smet", "f"),
-    ("st_dens", "sdens", "f"),
-    ("sy_dist", "dist", "f"),
-    ("sy_vmag", "vmag", "f"),
-    ("sy_tmag", "tmag", "f"),
-    ("sy_gaiamag", "gmag", "f"),
-    ("sy_kmag", "kmag", "f"),
-    ("sy_snum", "snum", "f"),
-    ("cb_flag", "cbflag", "f"),
-    ("st_age", "age", "f"),
-    ("st_ageerr1", "ageerr1", "f"),  # positive (upper) 1-sigma age uncertainty
-    ("st_agelim", "agelim", "f"),    # archive limit flag: -1 lower, 0 value+error, 1 upper
-    ("ttv_flag", "ttv", "f"),
-    ("pl_projobliq", "projobliq", "f"),
-    ("st_nrvc", "nrvc", "f"),
-    ("st_nspec", "nspec", "f"),
-    ("st_nphot", "nphot", "f"),
-]
-
-_nexsci_cache: dict = {}
-
-
-_PUBDATES_PATH = HERE.parent.parent / "data" / "nexsci_pubdates.csv"
-_pubdates_cache: dict[str, str] = {}
-
-
-def _load_pubdates() -> dict[str, str]:
-    """Load latest publication dates mapping from data/nexsci_pubdates.csv."""
-    global _pubdates_cache
-    if _pubdates_cache:
-        return _pubdates_cache
-    path = _PUBDATES_PATH
-    if not path.is_file():
-        return {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            _pubdates_cache = {row["pl_name"].strip(): (row.get("pl_pubdate") or "").strip() for row in reader if row.get("pl_name")}
-    except Exception:
-        logger.warning("failed to read latest publication dates catalog %s", path, exc_info=True)
-        return {}
-    return _pubdates_cache
-
-
-def _load_nexsci_catalog() -> dict:
-    """Read ``data/nexsci_pscomppars.csv`` (NASA Exoplanet Archive Composite
-    Planetary Systems — one row per confirmed planet) into column-oriented
-    arrays for the /nexsci page. Cached by file mtime so the ~4.6k-row CSV is
-    parsed at most once per update; degrades to empty when the (git-ignored)
-    file is absent."""
-    path = _NEXSCI_CATALOG_PATH
-    empty = {"data": {k: [] for _, k, _ in _NEXSCI_COLUMNS}, "n": 0, "updated": ""}
-    try:
-        mtime = path.stat().st_mtime_ns
-    except OSError:
-        return empty
-
-    cached = _nexsci_cache.get("catalog")
-    if cached is not None and cached[0] == mtime:
-        return cached[1]
-
-    pubdates = _load_pubdates()
-
-    data: dict[str, list] = {key: [] for _, key, _ in _NEXSCI_COLUMNS}
-    with open(path, encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            for header, key, kind in _NEXSCI_COLUMNS:
-                if key == "pubdate":
-                    pl_name = row.get("pl_name", "").strip()
-                    raw = pubdates.get(pl_name) or row.get(header)
-                else:
-                    raw = row.get(header)
-                data[key].append(_toi_float(raw) if kind == "f" else (raw or "").strip())
-            # Fallback for transit radius ratio if empty
-            if data["ratror"][-1] is None:
-                rade = data["radius"][-1]
-                srad = data["srad"][-1]
-                if rade is not None and srad is not None and srad > 0:
-                    data["ratror"][-1] = (rade / srad) * (6378.1 / 695700.0)
-            # Fallback for planet radius in Jupiter radii if empty
-            if data["radj"][-1] is None:
-                rade = data["radius"][-1]
-                if rade is not None:
-                    data["radj"][-1] = rade / 11.2089
-            # Fallback for planet mass in Jupiter masses if empty
-            if data["massj"][-1] is None:
-                masse = data["mass"][-1]
-                if masse is not None:
-                    data["massj"][-1] = masse / 317.828
-
-    # The composite table has no per-row date column, so surface the file's own
-    # modification date as the catalog "last updated" stamp.
-    updated = datetime.date.fromtimestamp(mtime / 1e9).isoformat()
-    result = {"data": data, "n": len(data["name"]), "updated": updated}
-    _nexsci_cache["catalog"] = (mtime, result)
-    return result
-
-
-def _nexsci_db_membership(cat_data: dict, db: str) -> tuple[list[int], list[str]]:
-    """Return ``(indb, tname)`` per NExScI row: ``indb`` is 1 when the planet's
-    host is in muscat-db (matched by TIC id, else by normalized host name), and
-    ``tname`` is the matched DB target's normalized name (the /target link).
-    Rows with no muscat-db match get ``indb=0`` and an empty ``tname`` — the
-    page then falls back to the NASA Exoplanet Archive overview link, built
-    client-side from the archive's canonically-hyphenated ``host`` name."""
-    ids = _db_target_identifiers(db)
-    tic_map, names = ids["tic"], ids["names"]
-    tics, hosts = cat_data["tic"], cat_data["host"]
-    n = len(hosts)
-    indb = [0] * n
-    tname = [""] * n
-    for i in range(n):
-        link = None
-        digits = re.sub(r"\D", "", tics[i]) if tics[i] else ""
-        if digits:
-            link = tic_map.get(int(digits))
-        if link is None and hosts[i]:
-            nn = _normalize_target_name(hosts[i])
-            if nn in names:
-                link = nn
-        if link is not None:
-            indb[i] = 1
-            tname[i] = link
-    return indb, tname
 
 
 @app.get("/nexsci", response_class=HTMLResponse)
@@ -2017,31 +834,48 @@ def export_targets_csv():
     )
 
 
-def _sinistro_obslog_choices(db: str, inst: str, date: str, target: str) -> tuple[list[str], list[str]]:
-    """``(sites, modes)`` present in the obslog for a sinistro target+date.
+_LCO_TELESCOPE_FILENAME_RE = re.compile(r"^[a-z]{3}1m0(\d{2})-")
 
-    The LCO site is the 3-char filename prefix (e.g. ``cpt1m010-...``); the mode
-    is ``read_mode`` (CONFMODE). Both are intersected with the known valid sets
-    so a stray prefix or non-canonical read_mode (MUSCAT_FAST/SLOW) can't leak
-    in. Empty lists for non-sinistro or on error.
+
+def _sinistro_obslog_choices(
+    db: str, inst: str, date: str, target: str, site: str = ""
+) -> tuple[list[str], list[str], list[str]]:
+    """``(sites, telescopes, modes)`` present in the obslog for a sinistro
+    target+date, optionally scoping the telescope list to one ``site``.
+
+    The LCO site is the 3-char filename prefix (e.g. ``cpt1m010-...``); the
+    physical telescope is the 2-digit unit number right after ``1m0`` in that
+    same prefix (e.g. ``cpt1m010-`` -> unit ``10``, reconstructed as the
+    canonical TELESCOP-style value ``'1m0-10'``); the mode is ``read_mode``
+    (CONFMODE). Site/mode are intersected with the known valid sets so a stray
+    prefix or non-canonical read_mode (MUSCAT_FAST/SLOW) can't leak in;
+    telescope is open-ended (LCO's 1m fleet changes over time) so only the
+    filename shape is validated. Empty lists for non-sinistro or on error.
     """
     if inst != "sinistro" or not (date and target):
-        return [], []
+        return [], [], []
     try:
         with get_conn(db) as conn:
             cur = conn.execute(
-                "SELECT DISTINCT substr(filename, 1, 3) FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND filename IS NOT NULL AND filename != ''",
+                "SELECT DISTINCT filename FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND filename IS NOT NULL AND filename != ''",
                 (inst, date, target),
             )
-            sites = sorted({row[0].lower() for row in cur.fetchall() if row[0]} & set(phot.SINISTRO_SITES))
+            filenames = [row[0].lower() for row in cur.fetchall() if row[0]]
+            sites = sorted({fn[:3] for fn in filenames} & set(phot.SINISTRO_SITES))
+            scoped = [fn for fn in filenames if not site or fn.startswith(site)]
+            telescopes = sorted({
+                f"1m0-{m.group(1)}"
+                for fn in scoped
+                if (m := _LCO_TELESCOPE_FILENAME_RE.match(fn))
+            })
             cur = conn.execute(
                 "SELECT DISTINCT read_mode FROM frames WHERE instrument = ? AND obsdate = ? AND object = ? AND read_mode IS NOT NULL AND read_mode != ''",
                 (inst, date, target),
             )
             modes = sorted({row[0].lower() for row in cur.fetchall() if row[0]} & set(phot.SINISTRO_MODES))
-        return sites, modes
+        return sites, telescopes, modes
     except Exception:
-        return [], []
+        return [], [], []
 
 
 def _site_required_error(db: str, inst: str, date: str, target: str, options: dict) -> str | None:
@@ -2055,24 +889,49 @@ def _site_required_error(db: str, inst: str, date: str, target: str, options: di
         return None
     if (options.get("site") or "").strip():
         return None
-    sites, _modes = _sinistro_obslog_choices(db, inst, date, target)
+    sites, _telescopes, _modes = _sinistro_obslog_choices(db, inst, date, target)
     if len(sites) > 1:
         return f"select a site to run — {date} has {len(sites)} sites ({', '.join(sites)})"
     return None
 
 
+def _telescope_required_error(db: str, inst: str, date: str, target: str, options: dict) -> str | None:
+    """Block a sinistro run that would silently merge multiple physical telescopes.
+
+    Mirrors :func:`_site_required_error`: when the obslog (scoped to the chosen
+    site, if any) holds more than one physical 1m telescope for this
+    target+date and none is chosen, prose would combine frames from different
+    telescopes into one mislabeled reduction (prose2 aborts on this too).
+    """
+    if inst != "sinistro":
+        return None
+    if (options.get("telescope") or "").strip():
+        return None
+    site = (options.get("site") or "").strip().lower()
+    _sites, telescopes, _modes = _sinistro_obslog_choices(db, inst, date, target, site=site)
+    if len(telescopes) > 1:
+        return f"select a telescope to run — {date} has {len(telescopes)} telescopes ({', '.join(telescopes)})"
+    return None
+
+
 @app.get("/photometry", response_class=HTMLResponse)
-def photometry_page(inst: str = "", date: str = "", target: str = "", site: str = "", mode: str = "", run: str = "", overwrite: str = ""):
+def photometry_page(inst: str = "", date: str = "", target: str = "", site: str = "", telescope: str = "", mode: str = "", run: str = "", overwrite: str = ""):
     db = _db_path()
     inst = inst if inst in INSTRUMENTS else ""
     date = date if phot.valid_date(date) else ""
     target = (target or "").strip()
-    # Site/mode are sinistro-only view filters (which LCO site / readout mode's
-    # products to show). They are validated against the known sets here; whether
-    # they are actually present is decided by list_outputs from the filenames.
+    # Site/telescope/mode are sinistro-only view filters (which LCO
+    # site/physical telescope/readout mode's products to show). Site/mode are
+    # validated against the known sets here; telescope is open-ended (no fixed
+    # whitelist, LCO's 1m fleet changes over time) so only its shape is
+    # checked. Whether any of them are actually present is decided by
+    # list_outputs from the filenames.
     site = site.strip().lower()
     if inst != "sinistro" or site not in phot.SINISTRO_SITES:
         site = ""
+    telescope = telescope.strip().lower()
+    if inst != "sinistro" or not phot.TELESCOPE_RE.match(telescope):
+        telescope = ""
     mode = mode.strip().lower()
     if inst != "sinistro" or mode not in phot.SINISTRO_MODES:
         mode = ""
@@ -2087,6 +946,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
     dates: list[str] = []
     targets: list[str] = []
     available_sites: list[str] = ["lsc", "cpt", "coj", "tfn", "elp"]
+    available_telescopes: list[str] = []
     available_modes: list[str] = ["central_2k_2x2", "full_frame"]
     outputs = None
     runs: list = []
@@ -2110,6 +970,8 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         if inst == "sinistro":
             if site:
                 runs = [r for r in runs if r.is_legacy or r.site == site or not r.site]
+            if telescope:
+                runs = [r for r in runs if r.is_legacy or r.telescope == telescope or not r.telescope]
             if mode:
                 runs = [r for r in runs if r.is_legacy or r.mode == mode or not r.mode]
         run_ids = {r.run_id for r in runs}
@@ -2129,15 +991,15 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
 
         if sel_run is not None:
             run_key = sel_run or None  # "" → None for legacy
-            if not (site or mode) and run_key in run_outputs:
+            if not (site or telescope or mode) and run_key in run_outputs:
                 # Reuse the outputs already computed by list_photometry_runs.
-                # Only skip the cache when sinistro site/mode filters are active,
-                # since those affect which files are selected.
+                # Only skip the cache when sinistro site/telescope/mode filters
+                # are active, since those affect which files are selected.
                 outputs = run_outputs[run_key]
             else:
-                outputs = phot.list_outputs(inst, date, target, site=site or None, mode=mode or None, run_id=sel_run or None)
+                outputs = phot.list_outputs(inst, date, target, site=site or None, telescope=telescope or None, mode=mode or None, run_id=sel_run or None)
         else:
-            outputs = phot.list_outputs(inst, date, target, site=site or None, mode=mode or None)
+            outputs = phot.list_outputs(inst, date, target, site=site or None, telescope=telescope or None, mode=mode or None)
         command = phot.command_str(inst, date, target, test_run=False)
         raw_missing = not phot.raw_data_dir(inst, date).is_dir()
 
@@ -2163,12 +1025,14 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         except Exception:
             logger.debug("failed to load obs metadata for photometry page %s/%s/%s", inst, date, target, exc_info=True)
 
-        # Restrict the site/mode run-option dropdowns to what the obslog actually
-        # holds for this target+date, so you can't launch a reduction for a
-        # site/mode with no frames.
-        db_sites, db_modes = _sinistro_obslog_choices(db, inst, date, target)
+        # Restrict the site/telescope/mode run-option dropdowns to what the
+        # obslog actually holds for this target+date, so you can't launch a
+        # reduction for a site/telescope/mode with no frames.
+        db_sites, db_telescopes, db_modes = _sinistro_obslog_choices(db, inst, date, target, site=site)
         if db_sites:
             available_sites = db_sites
+        if db_telescopes:
+            available_telescopes = db_telescopes
         if db_modes:
             available_modes = db_modes
 
@@ -2186,13 +1050,24 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
                 nearby_preview = {"headers": nb_headers, "rows": nb_rows}
 
     # Merge URL parameter overrides with defaults
-    merged_defaults = {**phot.RUN_DEFAULTS, **run_defaults_override}
+    # Sinistro's site/telescope/mode selectors double as page view filters and
+    # reduction options.  Seed the option controls from the validated URL so a
+    # route reached through one of those selectors remains visibly selected on
+    # reload, rather than being overwritten by the generic defaults.
+    merged_defaults = {
+        **phot.RUN_DEFAULTS,
+        **run_defaults_override,
+        "site": site,
+        "telescope": telescope,
+        "mode": mode,
+    }
 
     resp = _render(
         "photometry.html",
         instruments=list(INSTRUMENTS),
         sel_inst=inst, sel_date=date, sel_target=target,
         sel_site=(outputs.get("site") if outputs else "") or "",
+        sel_telescope=(outputs.get("telescope") if outputs else "") or "",
         sel_mode=(outputs.get("mode") if outputs else "") or "",
         runs=runs,
         sel_run=sel_run or "",
@@ -2209,6 +1084,7 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         is_narrowband=is_narrowband,
         available_bands=available_bands,
         available_sites=available_sites,
+        available_telescopes=available_telescopes,
         available_modes=available_modes,
     )
     # The run buttons' enabled/disabled state is JavaScript-driven and reflects
@@ -2220,15 +1096,20 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
 
 
 @app.get("/transit-fit", response_class=HTMLResponse)
-def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str = "", mode: str = "", run: str = ""):
+def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str = "", telescope: str = "", mode: str = "", run: str = ""):
     db = _db_path()
     inst = inst if inst in INSTRUMENTS else ""
     date = date if phot.valid_date(date) else ""
     target = (target or "").strip()
-    # Sinistro-only view filters (which site / readout mode's lightcurves to list).
+    # Sinistro-only view filters (which site / physical telescope / readout
+    # mode's lightcurves to list). Telescope is open-ended (no fixed whitelist)
+    # so only its shape is checked.
     site = site.strip().lower()
     if inst != "sinistro" or site not in phot.SINISTRO_SITES:
         site = ""
+    telescope = telescope.strip().lower()
+    if inst != "sinistro" or not phot.TELESCOPE_RE.match(telescope):
+        telescope = ""
     mode = mode.strip().lower()
     if inst != "sinistro" or mode not in phot.SINISTRO_MODES:
         mode = ""
@@ -2241,8 +1122,10 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
     csvs = []
     target_params = {}
     csv_sites: list[str] = []
+    csv_telescopes: list[str] = []
     csv_modes: list[str] = []
     sel_site = ""
+    sel_telescope = ""
     sel_mode = ""
     runs: list = []
     sel_run = ""
@@ -2264,26 +1147,34 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
                 created_at = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
             except Exception:
                 mtime, created_at = 0.0, "Unknown"
-            csite, cmode = fit.csv_site_mode(c.name) if inst == "sinistro" else (None, None)
+            csite, ctelescope, cmode = fit.csv_site_mode(c.name) if inst == "sinistro" else (None, None, None)
             crun = c.parent.name if "_runs" in c.parts else ""
             rows.append({"path": str(c), "name": c.name, "created_at": created_at,
-                         "_mtime": mtime, "_site": csite, "_mode": cmode, "run_id": crun})
+                         "_mtime": mtime, "_site": csite, "_telescope": ctelescope, "_mode": cmode, "run_id": crun})
 
         if inst == "sinistro":
-            # A sinistro date+target can hold multiple sites / readout modes with
-            # identical bands. The picker defaults to showing ALL lightcurves (so
-            # the user can fit one site or deliberately combine several); the
-            # Site/Mode chips optionally narrow the list. The run's identity is
-            # derived from whatever is actually selected at launch.
+            # A sinistro date+target can hold multiple sites / physical
+            # telescopes / readout modes with identical bands. The picker
+            # defaults to showing ALL lightcurves (so the user can fit one
+            # site/telescope or deliberately combine several); the
+            # Site/Telescope/Mode chips optionally narrow the list. The run's
+            # identity is derived from whatever is actually selected at launch.
             csv_sites = sorted({r["_site"] for r in rows if r["_site"]})
             sel_site = site  # validated against SINISTRO_SITES above; "" == all
+            csv_telescopes = sorted({
+                r["_telescope"] for r in rows
+                if r["_telescope"] and (not sel_site or r["_site"] == sel_site)
+            })
+            sel_telescope = telescope  # "" == all
             csv_modes = sorted({
                 r["_mode"] for r in rows
                 if r["_mode"] and (not sel_site or r["_site"] == sel_site)
+                and (not sel_telescope or r["_telescope"] == sel_telescope)
             })
             sel_mode = mode  # "" == all
             rows = [r for r in rows
                     if (not sel_site or r["_site"] == sel_site)
+                    and (not sel_telescope or r["_telescope"] == sel_telescope)
                     and (not sel_mode or r["_mode"] == sel_mode)]
 
         csvs = [{"path": r["path"], "name": r["name"], "created_at": r["created_at"], "run_id": r["run_id"]} for r in rows]
@@ -2296,6 +1187,8 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
         if inst == "sinistro":
             if sel_site:
                 runs = [r for r in runs if r.is_legacy or r.site == sel_site or not r.site]
+            if sel_telescope:
+                runs = [r for r in runs if r.is_legacy or r.telescope == sel_telescope or not r.telescope]
             if sel_mode:
                 runs = [r for r in runs if r.is_legacy or r.mode == sel_mode or not r.mode]
 
@@ -2322,8 +1215,8 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
         "transit_fit.html",
         instruments=list(INSTRUMENTS),
         sel_inst=inst, sel_date=date, sel_target=target,
-        sel_site=sel_site, sel_mode=sel_mode,
-        csv_sites=csv_sites, csv_modes=csv_modes,
+        sel_site=sel_site, sel_telescope=sel_telescope, sel_mode=sel_mode,
+        csv_sites=csv_sites, csv_telescopes=csv_telescopes, csv_modes=csv_modes,
         runs=runs, sel_run=sel_run,
         dates=dates, targets=targets,
         csvs=csvs, outputs=outputs,
@@ -2333,13 +1226,11 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
 
 
 @transit_fit_router.get("/query-archive")
-def transit_fit_query_archive(target: str, source: str = "nasa"):
+async def transit_fit_query_archive(target: str, source: str = "nasa"):
     if not (target or "").strip():
         return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
 
-    import urllib.request
     import urllib.parse
-    import json
     import csv
     import pathlib
     import re
@@ -2554,7 +1445,7 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
                 params[k] = ""
         return {"params": params, "pl_name": pl_name}
 
-    urlopen_is_mocked = hasattr(urllib.request.urlopen, "called")
+    urlopen_is_mocked = hasattr(_async_get, "called")
 
     if source == "toi":
         if not urlopen_is_mocked:
@@ -2580,31 +1471,30 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
         q = f"SELECT {col_str} FROM toi WHERE toi = {target_lit} OR toidisplay LIKE {target_like} OR toi LIKE {clean_like}"
         data = []
         url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         try:
-            with urllib.request.urlopen(req, timeout=5) as response:
-                res = json.loads(response.read().decode())
-                if res:
-                    # Sort to prioritize: toi = clean_target (3), toidisplay LIKE target (2), toi LIKE clean_target (1)
-                    best_row = None
-                    best_score = -1
-                    for row in res:
-                        r_toi = str(row.get("toi", "")).strip()
-                        r_toidisplay = str(row.get("toidisplay", "")).strip()
-                        
-                        score = -1
-                        if r_toi == clean_target:
-                            score = 3
-                        elif target.lower() in r_toidisplay.lower():
-                            score = 2
-                        elif clean_target in r_toi:
-                            score = 1
-                            
-                        if score > best_score:
-                            best_score = score
-                            best_row = row
-                    if best_row:
-                        data = [best_row]
+            response = await _async_get(url, headers={'User-Agent': 'Mozilla/5.0'})
+            res = response.json()
+            if res:
+                # Sort to prioritize: toi = clean_target (3), toidisplay LIKE target (2), toi LIKE clean_target (1)
+                best_row = None
+                best_score = -1
+                for row in res:
+                    r_toi = str(row.get("toi", "")).strip()
+                    r_toidisplay = str(row.get("toidisplay", "")).strip()
+
+                    score = -1
+                    if r_toi == clean_target:
+                        score = 3
+                    elif target.lower() in r_toidisplay.lower():
+                        score = 2
+                    elif clean_target in r_toi:
+                        score = 1
+
+                    if score > best_score:
+                        best_score = score
+                        best_row = row
+                if best_row:
+                    data = [best_row]
         except Exception:
             pass
 
@@ -2688,42 +1578,41 @@ def transit_fit_query_archive(target: str, source: str = "nasa"):
 
         data = []
         url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         try:
-            with urllib.request.urlopen(req, timeout=5) as response:
-                res = json.loads(response.read().decode())
-                if res:
-                    # Score and rank matching rows in memory
-                    target_clean = re.sub(r"[^0-9a-zA-Z]", "", target).lower()
-                    best_row = None
-                    best_score = -1
-                    clean_re = re.compile(r"[^0-9a-zA-Z]")
-                    
-                    for row in res:
-                        pl_name = (row.get("pl_name") or "").strip()
-                        hostname = (row.get("hostname") or "").strip()
-                        hip_name = (row.get("hip_name") or "").strip()
-                        hd_name = (row.get("hd_name") or "").strip()
-                        
-                        pl_clean = clean_re.sub('', pl_name).lower()
-                        host_clean = clean_re.sub('', hostname).lower()
-                        hip_clean = clean_re.sub('', hip_name).lower()
-                        hd_clean = clean_re.sub('', hd_name).lower()
-                        
-                        score = -1
-                        if target_clean == pl_clean:
-                            score = 3
-                        elif target_clean in (host_clean, hip_clean, hd_clean):
-                            score = 2
-                        elif (pl_clean and target_clean in pl_clean) or (host_clean and target_clean in host_clean):
-                            score = 1
-                            
-                        if score > best_score:
-                            best_score = score
-                            best_row = row
-                    
-                    if best_row:
-                        data = [best_row]
+            response = await _async_get(url, headers={'User-Agent': 'Mozilla/5.0'})
+            res = response.json()
+            if res:
+                # Score and rank matching rows in memory
+                target_clean = re.sub(r"[^0-9a-zA-Z]", "", target).lower()
+                best_row = None
+                best_score = -1
+                clean_re = re.compile(r"[^0-9a-zA-Z]")
+
+                for row in res:
+                    pl_name = (row.get("pl_name") or "").strip()
+                    hostname = (row.get("hostname") or "").strip()
+                    hip_name = (row.get("hip_name") or "").strip()
+                    hd_name = (row.get("hd_name") or "").strip()
+
+                    pl_clean = clean_re.sub('', pl_name).lower()
+                    host_clean = clean_re.sub('', hostname).lower()
+                    hip_clean = clean_re.sub('', hip_name).lower()
+                    hd_clean = clean_re.sub('', hd_name).lower()
+
+                    score = -1
+                    if target_clean == pl_clean:
+                        score = 3
+                    elif target_clean in (host_clean, hip_clean, hd_clean):
+                        score = 2
+                    elif (pl_clean and target_clean in pl_clean) or (host_clean and target_clean in host_clean):
+                        score = 1
+
+                    if score > best_score:
+                        best_score = score
+                        best_row = row
+
+                if best_row:
+                    data = [best_row]
         except Exception:
             pass
 
@@ -2850,7 +1739,13 @@ def _serve_transit_file(inst: str, date: str, target: str, name: str, run_id: st
         path = rdir / name
     if not path.is_file():
         raise HTTPException(404, "file not found")
-    return FileResponse(str(path), headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
+    # Configuration links are inspection views.  Explicit download links remain
+    # separate, so force a browser-renderable type instead of application/yaml.
+    media_type = "text/plain; charset=utf-8" if name in {"fit.yaml", "sys.yaml"} else None
+    return FileResponse(
+        str(path), media_type=media_type,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+    )
 
 
 @transit_fit_router.get("/file/{inst}/{date}/{target}/run/{run_id}/{name}")
@@ -3001,6 +1896,23 @@ def exposure_calculate(payload: dict = Body(...)):
     if not mags:
         return JSONResponse({"ok": False, "error": "No magnitudes provided"}, status_code=400)
 
+    extra_sources = None
+    raw_extra_sources = payload.get("extra_sources")
+    if isinstance(raw_extra_sources, list):
+        extra_sources = []
+        for entry in raw_extra_sources:
+            if not isinstance(entry, dict):
+                continue
+            entry_mags = entry.get("mags")
+            if not isinstance(entry_mags, dict) or not entry_mags:
+                continue
+            try:
+                cleaned_mags = {str(band): float(m) for band, m in entry_mags.items()}
+            except (TypeError, ValueError):
+                continue
+            label = entry.get("label")
+            extra_sources.append({"label": str(label) if label else None, "mags": cleaned_mags})
+
     result = exp_calc.calc_all_bands(
         instrument=inst,
         mags=mags,
@@ -3011,6 +1923,7 @@ def exposure_calculate(payload: dict = Body(...)):
         exptime=exptime,
         target_adu=target_adu,
         confmode=confmode,
+        extra_sources=extra_sources,
     )
     return JSONResponse({"ok": True, **result})
 
@@ -3056,6 +1969,41 @@ def exposure_lookup_mags(payload: dict = Body(...)):
         "mags": mags,
         "source": source,
     })
+
+
+@exposure_router.post("/lookup-mags-batch", response_class=JSONResponse)
+def exposure_lookup_mags_batch(payload: dict = Body(...)):
+    """Griz magnitudes for a batch of stars (e.g. FOV comparison stars).
+
+    Each star tries the same Pan-STARRS/SkyMapper catalog lookup as the
+    primary target first, falling back to a Gaia color transform when given
+    ``gmag``/``bp_rp`` and no catalog match exists (see
+    ``exposure.lookup_magnitudes_with_fallback``). Looked up in parallel
+    since each is an independent network round trip.
+    """
+    stars = payload.get("stars") or []
+    if not isinstance(stars, list) or not stars:
+        return JSONResponse({"ok": False, "error": "No stars provided"}, status_code=400)
+
+    def _lookup(star: dict) -> dict:
+        try:
+            ra = float(star.get("ra"))
+            dec = float(star.get("dec"))
+        except (TypeError, ValueError):
+            return {"mags": None, "source": None, "is_approx": False, "error": "Invalid ra/dec"}
+        gmag = star.get("gmag")
+        bp_rp = star.get("bp_rp")
+        gmag = float(gmag) if gmag not in (None, "") else None
+        bp_rp = float(bp_rp) if bp_rp not in (None, "") else None
+        mags, source, is_approx = exp_calc.lookup_magnitudes_with_fallback(ra, dec, gmag, bp_rp)
+        return {"mags": mags, "source": source, "is_approx": is_approx}
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=min(8, len(stars))) as executor:
+        results = list(executor.map(_lookup, stars))
+
+    return JSONResponse({"ok": True, "results": results})
 
 
 @exposure_router.get("/status", response_class=JSONResponse)
@@ -3311,7 +2259,7 @@ def ephemeris_page():
 
 
 @app.get("/ttv-fit")
-def ttv_fit_redirect(inst: str = "", date: str = "", target: str = ""):
+def ttv_fit_redirect(target: str = ""):
     """Redirect to ephemeris page (TTV fitting is now integrated there)."""
     params = []
     if target:
@@ -3349,42 +2297,6 @@ def api_ephemeris_view_get(slug: str):
 
 def _lco_error_response(e: "lco.LcoError") -> JSONResponse:
     return JSONResponse(e.to_dict(), status_code=e.status)
-
-
-def _request_user(request: Request) -> str | None:
-    return getattr(request.state, "user", None) or None
-
-
-def _settings_auth_error() -> JSONResponse:
-    return JSONResponse(
-        {
-            "ok": False,
-            "error": "login required",
-            "detail": "Per-user settings require nginx authentication.",
-        },
-        status_code=401,
-    )
-
-
-def _is_same_origin(request: Request) -> bool:
-    """True if the request's Origin (or Referer) header matches this host.
-
-    HTTP Basic Auth credentials are resent by the browser automatically on
-    every request to the realm, so state-changing endpoints need their own
-    CSRF defense. A CORS preflight is not sufficient here: FastAPI's
-    ``Body(...)`` parses the request body as JSON regardless of the
-    Content-Type the client declared, so a cross-origin "simple request"
-    (e.g. Content-Type: text/plain, which browsers don't preflight) would
-    still reach the handler with an attacker-controlled body.
-    """
-    origin = request.headers.get("origin") or request.headers.get("referer")
-    if not origin:
-        return False
-    return urlsplit(origin).netloc == request.headers.get("host", "")
-
-
-def _csrf_error() -> JSONResponse:
-    return JSONResponse({"ok": False, "error": "cross-origin request rejected"}, status_code=403)
 
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -3654,6 +2566,90 @@ def api_lco_ipp(request: Request, payload: dict = Body(...)):
         return _lco_error_response(e)
 
 
+@lco_router.post("/test-observations/plan", response_class=JSONResponse)
+def api_lco_test_plan(payload: dict = Body(...)):
+    """Generate and persist a deterministic, observer-reviewable test plan."""
+    try:
+        if not payload.get("fov_candidates"):
+            result = fov_opt.optimize(
+                payload.get("kind"), target=payload.get("target_name") or "",
+                ra=payload.get("ra"), dec=payload.get("dec"),
+                sinistro_mode=payload.get("readout_mode"),
+            )
+            if not result.ok:
+                raise test_observations.TestObservationError(result.error or "FOV optimization failed")
+            best = result.to_dict()
+            payload["fov_candidates"] = [
+                {"center_ra": best["center_ra"], "center_dec": best["center_dec"], "pa_deg": best["pa_deg"],
+                 "comparisons": best.get("comps", []), "edge_margin_arcsec": best.get("margin_arcsec")},
+                {"center_ra": best["ra"], "center_dec": best["dec"], "pa_deg": 0,
+                 "comparisons": best.get("brightest_in_field", []), "edge_margin_arcsec": best.get("margin_arcsec"),
+                 "fallback_reason": "target-centered conservative pointing"},
+            ]
+            payload.setdefault("provenance", {})["fov_optimizer"] = {
+                "catalog": best.get("catalog"), "fov_arcsec": best.get("fov_arcsec"),
+                "margin_arcsec": best.get("margin_arcsec"), "software": test_observations.ANALYSIS_VERSION,
+            }
+        plan = test_observations.generate_plan(payload)
+        record = test_observations.create_record(plan)
+        return JSONResponse({"ok": True, "record": record})
+    except test_observations.TestObservationError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+def _test_request(record: dict, params: dict) -> dict:
+    plan = record["plan"]
+    base = {**params, "kind": plan["kind"]}
+    base["name"] = str(base.get("name") or f"TEST {plan.get('target') or record['id']}")
+    if not base["name"].upper().startswith("TEST"):
+        base["name"] = "TEST " + base["name"]
+    configs = test_observations.request_configurations(plan, base)
+    return lco.build_requestgroup(plan["kind"], base, configurations=configs)
+
+
+@lco_router.post("/test-observations/{observation_id}/ipp", response_class=JSONResponse)
+def api_lco_test_ipp(observation_id: str, request: Request, payload: dict = Body(...)):
+    try:
+        record = test_observations.get_record(observation_id)
+        rg = _test_request(record, payload)
+        ipp = lco.max_allowable_ipp(rg, _request_user(request))
+        digest = lco.payload_hash(rg)
+        record = test_observations.update_record(observation_id, state="validated", payload_hash=digest)
+        return JSONResponse({"ok": True, "payload": rg, "payload_hash": digest, "ipp": ipp, "record": record})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "test observation not found"}, status_code=404)
+    except lco.LcoError as exc:
+        return _lco_error_response(exc)
+
+
+@lco_router.post("/test-observations/{observation_id}/submit", response_class=JSONResponse)
+def api_lco_test_submit(observation_id: str, request: Request, payload: dict = Body(...)):
+    if not payload.get("confirm"):
+        return JSONResponse({"ok": False, "error": "submission requires explicit confirm"}, status_code=400)
+    try:
+        record = test_observations.get_record(observation_id)
+        rg = _test_request(record, payload)
+        digest = lco.payload_hash(rg)
+        if not payload.get("dry_run_hash") or payload["dry_run_hash"] != digest or record["payload_hash"] != digest:
+            return JSONResponse({"ok": False, "error": "no matching test-observation dry-run; run the dry-run again"}, status_code=409)
+        result = lco.submit_requestgroup(rg, _request_user(request))
+        ids = result.get("requests") or result.get("request_ids") or ([result["id"]] if result.get("id") is not None else [])
+        record = test_observations.update_record(observation_id, state="submitted", request_ids=ids)
+        return JSONResponse({"ok": True, "result": result, "record": record})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "test observation not found"}, status_code=404)
+    except lco.LcoError as exc:
+        return _lco_error_response(exc)
+
+
+@lco_router.get("/test-observations/{observation_id}", response_class=JSONResponse)
+def api_lco_test_status(observation_id: str):
+    try:
+        return JSONResponse({"ok": True, "record": test_observations.get_record(observation_id)})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "test observation not found"}, status_code=404)
+
+
 @lco_router.post("/submit", response_class=JSONResponse)
 def api_lco_submit(request: Request, payload: dict = Body(...)):
     """Live submission. Guarded: requires explicit confirm AND a payload hash that
@@ -3902,732 +2898,6 @@ def api_lco_archive_download_status(job_id: str):
         return _lco_error_response(e)
 
 
-# Helper to normalize target names for comparison
-def _normalize_target_name(t: str) -> str:
-    s = t.strip().upper().replace(" ", "").replace("-", "").replace("_", "")
-    s = re.sub(r"\.\d+$", "", s)
-    if len(s) > 2 and s[-1] in "BCDEFGH":
-        return s[:-1]
-    return s
-
-
-def _safe_float(value) -> float | None:
-    """Parse a value to float, returning None for blanks/invalid input."""
-    if value is None:
-        return None
-    try:
-        s = str(value).strip()
-        if not s:
-            return None
-        return float(s)
-    except (TypeError, ValueError):
-        return None
-
-
-def _get_err(row: dict, key_base: str) -> float | None:
-    """Extract and average positive and negative uncertainties if available, or return one."""
-    err1 = _safe_float(row.get(key_base + "err1"))
-    err2 = _safe_float(row.get(key_base + "err2"))
-    if err1 is not None and err2 is not None:
-        return (abs(err1) + abs(err2)) / 2.0
-    if err1 is not None:
-        return abs(err1)
-    if err2 is not None:
-        return abs(err2)
-    return None
-
-
-
-def _query_target_planets_nasa(target: str) -> dict:
-    import urllib.request
-    import urllib.parse
-    import json
-    
-    target_clean = target.strip().upper()
-    cache_key = "nasa_" + target_clean
-    cached = _CATALOG_CACHE.get(cache_key, _CACHE_MISS)
-    if cached is not _CACHE_MISS:
-        return cached
-        
-    results = {}
-    target_norm = _normalize_target_name(target)
-    
-    # 1. Local database search (nexsci_pscomppars.csv)
-    try:
-        csv_path = pathlib.Path(HERE).parent.parent / "data" / "nexsci_pscomppars.csv"
-        if csv_path.exists():
-            with open(csv_path, errors="replace") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    h_name = row.get("hostname", "")
-                    p_name = row.get("pl_name", "")
-                    tic = row.get("tic_id", "")
-                    if (h_name and _normalize_target_name(h_name) == target_norm) or \
-                       (p_name and _normalize_target_name(p_name) == target_norm) or \
-                       (tic and _normalize_target_name(tic) == target_norm):
-                        pl_letter = (row.get("pl_letter") or "").strip().lower()
-                        if not pl_letter:
-                            pn = (row.get("pl_name") or "").strip()
-                            parts = pn.rsplit(None, 1)
-                            if len(parts) == 2 and len(parts[1]) == 1 and parts[1].isalpha():
-                                pl_letter = parts[1].lower()
-                        t0 = row.get("pl_tranmid")
-                        per = row.get("pl_orbper")
-                        if pl_letter and t0 is not None and per is not None:
-                            try:
-                                entry = {"t0": float(t0), "period": float(per)}
-                            except ValueError:
-                                continue
-                            dur = _safe_float(row.get("pl_trandur"))  # hours
-                            if dur is not None:
-                                entry["duration"] = dur
-                            # Extract uncertainties
-                            t0_unc = _get_err(row, "pl_tranmid")
-                            per_unc = _get_err(row, "pl_orbper")
-                            dur_unc = _get_err(row, "pl_trandur")
-                            if t0_unc is not None:
-                                entry["t0_unc"] = t0_unc
-                            if per_unc is not None:
-                                entry["period_unc"] = per_unc
-                            if dur_unc is not None:
-                                entry["duration_unc"] = dur_unc
-                            results[pl_letter] = entry
-    except Exception:
-        logger.debug("failed local NASA ephemeris lookup for %s", target, exc_info=True)
-
-    # 1b. Fallback local database search (nexsci_ps.csv)
-    if not results:
-        try:
-            csv_path = pathlib.Path(HERE).parent.parent / "data" / "nexsci_ps.csv"
-            if csv_path.exists():
-                tokens = [t for t in re.split(r'[^0-9a-zA-Z]', target.lower()) if t and t not in ("toi", "tic", "hd", "hip")]
-                if not tokens:
-                    tokens = [target.lower()]
-                with open(csv_path, errors="replace") as f:
-                    header_line = f.readline()
-                    header = [h.strip('"') for h in next(csv.reader([header_line]))]
-                    for line in f:
-                        line_lower = line.lower()
-                        if not any(token in line_lower for token in tokens):
-                            continue
-                        row_values = next(csv.reader([line]))
-                        row = dict(zip(header, row_values))
-                        h_name = row.get("hostname", "")
-                        p_name = row.get("pl_name", "")
-                        tic = row.get("tic_id", "")
-                        if (h_name and _normalize_target_name(h_name) == target_norm) or \
-                           (p_name and _normalize_target_name(p_name) == target_norm) or \
-                           (tic and _normalize_target_name(tic) == target_norm):
-                            pl_letter = (row.get("pl_letter") or "").strip().lower()
-                            if not pl_letter:
-                                pn = (row.get("pl_name") or "").strip()
-                                parts = pn.rsplit(None, 1)
-                                if len(parts) == 2 and len(parts[1]) == 1 and parts[1].isalpha():
-                                    pl_letter = parts[1].lower()
-                            t0 = row.get("pl_tranmid")
-                            per = row.get("pl_orbper")
-                            if pl_letter and t0 and per:
-                                try:
-                                    entry = {"t0": float(t0), "period": float(per)}
-                                except ValueError:
-                                    continue
-                                dur = _safe_float(row.get("pl_trandur"))
-                                if dur is not None:
-                                    entry["duration"] = dur
-                                t0_unc = _get_err(row, "pl_tranmid")
-                                per_unc = _get_err(row, "pl_orbper")
-                                dur_unc = _get_err(row, "pl_trandur")
-                                if t0_unc is not None:
-                                    entry["t0_unc"] = t0_unc
-                                if per_unc is not None:
-                                    entry["period_unc"] = per_unc
-                                if dur_unc is not None:
-                                    entry["duration_unc"] = dur_unc
-                                
-                                is_default = (row.get("default_flag") == "1")
-                                if is_default or pl_letter not in results:
-                                    results[pl_letter] = entry
-        except Exception:
-            logger.debug("failed local fallback NASA ephemeris lookup for %s", target, exc_info=True)
-
-    # 2. Online search
-    if not results:
-        # Clean target to find host name. E.g. "TOI 4600 b" -> "TOI 4600"
-        host = target.strip()
-        if len(host) > 2 and host[-2] == " " and host[-1].lower() in "bcdefgh":
-            host = host[:-2].strip()
-            
-        cols = [
-            "pl_name", "pl_tranmid", "pl_tranmiderr1", "pl_tranmiderr2",
-            "pl_orbper", "pl_orbpererr1", "pl_orbpererr2",
-            "pl_trandur", "pl_trandurerr1", "pl_trandurerr2"
-        ]
-        col_str = ", ".join(cols)
-        q = f"SELECT {col_str} FROM pscomppars WHERE hostname = {_adql_literal(host)} OR hostname LIKE {_adql_literal(host + '%')}"
-        url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        try:
-            with urllib.request.urlopen(req, timeout=1.0) as response:
-                data = json.loads(response.read().decode())
-                for row in data:
-                    pl_name = row.get("pl_name", "")
-                    if pl_name and len(pl_name) > 2 and pl_name[-2] == " ":
-                        letter = pl_name[-1].lower()
-                        t0 = row.get("pl_tranmid")
-                        per = row.get("pl_orbper")
-                        if letter and t0 is not None and per is not None:
-                            entry = {"t0": float(t0), "period": float(per)}
-                            dur = _safe_float(row.get("pl_trandur"))  # hours
-                            if dur is not None:
-                                entry["duration"] = dur
-                            # Extract uncertainties
-                            t0_unc = _get_err(row, "pl_tranmid")
-                            per_unc = _get_err(row, "pl_orbper")
-                            dur_unc = _get_err(row, "pl_trandur")
-                            if t0_unc is not None:
-                                entry["t0_unc"] = t0_unc
-                            if per_unc is not None:
-                                entry["period_unc"] = per_unc
-                            if dur_unc is not None:
-                                entry["duration_unc"] = dur_unc
-                            results[letter] = entry
-        except Exception:
-            logger.debug("failed online NASA ephemeris lookup for %s", target, exc_info=True)
-
-    _CATALOG_CACHE[cache_key] = results
-    return results
-
-
-def _query_target_coordinates(target: str) -> dict | None:
-    target_clean = target.strip().upper()
-    cache_key = "coords_" + target_clean
-    cached = _CATALOG_CACHE.get(cache_key, _CACHE_MISS)
-    if cached is not _CACHE_MISS:
-        return cached
-
-    target_norm = _normalize_target_name(target)
-
-    def _store(coords: dict | None) -> dict | None:
-        _CATALOG_CACHE[cache_key] = coords
-        return coords
-
-    def _coords_from_nasa_row(row: dict) -> dict | None:
-        ra = _safe_float(row.get("ra_x"))
-        dec = _safe_float(row.get("dec_x"))
-        if ra is None or dec is None:
-            return None
-        return {"ra": ra, "dec": dec, "source": "nasa"}
-
-    def _coords_from_toi_row(row: dict) -> dict | None:
-        ra = _safe_float(row.get("ra_deg"))
-        dec = _safe_float(row.get("dec_deg"))
-        if ra is None or dec is None:
-            ra = _safe_float(row.get("RA"))
-            dec = _safe_float(row.get("Dec"))
-        if ra is None or dec is None:
-            return None
-        return {"ra": ra, "dec": dec, "source": "toi"}
-
-    try:
-        csv_path = pathlib.Path(HERE).parent.parent / "data" / "nexsci_pscomppars.csv"
-        if csv_path.exists():
-            with open(csv_path, errors="replace") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    h_name = row.get("hostname", "")
-                    p_name = row.get("pl_name", "")
-                    tic = row.get("tic_id", "")
-                    if (
-                        h_name and _normalize_target_name(h_name) == target_norm
-                    ) or (
-                        p_name and _normalize_target_name(p_name) == target_norm
-                    ) or (
-                        tic and _normalize_target_name(tic) == target_norm
-                    ):
-                        coords = _coords_from_nasa_row(row)
-                        if coords:
-                            return _store(coords)
-    except Exception:
-        logger.debug("failed local coordinate lookup in NASA cache for %s", target, exc_info=True)
-
-    try:
-        csv_path = pathlib.Path(HERE).parent.parent / "data" / "TOIs.csv"
-        if csv_path.exists():
-            with open(csv_path, errors="replace") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    row = {k.lower(): v for k, v in row.items()}
-                    toi_val = row.get("toi", "")
-                    tic_val = row.get("tic id", "")
-                    match = False
-                    if toi_val and _normalize_target_name("TOI" + toi_val) == target_norm:
-                        match = True
-                    elif tic_val and (
-                        _normalize_target_name(tic_val) == target_norm
-                        or _normalize_target_name("TIC" + tic_val) == target_norm
-                    ):
-                        match = True
-                    elif row.get("planet name") and _normalize_target_name(row.get("planet name", "")) == target_norm:
-                        match = True
-                    if match:
-                        coords = _coords_from_toi_row(row)
-                        if coords:
-                            return _store(coords)
-    except Exception:
-        logger.debug("failed local coordinate lookup in TOI cache for %s", target, exc_info=True)
-
-    return _store(None)
-
-
-def _resolve_archive_coords(target: str) -> tuple[float, float, str] | None:
-    """Resolve a target name to (ra_deg, dec_deg, source) for archive searches.
-
-    Tries the offline NASA/TOI catalogs first (fast, cached, no network), then
-    falls back to SIMBAD name resolution. Returns None when the name cannot be
-    resolved by any source. Both results are cached.
-    """
-    coords = _query_target_coordinates(target)
-    if coords is not None:
-        return float(coords["ra"]), float(coords["dec"]), str(coords.get("source") or "catalog")
-
-    cache_key = "simbad_" + target.strip().upper()
-    cached = _CATALOG_CACHE.get(cache_key, _CACHE_MISS)
-    if cached is not _CACHE_MISS:
-        return cached
-
-    radec = exp_calc.resolve_target_coords(target)
-    result = (float(radec[0]), float(radec[1]), "simbad") if radec else None
-    _CATALOG_CACHE[cache_key] = result
-    return result
-
-
-def _parse_lco_obs_dt(frame: dict) -> datetime.datetime | None:
-    raw = (
-        frame.get("DATE_OBS")
-        or frame.get("observation_date")
-        or frame.get("DAY_OBS")
-        or ""
-    )
-    raw = str(raw).strip()
-    if not raw:
-        return None
-    try:
-        if len(raw) == 10:
-            return datetime.datetime.fromisoformat(raw).replace(tzinfo=datetime.timezone.utc)
-        if raw.endswith("Z"):
-            raw = raw[:-1] + "+00:00"
-        dt = datetime.datetime.fromisoformat(raw)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=datetime.timezone.utc)
-        return dt.astimezone(datetime.timezone.utc)
-    except ValueError:
-        return None
-
-
-def _lco_observing_date(frame: dict) -> str:
-    dt = _parse_lco_obs_dt(frame)
-    if dt is None:
-        day_obs = str(frame.get("DAY_OBS") or "").strip()
-        if day_obs:
-            return day_obs
-        return ""
-    site = str(frame.get("SITEID") or "").strip().lower()
-    tz_name = _LCO_SITE_TZ.get(site, "UTC")
-    local_dt = dt.astimezone(ZoneInfo(tz_name))
-    # Observing nights run through local midnight, so local post-midnight frames
-    # belong to the prior evening's dataset.
-    if local_dt.hour < 12:
-        local_dt = local_dt - datetime.timedelta(days=1)
-    return local_dt.date().isoformat()
-
-
-def _sexagesimal_to_deg(value: str, *, is_ra: bool) -> float | None:
-    parts = value.split(":")
-    if len(parts) != 3:
-        return None
-    sign = 1.0
-    head = parts[0]
-    if not is_ra and head.startswith("-"):
-        sign = -1.0
-    head = head.lstrip("+-")
-    try:
-        a = float(head)
-        b = float(parts[1])
-        c = float(parts[2])
-    except ValueError:
-        return None
-    base = abs(a) + b / 60.0 + c / 3600.0
-    if is_ra:
-        return base * 15.0
-    return sign * base
-
-
-def _coord_to_deg(value, *, is_ra: bool) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    s = str(value).strip()
-    if not s:
-        return None
-    try:
-        return float(s)
-    except ValueError:
-        pass
-    clean = _clean_ra(s) if is_ra else _clean_dec(s)
-    if clean is None:
-        return None
-    return _sexagesimal_to_deg(clean, is_ra=is_ra)
-
-
-def _frame_coords_deg(frame: dict) -> tuple[float | None, float | None]:
-    ra = (
-        frame.get("RA")
-        or frame.get("ra")
-        or frame.get("ra_x")
-        or frame.get("target_ra")
-    )
-    dec = (
-        frame.get("DEC")
-        or frame.get("Dec")
-        or frame.get("declination")
-        or frame.get("dec_x")
-        or frame.get("target_dec")
-    )
-    return _coord_to_deg(ra, is_ra=True), _coord_to_deg(dec, is_ra=False)
-
-
-def _angular_sep_arcsec(ra1: float, dec1: float, ra2: float, dec2: float) -> float:
-    ra1r = math.radians(ra1)
-    dec1r = math.radians(dec1)
-    ra2r = math.radians(ra2)
-    dec2r = math.radians(dec2)
-    cos_sep = (
-        math.sin(dec1r) * math.sin(dec2r)
-        + math.cos(dec1r) * math.cos(dec2r) * math.cos(ra1r - ra2r)
-    )
-    cos_sep = max(-1.0, min(1.0, cos_sep))
-    return math.degrees(math.acos(cos_sep)) * 3600.0
-
-
-def _local_lco_datasets(inst: str, obsdate: str, site: str) -> list[dict]:
-    db = _db_path()
-    with get_conn(db) as conn:
-        conn.create_aggregate("coord_repr", 2, CoordRepr)
-        rows = conn.execute(
-            """
-            SELECT object, COUNT(*) AS nframes, coord_repr(ra, declination) AS coord
-            FROM frames
-            WHERE instrument = ?
-              AND obsdate = ?
-              AND filename LIKE ?
-            GROUP BY object
-            """,
-            (inst, obsdate, f"{site}%"),
-        ).fetchall()
-    out = []
-    for obj, nframes, packed in rows:
-        ra_raw, dec_raw = _unpack_coord(packed)
-        ra_deg = _coord_to_deg(ra_raw, is_ra=True)
-        dec_deg = _coord_to_deg(dec_raw, is_ra=False)
-        out.append(
-            {
-                "object": obj or "",
-                "nframes": int(nframes or 0),
-                "ra_deg": ra_deg,
-                "dec_deg": dec_deg,
-            }
-        )
-    return out
-
-
-def _annotate_lco_archive_results(inst: str, results: list[dict]) -> tuple[list[dict], int]:
-    if not results:
-        return [], 0
-
-    rows: list[dict] = [dict(r) for r in results]
-    rows.sort(
-        key=lambda r: (
-            _parse_lco_obs_dt(r) or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc),
-            str(r.get("filename") or r.get("basename") or ""),
-        )
-    )
-
-    filename_to_group: dict[str, str] = {}
-    dataset_meta: dict[str, dict] = {}
-    group_idx_by_key: dict[tuple[str, str, str], int] = {}
-
-    for row in rows:
-        observing_date = _lco_observing_date(row)
-        identity = (
-            observing_date,
-            str(row.get("OBJECT") or ""),
-            str(row.get("SITEID") or ""),
-        )
-        if identity not in group_idx_by_key:
-            group_idx_by_key[identity] = len(group_idx_by_key) + 1
-        group_id = f"{observing_date or 'unknown'}:{group_idx_by_key[identity]}"
-        if group_id not in dataset_meta:
-            inferred_inst = inst if inst in INSTRUMENTS else ""
-            if not inferred_inst:
-                try:
-                    inferred_inst = lco.infer_archive_instrument(row)
-                except lco.LcoError:
-                    inferred_inst = ""
-            dataset_meta[group_id] = {
-                "dataset_id": group_id,
-                "dataset_date": observing_date,
-                "instrument": inferred_inst,
-                "object": str(row.get("OBJECT") or ""),
-                "site": str(row.get("SITEID") or ""),
-                "telescope": str(row.get("TELID") or ""),
-                "instrument_header": str(row.get("INSTRUME") or ""),
-                "frame_count": 0,
-                "existing_count": 0,
-                "filenames": [],
-                "archive_ra_deg": None,
-                "archive_dec_deg": None,
-            }
-        meta = dataset_meta[group_id]
-        meta["frame_count"] += 1
-        fname = str(row.get("filename") or row.get("basename") or "")
-        if fname:
-            meta["filenames"].append(fname)
-            filename_to_group[fname] = group_id
-        if meta["archive_ra_deg"] is None or meta["archive_dec_deg"] is None:
-            ra_deg, dec_deg = _frame_coords_deg(row)
-            if ra_deg is not None and dec_deg is not None:
-                meta["archive_ra_deg"] = ra_deg
-                meta["archive_dec_deg"] = dec_deg
-
-    local_cache: dict[tuple[str, str, str], list[dict]] = {}
-    for meta in dataset_meta.values():
-        inst_name = str(meta.get("instrument") or "")
-        obsdate = (meta.get("dataset_date") or "").replace("-", "")[2:8]
-        site = str(meta.get("site") or "").lower()
-        if not inst_name or not obsdate or not site:
-            continue
-        key = (inst_name, obsdate, site)
-        if key not in local_cache:
-            local_cache[key] = _local_lco_datasets(inst_name, obsdate, site)
-
-        archive_ra = meta.get("archive_ra_deg")
-        archive_dec = meta.get("archive_dec_deg")
-        if archive_ra is None or archive_dec is None:
-            archive_name = _normalize_target_name(str(meta.get("object") or ""))
-            if not archive_name:
-                continue
-            for cand in local_cache[key]:
-                if _normalize_target_name(str(cand.get("object") or "")) == archive_name:
-                    meta["existing_count"] = int(cand.get("nframes") or 0)
-                    meta["matched_object"] = str(cand.get("object") or "")
-                    break
-            continue
-
-        best_match = None
-        best_sep = None
-        for cand in local_cache[key]:
-            ra2 = cand.get("ra_deg")
-            dec2 = cand.get("dec_deg")
-            if ra2 is None or dec2 is None:
-                continue
-            sep = _angular_sep_arcsec(archive_ra, archive_dec, ra2, dec2)
-            if best_sep is None or sep < best_sep:
-                best_sep = sep
-                best_match = cand
-        if best_match is not None and best_sep is not None and best_sep <= _LCO_DATASET_MATCH_ARCSEC:
-            meta["existing_count"] = int(best_match.get("nframes") or 0)
-            meta["matched_object"] = str(best_match.get("object") or "")
-            meta["match_sep_arcsec"] = round(best_sep, 2)
-
-    out: list[dict] = []
-    for row in rows:
-        fname = str(row.get("filename") or row.get("basename") or "")
-        gid = filename_to_group.get(fname, "")
-        meta = dataset_meta.get(gid, {})
-        row["dataset_id"] = gid
-        row["dataset_date"] = meta.get("dataset_date", "")
-        row["archive_instrument"] = meta.get("instrument", "")
-        row["dataset_exists"] = bool(meta.get("existing_count"))
-        row["dataset_existing_count"] = int(meta.get("existing_count", 0))
-        row["dataset_frame_count"] = int(meta.get("frame_count", 0))
-        row["dataset_matched_object"] = meta.get("matched_object", "")
-        row["dataset_match_sep_arcsec"] = meta.get("match_sep_arcsec")
-        
-        # Check if frame is saved locally
-        inferred_inst = meta.get("instrument") or ""
-        obsdate = (meta.get("dataset_date") or "").replace("-", "")[2:8]
-        row["saved_locally"] = False
-        if inferred_inst and obsdate and fname:
-            try:
-                dest = lco.frame_dest(inferred_inst, obsdate, fname)
-                if dest.exists() and dest.stat().st_size > 0:
-                    row["saved_locally"] = True
-            except Exception:
-                logger.debug("failed local saved-frame check for %s/%s/%s", inferred_inst, obsdate, fname, exc_info=True)
-        out.append(row)
-    return out, len(dataset_meta)
-
-
-def _query_target_planets_toi(target: str) -> dict:
-    import urllib.request
-    import urllib.parse
-    import json
-    
-    target_clean = target.strip().upper()
-    cache_key = "toi_" + target_clean
-    cached = _CATALOG_CACHE.get(cache_key, _CACHE_MISS)
-    if cached is not _CACHE_MISS:
-        return cached
-        
-    results = {}
-    target_norm = _normalize_target_name(target)
-    
-    # 1. Local database search (TOIs.csv)
-    try:
-        csv_path = pathlib.Path(HERE).parent.parent / "data" / "TOIs.csv"
-        if csv_path.exists():
-            with open(csv_path, errors="replace") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    row = {k.lower(): v for k, v in row.items()}
-                    toi_val = row.get("toi", "")
-                    tic_val = row.get("tic id", "")
-                    match = False
-                    if toi_val and _normalize_target_name("TOI" + toi_val) == target_norm:
-                        match = True
-                    elif tic_val and (
-                        _normalize_target_name(tic_val) == target_norm or
-                        _normalize_target_name("TIC" + tic_val) == target_norm
-                    ):
-                        match = True
-                    elif row.get("planet name") and _normalize_target_name(row.get("planet name", "")) == target_norm:
-                        match = True
-                    
-                    if match:
-                        try:
-                            parts = toi_val.split(".")
-                            if len(parts) == 2:
-                                candidate_num = int(parts[1])
-                                letter = chr(ord('b') + candidate_num - 1)
-                            else:
-                                letter = "b"
-                        except Exception:
-                            letter = "b"
-                        t0 = row.get("epoch (bjd)")
-                        per = row.get("period (days)")
-                        if t0 is not None and per is not None:
-                            try:
-                                entry = {"t0": float(t0), "period": float(per)}
-                            except ValueError:
-                                continue
-                            dur = _safe_float(row.get("duration (hours)"))
-                            if dur is not None:
-                                entry["duration"] = dur
-                            # Extract uncertainties
-                            t0_unc = _safe_float(row.get("epoch (bjd) err"))
-                            per_unc = _safe_float(row.get("period (days) err"))
-                            dur_unc = _safe_float(row.get("duration (hours) err"))
-                            if t0_unc is not None:
-                                entry["t0_unc"] = t0_unc
-                            if per_unc is not None:
-                                entry["period_unc"] = per_unc
-                            if dur_unc is not None:
-                                entry["duration_unc"] = dur_unc
-                            results[letter] = entry
-    except Exception:
-        logger.debug("failed local TOI ephemeris lookup for %s", target, exc_info=True)
-
-    # 2. Online search
-    if not results:
-        host = target.strip()
-        if len(host) > 2 and host[-2] == " " and host[-1].lower() in "bcdefgh":
-            host = host[:-2].strip()
-        q = f"SELECT toidisplay, pl_tranmid, pl_tranmiderr1, pl_tranmiderr2, pl_orbper, pl_orbpererr1, pl_orbpererr2, pl_trandurh, pl_trandurherr1, pl_trandurherr2 FROM toi WHERE toidisplay LIKE {_adql_literal(host + '%')}"
-        url = 'https://exoplanetarchive.ipac.caltech.edu/TAP/sync?' + urllib.parse.urlencode({'query': q, 'format': 'json'})
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        try:
-            with urllib.request.urlopen(req, timeout=5.0) as response:
-                data = json.loads(response.read().decode())
-                for row in data:
-                    toidisplay = row.get("toidisplay", "")
-                    if toidisplay:
-                        base_name = toidisplay.split(".")[0].strip()
-                        if _normalize_target_name(base_name) != target_norm:
-                            continue
-                    t0 = row.get("pl_tranmid")
-                    per = row.get("pl_orbper")
-                    if toidisplay and t0 is not None and per is not None:
-                        parts = toidisplay.split(".")
-                        if len(parts) == 2:
-                            try:
-                                candidate_num = int(parts[1])
-                                letter = chr(ord('b') + candidate_num - 1)
-                                entry = {"t0": float(t0), "period": float(per)}
-                            except Exception:
-                                continue
-                            dur = _safe_float(row.get("pl_trandurh"))  # hours
-                            if dur is not None:
-                                entry["duration"] = dur
-                            # Extract uncertainties
-                            t0_unc = _get_err(row, "pl_tranmid")
-                            per_unc = _get_err(row, "pl_orbper")
-                            dur_unc = _get_err(row, "pl_trandurh")
-                            if t0_unc is not None:
-                                entry["t0_unc"] = t0_unc
-                            if per_unc is not None:
-                                entry["period_unc"] = per_unc
-                            if dur_unc is not None:
-                                entry["duration_unc"] = dur_unc
-                            results[letter] = entry
-        except Exception:
-            logger.debug("failed online TOI ephemeris lookup for %s", target, exc_info=True)
-
-    _CATALOG_CACHE[cache_key] = results
-    return results
-
-
-# Helper to query all planet ephemerides for a target from catalogs
-def _query_target_planets_catalog(target: str) -> dict:
-    target_clean = target.strip().upper()
-    cached = _CATALOG_CACHE.get(target_clean, _CACHE_MISS)
-    if cached is not _CACHE_MISS:
-        return cached
-        
-    results = dict(_query_target_planets_nasa(target))
-    if not results:
-        results = dict(_query_target_planets_toi(target))
-        
-    # Check local muscatdb_targets_old.csv if still empty and file exists
-    if not results:
-        target_norm = _normalize_target_name(target)
-        try:
-            csv_path = pathlib.Path(HERE).parent.parent / "data" / "muscatdb_targets_old.csv"
-            if csv_path.exists():
-                with open(csv_path, errors="replace") as f:
-                    reader = csv.DictReader(f, delimiter=";")
-                    for row in reader:
-                        name_val = (row.get("name") or "").strip()
-                        if name_val and _normalize_target_name(name_val) == target_norm:
-                            period_raw = row.get("period") or row.get("period_sg1")
-                            t0_raw = row.get("t0") or row.get("t0_sg1")
-                            if not period_raw or not t0_raw:
-                                break
-                            try:
-                                results["b"] = {
-                                    "t0": float(t0_raw),
-                                    "period": float(period_raw),
-                                }
-                            except ValueError:
-                                pass
-                            break
-        except Exception:
-            logger.debug("failed legacy catalog fallback for %s", target, exc_info=True)
-
-    _CATALOG_CACHE[target_clean] = results
-    return results
-
-
 # Helper to fetch fitted transit centers for a run
 def _get_run_fitted_params(inst: str, date: str, target: str, run_id: str | None) -> dict:
     """Per-planet fitted ephemeris from a run's outputs (the Fitted Parameters
@@ -4715,28 +2985,6 @@ def _get_run_fitted_params(inst: str, date: str, target: str, run_id: str | None
     return fitted
 
 
-def _global_ads_token() -> str:
-    return (
-        os.environ.get("ADS_API_TOKEN")
-        or os.environ.get("ADS_DEV_KEY")
-        or os.environ.get("ADS_TOKEN")
-        or ""
-    ).strip()
-
-
-def _ads_token_for_request(request: Request | None) -> tuple[str, str | None]:
-    user = _request_user(request) if request is not None else None
-    if user:
-        try:
-            token = get_user_ads_token(user)
-        except UserSettingsError:
-            token = None
-        if token:
-            return token, "user"
-    token = _global_ads_token()
-    return (token, "global") if token else ("", None)
-
-
 @ads_router.get("/config", response_class=JSONResponse)
 def api_ads_config(request: Request):
     """Report whether the ADS API token is configured. No secrets."""
@@ -4753,15 +3001,13 @@ def api_ads_config(request: Request):
 
 
 @target_router.get("/publications", response_class=JSONResponse)
-def api_target_publications(request: Request, q: str):
-    import urllib.request
+async def api_target_publications(request: Request, q: str):
     import urllib.parse
-    import json
-    
+
     q = (q or "").strip()
     if not q:
         return JSONResponse({"ok": False, "error": "Query parameter q is required"}, status_code=400)
-        
+
     token, _source = _ads_token_for_request(request)
     if not token:
         return JSONResponse({
@@ -4769,7 +3015,7 @@ def api_target_publications(request: Request, q: str):
             "error": "ADS API token is not configured. Save your token in Settings.",
             "token_missing": True
         }, status_code=400)
-        
+
     params = {
         "q": q,
         "fq": "collection:astronomy",
@@ -4778,24 +3024,21 @@ def api_target_publications(request: Request, q: str):
         "rows": 20
     }
     url = "https://api.adsabs.harvard.edu/v1/search/query?" + urllib.parse.urlencode(params)
-    
-    req = urllib.request.Request(url, headers={
-        "Authorization": f"Bearer {token}",
-        "User-Agent": "MuSCAT-db/0.1.0"
-    })
-    
+
     try:
-        with urllib.request.urlopen(req, timeout=10.0) as response:
-            data = json.loads(response.read().decode("utf-8"))
-            docs = data.get("response", {}).get("docs", [])
-            return JSONResponse({"ok": True, "papers": docs})
-    except urllib.error.HTTPError as e:
+        response = await _async_get(url, headers={
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "MuSCAT-db/0.1.0"
+        })
+        data = response.json()
+        docs = data.get("response", {}).get("docs", [])
+        return JSONResponse({"ok": True, "papers": docs})
+    except httpx.HTTPStatusError as e:
         try:
-            err_body = e.read().decode("utf-8")
-            err_msg = json.loads(err_body).get("error", {}).get("message", str(e))
+            err_msg = e.response.json().get("error", {}).get("message", str(e))
         except Exception:
             err_msg = str(e)
-        return JSONResponse({"ok": False, "error": f"ADS API returned error: {err_msg}"}, status_code=e.code)
+        return JSONResponse({"ok": False, "error": f"ADS API returned error: {err_msg}"}, status_code=e.response.status_code)
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"Failed to query ADS: {str(e)}"}, status_code=500)
 
@@ -5044,72 +3287,29 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
                     "checked": is_checked
                 })
                 
-        # Perform straight line fit if possible
+        # Perform straight line fit if possible. The weighted/unweighted
+        # least-squares math (epoch-centering, variance propagation) lives in
+        # ephemeris_math.fit_linear_ephemeris; only checked, positive-uncertainty
+        # points may participate in the regression.
         fit_points = [p for p in points if p["checked"] and p["unc"] is not None and p["unc"] > 0]
-        was_fit = False
-        t0_fit = T0
-        period_fit = P
-        t0_fit_unc = 0.0
-        period_fit_unc = 0.0
-        
-        # Center epoch
-        E_center = 0
-        t0_centered = T0
-        t0_centered_unc = 0.0
         fit_method = payload.get("fit_method", "unweighted")
-        
-        if len(fit_points) >= 2:
-            epochs_checked = [p["epoch"] for p in fit_points]
-            E_min = min(epochs_checked)
-            E_max = max(epochs_checked)
-            E_center = E_min + int((E_max - E_min) // 2)
-            
-            Sw = Swx = Swy = Swxx = Swxy = 0.0
-            for p in fit_points:
-                x = p["epoch"] - E_center
-                y = p["tc"]
-                if fit_method == "weighted":
-                    w = 1.0 / (p["unc"] ** 2)
-                else:
-                    w = 1.0
-                Sw += w
-                Swx += w * x
-                Swy += w * y
-                Swxx += w * (x ** 2)
-                Swxy += w * x * y
-                
-            delta = Sw * Swxx - (Swx ** 2)
-            if delta > 0.0:
-                t0_centered = (Swxx * Swy - Swx * Swxy) / delta
-                period_fit = (Sw * Swxy - Swx * Swy) / delta
-                
-                # Calculate uncertainties
-                if fit_method == "weighted":
-                    t0_centered_unc = (Swxx / delta) ** 0.5
-                    period_fit_unc = (Sw / delta) ** 0.5
-                else:
-                    # Unweighted fit uncertainty needs residual variance estimation
-                    residuals_sum_sq = sum(
-                        (p["tc"] - (t0_centered + (p["epoch"] - E_center) * period_fit)) ** 2
-                        for p in fit_points
-                    )
-                    dof = len(fit_points) - 2
-                    sigma_sq = residuals_sum_sq / dof if dof > 0 else 0.0
-                    t0_centered_unc = (sigma_sq * Swxx / delta) ** 0.5
-                    period_fit_unc = (sigma_sq * Sw / delta) ** 0.5
-                
-                # Extrapolate back to the catalog epoch (E = 0)
-                t0_fit = t0_centered - E_center * period_fit
-                
-                # Extrapolated uncertainty: Var(t0_fit) = Var(t0_centered) + E_center^2 * Var(P) - 2 * E_center * Cov(t0_centered, P)
-                var_t0_factor = Swxx + (E_center ** 2) * Sw + 2.0 * E_center * Swx
-                if fit_method == "weighted":
-                    t0_fit_unc = (var_t0_factor / delta) ** 0.5
-                else:
-                    t0_fit_unc = (sigma_sq * var_t0_factor / delta) ** 0.5
-                    
-                was_fit = True
-                
+        fit_result = ephemeris_math.fit_linear_ephemeris(
+            [p["epoch"] for p in fit_points],
+            [p["tc"] for p in fit_points],
+            [p["unc"] for p in fit_points],
+            T0,
+            P,
+            fit_method=fit_method,
+        )
+        was_fit = fit_result["was_fit"]
+        t0_fit = fit_result["t0_fit"]
+        period_fit = fit_result["period_fit"]
+        t0_fit_unc = fit_result["t0_fit_unc"]
+        period_fit_unc = fit_result["period_fit_unc"]
+        t0_centered = fit_result["t0_fit_centered"]
+        t0_centered_unc = fit_result["t0_fit_centered_unc"]
+        E_center = fit_result["E_center"]
+
         # Calculate O-C values
         points_data = []
         for p in points:
@@ -5447,6 +3647,16 @@ def job_log(type_: str, inst: str, date: str, target: str, run: str = ""):
     return FileResponse(str(path))
 
 
+@jobs_router.get("/ttv-log/{target}")
+def ttv_job_log(target: str, run: str = ""):
+    # `run` is the job's run_id (an already-slugified segment); log_path
+    # validates it and resolves the default run when it is empty.
+    path = ttv.log_path(target, (run or "").strip())
+    if path is None:
+        raise HTTPException(404, "log not found")
+    return FileResponse(str(path))
+
+
 @jobs_router.post("/rerun")
 def jobs_rerun(request: Request, payload: dict = Body(...)):
     import json
@@ -5464,7 +3674,7 @@ def jobs_rerun(request: Request, payload: dict = Body(...)):
     except (json.JSONDecodeError, TypeError):
         p = {}
     options = dict(p.get("options") or {})
-    for field in ("run_name", "site", "mode"):
+    for field in ("run_name", "site", "telescope", "mode"):
         value = p.get(field) or job.get(field)
         if value and not options.get(field):
             options[field] = value
@@ -5473,6 +3683,9 @@ def jobs_rerun(request: Request, payload: dict = Body(...)):
         result = phot.start_run(inst, date, target, options=options, test_run=p.get("test_run", True), user_name=user_name)
     elif job["type"] == "transit_fit":
         result = fit.start_fit(inst, date, target, options=options, test_run=p.get("test_run", False), selected_csvs=p.get("selected_csvs"), user_name=user_name)
+    elif job["type"] == "ttv_fit":
+        from muscat_db.ttv_fit import start_ttv_fit
+        result = start_ttv_fit(target, options, user_name)
     else:
         raise HTTPException(400, "unknown job type")
     if not result.get("ok"):
@@ -5588,10 +3801,14 @@ def photometry_run(request: Request, payload: dict = Body(...)):
     options = payload.get("options") or {}
     test_run = bool(payload.get("test_run", True))
     user_name = request.state.user
-    # Hard block: never launch a sinistro run that would merge multiple sites.
+    # Hard block: never launch a sinistro run that would merge multiple sites
+    # or multiple physical telescopes.
     site_err = _site_required_error(_db_path(), inst, date, target, options)
     if site_err:
         return JSONResponse({"ok": False, "error": site_err}, status_code=400)
+    telescope_err = _telescope_required_error(_db_path(), inst, date, target, options)
+    if telescope_err:
+        return JSONResponse({"ok": False, "error": telescope_err}, status_code=400)
     result = phot.start_run(inst, date, target, options=options, test_run=test_run, user_name=user_name)
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
@@ -5607,10 +3824,12 @@ def photometry_command(payload: dict = Body(...)):
     options = payload.get("options") or {}
     test_run = bool(payload.get("test_run", False))
     error = phot.validate_run_options(phot.normalize_run_options(options), inst=inst)
-    # Surface the multi-site block as a command error so the page disables the
-    # run buttons and shows why until a site is chosen.
+    # Surface the multi-site/multi-telescope block as a command error so the
+    # page disables the run buttons and shows why until a choice is made.
     if not error:
         error = _site_required_error(_db_path(), inst, date, target, options)
+    if not error:
+        error = _telescope_required_error(_db_path(), inst, date, target, options)
     command = phot.command_str(inst, date, target, options=options, test_run=test_run)
     return JSONResponse({"command": command, "error": error})
 
@@ -5650,16 +3869,28 @@ def photometry_status_batch(payload: dict = Body(...)):
     jobs = payload.get("jobs") or []
     if not isinstance(jobs, list):
         return JSONResponse({"error": "jobs must be a list"}, status_code=400)
+    if len(jobs) > _MAX_STATUS_BATCH:
+        return JSONResponse(
+            {"error": f"jobs must contain at most {_MAX_STATUS_BATCH} entries"},
+            status_code=400,
+        )
 
     results = []
     for job_spec in jobs:
-        inst = (job_spec.get("inst") or "").strip()
-        date = (job_spec.get("date") or "").strip()
-        target = (job_spec.get("target") or "").strip()
-        run = (job_spec.get("run") or "").strip()
+        if not isinstance(job_spec, dict):
+            results.append({"error": "each job must be an object"})
+            continue
+        raw_fields = tuple(job_spec.get(name) or "" for name in ("inst", "date", "target", "run"))
+        if not all(isinstance(value, str) for value in raw_fields):
+            results.append({"error": "job fields must be strings"})
+            continue
+        inst, date, target, run = (value.strip() for value in raw_fields)
 
         if not all([inst, date, target]):
             results.append({"error": "inst, date, and target are required"})
+            continue
+        if any(len(value) > _MAX_STATUS_FIELD_LEN for value in (inst, date, target, run)):
+            results.append({"error": "job fields are too long"})
             continue
 
         status = phot.job_status(inst, date, target, run_id=run)
@@ -5749,123 +3980,95 @@ def ccd_page(instrument: str, obsdate: str, ccd: int):
 
 
 @ttv_fit_router.get("/outputs", response_class=JSONResponse)
-def ttv_fit_outputs(inst: str = "", date: str = "", target: str = "", run_name: str = ""):
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
-    if target:
-        target = target.strip()
-    outputs = ttv.get_ttv_outputs(inst, date, target, run_name)
+def ttv_fit_outputs(target: str = "", run_name: str = ""):
+    if not target:
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    outputs = ttv.get_ttv_outputs(target.strip(), run_name)
     return JSONResponse({"ok": True, "outputs": outputs})
 
 
 @ttv_fit_router.get("/runs", response_class=JSONResponse)
-def ttv_fit_runs(inst: str = "", date: str = "", target: str = ""):
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
+def ttv_fit_runs(target: str = ""):
     if not target:
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
-    return JSONResponse({"ok": True, "runs": ttv.list_ttv_runs(inst, date, target.strip())})
+    return JSONResponse({"ok": True, "runs": ttv.list_ttv_runs(target.strip())})
 
 
 @ttv_fit_router.post("/start", response_class=JSONResponse)
-def api_start_ttv_fit(payload: dict = Body(...)):
-    inst = (payload.get("instrument") or "").strip()
-    date = (payload.get("date") or "").strip()
+def api_start_ttv_fit(request: Request, payload: dict = Body(...)):
     target = (payload.get("target") or "").strip()
-    user_name = (payload.get("user_name") or "").strip()
     options = payload.get("options") or {}
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
-    if not date:
-        return JSONResponse({"ok": False, "error": "date is required"}, status_code=400)
     if not target:
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
-    result = ttv.start_ttv_fit(inst, date, target, options, user_name)
+    result = ttv.start_ttv_fit(target, options, request.state.user)
     return JSONResponse(result)
 
 
 @ttv_fit_router.post("/cancel", response_class=JSONResponse)
 def api_cancel_ttv_fit(payload: dict = Body(...)):
-    inst = (payload.get("instrument") or "").strip()
-    date = (payload.get("date") or "").strip()
     target = (payload.get("target") or "").strip()
     run_name = (payload.get("run_name") or "").strip()
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
-    res = ttv.cancel_ttv_fit(inst, date, target, run_name)
+    if not target:
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    res = ttv.cancel_ttv_fit(target, run_name)
     return JSONResponse(res)
 
 
 @ttv_fit_router.post("/delete", response_class=JSONResponse)
 def api_delete_ttv_fit(payload: dict = Body(...)):
-    inst = (payload.get("instrument") or "").strip()
-    date = (payload.get("date") or "").strip()
     target = (payload.get("target") or "").strip()
     run_name = (payload.get("run_name") or "").strip()
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
-    res = ttv.delete_ttv_fit(inst, date, target, run_name)
+    if not target:
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    res = ttv.delete_ttv_fit(target, run_name)
     return JSONResponse(res)
 
 
 @ttv_fit_router.get("/status", response_class=JSONResponse)
-def ttv_fit_status(inst: str = "", date: str = "", target: str = "", run_name: str = ""):
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
+def ttv_fit_status(target: str = "", run_name: str = ""):
     if not target:
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
-    status = ttv.job_status(inst, date, target, run_name)
+    status = ttv.job_status(target.strip(), run_name)
     return JSONResponse(status)
 
 
 @ttv_fit_router.get("/output-file", response_class=FileResponse)
-def ttv_fit_output_file(inst: str = "", date: str = "", target: str = "", run_name: str = "", file: str = ""):
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
+def ttv_fit_output_file(target: str = "", run_name: str = "", file: str = ""):
     if not target:
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
-    output_dir = ttv.ttv_output_dir(inst, date, target, run_name)
-    filepath = output_dir / file
-    if not filepath.exists() or not filepath.is_file():
+    filepath = ttv.safe_output_file(target.strip(), run_name, file)
+    if filepath is None:
+        if not file or pathlib.PurePath(file).name != file:
+            raise HTTPException(400, "invalid filename")
         raise HTTPException(404, f"file not found: {file}")
     return FileResponse(str(filepath))
 
 
 @ttv_fit_router.get("/download-all", response_class=FileResponse)
-def ttv_fit_download_all(inst: str = "", date: str = "", target: str = "", run_name: str = ""):
-    import io, zipfile
-
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
+def ttv_fit_download_all(target: str = "", run_name: str = ""):
     if not target:
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
-    output_dir = ttv.ttv_output_dir(inst, date, target, run_name)
+    output_dir = ttv.ttv_output_dir(target.strip(), run_name)
     if not output_dir.is_dir():
         raise HTTPException(404, "output directory not found")
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for fpath in sorted(output_dir.iterdir()):
-            if fpath.is_file() and not fpath.name.startswith("."):
-                zf.write(str(fpath), arcname=fpath.name)
-    buf.seek(0)
-    return Response(
-        content=buf.getvalue(),
-        media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename={target}_ttv_outputs.zip"},
+    files = [
+        (path, path.name)
+        for path in sorted(output_dir.iterdir())
+        if path.is_file() and not path.name.startswith(".")
+    ]
+    return _create_zip_response(
+        files,
+        f"{target.strip().replace(' ', '')}_ttv_outputs.zip",
     )
 
 
 @ttv_fit_router.post("/command", response_class=JSONResponse)
 def api_ttv_fit_command(payload: dict = Body(...)):
-    inst = (payload.get("instrument") or "").strip()
-    date = (payload.get("date") or "").strip()
     target = (payload.get("target") or "").strip()
     options = payload.get("options") or {}
-    if inst not in INSTRUMENTS:
-        return JSONResponse({"ok": False, "error": "invalid instrument"}, status_code=400)
     if not target:
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
-    cmd_str = ttv.get_ttv_command(inst, date, target, options)
+    cmd_str = ttv.get_ttv_command(target, options)
     return JSONResponse({"ok": True, "command": cmd_str})
 
 

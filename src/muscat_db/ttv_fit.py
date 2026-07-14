@@ -19,11 +19,9 @@ from typing import IO
 from muscat_db import jobs, database
 from muscat_db.job_store import get_job_store
 from muscat_db import __meta__, __muscatdb_version__, __version__
-from muscat_db.instruments import INSTRUMENTS
 from muscat_db.photometry import (
     _conda_env_python,
     _RUNS_DIR_NAME,
-    valid_date,
     _tail,
     _get_error_desc,
 )
@@ -58,6 +56,22 @@ def _harmonic_version() -> str:
     return _HARMONIC_VERSION
 
 
+def _format_csv_table(csv_text: str) -> str:
+    """Format CSV transit-time data as a human-readable table."""
+    lines = [l for l in csv_text.strip().split("\n") if l.strip()]
+    if not lines:
+        return csv_text
+    rows = [line.split(",") for line in lines]
+    col_widths = [max(len(cells[i]) for cells in rows) for i in range(len(rows[0]))]
+    sep = "  "
+    header = sep.join(f"{c:>{col_widths[i]}}" for i, c in enumerate(rows[0]))
+    ruler = sep.join("-" * col_widths[i] for i in range(len(rows[0])))
+    data = []
+    for row in rows[1:]:
+        data.append(sep.join(f"{c:>{col_widths[i]}}" for i, c in enumerate(row)))
+    return f"{header}\n{ruler}\n" + "\n".join(data)
+
+
 def _write_log_banner(logf: IO, cmd: list[str], options: dict | None = None) -> None:
     separator = "=" * 60
     now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -69,18 +83,20 @@ def _write_log_banner(logf: IO, cmd: list[str], options: dict | None = None) -> 
     if options is not None:
         logf.write("--- options ---\n")
         for k, v in sorted(options.items()):
-            logf.write(f"  {k}: {v!r}\n")
+            if k == "csv_content" and isinstance(v, str) and v.strip():
+                logf.write(f"  csv_content:\n{_format_csv_table(v)}\n\n")
+            elif k == "ini_content" and isinstance(v, str) and v.strip():
+                logf.write(f"  ini_content:\n{v.rstrip()}\n\n")
+            else:
+                logf.write(f"  {k}: {v!r}\n")
         logf.write("\n")
 
 
-def ttv_output_dir(inst: str, date: str, target: str, run_name: str = "") -> pathlib.Path:
-    """Results directory for a TTV run: ``<base>/<target>/_runs/<run_name>``.
-
-    Mirrors the photometry ``_runs/`` convention (:func:`photometry.run_output_dir`);
-    ``inst``/``date`` are accepted for call-site symmetry but harmonic results are
-    keyed on target alone.
-    """
-    base = pathlib.Path(os.environ.get("MUSCAT_TTV_DIR", "~/ql/harmonic")).expanduser().resolve(strict=False)
+def ttv_output_dir(target: str, run_name: str = "") -> pathlib.Path:
+    """Results directory for a TTV run: ``<base>/<target>/_runs/<run_name>``."""
+    base = pathlib.Path(
+        os.environ.get("MUSCAT_TTV_DIR", str(pathlib.Path.home() / "ql" / "harmonic"))
+    ).expanduser().resolve(strict=False)
     parts = [base, _target_dir_name(target), _RUNS_DIR_NAME, slugify_run_name(run_name)]
     path = pathlib.Path(*[str(p) for p in parts]).resolve(strict=False)
     try:
@@ -90,10 +106,23 @@ def ttv_output_dir(inst: str, date: str, target: str, run_name: str = "") -> pat
     return path
 
 
-def get_ttv_command(inst: str, date: str, target: str, options: dict) -> str:
+def safe_output_file(target: str, run_name: str, filename: str) -> pathlib.Path | None:
+    """Return a direct file child of a TTV run, rejecting path traversal."""
+    if not filename or pathlib.PurePath(filename).name != filename:
+        return None
+    try:
+        output_dir = ttv_output_dir(target, run_name).resolve(strict=False)
+        candidate = (output_dir / filename).resolve(strict=False)
+        candidate.relative_to(output_dir)
+    except (OSError, ValueError):
+        return None
+    return candidate if candidate.is_file() else None
+
+
+def get_ttv_command(target: str, options: dict) -> str:
     run_name = (options.get("run_name") or "").strip()
     try:
-        rdir = ttv_output_dir(inst, date, target, run_name)
+        rdir = ttv_output_dir(target, run_name)
     except ValueError:
         return ""
     cmd = [
@@ -130,6 +159,15 @@ def get_ttv_command(inst: str, date: str, target: str, options: dict) -> str:
     mstar = options.get("mstar")
     if mstar:
         cmd.extend(["-m", str(mstar)])
+    mu_min_me = options.get("mu_min_me")
+    if mu_min_me is not None:
+        cmd.extend(["--mu-min-me", str(mu_min_me)])
+    mu_max_me = options.get("mu_max_me")
+    if mu_max_me is not None:
+        cmd.extend(["--mu-max-me", str(mu_max_me)])
+    z_max = options.get("z_max")
+    if z_max is not None:
+        cmd.extend(["--z-max", str(z_max)])
     if options.get("clobber"):
         cmd.append("--clobber")
     return shlex.join(cmd)
@@ -139,13 +177,29 @@ _target_dir_name = jobs.target_dir_name
 slugify_run_name = jobs.slugify_run_name
 
 
-def log_path(inst: str, date: str, target: str) -> pathlib.Path | None:
+def log_path(target: str, run_id: str = "") -> pathlib.Path | None:
+    """Path to the ``harmonic.log`` for a given TTV fit run, or ``None`` if absent.
+
+    ``run_id`` is an already-slugified run segment (as persisted on jobs as
+    ``run_id``); an empty value means the default run. Both ``target`` and
+    ``run_id`` are validated as single path segments so a crafted value cannot
+    escape ``MUSCAT_TTV_DIR``.
+    """
     try:
-        rdir = ttv_output_dir(inst, date, target)
+        base = pathlib.Path(
+            os.environ.get("MUSCAT_TTV_DIR", str(pathlib.Path.home() / "ql" / "harmonic"))
+        ).expanduser().resolve(strict=False)
+        target_seg = _target_dir_name(target)
+        # run_id is already a slug; empty run_id means the default run.
+        run_seg = jobs.run_dir_name(run_id) if run_id else "default"
     except ValueError:
         return None
-    p = rdir / "harmonic.log"
-    return p if p.is_file() else None
+    p = base / target_seg / _RUNS_DIR_NAME / run_seg / "harmonic.log"
+    if p.is_file():
+        return p
+    # Fallback for legacy runs written directly under <base>/<target>/.
+    legacy = base / target_seg / "harmonic.log"
+    return legacy if legacy.is_file() else None
 
 
 TTVFitJob = jobs.PipelineJob
@@ -172,8 +226,8 @@ def _count_running_full() -> int:
     return jobs.count_running_full(_TTV_JOBS)
 
 
-def ttv_job_key(inst: str, date: str, target: str, run_name: str = "") -> str:
-    return f"{inst}/{date}/{_target_dir_name(target)}/{slugify_run_name(run_name)}"
+def ttv_job_key(target: str, run_name: str = "") -> str:
+    return f"{_target_dir_name(target)}/{slugify_run_name(run_name)}"
 
 
 def _harmonic_prefix() -> list[str]:
@@ -309,26 +363,21 @@ def validate_ttv_options(options: dict | None) -> str | None:
     except Exception:
         return "Could not parse INI configuration"
 
-    first_pair = planet_letters[:2]
-    expected_amp = f"a_{first_pair}"
-    has_any_amp = any(k.startswith("a_") for k in config["INIT"])
-    if not has_any_amp:
-        return f"INI [INIT] must contain at least one amplitude guess (e.g. {expected_amp})"
+    if len(planet_letters) >= 2:
+        first_pair = planet_letters[:2]
+        expected_amp = f"a_{first_pair}"
+        has_any_amp = any(k.startswith("a_") for k in config["INIT"])
+        if not has_any_amp:
+            return f"INI [INIT] must contain at least one amplitude guess (e.g. {expected_amp})"
 
     return None
 
 
 def start_ttv_fit(
-    inst: str,
-    date: str,
     target: str,
     options: dict,
     user_name: str | None = None,
 ) -> dict:
-    if inst not in INSTRUMENTS:
-        return {"ok": False, "error": f"unknown instrument {inst!r}"}
-    if not valid_date(date):
-        return {"ok": False, "error": "date must be 6-digit yymmdd"}
     if not (target or "").strip():
         return {"ok": False, "error": "target is required"}
     try:
@@ -343,19 +392,22 @@ def start_ttv_fit(
     run_name = (options.get("run_name") or "").strip()
     run_seg = slugify_run_name(run_name)
 
-    key = ttv_job_key(inst, date, target, run_name)
+    key = ttv_job_key(target, run_name)
 
     with _TTV_LOCK:
         existing = _TTV_JOBS.get(key)
         if existing is not None and existing.proc.poll() is None:
             return {"ok": True, "key": key, "already_running": True}
 
-        at_capacity = _count_running_full() >= _MAX_FULL_JOBS
+        # Every ttv_fit job is "full" (no test-run concept here), so always
+        # claim a cross-process concurrency slot before launching.
+        claimed_slot = get_job_store().claim_slot("ttv_fit", key, _MAX_FULL_JOBS)
+        at_capacity = not claimed_slot
         if at_capacity:
             try:
                 get_job_store().enqueue(
                     type_="ttv_fit",
-                    inst=inst, date=date, target=target, run_id=run_seg,
+                    inst="_", date="_", target=target, run_id=run_seg,
                     started_at=time.time(),
                     run_type="full",
                     params=json.dumps({"options": options}, separators=(",", ":")),
@@ -366,7 +418,7 @@ def start_ttv_fit(
                 return {"ok": False, "error": "database not writable"}
             return {"ok": True, "key": key, "queued": True}
 
-    rdir = ttv_output_dir(inst, date, target, run_name)
+    rdir = ttv_output_dir(target, run_name)
     rdir.mkdir(parents=True, exist_ok=True)
 
     csv_content = options.get("csv_content", "")
@@ -407,6 +459,15 @@ def start_ttv_fit(
     mstar = options.get("mstar")
     if mstar:
         cmd.extend(["-m", str(mstar)])
+    mu_min_me = options.get("mu_min_me")
+    if mu_min_me is not None:
+        cmd.extend(["--mu-min-me", str(mu_min_me)])
+    mu_max_me = options.get("mu_max_me")
+    if mu_max_me is not None:
+        cmd.extend(["--mu-max-me", str(mu_max_me)])
+    z_max = options.get("z_max")
+    if z_max is not None:
+        cmd.extend(["--z-max", str(z_max)])
     if options.get("clobber"):
         cmd.append("--clobber")
 
@@ -430,20 +491,21 @@ def start_ttv_fit(
         except Exception:
             logger.debug("failed to write harmonic.pid in %s", rdir, exc_info=True)
     except (FileNotFoundError, OSError) as exc:
+        get_job_store().release_slot("ttv_fit", key)
         logf.write(f"\nfailed to launch harmonic: {exc}\n")
         logf.close()
         return {"ok": False, "error": f"failed to launch harmonic: {exc}"}
 
     with _TTV_LOCK:
         _TTV_JOBS[key] = TTVFitJob(
-            key=key, inst=inst, date=date, target=target,
+            key=key, inst="_", date="_", target=target,
             cmd=cmd, proc=proc, logf=logf, log_path=log_path,
             run_type="full", run_id=run_seg, run_name=run_name,
         )
         get_job_store().save(
             type_="ttv_fit",
-            inst=inst,
-            date=date,
+            inst="_",
+            date="_",
             target=target,
             run_id=run_seg,
             state="running",
@@ -459,17 +521,15 @@ def start_ttv_fit(
     return {"ok": True, "key": key}
 
 
-def _pending_status(inst: str, date: str, target: str, run_name: str = "") -> dict | None:
-    try:
-        db_key = f"ttv_fit:{ttv_job_key(inst, date, target, run_name)}"
-    except ValueError:
-        return None
+def _pending_status(target: str, run_name: str = "") -> dict | None:
+    run_seg = slugify_run_name(run_name)
     try:
         for entry in get_job_store().all():
             if (
-                entry["key"] == db_key
-                and entry["type"] == "ttv_fit"
-                and entry["state"] == "pending"
+                entry.get("type") == "ttv_fit"
+                and entry.get("target") == target
+                and (entry.get("run_name") == run_name or entry.get("run_id") == run_seg)
+                and entry.get("state") == "pending"
             ):
                 started = entry.get("started_at") or time.time()
                 return {
@@ -479,24 +539,22 @@ def _pending_status(inst: str, date: str, target: str, run_name: str = "") -> di
                     "elapsed": round(time.time() - started),
                 }
     except Exception:
-        logger.debug("failed to read pending ttv-fit status for %s/%s/%s", inst, date, target, exc_info=True)
+        logger.debug("failed to read pending ttv-fit status for %s", target, exc_info=True)
     return None
 
 
-def _running_status(inst: str, date: str, target: str, run_name: str = "") -> dict | None:
-    try:
-        db_key = f"ttv_fit:{ttv_job_key(inst, date, target, run_name)}"
-    except ValueError:
-        return None
+def _running_status(target: str, run_name: str = "") -> dict | None:
+    run_seg = slugify_run_name(run_name)
     try:
         for entry in get_job_store().all():
             if (
-                entry["key"] == db_key
-                and entry["type"] == "ttv_fit"
-                and entry["state"] == "running"
+                entry.get("type") == "ttv_fit"
+                and entry.get("target") == target
+                and (entry.get("run_name") == run_name or entry.get("run_id") == run_seg)
+                and entry.get("state") == "running"
             ):
                 try:
-                    rdir = ttv_output_dir(inst, date, target, run_name)
+                    rdir = ttv_output_dir(target, run_name)
                     lp = rdir / "harmonic.log"
                 except ValueError:
                     lp = None
@@ -508,24 +566,25 @@ def _running_status(inst: str, date: str, target: str, run_name: str = "") -> di
                     "elapsed": round(time.time() - started),
                 }
     except Exception:
-        logger.debug("failed to read running ttv-fit status for %s/%s/%s", inst, date, target, exc_info=True)
+        logger.debug("failed to read running ttv-fit status for %s", target, exc_info=True)
     return None
 
 
-def _persisted_status(inst: str, date: str, target: str, run_name: str = "") -> dict | None:
-    try:
-        db_key = f"ttv_fit:{ttv_job_key(inst, date, target, run_name)}"
-    except ValueError:
-        return None
+def _persisted_status(target: str, run_name: str = "") -> dict | None:
+    run_seg = slugify_run_name(run_name)
     try:
         for entry in get_job_store().all():
-            if entry["key"] != db_key or entry["type"] != "ttv_fit":
+            if (
+                entry.get("type") != "ttv_fit"
+                or entry.get("target") != target
+                or (entry.get("run_name") != run_name and entry.get("run_id") != run_seg)
+            ):
                 continue
             state = entry["state"]
             if state not in ("done", "error", "cancelled"):
                 return None
             try:
-                rdir = ttv_output_dir(inst, date, target, run_name)
+                rdir = ttv_output_dir(target, run_name)
                 lp = rdir / "harmonic.log"
             except ValueError:
                 lp = None
@@ -536,29 +595,29 @@ def _persisted_status(inst: str, date: str, target: str, run_name: str = "") -> 
                 "elapsed": round(entry.get("elapsed") or 0),
             }
     except Exception:
-        logger.debug("failed to read persisted ttv-fit status for %s/%s/%s", inst, date, target, exc_info=True)
+        logger.debug("failed to read persisted ttv-fit status for %s", target, exc_info=True)
     return None
 
 
-def job_status(inst: str, date: str, target: str, run_name: str = "") -> dict:
+def job_status(target: str, run_name: str = "") -> dict:
     try:
-        key = ttv_job_key(inst, date, target, run_name)
+        key = ttv_job_key(target, run_name)
     except ValueError as exc:
         return {"state": "none", "log": "", "returncode": None, "elapsed": 0, "error": str(exc)}
     with _TTV_LOCK:
         job = _TTV_JOBS.get(key)
         if job is None:
-            pending = _pending_status(inst, date, target, run_name)
+            pending = _pending_status(target, run_name)
             if pending is not None:
                 return pending
-            running = _running_status(inst, date, target, run_name)
+            running = _running_status(target, run_name)
             if running is not None:
                 return running
-            persisted = _persisted_status(inst, date, target, run_name)
+            persisted = _persisted_status(target, run_name)
             if persisted is not None:
                 return persisted
             try:
-                rdir = ttv_output_dir(inst, date, target, run_name)
+                rdir = ttv_output_dir(target, run_name)
                 log_path = rdir / "harmonic.log"
                 if log_path.is_file():
                     return {"state": "done", "log": _tail(log_path), "returncode": 0, "elapsed": 0}
@@ -590,9 +649,9 @@ def job_status(inst: str, date: str, target: str, run_name: str = "") -> dict:
 _kill_after = jobs.kill_after
 
 
-def cancel_ttv_fit(inst: str, date: str, target: str, run_name: str = "") -> dict:
+def cancel_ttv_fit(target: str, run_name: str = "") -> dict:
     try:
-        key = ttv_job_key(inst, date, target, run_name)
+        key = ttv_job_key(target, run_name)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
     store = get_job_store()
@@ -600,17 +659,24 @@ def cancel_ttv_fit(inst: str, date: str, target: str, run_name: str = "") -> dic
     with _TTV_LOCK:
         job = _TTV_JOBS.get(key)
         if job is None:
-            db_key = f"ttv_fit:{key}"
-            found = [j for j in store.all() if j["key"] == db_key]
-            if found and found[0]["state"] == "pending":
+            found = [
+                j for j in store.all()
+                if j.get("type") == "ttv_fit"
+                and j.get("target") == target
+                and (j.get("run_name") == run_name or j.get("run_id") == run_seg)
+            ]
+            if found and found[0]["state"] in ("running", "pending"):
                 store.save(
-                    type_="ttv_fit", inst=inst, date=date, target=target,
-                    state="cancelled", returncode=-1, elapsed=0,
+                    type_="ttv_fit",
+                    inst=found[0].get("inst") or "_",
+                    date=found[0].get("date") or "_",
+                    target=target,
+                    state="cancelled", returncode=-1, elapsed=found[0].get("elapsed") or 0,
                     started_at=found[0]["started_at"],
                     error_desc="Cancelled by user",
                     run_id=run_seg, run_name=run_name,
                 )
-                return {"ok": True, "key": key}
+                return {"ok": True, "key": found[0]["key"]}
             return {"ok": False, "error": "no job to cancel"}
         if job.proc.poll() is not None:
             return {"ok": True, "already_finished": True}
@@ -618,7 +684,7 @@ def cancel_ttv_fit(inst: str, date: str, target: str, run_name: str = "") -> dic
         proc = job.proc
         store.save(
             type_="ttv_fit",
-            inst=inst, date=date, target=target,
+            inst=job.inst or "_", date=job.date or "_", target=target,
             state="cancelled", returncode=-1,
             elapsed=round(time.time() - job.started_at),
             started_at=job.started_at,
@@ -638,9 +704,9 @@ def cancel_ttv_fit(inst: str, date: str, target: str, run_name: str = "") -> dic
     return {"ok": True, "key": key}
 
 
-def delete_ttv_fit(inst: str, date: str, target: str, run_name: str = "") -> dict:
+def delete_ttv_fit(target: str, run_name: str = "") -> dict:
     try:
-        rdir = ttv_output_dir(inst, date, target, run_name)
+        rdir = ttv_output_dir(target, run_name)
     except ValueError:
         return {"ok": False, "error": "invalid target"}
     removed = 0
@@ -650,7 +716,7 @@ def delete_ttv_fit(inst: str, date: str, target: str, run_name: str = "") -> dic
             removed += 1
         except OSError:
             pass
-    job_key = ttv_job_key(inst, date, target, run_name)
+    job_key = ttv_job_key(target, run_name)
     db_key = f"ttv_fit:{job_key}"
     get_job_store().delete(db_key)
     with _TTV_LOCK:
@@ -662,22 +728,22 @@ def delete_ttv_fit(inst: str, date: str, target: str, run_name: str = "") -> dic
 _ttv_outputs_cache = register_cache(ttl=300.0)
 
 
-def has_ttv_outputs(inst: str, date: str, target: str, run_name: str = "") -> bool:
+def has_ttv_outputs(target: str, run_name: str = "") -> bool:
     try:
-        rdir = ttv_output_dir(inst, date, target, run_name)
+        rdir = ttv_output_dir(target, run_name)
     except ValueError:
         return False
     return rdir.is_dir() and (rdir / "samples.csv.gz").is_file()
 
 
-def list_ttv_runs(inst: str, date: str, target: str) -> list[dict]:
+def list_ttv_runs(target: str) -> list[dict]:
     """Run-name slugs under ``<target>/_runs`` that hold at least one result file.
 
     Newest-first by directory mtime, so the freshest run is the one the
     ephemeris page selects by default.
     """
     try:
-        runs_dir = ttv_output_dir(inst, date, target, "").parent
+        runs_dir = ttv_output_dir(target, "").parent
     except ValueError:
         return []
     if not runs_dir.is_dir():
@@ -686,7 +752,7 @@ def list_ttv_runs(inst: str, date: str, target: str) -> list[dict]:
     runs: list[dict] = []
     for d in sorted(runs_dir.iterdir()):
         # Directory names are already slugs, so re-slugging them is a no-op.
-        if not d.is_dir() or not get_ttv_outputs(inst, date, target, d.name)["has_any"]:
+        if not d.is_dir() or not get_ttv_outputs(target, d.name)["has_any"]:
             continue
         try:
             mtime = d.stat().st_mtime
@@ -698,22 +764,22 @@ def list_ttv_runs(inst: str, date: str, target: str) -> list[dict]:
     return runs
 
 
-def get_ttv_outputs(inst: str, date: str, target: str, run_name: str = "") -> dict:
+def get_ttv_outputs(target: str, run_name: str = "") -> dict:
     try:
-        rdir = ttv_output_dir(inst, date, target, run_name)
+        rdir = ttv_output_dir(target, run_name)
     except ValueError:
-        return _get_ttv_outputs_mtime(inst, date, target, run_name, -1.0)
+        return _get_ttv_outputs_mtime(target, run_name, -1.0)
     mtime = 0.0
     try:
         mtime = rdir.stat().st_mtime
     except OSError:
         pass
-    return _get_ttv_outputs_mtime(inst, date, target, run_name, mtime)
+    return _get_ttv_outputs_mtime(target, run_name, mtime)
 
 
 @_ttv_outputs_cache
 def _get_ttv_outputs_mtime(
-    inst: str, date: str, target: str, run_name: str, _cache_mtime: float
+    target: str, run_name: str, _cache_mtime: float
 ) -> dict:
     outputs: dict = {
         "has_any": False,
@@ -725,7 +791,7 @@ def _get_ttv_outputs_mtime(
         "extra_files": [],
     }
     try:
-        rdir = ttv_output_dir(inst, date, target, run_name)
+        rdir = ttv_output_dir(target, run_name)
     except ValueError:
         return outputs
 
@@ -779,7 +845,9 @@ def sync_jobs() -> None:
         db_by_key = {j["key"]: j for j in db_jobs}
 
         for key, job in _TTV_JOBS.items():
-            db_key = f"ttv_fit:{ttv_job_key(job.inst, job.date, job.target, job.run_name)}"
+            db_key = f"ttv_fit:{job.inst}/{job.date}/{job.target.replace(' ', '')}"
+            if job.run_id:
+                db_key = f"{db_key}/{job.run_id}"
             state, rc, is_terminal = jobs.resolve_job_state(job, _finalize_config())
             if is_terminal and job.state == "running":
                 job.state = state
@@ -816,8 +884,8 @@ def sync_jobs() -> None:
 
             store.save(
                 type_="ttv_fit",
-                inst=job.inst,
-                date=job.date,
+                inst=job.inst or "_",
+                date=job.date or "_",
                 target=job.target,
                 state=persist_state,
                 returncode=persist_rc,
@@ -835,14 +903,12 @@ def sync_jobs() -> None:
             row = next((j for j in db_jobs if j["key"] == db_key), None)
             if row is None:
                 continue
-            inst = row["inst"]
-            date = row["date"]
             target = row["target"]
             run_name = row.get("run_name") or ""
             completed_ok = False
             rdir = None
             try:
-                rdir = ttv_output_dir(inst, date, target, run_name)
+                rdir = ttv_output_dir(target, run_name)
                 if rdir.is_dir() and (rdir / "samples.csv.gz").is_file():
                     log_path = rdir / "harmonic.log"
                     if log_path.is_file():
@@ -856,7 +922,7 @@ def sync_jobs() -> None:
             if completed_ok:
                 store.save(
                     type_="ttv_fit",
-                    inst=inst, date=date, target=target,
+                    inst=row.get("inst") or "_", date=row.get("date") or "_", target=target,
                     state="done", returncode=0,
                     elapsed=row["elapsed"],
                     started_at=row["started_at"],
@@ -868,7 +934,7 @@ def sync_jobs() -> None:
             else:
                 store.save(
                     type_="ttv_fit",
-                    inst=inst, date=date, target=target,
+                    inst=row.get("inst") or "_", date=row.get("date") or "_", target=target,
                     state="error", returncode=-1,
                     elapsed=row["elapsed"],
                     started_at=row["started_at"],
@@ -878,10 +944,17 @@ def sync_jobs() -> None:
                 )
                 database.refresh_target_status(target)
 
-        if _count_running_full() < _MAX_FULL_JOBS:
+        # Release any concurrency slot whose claimant's persisted job row is
+        # no longer 'running' (crashed/restarted without releasing cleanly).
+        # Checked against the durable jobs table, so this is safe to run from
+        # any process -- unlike the per-process _TTV_JOBS dict above, it does
+        # not assume this process is the one that held the slot.
+        store.reconcile_slots("ttv_fit")
+
+        if store.count_claimed("ttv_fit") < _MAX_FULL_JOBS:
             pending = store.pending("ttv_fit")
             for entry in pending:
-                if _count_running_full() >= _MAX_FULL_JOBS:
+                if store.count_claimed("ttv_fit") >= _MAX_FULL_JOBS:
                     break
                 try:
                     p = json.loads(entry.get("params") or "{}")
@@ -890,19 +963,24 @@ def sync_jobs() -> None:
                 opts = p.get("options", {})
                 run_name = entry.get("run_name") or opts.get("run_name") or ""
                 run_seg = slugify_run_name(run_name)
+                target = entry["target"]
                 try:
-                    mem_key = ttv_job_key(entry["inst"], entry["date"], entry["target"], run_name)
+                    mem_key = ttv_job_key(target, run_name)
                 except ValueError:
                     continue
                 if mem_key in _TTV_JOBS:
-                    store.save(type_="ttv_fit", inst=entry["inst"], date=entry["date"], target=entry["target"], state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_id=run_seg, run_name=run_name)
+                    store.save(type_="ttv_fit", inst="_", date="_", target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Duplicate entry", run_id=run_seg, run_name=run_name)
                     continue
-                inst, date, target = entry["inst"], entry["date"], entry["target"]
                 try:
-                    key = ttv_job_key(inst, date, target, run_name)
-                    rdir = ttv_output_dir(inst, date, target, run_name)
+                    key = ttv_job_key(target, run_name)
+                    rdir = ttv_output_dir(target, run_name)
                 except ValueError:
-                    store.save(type_="ttv_fit", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Invalid target", run_id=run_seg, run_name=run_name)
+                    store.save(type_="ttv_fit", inst="_", date="_", target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Invalid target", run_id=run_seg, run_name=run_name)
+                    continue
+                # Atomic: at most one process/caller ever wins this claim for a
+                # given key, so two workers draining the same pending row can
+                # never both launch it.
+                if not store.claim_slot("ttv_fit", key, _MAX_FULL_JOBS):
                     continue
                 rdir.mkdir(parents=True, exist_ok=True)
                 csv_content = opts.get("csv_content", "")
@@ -942,6 +1020,15 @@ def sync_jobs() -> None:
                 mstar = opts.get("mstar")
                 if mstar:
                     cmd.extend(["-m", str(mstar)])
+                mu_min_me = opts.get("mu_min_me")
+                if mu_min_me is not None:
+                    cmd.extend(["--mu-min-me", str(mu_min_me)])
+                mu_max_me = opts.get("mu_max_me")
+                if mu_max_me is not None:
+                    cmd.extend(["--mu-max-me", str(mu_max_me)])
+                z_max = opts.get("z_max")
+                if z_max is not None:
+                    cmd.extend(["--z-max", str(z_max)])
                 if opts.get("clobber"):
                     cmd.append("--clobber")
                 log_path = rdir / "harmonic.log"
@@ -960,11 +1047,12 @@ def sync_jobs() -> None:
                         logf.close()
                     except OSError:
                         pass
-                    store.save(type_="ttv_fit", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_id=run_seg, run_name=run_name)
+                    store.release_slot("ttv_fit", key)
+                    store.save(type_="ttv_fit", inst="_", date="_", target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_id=run_seg, run_name=run_name)
                     continue
-                _TTV_JOBS[key] = TTVFitJob(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=log_path, run_type="full", run_id=run_seg, run_name=run_name)
+                _TTV_JOBS[key] = TTVFitJob(key=key, inst="_", date="_", target=target, cmd=cmd, proc=proc, logf=logf, log_path=log_path, run_type="full", run_id=run_seg, run_name=run_name)
                 try:
-                    store.save(type_="ttv_fit", inst=inst, date=date, target=target, state="running", returncode=None, elapsed=0, started_at=_TTV_JOBS[key].started_at, run_type="full", params=entry.get("params", ""), run_id=run_seg, run_name=run_name)
+                    store.save(type_="ttv_fit", inst="_", date="_", target=target, state="running", returncode=None, elapsed=0, started_at=_TTV_JOBS[key].started_at, run_type="full", params=entry.get("params", ""), run_id=run_seg, run_name=run_name)
                 except Exception:
                     logger.debug("failed to persist queued ttv-fit launch for %s", rdir, exc_info=True)
                     try:
@@ -976,4 +1064,5 @@ def sync_jobs() -> None:
                     except OSError:
                         pass
                     _TTV_JOBS.pop(key, None)
-                    store.save(type_="ttv_fit", inst=inst, date=date, target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Database error", run_id=run_seg, run_name=run_name)
+                    store.release_slot("ttv_fit", key)
+                    store.save(type_="ttv_fit", inst="_", date="_", target=target, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Database error", run_id=run_seg, run_name=run_name)

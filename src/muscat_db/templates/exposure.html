@@ -109,6 +109,13 @@
   .rec-box .rec-main { display: flex; flex-direction: column; gap: 0.15rem; }
   .rec-box .rec-label { font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
   .rec-box .rec-val { font-size: 1.8rem; font-weight: 700; color: var(--accent2); line-height: 1; font-variant-numeric: tabular-nums; }
+  .rec-box .rec-val.rec-bands { display: flex; flex-wrap: wrap; gap: 0.45rem; margin: 0.25rem 0; }
+  .rec-band-row { display: flex; flex-basis: 100%; flex-wrap: wrap; gap: 0.45rem; }
+  .rec-band { display: inline-flex; align-items: baseline; gap: 0.3rem; padding: 0.35rem 0.5rem; background: var(--input-bg); border: 1px solid var(--border); border-radius: 7px; }
+  .rec-band-name { font-size: 0.68rem; color: var(--text-dim); }
+  .rec-band-time { font-size: 1.05rem; color: var(--accent2); }
+  .rec-band-row.narrow .rec-band { border-color: color-mix(in srgb, #45d6b5 50%, var(--border)); background: color-mix(in srgb, #45d6b5 8%, var(--input-bg)); }
+  .rec-band-row.narrow .rec-band-name, .rec-band-row.narrow .rec-band-time { color: #28a98d; }
   .rec-box .rec-note { font-size: 0.72rem; color: var(--text-dim); }
   .copy-btn { background: var(--input-bg); border: 1px solid var(--border); color: var(--text-dim); border-radius: 7px; padding: 0.4rem 0.7rem; font-size: 0.78rem; cursor: pointer; white-space: nowrap; }
   .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
@@ -117,11 +124,29 @@
   .legend span { display: inline-flex; align-items: center; gap: 0.35rem; }
   .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 
+  /* Comparison stars (FOV handoff) */
+  .comp-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 0.55rem 0.75rem; margin-bottom: 0.5rem; }
+  .comp-card:last-child { margin-bottom: 0; }
+  .comp-card-head { display: flex; align-items: center; gap: 0.55rem; flex-wrap: wrap; }
+  .comp-card-mags { font-size: 0.82rem; color: var(--text-dim); margin-top: 0.3rem; }
+
+  /* Results: Source column only shown when comparison stars are included */
+  table.results .src-col { display: none; }
+  table.results.has-comps .src-col { display: table-cell; }
+
   /* Instrument param chips */
   .chip-row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.85rem; }
   .chip { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 0.4rem 0.65rem; display: flex; flex-direction: column; gap: 0.1rem; }
   .chip .ck { font-size: 0.62rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
   .chip .cv { font-size: 0.9rem; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+
+  .coeff-toolbar { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin: 0.55rem 0; }
+  .coeff-view-btn, .coeff-param { background: var(--input-bg); color: var(--text-dim); border: 1px solid var(--border); border-radius: 6px; padding: 0.3rem 0.55rem; font: inherit; font-size: 0.74rem; }
+  .coeff-view-btn { cursor: pointer; }
+  .coeff-view-btn.active { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--input-bg)); }
+  .coeff-param { margin-left: auto; }
+  .coeff-plot { width: 100%; min-height: 280px; }
+  .coeff-plot svg { display: block; width: 100%; height: auto; }
 
   .dev-banner {
     background: linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(245, 158, 11, 0.12) 100%);
@@ -246,6 +271,16 @@
       <div class="mag-grid" id="mag-broad"></div>
     </div>
 
+    {# ---- Comparison stars (handed off from the FOV optimizer) ---- #}
+    <div class="exp-section" id="comps-section" style="display:none;">
+      <div class="mag-head">
+        <h3 style="margin:0;">Comparison stars <span class="help-icon multiline" data-help="Bright in-field stars sent over from the FOV Optimizer. MuSCAT instruments expose every star in the field at once, so a comparison star brighter than the target can saturate first and cap the usable exposure — these are included in the calculation below.">?</span></h3>
+        <button class="copy-btn" type="button" id="clear-comps">Clear</button>
+      </div>
+      <div id="comps-status" class="msg dim"></div>
+      <div id="comps-list"></div>
+    </div>
+
     {# ---- Observation parameters ---- #}
     <div class="exp-section">
       <h3>Observation parameters</h3>
@@ -306,6 +341,7 @@
             <thead>
               <tr>
                 <th>Band</th>
+                <th class="src-col">Source</th>
                 <th>Mag</th>
                 <th id="col-primary">Exp (s)</th>
                 <th>Peak (ADU)</th>
@@ -326,7 +362,7 @@
           <div class="rec-main">
             <span class="rec-label">Recommended exposure</span>
             <span class="rec-val" id="rec-val"></span>
-            <span class="rec-note">conservative — keeps every band below the selected saturation limit</span>
+            <span class="rec-note" id="rec-note">conservative — keeps every band below the selected saturation limit</span>
           </div>
           <button class="copy-btn" type="button" id="copy-rec">Copy</button>
         </div>
@@ -454,11 +490,24 @@
   var clearMags = document.getElementById('clear-mags');
   var instParams = document.getElementById('inst-params');
   var colPrimary = document.getElementById('col-primary');
+  var resultsTable = document.getElementById('results-table');
+  var compsSection = document.getElementById('comps-section');
+  var compsStatus = document.getElementById('comps-status');
+  var compsList = document.getElementById('comps-list');
+  var clearComps = document.getElementById('clear-comps');
+  var recNote = document.getElementById('rec-note');
 
   var INST_PARAMS = {};
   try { INST_PARAMS = JSON.parse(document.getElementById('inst-params-data').textContent || '{}'); } catch (e) {}
 
+  // Resolved comparison stars handed off from the FOV page:
+  // [{label, sepArcsec, gmag, mags: {band: mag} | null, source, isApprox}]
+  var currentComps = [];
+  var coeffView = 'table';
+  var coeffParameter = 'coef';
+
   var STORE_KEY = 'expcalc.v1';
+  var COMP_HANDOFF_KEY = 'fov.compHandoff.v1';
   var BAND_COLORS = {
     gp: '#4f9eff', rp: '#e0564a', ip: '#b03a2e', zs: '#8e44ad',
     g_narrow: '#45d6b5', Na_D: '#45d6b5', i_narrow: '#45d6b5', z_narrow: '#45d6b5'
@@ -512,7 +561,8 @@
       localStorage.setItem(STORE_KEY, JSON.stringify({
         inst: selInst.value, confmode: selConfmode.value, target: targetName.value, mags: mags,
         focus: focusMm.value, airmass: airmass.value, satFrac: satFrac.value, customAdu: customAdu.value,
-        showNarrow: showNarrow.checked
+        showNarrow: showNarrow.checked, comps: currentComps,
+        coeffView: coeffView, coeffParameter: coeffParameter
       }));
     } catch (e) {}
   }
@@ -529,6 +579,9 @@
     if (s.satFrac) { satFrac.value = s.satFrac; customAduField.style.display = s.satFrac === 'custom' ? '' : 'none'; }
     if (s.customAdu) customAdu.value = s.customAdu;
     if (s.showNarrow !== undefined) showNarrow.checked = s.showNarrow;
+    if (s.coeffView === 'table' || s.coeffView === 'plot') coeffView = s.coeffView;
+    if (s.coeffParameter === 'coef' || s.coeffParameter === 'fwhm_pix') coeffParameter = s.coeffParameter;
+    if (Array.isArray(s.comps) && s.comps.length) { currentComps = s.comps; renderComps(); }
     syncFocus(); syncAirmass();
   }
 
@@ -589,9 +642,97 @@
     lookupStatus.textContent = ''; saveState();
   });
 
+  // ---- Comparison stars (FOV handoff) ----
+  function renderComps() {
+    if (!currentComps.length) {
+      compsSection.style.display = 'none';
+      compsList.innerHTML = '';
+      return;
+    }
+    compsSection.style.display = '';
+    compsList.innerHTML = currentComps.map(function (c) {
+      var badgeClass = c.mags ? (c.isApprox ? 'calib-none' : 'calib-ok') : 'calib-none';
+      var badgeText = c.mags ? (c.isApprox ? 'approx' : 'catalog') : 'no photometry';
+      var magsTxt = c.mags
+        ? BROAD.filter(function (b) { return c.mags[b] !== undefined; })
+            .map(function (b) { return b + '=' + Number(c.mags[b]).toFixed(2); }).join('  ')
+        : 'No griz photometry available for this star (no Pan-STARRS/SkyMapper match; Gaia color-transform fallback is under development).';
+      return '<div class="comp-card">' +
+        '<div class="comp-card-head">' +
+          '<strong>' + c.label + '</strong>' +
+          '<span class="msg dim">&Delta;' + c.sepArcsec.toFixed(0) + '&Prime; &middot; Gmag ' + c.gmag.toFixed(2) + '</span>' +
+          '<span class="calib-badge ' + badgeClass + '"><span class="cb-dot"></span>' + badgeText +
+            (c.source ? ' &middot; ' + c.source : '') + '</span>' +
+        '</div>' +
+        '<div class="comp-card-mags mono">' + magsTxt + '</div>' +
+        '</div>';
+    }).join('');
+  }
+
+  clearComps.addEventListener('click', function () {
+    currentComps = [];
+    compsStatus.textContent = '';
+    renderComps();
+    saveState();
+  });
+
+  // One-shot handoff from the FOV page: a "Check saturation in Exp Calc"
+  // click there stashes {target, ra, dec, instrument, comps: [...]} in
+  // sessionStorage and navigates here with ?fromFov=1. Consumed once (the
+  // key is removed immediately) then resolved comps persist normally via
+  // the regular expcalc.v1 localStorage state.
+  function consumeFovHandoff() {
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('fromFov') !== '1') return;
+    var raw = null;
+    try {
+      raw = sessionStorage.getItem(COMP_HANDOFF_KEY);
+      sessionStorage.removeItem(COMP_HANDOFF_KEY);
+    } catch (e) { /* ignore */ }
+    if (!raw) return;
+    var payload;
+    try { payload = JSON.parse(raw); } catch (e) { return; }
+    var comps = payload && payload.comps ? payload.comps : [];
+    if (!comps.length) return;
+
+    compsSection.style.display = '';
+    compsStatus.className = 'msg dim';
+    compsStatus.textContent = 'Resolving griz photometry for ' + comps.length + ' comparison star(s) from FOV…';
+
+    fetch('/api/exposure/lookup-mags-batch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        stars: comps.map(function (c) { return { ra: c.ra, dec: c.dec, gmag: c.gmag, bp_rp: c.bp_rp }; }),
+      }),
+    }).then(function (r) { return r.json(); }).then(function (data) {
+      if (!data.ok) {
+        compsStatus.className = 'msg err';
+        compsStatus.textContent = 'Failed to resolve comparison stars: ' + (data.error || 'unknown error');
+        return;
+      }
+      currentComps = comps.map(function (c, i) {
+        var res = data.results[i] || {};
+        return {
+          label: 'Comp ' + (i + 1),
+          sepArcsec: c.sep_arcsec, gmag: c.gmag,
+          mags: res.mags || null, source: res.source || null, isApprox: !!res.is_approx,
+        };
+      });
+      var nOk = currentComps.filter(function (c) { return c.mags; }).length;
+      compsStatus.className = nOk ? 'msg ok' : 'msg err';
+      compsStatus.textContent = nOk
+        ? '✓ Resolved ' + nOk + '/' + currentComps.length + ' comparison star(s) from FOV.'
+        : 'No griz photometry found for any handed-off comparison star.';
+      renderComps();
+      saveState();
+    }).catch(function (err) {
+      compsStatus.className = 'msg err';
+      compsStatus.textContent = 'Error resolving comparison stars: ' + err.message;
+    });
+  }
+
   // ---- Collect magnitudes ----
   var NARROW_MAP = { g_narrow: 'gp', Na_D: 'rp', i_narrow: 'ip', z_narrow: 'zs' };
-  var NARROW_OFFSET = { g_narrow: -1.15, Na_D: -1.30, i_narrow: -1.30, z_narrow: -1.30 };
 
   function collectMags() {
     var mags = {};
@@ -600,16 +741,15 @@
       if (!isNaN(v) && v > 0) mags[inp.dataset.band] = v;
     });
 
-    // Add narrowband magnitudes if checkbox is checked
+    // Add narrowband magnitudes if checkbox is checked. A star's magnitude
+    // doesn't change between broad and narrow filters (assuming ~flat SED),
+    // so reuse the broadband parent magnitude as-is -- the backend scales
+    // exposure time up for the narrower filter's reduced throughput.
     if (showNarrow.checked) {
       Object.keys(NARROW_MAP).forEach(function (narrow) {
         var parent = NARROW_MAP[narrow];
         var parentMag = mags[parent];
-        if (parentMag) {
-          var offset = NARROW_OFFSET[narrow] || 0;
-          var narrowMag = parentMag + (offset / 0.4);
-          mags[narrow] = narrowMag;
-        }
+        if (parentMag) mags[narrow] = parentMag;
       });
     }
 
@@ -640,6 +780,10 @@
     } else {
       payload.exptime = parseFloat(document.getElementById('calc-exptime').value || 30);
     }
+    var extraSources = currentComps
+      .filter(function (c) { return c.mags; })
+      .map(function (c) { return { label: c.label, mags: c.mags }; });
+    if (extraSources.length) payload.extra_sources = extraSources;
 
     var btn = mode === 'exptime' ? calcBtn : calcPeakBtn;
     var label = mode === 'exptime' ? 'Calculating' : 'Calculating';
@@ -677,7 +821,8 @@
     colPrimary.textContent = mode === 'exptime' ? 'Exp (s)' : 'Exp (s)';
 
     // Remove any existing note divs (narrowband and muscat2)
-    var existingNotes = resultsBody.parentElement.querySelectorAll('[data-note="true"]');
+    var resultsTableWrap = resultsTable.parentElement;
+    var existingNotes = resultsTableWrap.querySelectorAll('[data-note="true"]');
     existingNotes.forEach(function (n) { n.remove(); });
 
     var rows = data.results || [];
@@ -692,18 +837,26 @@
     var minExp = mode === 'exptime' && rows.length
       ? Math.min.apply(null, rows.map(function (r) { return r.exptime; })) : null;
 
+    // Source column (Target / Comp N) only makes sense to show once
+    // comparison stars are actually part of the calculation.
+    var hasComps = rows.some(function (r) { return r.is_target === false; });
+    resultsTable.classList.toggle('has-comps', hasComps);
+
     rows.forEach(function (r) {
       var pct = Number(r.pct_full_well);
       var cls = r.is_saturated ? 'sat' : fwClass(pct);
       var pill = cls === 'sat' ? 'pill-sat' : (cls === 'warn' ? 'pill-warn' : 'pill-safe');
       var pillTxt = cls === 'sat' ? 'saturated' : (cls === 'warn' ? 'near limit' : 'safe');
       var isLimiting = (minExp !== null && Math.abs(r.exptime - minExp) < 1e-6);
+      var limitedByComp = isLimiting && r.is_target === false;
 
       var tr = document.createElement('tr');
       if (isLimiting) tr.className = 'limiting';
       tr.innerHTML =
         '<td><span class="band-cell">' + dot(r.band) + r.band +
           (isLimiting ? ' <span class="limiting-tag">limiting</span>' : '') + '</span></td>' +
+        '<td class="src-col">' + (r.is_target === false ? (r.source_label || 'Comp') : 'Target') +
+          (limitedByComp ? ' <span class="limiting-tag" title="A comparison star, not the target, is capping this exposure">⚠</span>' : '') + '</td>' +
         '<td class="mono">' + r.mag.toFixed(2) + '</td>' +
         '<td><strong>' + r.exptime.toFixed(1) + '</strong></td>' +
         '<td class="mono">' + Number(r.peak_adu).toLocaleString() + '</td>' +
@@ -725,11 +878,13 @@
       note.style.borderRadius = '6px';
       note.style.fontSize = '0.75rem';
       note.style.color = 'var(--text-dim)';
+      note.style.width = '100%';
+      note.style.boxSizing = 'border-box';
       note.innerHTML = '<strong style="color:var(--text);">Narrowband filter width ratios:</strong><br>' +
         'g_narrow: 10nm / 140nm ≈ 0.07  •  i_narrow: 5nm / 100nm = 0.05  •  ' +
         'z_narrow: 5nm / 100nm = 0.05  •  Na_D: 5nm / 100nm = 0.05<br>' +
         '<span style="margin-top:0.3rem; display:block;">Narrower filters transmit fewer photons, requiring longer exposures or brighter targets to reach the same peak counts.</span>';
-      resultsBody.parentElement.appendChild(note);
+      resultsTableWrap.appendChild(note);
     }
 
     // Add muscat2 note if selected
@@ -746,19 +901,68 @@
       note2.style.fontSize = '0.8rem';
       note2.style.color = 'var(--text-dim)';
       note2.textContent = 'MuSCAT2 vs MuSCAT3: ~10× longer exposures (smaller aperture 1.52m vs 2.0m, lower gain 1.0 vs 1.8, larger pixels 0.44 vs 0.267). Example: gp=12.9 → MuSCAT3: 7.4s vs MuSCAT2: ~70s.';
-      resultsBody.parentElement.appendChild(note2);
+      resultsTableWrap.appendChild(note2);
     }
 
-    if (mode === 'exptime' && data.recommended_exptime) {
+    if (mode === 'exptime' && rows.length) {
       recBox.style.display = 'flex';
-      recVal.textContent = data.recommended_exptime + ' s';
+      var isMuscat = String(data.instrument || '').indexOf('muscat') === 0;
+      recVal.innerHTML = '';
+      recVal.classList.toggle('rec-bands', isMuscat);
+
+      if (isMuscat) {
+        var recommendations = [];
+        rows.forEach(function (r) {
+          var existing = recommendations.find(function (item) { return item.band === r.band; });
+          if (existing) {
+            existing.exptime = Math.min(existing.exptime, Number(r.exptime));
+          } else {
+            recommendations.push({band: r.band, exptime: Number(r.exptime)});
+          }
+        });
+        recommendations.forEach(function (item) {
+          var bandRec = document.createElement('span');
+          bandRec.className = 'rec-band';
+          var bandName = document.createElement('span');
+          bandName.className = 'rec-band-name';
+          bandName.textContent = item.band;
+          var bandTime = document.createElement('span');
+          bandTime.className = 'rec-band-time';
+          bandTime.textContent = item.exptime.toFixed(1) + ' s';
+          bandRec.appendChild(bandName);
+          bandRec.appendChild(bandTime);
+          recVal.appendChild(bandRec);
+        });
+        recVal.dataset.copyText = recommendations.map(function (item) {
+          return item.band + ': ' + item.exptime.toFixed(1) + ' s';
+        }).join(', ');
+        var broadRow = document.createElement('span');
+        broadRow.className = 'rec-band-row broad';
+        var narrowRow = document.createElement('span');
+        narrowRow.className = 'rec-band-row narrow';
+        Array.from(recVal.children).forEach(function (badge, index) {
+          (broadBands.indexOf(recommendations[index].band) !== -1 ? broadRow : narrowRow).appendChild(badge);
+        });
+        recVal.appendChild(broadRow);
+        if (narrowRow.children.length) recVal.appendChild(narrowRow);
+        recNote.textContent = hasComps
+          ? 'per-band limits — each keeps the target and comparison star(s) below the selected saturation limit'
+          : 'per-band limits — each keeps that band below the selected saturation limit';
+      } else {
+        recVal.textContent = data.recommended_exptime + ' s';
+        recVal.dataset.copyText = recVal.textContent;
+        recNote.textContent = hasComps
+          ? 'conservative — keeps the target and comparison star(s) below the selected saturation limit'
+          : 'conservative — keeps every band below the selected saturation limit';
+      }
     } else {
       recBox.style.display = 'none';
+      recVal.dataset.copyText = '';
     }
   }
 
   copyRec.addEventListener('click', function () {
-    var v = (recVal.textContent || '').replace(/[^0-9.]/g, '');
+    var v = recVal.dataset.copyText || recVal.textContent || '';
     if (!v) return;
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(v).then(function () {
@@ -796,8 +1000,13 @@
     var p = INST_PARAMS[inst];
     var html = '';
     if (p) {
+      var fwChips = (typeof p.full_well === 'object' && p.full_well !== null)
+        ? Object.keys(p.full_well).map(function (b) {
+            return chip('Full well (' + b + ')', Number(p.full_well[b]).toLocaleString() + ' e⁻');
+          }).join('')
+        : chip('Full well', Number(p.full_well).toLocaleString() + ' e⁻');
       html += '<div class="chip-row">' +
-        chip('Full well', Number(p.full_well).toLocaleString() + ' e⁻') +
+        fwChips +
         chip('Gain', p.gain + ' e⁻/ADU') +
         chip('Pixel scale', p.pixel_scale + '"/px') +
         chip('Aperture', p.aperture_m + ' m') +
@@ -812,23 +1021,103 @@
       var n = data.coeffs.length;
       if (n === 0) { slot.textContent = 'No DB calibration — using empirical MuSCAT3 coefficients (scaled).'; return; }
       var t = '<p style="margin-bottom:0.4rem;">Calibrated coefficients: <strong>' + n + '</strong></p>' +
-        '<table style="font-size:0.74rem;"><thead><tr><th>Band</th><th>Focus (mm)</th><th>Coef</th><th>FWHM (pix)</th><th>N</th></tr></thead><tbody>';
+        '<div class="coeff-toolbar"><button type="button" class="coeff-view-btn active" data-view="table">Table</button>' +
+        '<button type="button" class="coeff-view-btn" data-view="plot">Plot</button>' +
+        '<select class="coeff-param" aria-label="Plot parameter"><option value="coef">Coefficient</option><option value="fwhm_pix">FWHM (pix)</option></select></div>' +
+        '<div class="coeff-table"><table style="font-size:0.74rem;"><thead><tr><th>Band</th><th>Focus (mm)</th><th>Coef</th><th>FWHM (pix)</th><th>N</th></tr></thead><tbody>';
       data.coeffs.slice(0, 20).forEach(function (c) {
         t += '<tr><td>' + c.band + '</td><td>' + c.focus_mm + '</td><td>' + Number(c.coef).toFixed(3) + '</td><td>' + Number(c.fwhm_pix).toFixed(2) + '</td><td>' + c.n_frames + '</td></tr>';
       });
       if (n > 20) t += '<tr><td colspan="5" style="text-align:center;">… and ' + (n - 20) + ' more</td></tr>';
-      t += '</tbody></table>';
+      t += '</tbody></table></div><div class="coeff-plot" style="display:none;"></div>';
       slot.innerHTML = t;
+      var tableView = slot.querySelector('.coeff-table');
+      var plotView = slot.querySelector('.coeff-plot');
+      var param = slot.querySelector('.coeff-param');
+      slot.querySelectorAll('.coeff-view-btn').forEach(function (button) {
+        button.addEventListener('click', function () {
+          var showPlot = button.dataset.view === 'plot';
+          coeffView = button.dataset.view;
+          tableView.style.display = showPlot ? 'none' : 'block';
+          plotView.style.display = showPlot ? 'block' : 'none';
+          param.style.display = showPlot ? 'block' : 'none';
+          slot.querySelectorAll('.coeff-view-btn').forEach(function (b) { b.classList.toggle('active', b === button); });
+          if (showPlot) renderCoeffPlot(data.coeffs, param.value, plotView);
+          saveState();
+        });
+      });
+      param.value = coeffParameter;
+      param.addEventListener('change', function () {
+        coeffParameter = param.value;
+        renderCoeffPlot(data.coeffs, param.value, plotView);
+        saveState();
+      });
+      slot.querySelector('.coeff-view-btn[data-view="' + coeffView + '"]').click();
     }).catch(function () {
       var slot = document.getElementById('coeff-slot'); if (slot) slot.textContent = '';
     });
   }
   function chip(k, v) { return '<div class="chip"><span class="ck">' + k + '</span><span class="cv">' + v + '</span></div>'; }
 
+  function renderCoeffPlot(coeffs, parameter, container) {
+    var values = coeffs.filter(function (c) {
+      var focus = Number(c.focus_mm);
+      return Number.isFinite(focus) && focus <= 6 && Number.isFinite(Number(c[parameter]));
+    });
+    container.innerHTML = '';
+    if (!values.length) { container.textContent = 'No values available for this parameter.'; return; }
+
+    var width = 720, height = 300, left = 52, right = 115, top = 18, bottom = 42;
+    var plotWidth = width - left - right, plotHeight = height - top - bottom;
+    var xs = values.map(function (c) { return Number(c.focus_mm); });
+    var ys = values.map(function (c) { return Number(c[parameter]); });
+    var xMin = Math.min.apply(null, xs), xMax = Math.max.apply(null, xs);
+    var yMin = Math.min.apply(null, ys), yMax = Math.max.apply(null, ys);
+    if (xMin === xMax) { xMin -= 0.5; xMax += 0.5; }
+    if (yMin === yMax) { yMin -= 0.5; yMax += 0.5; }
+    var yPad = (yMax - yMin) * 0.08; yMin -= yPad; yMax += yPad;
+    function sx(x) { return left + (x - xMin) / (xMax - xMin) * plotWidth; }
+    function sy(y) { return top + (yMax - y) / (yMax - yMin) * plotHeight; }
+    function add(name, attrs, text) {
+      var el = document.createElementNS('http://www.w3.org/2000/svg', name);
+      Object.keys(attrs || {}).forEach(function (key) { el.setAttribute(key, attrs[key]); });
+      if (text !== undefined) el.textContent = text;
+      svg.appendChild(el); return el;
+    }
+    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', (parameter === 'coef' ? 'Coefficient' : 'FWHM') + ' by focus and band');
+    container.appendChild(svg);
+    for (var tick = 0; tick <= 4; tick += 1) {
+      var tx = left + plotWidth * tick / 4;
+      var ty = top + plotHeight * tick / 4;
+      add('line', {x1:left, y1:ty, x2:left + plotWidth, y2:ty, stroke:'var(--border)', 'stroke-width':'1'});
+      add('text', {x:tx, y:height - 20, fill:'var(--text-dim)', 'font-size':'11', 'text-anchor':'middle'}, (xMin + (xMax - xMin) * tick / 4).toFixed(1));
+      add('text', {x:left - 8, y:ty + 4, fill:'var(--text-dim)', 'font-size':'11', 'text-anchor':'end'}, (yMax - (yMax - yMin) * tick / 4).toFixed(parameter === 'coef' ? 3 : 2));
+    }
+    add('line', {x1:left, y1:top, x2:left, y2:top + plotHeight, stroke:'var(--text-dim)'});
+    add('line', {x1:left, y1:top + plotHeight, x2:left + plotWidth, y2:top + plotHeight, stroke:'var(--text-dim)'});
+    add('text', {x:left + plotWidth / 2, y:height - 4, fill:'var(--text-dim)', 'font-size':'12', 'text-anchor':'middle'}, 'Focus (mm)');
+    add('text', {x:14, y:top + plotHeight / 2, fill:'var(--text-dim)', 'font-size':'12', 'text-anchor':'middle', transform:'rotate(-90 14 ' + (top + plotHeight / 2) + ')'}, parameter === 'coef' ? 'Coefficient' : 'FWHM (pix)');
+
+    var bands = [];
+    values.forEach(function (c) { if (bands.indexOf(c.band) === -1) bands.push(c.band); });
+    bands.forEach(function (band, bandIndex) {
+      var series = values.filter(function (c) { return c.band === band; }).sort(function (a, b) { return Number(a.focus_mm) - Number(b.focus_mm); });
+      var color = BAND_COLORS[band] || ['#4f9eff', '#e0564a', '#8e44ad', '#28a98d'][bandIndex % 4];
+      add('polyline', {points:series.map(function (c) { return sx(Number(c.focus_mm)) + ',' + sy(Number(c[parameter])); }).join(' '), fill:'none', stroke:color, 'stroke-width':'2'});
+      series.forEach(function (c) { add('circle', {cx:sx(Number(c.focus_mm)), cy:sy(Number(c[parameter])), r:'3.5', fill:color}); });
+      add('circle', {cx:left + plotWidth + 18, cy:top + 14 + bandIndex * 18, r:'4', fill:color});
+      add('text', {x:left + plotWidth + 28, y:top + 18 + bandIndex * 18, fill:'var(--text-dim)', 'font-size':'11'}, band);
+    });
+  }
+
   selInst.addEventListener('change', function () { renderInstParams(this.value); });
 
   // ---- Init ----
   loadState();
+  consumeFovHandoff();
   if (selInst.value) renderInstParams(selInst.value);
 })();
 </script>

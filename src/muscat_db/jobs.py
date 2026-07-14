@@ -68,15 +68,46 @@ def run_dir_name(run_id: str) -> str:
     return rid
 
 
-def build_run_id(site: str | None, mode: str | None, run_name: str | None) -> str:
-    """Compose a run id from optional site, optional mode, and a run-name slug.
+_TELESCOPE_TOKEN_RE = re.compile(r"[^0-9a-z]+")
+
+
+def slugify_telescope(telescope: str | None) -> str:
+    """Slug a sinistro TELESCOP header value into a compact run-id/filename
+    token, e.g. ``'1m0-05'`` -> ``'tel05'``. Mirrors prose2's ``build_stem``
+    token derivation so the two stay joinable. A value already in token form
+    (e.g. ``'mixed'``) or blank passes through unchanged aside from casing,
+    since it never contains ``-`` for ``rsplit`` to act on.
+    """
+    raw = (telescope or "").strip().lower()
+    if not raw:
+        return ""
+    tail = raw.rsplit("-", 1)[-1]
+    tail = _TELESCOPE_TOKEN_RE.sub("", tail)
+    if not tail:
+        return ""
+    # Numeric unit codes (from a raw '1m0-05' header value) get the 'tel'
+    # marker so the token is unambiguous in filenames/run-ids; non-numeric
+    # values ('mixed', or an already-slugged 'tel05') pass through as-is.
+    return f"tel{tail}" if tail.isdigit() else tail
+
+
+def build_run_id(
+    site: str | None,
+    mode: str | None,
+    run_name: str | None,
+    telescope: str | None = None,
+) -> str:
+    """Compose a run id from optional site, optional telescope, optional mode,
+    and a run-name slug.
 
     Components are joined by ``-`` (the components themselves only ever contain
     ``_``, so ``-`` keeps the id readable and splittable). ``site``/``mode`` are
     blank for non-sinistro or when undetermined; ``mixed`` when the selected
     lightcurves span more than one value (mixing is allowed). Sinistro's
     ``central_2k_2x2`` readout mode is the default and is omitted; non-default
-    modes such as ``full_frame`` remain explicit.
+    modes such as ``full_frame`` remain explicit. ``telescope`` is the physical
+    LCO 1m unit (TELESCOP header, e.g. ``'1m0-05'``), slugged to ``'tel05'`` so
+    the ``-`` join/split stays unambiguous.
     """
     mode_part = (mode or "").strip().lower()
     if mode_part == "central_2k_2x2":
@@ -85,6 +116,7 @@ def build_run_id(site: str | None, mode: str | None, run_name: str | None) -> st
         p
         for p in (
             (site or "").strip().lower(),
+            slugify_telescope(telescope),
             mode_part,
             slugify_run_name(run_name),
         )
@@ -118,8 +150,9 @@ class PipelineJob:
     cancelled: bool = False
     elapsed: int | None = None
     run_type: str = "full"  # "test" | "full"
-    run_id: str = ""  # site-mode-runname slug; "" == legacy single-dir run
+    run_id: str = ""  # site-telescope-mode-runname slug; "" == legacy single-dir run
     site: str = ""
+    telescope: str = ""
     mode: str = ""
     run_name: str = ""
 

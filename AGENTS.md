@@ -18,10 +18,10 @@
 ## paths 
 * use uv run for muscat-db
 * use conda env prose when running run_photometry
-* path: /ut2/jerome/miniconda3/envs/prose
-* photometry.py depends on run_photometry.py in /ut2/jerome/github/research/project/ext_tools/prose2
-* transit_fit.py depends on timer package in /ut2/jerome/github/research/project/ext_tools/timer
-* ttv_fit.py depends on /ut2/jerome/github/research/project/ext_tools/harmonic
+* path: $HOME/miniconda3/envs/prose
+* photometry.py depends on run_photometry.py in $HOME/github/research/project/ext_tools/prose2
+* transit_fit.py depends on timer package in $HOME/github/research/project/ext_tools/timer
+* ttv_fit.py depends on $HOME/github/research/project/ext_tools/harmonic
 * do not duplicate functions between muscat-db and prose2. all photometry functions should live in prose2.
 * do not use /tmp. use $HOME/temp
 

@@ -19,7 +19,7 @@ INST = "muscat4"
 DATE = "250512"
 TARGET = "TOI-6715"
 BANDS = ["gp", "rp", "ip", "zs"]
-REAL_EXAMPLE = Path("/ut2/jerome/ql/prose/muscat4/250512")
+REAL_EXAMPLE = Path.home() / "ql" / "prose" / "muscat4" / "250512"
 
 
 def _make_outputs(base: Path) -> Path:
@@ -91,9 +91,21 @@ class TestPaths:
         assert phot.build_run_id("sinistro", "lsc", "full_frame", "default") == "lsc-full_frame-default"
         assert phot.build_run_id("muscat4", "", "", "default") == "default"
 
-    def test_raw_data_dir_uses_instrument_config(self):
-        # MUSCAT4.data_dir == /data/MuSCAT4
-        assert phot.raw_data_dir(INST, DATE) == Path("/data/MuSCAT4") / DATE
+    def test_photometry_run_id_includes_telescope(self):
+        assert (
+            phot.build_run_id("sinistro", "lsc", "central_2k_2x2", "default", telescope="1m0-05")
+            == "lsc-tel05-default"
+        )
+        assert (
+            phot.build_run_id("sinistro", "lsc", "full_frame", "default", telescope="1m0-05")
+            == "lsc-tel05-full_frame-default"
+        )
+        # Telescope is ignored (forced blank) for non-sinistro instruments.
+        assert phot.build_run_id("muscat4", "", "", "default", telescope="1m0-05") == "default"
+
+    def test_raw_data_dir_uses_common_root_and_instrument_subdir(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_DATA_DIR", str(tmp_path))
+        assert phot.raw_data_dir(INST, DATE) == tmp_path / "MuSCAT4" / DATE
 
     def test_valid_date(self):
         assert phot.valid_date("250512")
@@ -152,7 +164,7 @@ class TestListOutputs:
 
     def test_discovers_masters_for_muscat(self, prose_dir, tmp_path):
         raw_base = tmp_path / "data"
-        mdir = raw_base / f"{DATE}_calibrated"
+        mdir = raw_base / "MuSCAT" / f"{DATE}_calibrated"
         mdir.mkdir(parents=True, exist_ok=True)
         (mdir / "master_flat_gp.png").write_bytes(b"\x89PNG\r\n")
         (mdir / "master_bias.png").write_bytes(b"\x89PNG\r\n")
@@ -239,7 +251,7 @@ class TestListOutputs:
     def test_multi_site_detects_and_filters(self, monkeypatch, tmp_path):
         # A single sinistro date+target can hold two sites with identical bands.
         # list_outputs must surface both sites and show one at a time (not a
-        # newest-wins mix). Mirrors /ut2/jerome/ql/prose/sinistro/250710.
+        # newest-wins mix). Mirrors $HOME/ql/prose/sinistro/250710.
         import os
         base = tmp_path / "prose"
         base.mkdir()
@@ -276,6 +288,61 @@ class TestListOutputs:
         assert out_cpt["npz"] == "HIP67522_sinistro_cpt_250710.npz"
         assert out_cpt["bands"]["zs"]["csv"]["file"] == "HIP67522_sinistro_cpt_zs_250710.csv"
         assert phot.discovered_targets("sinistro", "250710") == ["HIP67522"]
+
+    def test_multi_telescope_detects_and_filters(self, monkeypatch, tmp_path):
+        # A single sinistro site+date can hold products from more than one
+        # physical 1m telescope (e.g. lsc has units 04, 05, 09). The telescope
+        # token sits right after the site token in the filename.
+        import os
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "250710"
+        rdir.mkdir(parents=True)
+        bands = ("gp", "zs")
+        # Write tel04 first (older), then tel05 (newer) so newest-wins would
+        # pick tel05 by default.
+        for i, tel in enumerate(("tel04", "tel05")):
+            sstem = f"HIP67522_sinistro_lsc_{tel}_250710"
+            for suf in ("_lightcurves.png", "_covariates.png", "_stacks.png"):
+                (rdir / (sstem + suf)).write_bytes(b"\x89PNG\r\n")
+            (rdir / (sstem + ".npz")).write_bytes(b"npz")
+            for b in bands:
+                bstem = f"HIP67522_sinistro_lsc_{tel}_{b}_250710"
+                (rdir / (bstem + ".csv")).write_text("BJD_TDB,Flux\n1,1\n")
+                (rdir / (bstem + "_ref.png")).write_bytes(b"\x89PNG\r\n")
+            for p in rdir.glob(f"HIP67522_sinistro_lsc_{tel}_*"):
+                os.utime(p, (1_000_000 + i, 1_000_000 + i))
+
+        out = phot.list_outputs("sinistro", "250710", "HIP67522")
+        assert out["site"] == "lsc"
+        assert out["telescopes"] == ["1m0-04", "1m0-05"]
+        assert out["telescope"] == "1m0-05"
+        assert out["npz"] == "HIP67522_sinistro_lsc_tel05_250710.npz"
+        assert out["bands"]["gp"]["csv"]["file"] == "HIP67522_sinistro_lsc_tel05_gp_250710.csv"
+
+        out_04 = phot.list_outputs("sinistro", "250710", "HIP67522", telescope="1m0-04")
+        assert out_04["telescope"] == "1m0-04"
+        assert out_04["npz"] == "HIP67522_sinistro_lsc_tel04_250710.npz"
+        assert out_04["bands"]["zs"]["csv"]["file"] == "HIP67522_sinistro_lsc_tel04_zs_250710.csv"
+
+    def test_telescope_without_site_still_classifies(self, monkeypatch, tmp_path):
+        # A telescope token can appear without a site token (prose's --telescope
+        # without --site).
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "sinistro" / "240101"
+        rdir.mkdir(parents=True)
+        (rdir / "TOI-1234_sinistro_tel09_240101_lightcurves.png").write_bytes(b"\x89PNG\r\n")
+        (rdir / "TOI-1234_sinistro_tel09_R_240101.csv").write_text("BJD_TDB,Flux\n1,1\n")
+
+        out = phot.list_outputs("sinistro", "240101", "TOI-1234")
+        assert out["site"] is None
+        assert out["telescopes"] == ["1m0-09"]
+        assert out["telescope"] == "1m0-09"
+        assert set(out["summary"]) == {"lightcurves"}
+        assert set(out["bands"]) == {"R"}
 
     def test_single_site_has_no_chips(self, monkeypatch, tmp_path):
         # One site only -> sites has a single entry so the template shows no chips.
@@ -669,6 +736,16 @@ class TestRunOptions:
         opts = phot.normalize_run_options({"bands": ["gp"], "avoid_nearby_stars": True, "avoid_nearby_star": "4.5"})
         assert opts["avoid_nearby_star_mode"] == "custom"
 
+    def test_centroid_method_default_not_echoed(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        cmd = phot.build_command(INST, DATE, TARGET, {}, test_run=False)
+        assert "--centroid_method" not in cmd
+
+    def test_centroid_method_non_default_is_emitted(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        cmd = phot.build_command(INST, DATE, TARGET, {"centroid_method": "com"}, test_run=False)
+        assert "--centroid_method com" in " ".join(cmd)
+
     def test_validate_requires_band(self):
         assert phot.validate_run_options(phot.normalize_run_options({"bands": []}))
 
@@ -691,6 +768,19 @@ class TestRunOptions:
             phot.normalize_run_options({"bands": ["gp"], "nan_imputation_method": "bogus"})
         )
         assert err and "nan imputation method" in err.lower()
+
+    def test_validate_rejects_unknown_centroid_method(self):
+        err = phot.validate_run_options(
+            phot.normalize_run_options({"bands": ["gp"], "centroid_method": "bogus"})
+        )
+        assert err and "centroid method" in err.lower()
+
+    def test_validate_accepts_known_centroid_methods(self):
+        for method in phot.CENTROID_METHODS:
+            err = phot.validate_run_options(
+                phot.normalize_run_options({"bands": ["gp"], "centroid_method": method})
+            )
+            assert err is None
 
     def test_validate_rejects_reference_band_not_selected(self):
         err = phot.validate_run_options(
@@ -768,7 +858,7 @@ class TestStartRun:
         from dataclasses import replace
         from muscat_db.instruments import INSTRUMENTS
         patched = dict(INSTRUMENTS)
-        patched[INST] = replace(INSTRUMENTS[INST], data_dir=str(tmp_path / "raw"))
+        patched[INST] = replace(INSTRUMENTS[INST], data_subdir=str(tmp_path / "raw"))
         monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
         r = phot.start_run(INST, DATE, TARGET)
         assert r["ok"] is False
@@ -791,7 +881,7 @@ class TestStartRun:
         stale_png.write_bytes(b"old")
 
         patched = dict(INSTRUMENTS)
-        patched[INST] = replace(INSTRUMENTS[INST], data_dir=str(raw_root))
+        patched[INST] = replace(INSTRUMENTS[INST], data_subdir=str(raw_root))
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(out_root))
         monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
         monkeypatch.setattr(phot.subprocess, "Popen", lambda *_a, **_k: pytest.fail("pipeline should not launch"))
@@ -844,7 +934,7 @@ class TestStartRun:
         other_target.write_text("keep\n")
 
         patched = dict(INSTRUMENTS)
-        patched[INST] = replace(INSTRUMENTS[INST], data_dir=str(raw_root))
+        patched[INST] = replace(INSTRUMENTS[INST], data_subdir=str(raw_root))
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(out_root))
         monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
         monkeypatch.setattr(phot, "get_job_store", lambda: Store())
@@ -897,7 +987,7 @@ class TestStartRun:
         (raw_root / DATE).mkdir(parents=True)
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path / "out"))
         patched = dict(INSTRUMENTS)
-        patched[INST] = replace(INSTRUMENTS[INST], data_dir=str(raw_root))
+        patched[INST] = replace(INSTRUMENTS[INST], data_subdir=str(raw_root))
         monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
         monkeypatch.setattr(phot, "_count_running_full", lambda: 1)
         monkeypatch.setattr(phot, "get_job_store", lambda: NoQueueStore())
@@ -1082,7 +1172,7 @@ class TestStartRun:
         raw = tmp_path / "raw" / DATE
         raw.mkdir(parents=True)
         patched = dict(_INST)
-        patched[INST] = replace(_INST[INST], data_dir=str(tmp_path / "raw"))
+        patched[INST] = replace(_INST[INST], data_subdir=str(tmp_path / "raw"))
         monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
 
         # Replace build_command so the "pipeline" is just `sleep 60`.
@@ -1355,7 +1445,7 @@ class TestRoutes:
     def test_file_route_serves_master_calibration(self, client, tmp_path, monkeypatch):
         raw_base = tmp_path / "data"
         monkeypatch.setenv("MUSCAT_DATA_DIR", str(raw_base))
-        mdir = raw_base / f"{DATE}_calibrated"
+        mdir = raw_base / "MuSCAT" / f"{DATE}_calibrated"
         mdir.mkdir(parents=True, exist_ok=True)
         (mdir / "master_bias.png").write_bytes(b"\x89PNG\r\n")
 
@@ -1391,6 +1481,23 @@ class TestRoutes:
         r = client.post("/api/photometry/status-batch", json={"jobs": "not_a_list"})
         assert r.status_code == 400
         assert "must be a list" in r.json()["error"]
+
+    def test_status_batch_route_rejects_oversized_batch(self, client):
+        r = client.post("/api/photometry/status-batch", json={"jobs": [{}] * 101})
+        assert r.status_code == 400
+        assert "at most 100" in r.json()["error"]
+
+    def test_status_batch_route_handles_non_object_entry(self, client):
+        r = client.post("/api/photometry/status-batch", json={"jobs": [None]})
+        assert r.status_code == 200
+        assert r.json()["jobs"] == [{"error": "each job must be an object"}]
+
+    def test_status_batch_route_rejects_long_fields(self, client):
+        r = client.post("/api/photometry/status-batch", json={
+            "jobs": [{"inst": INST, "date": DATE, "target": "x" * 257}],
+        })
+        assert r.status_code == 200
+        assert r.json()["jobs"] == [{"error": "job fields are too long"}]
 
     def test_status_batch_route_missing_fields(self, client):
         r = client.post("/api/photometry/status-batch", json={
@@ -1477,6 +1584,28 @@ class TestRoutes:
         # one mode -> Mode dropdown hidden; full_frame never offered
         assert 'id="opt-mode"' not in html
         assert 'value="full_frame"' not in html
+
+    def test_photometry_url_filter_seeds_sinistro_option(self, client, tmp_path):
+        """A Sinistro telescope selected in the URL remains selected after reload."""
+        import sqlite3
+        conn = sqlite3.connect(tmp_path / "muscat.db")
+        conn.executemany(
+            """INSERT INTO frames (instrument, obsdate, ccd, filename, object, read_mode)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [
+                ("sinistro", "250710", 0, "lsc1m005-fa15-20250710-0082-e91", "HIP67522", "central_2k_2x2"),
+                ("sinistro", "250710", 0, "lsc1m009-fa15-20250710-0083-e91", "HIP67522", "central_2k_2x2"),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        r = client.get(
+            "/photometry?inst=sinistro&date=250710&target=HIP67522"
+            "&site=lsc&telescope=1m0-05&mode=central_2k_2x2"
+        )
+        assert r.status_code == 200
+        assert '<option value="1m0-05" selected>1m0-05</option>' in r.text
 
     def _insert_two_sites(self, tmp_path):
         import sqlite3
@@ -1690,16 +1819,36 @@ class TestRoutes:
         r = client.get("/api/transit-fit/file/muscat3/250717/evil..target/timer-fit.log")
         assert r.status_code == 400
 
+    @pytest.mark.parametrize("filename", ["fit.yaml", "sys.yaml"])
+    def test_transit_fit_yaml_opens_as_plain_text(self, client, monkeypatch, tmp_path, filename):
+        """Fit configuration links are for inspection; only explicit download links save files."""
+        monkeypatch.setenv("MUSCAT_TIMER_DIR", str(tmp_path))
+        rdir = tmp_path / "muscat3" / "250717" / "TOI-1234" / "lsc-default"
+        rdir.mkdir(parents=True)
+        (rdir / filename).write_text("key: value\n")
+
+        response = client.get(
+            f"/api/transit-fit/file/muscat3/250717/TOI-1234/run/lsc-default/{filename}"
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/plain")
+        assert "attachment" not in (response.headers.get("content-disposition") or "")
+
     def test_transit_fit_log_rejects_bad_target(self, client):
         r = client.get("/api/jobs/log/transit_fit/muscat3/250717/evil..target")
         assert r.status_code == 404
 
     def test_transit_fit_query_archive_success(self, client, mocker):
-        mock_response = mocker.MagicMock()
-        mock_response.__enter__.return_value = mock_response
-        mock_response.read.return_value = b'[{"pl_name": "WASP-104 b", "st_teff": 5475.0, "st_tefferr1": 127.0, "st_tefferr2": -127.0}]'
-        mocker.patch("urllib.request.urlopen", return_value=mock_response)
-        
+        import httpx
+
+        mock_response = httpx.Response(
+            200,
+            content=b'[{"pl_name": "WASP-104 b", "st_teff": 5475.0, "st_tefferr1": 127.0, "st_tefferr2": -127.0}]',
+            request=httpx.Request("GET", "https://example.invalid"),
+        )
+        mocker.patch("muscat_db.web._async_get", return_value=mock_response)
+
         r = client.get("/api/transit-fit/query-archive?target=WASP-104")
         assert r.status_code == 200
         data = r.json()
@@ -1708,18 +1857,16 @@ class TestRoutes:
         assert data["params"]["teff"] == 5475.0
 
     def test_transit_fit_query_archive_escapes_adql_literals(self, client, mocker):
+        import httpx
+
         seen_queries = []
 
-        def side_effect(req, *args, **kwargs):
+        async def side_effect(url, **kwargs):
             from urllib.parse import parse_qs, urlparse
-            url_str = req.get_full_url() if hasattr(req, "get_full_url") else str(req)
-            seen_queries.append(parse_qs(urlparse(url_str).query).get("query", [""])[0])
-            mock_resp = mocker.MagicMock()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_resp.read.return_value = b"[]"
-            return mock_resp
+            seen_queries.append(parse_qs(urlparse(url).query).get("query", [""])[0])
+            return httpx.Response(200, content=b"[]", request=httpx.Request("GET", url))
 
-        mocker.patch("urllib.request.urlopen", side_effect=side_effect)
+        mocker.patch("muscat_db.web._async_get", side_effect=side_effect)
 
         r = client.get("/api/transit-fit/query-archive", params={"target": "WASP-104' OR 'x'='x"})
         assert r.status_code == 200
@@ -1727,18 +1874,16 @@ class TestRoutes:
         assert "WASP-104'' OR ''x''=''x" in seen_queries[0]
 
     def test_transit_fit_query_archive_escapes_toi_literals(self, client, mocker):
+        import httpx
+
         seen_queries = []
 
-        def side_effect(req, *args, **kwargs):
+        async def side_effect(url, **kwargs):
             from urllib.parse import parse_qs, urlparse
-            url_str = req.get_full_url() if hasattr(req, "get_full_url") else str(req)
-            seen_queries.append(parse_qs(urlparse(url_str).query).get("query", [""])[0])
-            mock_resp = mocker.MagicMock()
-            mock_resp.__enter__.return_value = mock_resp
-            mock_resp.read.return_value = b"[]"
-            return mock_resp
+            seen_queries.append(parse_qs(urlparse(url).query).get("query", [""])[0])
+            return httpx.Response(200, content=b"[]", request=httpx.Request("GET", url))
 
-        mocker.patch("urllib.request.urlopen", side_effect=side_effect)
+        mocker.patch("muscat_db.web._async_get", side_effect=side_effect)
 
         r = client.get("/api/transit-fit/query-archive", params={"target": "TOI' OR '1'='1", "source": "toi"})
         assert r.status_code == 200
@@ -1746,24 +1891,23 @@ class TestRoutes:
         assert "TOI'' OR ''1''=''1" in seen_queries[0]
 
     def test_transit_fit_query_archive_hip_target(self, client, mocker):
+        import httpx
+
         hip_data = b'[{"pl_name": "HIP 67522 b", "hostname": "HIP 67522", "hip_name": "HIP 67522", "st_teff": 5675.0, "st_tefferr1": 75.0, "st_tefferr2": -75.0, "st_logg": 4.0, "st_loggerr1": null, "st_loggerr2": null, "st_met": 0.0, "st_meterr1": null, "st_meterr2": null, "pl_orbper": 6.9594731, "pl_orbpererr1": 2.2e-06, "pl_orbpererr2": -2.2e-06, "pl_tranmid": 2458604.02376, "pl_tranmiderr1": 0.00033, "pl_tranmiderr2": -0.00032, "pl_trandur": 4.85, "pl_trandurerr1": 1.13, "pl_trandurerr2": -0.36, "pl_ratror": 0.06644, "pl_ratrorerr1": 0.0015, "pl_ratrorerr2": -0.0014, "pl_imppar": 0.03, "pl_impparerr1": 0.19, "pl_impparerr2": -0.22, "st_teff_reflink": "", "pl_orbper_reflink": ""}]'
 
         seen_urls = []
 
-        def side_effect(req, *args, **kwargs):
+        async def side_effect(url, **kwargs):
             from urllib.parse import urlparse, parse_qs
-            url_str = req.get_full_url() if hasattr(req, 'get_full_url') else str(req)
-            q = parse_qs(urlparse(url_str).query).get("query", [""])[0]
+            q = parse_qs(urlparse(url).query).get("query", [""])[0]
             seen_urls.append(q)
-            mock_resp = mocker.MagicMock()
-            mock_resp.__enter__.return_value = mock_resp
             if "hip_name = 'HIP 67522'" in q or "hostname = 'HIP 67522'" in q:
-                mock_resp.read.return_value = hip_data
+                content = hip_data
             else:
-                mock_resp.read.return_value = b'[]'
-            return mock_resp
+                content = b'[]'
+            return httpx.Response(200, content=content, request=httpx.Request("GET", url))
 
-        mocker.patch("urllib.request.urlopen", side_effect=side_effect)
+        mocker.patch("muscat_db.web._async_get", side_effect=side_effect)
 
         r = client.get("/api/transit-fit/query-archive?target=HIP67522")
         assert r.status_code == 200
@@ -2022,9 +2166,20 @@ class TestRoutes:
         assert _normalize_target_name("V1298Tau") == "V1298TAU"
         assert _normalize_target_name("V1298Tau_b") == "V1298TAU"
         assert _normalize_target_name("V1298Tauc") == "V1298TAU"
-        assert _normalize_target_name("TOI02016.03") == "TOI02016"
+        assert _normalize_target_name("TOI02016.03") == "TOI2016"
         assert _normalize_target_name("TOI-4600") == "TOI4600"
+        assert _normalize_target_name("TOI-6109") == "TOI6109"
+        assert _normalize_target_name("TOI06109.01") == "TOI6109"
+        assert _normalize_target_name("TOI06109.02") == "TOI6109"
+        assert _normalize_target_name("TOI 06109 b") == "TOI6109"
         assert _normalize_target_name("HIP 67522") == "HIP67522"
+
+    def test_target_name_normalization_does_not_reinterpret_malformed_tois(self):
+        from muscat_db.web import _normalize_target_name
+
+        assert _normalize_target_name("TOI06209-01") == "TOI0620901"
+        assert _normalize_target_name("TOI2106.01--exp0") == "TOI2106.01EXP0"
+        assert _normalize_target_name("TOI3915TRACK") == "TOI3915TRACK"
 
 
 class TestTransitFitJobs:
@@ -2167,7 +2322,7 @@ class TestTransitFitOptions:
 @pytest.mark.skipif(not REAL_EXAMPLE.is_dir(), reason="example output not mounted")
 class TestRealExample:
     def test_real_outputs_classified(self):
-        # Uses the default MUSCAT_PROSE_DIR (/ut2/jerome/ql/prose).
+        # Uses the default MUSCAT_PROSE_DIR ($HOME/ql/prose).
         os.environ.pop("MUSCAT_PROSE_DIR", None)
         out = phot.list_outputs(INST, DATE, TARGET)
         assert out["has_any"]

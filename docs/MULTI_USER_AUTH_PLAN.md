@@ -205,7 +205,7 @@ Concurrency:    per-user _MAX_FULL_JOBS (each user gets their own slot)
 
 ## nginx Deployment
 
-The server is expected to run inside the existing `muscatdb-gui` tmux session.
+The server is expected to run inside the existing `muscatdbgui` tmux session.
 nginx runs as a system service independent of the tmux session.
 
 ### Files

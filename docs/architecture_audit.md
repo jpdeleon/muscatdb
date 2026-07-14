@@ -13,7 +13,7 @@ This audit reveals three interconnected architectural debts in the application l
 **Layered structure (data flows top→bottom):**
 
 ```
-Obslog CSVs (/ut3/muscat/obslog, shared mount)
+Obslog CSVs (`$MUSCAT_OBSLOG_DIR`, shared mount in multi-host deployments)
         │  daily cronjob → database.build_db()  (atomic tmp-file rebuild)
         ▼
 muscat.db (SQLite, WAL)   tables: frames → summaries → targets (materialized), 
@@ -24,7 +24,7 @@ FastAPI app  (src/muscat_db/web.py, 3202 lines)  ── Jinja2 server-rendered t
         │                         │
         ├── photometry.py (2050)  └── transit_fit.py (~2150)   ── launch external pipelines as background subprocesses
         │        ▼                          ▼
-        │   prose2 (conda env "prose")   timer pkg            ── write product files to /ut2/jerome/ql/prose/<inst>/<date>/
+        │   prose2 (conda env "prose")   timer pkg            ── write product files to $HOME/ql/prose/<inst>/<date>/
         ▼
 Browser: vanilla JS embedded in templates, polls /…/status every 2s
 ```
@@ -151,7 +151,7 @@ This means **the exact freeze-mid-output bug that CLAUDE.md describes and photom
 
 **Files affected:**
 - `src/muscat_db/photometry.py` (lines 386-650)
-- Depends on prose2 naming in `/ut2/jerome/ql/prose/<inst>/<date>/`
+- Depends on prose2 naming in `$HOME/ql/prose/<inst>/<date>/`
 
 **Recommendation:** Have prose2 emit a small manifest sidecar (e.g., `<stem>_products.json`) enumerating its outputs and metadata. MuSCAT-DB reads the manifest. Since CLAUDE.md mandates "all photometry functions live in prose2," the manifest writer belongs there and the schema becomes the shared contract.
 

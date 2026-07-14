@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import os
 import sqlite3
 import tempfile
@@ -8,6 +7,7 @@ import getpass
 import zipfile
 import pytest
 from fastapi.testclient import TestClient
+from starlette.responses import Response
 
 from muscat_db.database import save_job, get_persisted_jobs
 from muscat_db.web import app, _annotate_lco_archive_results
@@ -106,6 +106,22 @@ def test_jobs_status_response_counts_and_started_at(mock_db, monkeypatch):
             
     assert user1_found
     assert default_user_found
+
+
+def test_ttv_output_file_rejects_paths_outside_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path / "ttv"))
+    secret = tmp_path / "secret.txt"
+    secret.write_text("server secret")
+    run_dir = tmp_path / "ttv" / "TOI123" / "_runs" / "default"
+    run_dir.mkdir(parents=True)
+
+    response = TestClient(app).get(
+        "/api/ttv-fit/output-file",
+        params={"target": "TOI123", "file": str(secret)},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "invalid filename"
 
 
 def test_jobs_status_elapsed_uses_latest_rerun_started_at(mock_db, monkeypatch):
@@ -421,15 +437,15 @@ def test_target_detail_has_lco_schedule_and_archive_buttons(mock_db, monkeypatch
     assert 'href="/lco/archive?target=V1298TAU"' in html
     assert (
         '<a href="https://exoplanetarchive.ipac.caltech.edu/overview/V1298TAU" '
-        'target="_blank" rel="noopener">NASA Archive ↗</a>'
+        'target="_blank" rel="noopener">NASA Archive</a>'
     ) in html
     assert (
         '<a href="https://exofop.ipac.caltech.edu/tess/target.php?id=12345" '
-        'target="_blank" rel="noopener">ExoFOP-TESS ↗</a>'
+        'target="_blank" rel="noopener">ExoFOP-TESS</a>'
     ) in html
     assert (
         '<a href="https://tess.cuikaiming.com/12345" '
-        'target="_blank" rel="noopener">TESS Viewer ↗</a>'
+        'target="_blank" rel="noopener">TESS Viewer</a>'
     ) in html
     assert 'then save your token in <a href="/settings">Settings</a>.' in html
     assert "then set the token as" not in html
@@ -642,6 +658,54 @@ def test_validate_no_duplicate_datasets():
     assert err2 is not None
     assert "Multiple lightcurves selected for the same dataset: band 'g' (site: cpt)" in err2
 
+
+def _insert_frame(conn, filename, obsdate="260101", target="TOI-1", read_mode="central_2k_2x2"):
+    conn.execute(
+        "INSERT INTO frames (instrument, obsdate, ccd, filename, object, jd_start, ut_start, "
+        "exptime, read_mode, filter, ra, declination, airmass, focus, pa) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("sinistro", obsdate, 0, filename, target, 0.0, "00:00:00", 30.0, read_mode, "gp", "", "", 1.0, 0.0, 0.0),
+    )
+
+
+def test_sinistro_obslog_choices_derives_sites_and_telescopes(mock_db):
+    from muscat_db.web import _sinistro_obslog_choices
+
+    conn = sqlite3.connect(mock_db)
+    _insert_frame(conn, "lsc1m005-fa15-20260101-0001-e91")
+    _insert_frame(conn, "lsc1m009-fa15-20260101-0002-e91")
+    _insert_frame(conn, "cpt1m010-fa16-20260101-0003-e91")
+    conn.commit()
+    conn.close()
+
+    sites, telescopes, modes = _sinistro_obslog_choices(mock_db, "sinistro", "260101", "TOI-1")
+    assert sites == ["cpt", "lsc"]
+    assert telescopes == ["1m0-05", "1m0-09", "1m0-10"]
+    assert modes == ["central_2k_2x2"]
+
+    # Scoped to site="lsc": only lsc's own two telescopes, not cpt's.
+    _sites, lsc_telescopes, _modes = _sinistro_obslog_choices(mock_db, "sinistro", "260101", "TOI-1", site="lsc")
+    assert lsc_telescopes == ["1m0-05", "1m0-09"]
+
+
+def test_telescope_required_error_blocks_ambiguous_selection(mock_db):
+    from muscat_db.web import _telescope_required_error
+
+    conn = sqlite3.connect(mock_db)
+    _insert_frame(conn, "lsc1m005-fa15-20260101-0001-e91")
+    _insert_frame(conn, "lsc1m009-fa15-20260101-0002-e91")
+    conn.commit()
+    conn.close()
+
+    err = _telescope_required_error(mock_db, "sinistro", "260101", "TOI-1", {"site": "lsc"})
+    assert err is not None
+    assert "telescope" in err and "1m0-05" in err and "1m0-09" in err
+
+    ok = _telescope_required_error(mock_db, "sinistro", "260101", "TOI-1", {"site": "lsc", "telescope": "1m0-05"})
+    assert ok is None
+
+    # Non-sinistro instruments are never blocked.
+    assert _telescope_required_error(mock_db, "muscat4", "260101", "TOI-1", {}) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -1374,7 +1438,7 @@ def _boyle_cat_data(tics):
 
 
 def test_merge_boyle_columns_joins_by_tic_id(monkeypatch):
-    from muscat_db import web
+    from muscat_db import catalog, web
     cols = {k: [] for k, _ in web._BOYLE_COLUMNS}
     cols["ruwe"] = [1.5, 2.5]
     cols["non_single_star"] = [0, 1]
@@ -1389,7 +1453,10 @@ def test_merge_boyle_columns_joins_by_tic_id(monkeypatch):
     cols["median_amplitude"] = [0.94, 1.7]
     cols["sectors"] = ["38,65", "1,2"]
     cols["sector_periods"] = ["3.25,3.28", "9.9,9.8"]
-    monkeypatch.setattr(web, "_load_boyle_catalog", lambda: (cols, {358: 0, 529: 1}))
+    # _merge_boyle_columns now lives in muscat_db.catalog and reads
+    # _load_boyle_catalog from that module's own globals, so the monkeypatch
+    # must target catalog, not the web.py alias.
+    monkeypatch.setattr(catalog, "_load_boyle_catalog", lambda: (cols, {358: 0, 529: 1}))
 
     merged, n = web._merge_boyle_columns(_boyle_cat_data(["358", "999", "TIC 529"]))
     assert n == 2
@@ -1400,8 +1467,8 @@ def test_merge_boyle_columns_joins_by_tic_id(monkeypatch):
 
 
 def test_merge_boyle_columns_degrades_without_catalog(monkeypatch, tmp_path):
-    from muscat_db import web
-    monkeypatch.setattr(web, "_BOYLE_PATH", tmp_path / "missing.feather")
+    from muscat_db import catalog, web
+    monkeypatch.setattr(catalog, "_BOYLE_PATH", tmp_path / "missing.feather")
     web._boyle_cache.clear()
     merged, n = web._merge_boyle_columns(_boyle_cat_data(["358", ""]))
     assert n == 0
@@ -1410,9 +1477,9 @@ def test_merge_boyle_columns_degrades_without_catalog(monkeypatch, tmp_path):
 
 
 def test_harps_coord_membership_matches_by_coordinate(monkeypatch):
-    from muscat_db import web
-    monkeypatch.setattr(web, "_HARPS_MATCH_ARCSEC", 5.0)
-    monkeypatch.setattr(web, "_load_harps_coords", lambda: ([(10.0, -20.0)], "2026-07-08"))
+    from muscat_db import catalog, web
+    monkeypatch.setattr(catalog, "_HARPS_MATCH_ARCSEC", 5.0)
+    monkeypatch.setattr(catalog, "_load_harps_coords", lambda: ([(10.0, -20.0)], "2026-07-08"))
     flags, n = web._harps_coord_membership({
         "ra": [10.0, 10.01, None],
         "dec": [-20.0, -20.0, -20.0],
@@ -1422,7 +1489,7 @@ def test_harps_coord_membership_matches_by_coordinate(monkeypatch):
 
 
 def test_harps_rvbank_rows_read_from_local_zip(monkeypatch, tmp_path):
-    from muscat_db import web
+    from muscat_db import catalog, web
     csv_text = (
         "target,ra,dec,BJD,RV_mlc_nzp\n"
         "HD209458,330.794883,18.884319,2451000.123456789,-2.5000001\n"
@@ -1432,12 +1499,12 @@ def test_harps_rvbank_rows_read_from_local_zip(monkeypatch, tmp_path):
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.writestr("HARPS_RVBank_ver02.csv", csv_text)
 
-    monkeypatch.setattr(web, "_HARPS_RVBANK_PATH", tmp_path / "missing.csv")
-    monkeypatch.setattr(web, "_HARPS_RVBANK_ZIP_PATH", zip_path)
-    monkeypatch.setattr(web, "_HARPS_TARGETS_PATH", tmp_path / "missing_targets.csv")
+    monkeypatch.setattr(catalog, "_HARPS_RVBANK_PATH", tmp_path / "missing.csv")
+    monkeypatch.setattr(catalog, "_HARPS_RVBANK_ZIP_PATH", zip_path)
+    monkeypatch.setattr(catalog, "_HARPS_TARGETS_PATH", tmp_path / "missing_targets.csv")
     web._harps_cache.clear()
 
-    res = web._query_harps_rvbank_rows(
+    res = catalog._query_harps_rvbank_rows(
         coords=[],
         matching_targets=[{"target": "HD209458", "ra": 330.794883, "dec": 18.884319, "n_rv": 1}],
         max_rows=10,
@@ -1450,27 +1517,25 @@ def test_harps_rvbank_rows_read_from_local_zip(monkeypatch, tmp_path):
 
 
 def test_harps_rvbank_rows_fall_back_to_online_stream(monkeypatch, tmp_path):
-    from muscat_db import web
-
-    class FakeResponse(io.BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            self.close()
+    import httpx
+    from muscat_db import catalog, web
 
     csv_text = (
         "target,ra,dec,BJD,RV_mlc_nzp\n"
         "HD209458,330.794883,18.884319,2451000.5,-3.25\n"
     )
-    monkeypatch.setattr(web, "_HARPS_RVBANK_PATH", tmp_path / "missing.csv")
-    monkeypatch.setattr(web, "_HARPS_RVBANK_ZIP_PATH", tmp_path / "missing.csv.zip")
-    monkeypatch.setattr(web, "_HARPS_TARGETS_PATH", tmp_path / "missing_targets.csv")
-    monkeypatch.setattr(web, "_HARPS_RVBANK_URL", "https://example.invalid/HARPS_RVBank_ver02.csv")
-    monkeypatch.setattr(web, "urlopen", lambda req, timeout: FakeResponse(csv_text.encode("utf-8")))
+    monkeypatch.setattr(catalog, "_HARPS_RVBANK_PATH", tmp_path / "missing.csv")
+    monkeypatch.setattr(catalog, "_HARPS_RVBANK_ZIP_PATH", tmp_path / "missing.csv.zip")
+    monkeypatch.setattr(catalog, "_HARPS_TARGETS_PATH", tmp_path / "missing_targets.csv")
+    monkeypatch.setattr(catalog, "_HARPS_RVBANK_URL", "https://example.invalid/HARPS_RVBank_ver02.csv")
+    monkeypatch.setattr(
+        catalog,
+        "_sync_get",
+        lambda url, **kw: httpx.Response(200, text=csv_text, request=httpx.Request("GET", url)),
+    )
     web._harps_cache.clear()
 
-    res = web._query_harps_rvbank_rows(
+    res = catalog._query_harps_rvbank_rows(
         coords=[(330.794883, 18.884319)],
         matching_targets=[],
         max_rows=10,
@@ -1483,16 +1548,16 @@ def test_harps_rvbank_rows_fall_back_to_online_stream(monkeypatch, tmp_path):
 
 
 def test_harps_target_lookup_uses_toi_catalog_coords_after_db_miss(monkeypatch):
-    from muscat_db import web
+    from muscat_db import catalog, web
 
-    monkeypatch.setattr(web, "_HARPS_MATCH_ARCSEC", 5.0)
+    monkeypatch.setattr(catalog, "_HARPS_MATCH_ARCSEC", 5.0)
     monkeypatch.setattr(
-        web,
+        catalog,
         "_load_harps_targets",
         lambda: ([{"target": "GJ3473", "ra": 120.592808, "dec": 3.33695, "n_rv": 32}], "2026-07-08"),
     )
     monkeypatch.setattr(
-        web,
+        catalog,
         "_load_toi_catalog",
         lambda: {
             "data": {
@@ -1507,7 +1572,7 @@ def test_harps_target_lookup_uses_toi_catalog_coords_after_db_miss(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        web,
+        catalog,
         "_load_nexsci_catalog",
         lambda: {"data": _nexsci_cat_data([], [], []), "n": 0, "updated": "2026-07-01"},
     )
@@ -1528,7 +1593,7 @@ def test_harps_target_lookup_uses_toi_catalog_coords_after_db_miss(monkeypatch):
             "error": "",
         }
 
-    monkeypatch.setattr(web, "_query_harps_rvbank_rows", fake_query)
+    monkeypatch.setattr(catalog, "_query_harps_rvbank_rows", fake_query)
 
     result = web._harps_data_for_target(
         [{"ra": "8:03:21", "dec": "+3:20:46"}],
@@ -1541,12 +1606,12 @@ def test_harps_target_lookup_uses_toi_catalog_coords_after_db_miss(monkeypatch):
 
 
 def test_nasa_confirmed_toi_membership_matches_tic_and_period(monkeypatch):
-    from muscat_db import web
+    from muscat_db import catalog, web
 
-    monkeypatch.setattr(web, "_TOI_CONFIRMED_PERIOD_REL_TOL", 0.01)
-    monkeypatch.setattr(web, "_TOI_CONFIRMED_PERIOD_ABS_TOL_D", 0.001)
+    monkeypatch.setattr(catalog, "_TOI_CONFIRMED_PERIOD_REL_TOL", 0.01)
+    monkeypatch.setattr(catalog, "_TOI_CONFIRMED_PERIOD_ABS_TOL_D", 0.001)
     monkeypatch.setattr(
-        web,
+        catalog,
         "_load_nexsci_catalog",
         lambda: {
             "data": {
@@ -1572,15 +1637,15 @@ def test_nasa_confirmed_toi_membership_matches_tic_and_period(monkeypatch):
 
 
 def test_toi_page_includes_boyle_payload(monkeypatch):
-    from muscat_db import web
+    from muscat_db import catalog, web
     cols = {k: [None] for k, _ in web._BOYLE_COLUMNS}
     cols["ruwe"] = [1.01]
     cols["sectors"] = ["38,65"]
     cols["sector_periods"] = ["2.19,2.19"]
-    monkeypatch.setattr(web, "_load_boyle_catalog", lambda: (cols, {50365310: 0}))
-    monkeypatch.setattr(web, "_load_harps_coords", lambda: ([(10.0, -20.0)], "2026-07-08"))
+    monkeypatch.setattr(catalog, "_load_boyle_catalog", lambda: (cols, {50365310: 0}))
+    monkeypatch.setattr(catalog, "_load_harps_coords", lambda: ([(10.0, -20.0)], "2026-07-08"))
     monkeypatch.setattr(
-        web,
+        catalog,
         "_load_nexsci_catalog",
         lambda: {
             "data": {
@@ -1647,7 +1712,7 @@ def _nexsci_cat_data(names, hosts, tics):
 
 
 def test_nexsci_page_renders_with_payload_and_archive_link(mock_db, monkeypatch):
-    from muscat_db import web
+    from muscat_db import catalog, web
     web._toi_db_cache.clear()
     data = _nexsci_cat_data(
         ["TOI-2000 b", "Kepler-999 b"],
@@ -1659,7 +1724,10 @@ def test_nexsci_page_renders_with_payload_and_archive_link(mock_db, monkeypatch)
     data["period"] = [3.1, 400.0]
     data["ra"] = [20.0, 30.0]
     data["dec"] = [-10.0, -5.0]
-    monkeypatch.setattr(web, "_load_harps_coords", lambda: ([(20.0, -10.0)], "2026-07-08"))
+    # nexsci_page() calls _harps_coord_membership() directly (which now lives
+    # in muscat_db.catalog and reads _load_harps_coords from that module's own
+    # globals), so this monkeypatch must target catalog, not the web.py alias.
+    monkeypatch.setattr(catalog, "_load_harps_coords", lambda: ([(20.0, -10.0)], "2026-07-08"))
     monkeypatch.setattr(web, "_load_spectra_targets", lambda: {"TOI-2000 b"})
     monkeypatch.setattr(
         web, "_load_nexsci_catalog", lambda: {"data": data, "n": 2, "updated": "2026-07-05"}
@@ -1868,18 +1936,18 @@ def test_api_target_publications_token_missing(monkeypatch):
 
 
 def test_api_target_publications_success(monkeypatch, mocker):
+    import httpx
+
     monkeypatch.setenv("ADS_API_TOKEN", "fake_token")
-    
-    mock_response = mocker.MagicMock()
-    mock_response.__enter__.return_value = mock_response
-    mock_response.read.return_value = b'{"response": {"docs": [{"bibcode": "2020ApJ...123..456A", "title": ["A Great Paper"], "author": ["Astronomer, A."], "pubdate": "2020-01-00", "pub": "ApJ", "citation_count": 10}]}}'
-    mock_urlopen = mocker.patch("urllib.request.urlopen", return_value=mock_response)
-    
+
+    mock_content = b'{"response": {"docs": [{"bibcode": "2020ApJ...123..456A", "title": ["A Great Paper"], "author": ["Astronomer, A."], "pubdate": "2020-01-00", "pub": "ApJ", "citation_count": 10}]}}'
+    mock_response = httpx.Response(200, content=mock_content, request=httpx.Request("GET", "https://example.invalid"))
+    mock_async_get = mocker.patch("muscat_db.web._async_get", return_value=mock_response)
+
     r = TestClient(app).get("/api/targets/publications", params={"q": "WASP-12"})
     assert r.status_code == 200
-    
-    called_req = mock_urlopen.call_args[0][0]
-    called_url = called_req.get_full_url() if hasattr(called_req, "get_full_url") else str(called_req)
+
+    called_url = mock_async_get.call_args[0][0]
     assert "fq=collection%3Aastronomy" in called_url
     assert "q=WASP-12" in called_url
 
@@ -1903,16 +1971,16 @@ def test_api_target_publications_uses_saved_ads_token(mock_db, monkeypatch, mock
     saved = client.post("/api/settings/ads-token", headers=post_headers, json={"token": "alice-ads-token"})
     assert saved.status_code == 200
 
-    mock_response = mocker.MagicMock()
-    mock_response.__enter__.return_value = mock_response
-    mock_response.read.return_value = b'{"response": {"docs": []}}'
-    mock_urlopen = mocker.patch("urllib.request.urlopen", return_value=mock_response)
+    import httpx
+
+    mock_response = httpx.Response(200, content=b'{"response": {"docs": []}}', request=httpx.Request("GET", "https://example.invalid"))
+    mock_async_get = mocker.patch("muscat_db.web._async_get", return_value=mock_response)
 
     r = client.get("/api/targets/publications", headers=headers, params={"q": "WASP-12"})
 
     assert r.status_code == 200
-    called_req = mock_urlopen.call_args[0][0]
-    assert called_req.headers["Authorization"] == "Bearer alice-ads-token"
+    called_headers = mock_async_get.call_args.kwargs["headers"]
+    assert called_headers["Authorization"] == "Bearer alice-ads-token"
     assert "alice-ads-token" not in r.text
 
 
@@ -1939,14 +2007,14 @@ def test_api_ads_config_not_configured(monkeypatch):
 
 
 def test_api_target_jwst(mocker):
+    import httpx
+
     mock_csv = (
         b"program,observation_num,instrument,observingmode,gratinggrism,event,status,starttime,observation_dur\n"
         b'"COM 2734",2,"NIRISS","SOSS","N/A","Transit","Archived","Jun 21, 2022 02:41:18",7.51\n'
     )
-    mock_response = mocker.MagicMock()
-    mock_response.__enter__.return_value = mock_response
-    mock_response.read.return_value = mock_csv
-    mocker.patch("urllib.request.urlopen", return_value=mock_response)
+    mock_response = httpx.Response(200, content=mock_csv, request=httpx.Request("GET", "https://example.invalid"))
+    mocker.patch("muscat_db.web._async_get", return_value=mock_response)
 
     mocker.patch("muscat_db.web._matched_jwst_targets", return_value=["WASP-96 b"])
 
@@ -1964,14 +2032,14 @@ def test_api_target_jwst(mocker):
 
 
 def test_api_target_spectra(mocker):
+    import httpx
+
     mock_csv = (
         b"spec_type,facility,instrument,minwavelng,maxwavelng,num_datapoints,authors,bibcode\n"
         b'Transmission,"Spitzer Space Telescope satellite","Infrared Array Camera (IRAC)",4.5000,4.5000,1,"Desert et al. 2015",2015ApJ...804...59D\n'
     )
-    mock_response = mocker.MagicMock()
-    mock_response.__enter__.return_value = mock_response
-    mock_response.read.return_value = mock_csv
-    mocker.patch("urllib.request.urlopen", return_value=mock_response)
+    mock_response = httpx.Response(200, content=mock_csv, request=httpx.Request("GET", "https://example.invalid"))
+    mocker.patch("muscat_db.web._async_get", return_value=mock_response)
 
     mocker.patch("muscat_db.web._matched_spectra_targets", return_value=["Kepler-20 c"])
 
@@ -1990,37 +2058,29 @@ def test_api_target_spectra(mocker):
 
 
 def test_api_exofop_check_confirmed(monkeypatch, tmp_path):
+    import httpx
+    from muscat_db import web
+
     # Use a temporary database path to avoid polluting the actual db
     db_file = tmp_path / "test_muscat.db"
     monkeypatch.setenv("MUSCAT_DB_PATH", str(db_file))
 
-    # Mock urllib.request.urlopen to simulate ExoFOP responses
+    # Mock web._async_get to simulate ExoFOP responses
     url_calls = []
 
-    class MockResponse:
-        def __init__(self, data):
-            self.data = data
-        def read(self):
-            return self.data
-        def __enter__(self):
-            return self
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            pass
-
-    def mock_urlopen(req, *args, **kwargs):
-        url = req.full_url if hasattr(req, "full_url") else req
+    async def mock_async_get(url, **kwargs):
         url_calls.append(url)
         if "79748331" in url:
             # Confirmed target
-            return MockResponse(b'{"basic_info": {"confirmed_planets": "TOI-1064 b, TOI-1064 c"}}')
+            content = b'{"basic_info": {"confirmed_planets": "TOI-1064 b, TOI-1064 c"}}'
         elif "25155310" in url:
             # Unconfirmed target
-            return MockResponse(b'{"basic_info": {"confirmed_planets": ""}}')
+            content = b'{"basic_info": {"confirmed_planets": ""}}'
         else:
-            return MockResponse(b'{"basic_info": {}}')
+            content = b'{"basic_info": {}}'
+        return httpx.Response(200, content=content, request=httpx.Request("GET", url))
 
-    import urllib.request
-    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+    monkeypatch.setattr(web, "_async_get", mock_async_get)
 
     from fastapi.testclient import TestClient
     from muscat_db.web import app
@@ -2081,6 +2141,24 @@ def test_ttv_fit_command_endpoint(monkeypatch):
     assert "/WASP-12/_runs/test_run" in res["command"]
 
 
+def test_ttv_fit_start_uses_authenticated_user(monkeypatch):
+    captured = {}
+
+    def fake_start(target, options, user_name):
+        captured.update(target=target, options=options, user_name=user_name)
+        return {"ok": True}
+
+    monkeypatch.setattr("muscat_db.web.ttv.start_ttv_fit", fake_start)
+    response = TestClient(app, client=("127.0.0.1", 12345)).post(
+        "/api/ttv-fit/start",
+        headers={"X-Forwarded-User": "trusted-user"},
+        json={"target": "WASP-12", "user_name": "forged-user", "options": {}},
+    )
+
+    assert response.status_code == 200
+    assert captured["user_name"] == "trusted-user"
+
+
 def test_ttv_output_dir_layout(tmp_path, monkeypatch):
     """TTV results live at <base>/<target>/_runs/<slug>, mirroring photometry."""
     from muscat_db import ttv_fit as ttv
@@ -2089,7 +2167,7 @@ def test_ttv_output_dir_layout(tmp_path, monkeypatch):
     base = tmp_path.resolve()
 
     def rel(run_name):
-        p = ttv.ttv_output_dir("muscat3", "260101", "HIP67522", run_name)
+        p = ttv.ttv_output_dir("HIP67522", run_name)
         return p.relative_to(base).as_posix()
 
     # Blank run name slugs to "default" (never the bare target dir).
@@ -2098,7 +2176,7 @@ def test_ttv_output_dir_layout(tmp_path, monkeypatch):
     # Run names are slugified, not passed through verbatim.
     assert rel("My Run 1") == "HIP67522/_runs/my_run_1"
     # The job key uses the same slug as the directory segment.
-    assert ttv.ttv_job_key("muscat3", "260101", "HIP67522", "My Run 1").endswith("/my_run_1")
+    assert ttv.ttv_job_key("HIP67522", "My Run 1").endswith("/my_run_1")
 
 
 def test_ttv_output_dir_rejects_traversal(tmp_path, monkeypatch):
@@ -2106,9 +2184,9 @@ def test_ttv_output_dir_rejects_traversal(tmp_path, monkeypatch):
 
     monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path))
     with pytest.raises(ValueError):
-        ttv.ttv_output_dir("muscat3", "260101", "../etc", "run")
+        ttv.ttv_output_dir("../etc", "run")
     # A traversal-looking run name is slugified into a single safe segment.
-    p = ttv.ttv_output_dir("muscat3", "260101", "HIP67522", "../../etc")
+    p = ttv.ttv_output_dir("HIP67522", "../../etc")
     assert p.relative_to(tmp_path.resolve()).as_posix() == "HIP67522/_runs/etc"
 
 
@@ -2132,7 +2210,7 @@ def test_list_ttv_runs_skips_empty_and_sorts_newest_first(tmp_path, monkeypatch)
     os.utime(older, (1_000_000, 1_000_000))
     os.utime(newer, (2_000_000, 2_000_000))
 
-    runs = ttv.list_ttv_runs("muscat3", "260101", "HIP67522")
+    runs = ttv.list_ttv_runs("HIP67522")
     assert [r["run_name"] for r in runs] == ["test", "default"]
 
 
@@ -2140,8 +2218,8 @@ def test_list_ttv_runs_empty_for_unknown_or_unsafe_target(tmp_path, monkeypatch)
     from muscat_db import ttv_fit as ttv
 
     monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path))
-    assert ttv.list_ttv_runs("muscat3", "260101", "NoSuchTarget") == []
-    assert ttv.list_ttv_runs("muscat3", "260101", "../etc") == []
+    assert ttv.list_ttv_runs("NoSuchTarget") == []
+    assert ttv.list_ttv_runs("../etc") == []
 
 
 def test_ttv_fit_runs_endpoint(tmp_path, monkeypatch):
@@ -2149,10 +2227,97 @@ def test_ttv_fit_runs_endpoint(tmp_path, monkeypatch):
     _make_ttv_run(tmp_path, "HIP67522", "default")
 
     client = TestClient(app)
-    r = client.get("/api/ttv-fit/runs", params={"inst": "muscat3", "date": "260101", "target": "HIP67522"})
+    r = client.get("/api/ttv-fit/runs", params={"target": "HIP67522"})
     assert r.status_code == 200
     assert [x["run_name"] for x in r.json()["runs"]] == ["default"]
 
-    # Guardrails: instrument must be known and target is required.
-    assert client.get("/api/ttv-fit/runs", params={"inst": "nope", "target": "HIP67522"}).status_code == 400
-    assert client.get("/api/ttv-fit/runs", params={"inst": "muscat3", "target": ""}).status_code == 400
+    # Guardrails: target is required.
+    assert client.get("/api/ttv-fit/runs", params={"target": ""}).status_code == 400
+
+
+def test_ttv_download_all_uses_disk_backed_archive(tmp_path, monkeypatch):
+    monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path))
+    run_dir = _make_ttv_run(tmp_path, "HIP67522", "default")
+    (run_dir / "samples.csv.gz").write_bytes(b"samples")
+    captured = {}
+
+    def fake_zip(files, archive_name):
+        captured["files"] = files
+        captured["archive_name"] = archive_name
+        return Response("archive", media_type="application/zip")
+
+    monkeypatch.setattr("muscat_db.web._create_zip_response", fake_zip)
+    response = TestClient(app).get(
+        "/api/ttv-fit/download-all",
+        params={"target": "HIP67522"},
+    )
+
+    assert response.status_code == 200
+    assert captured["archive_name"] == "HIP67522_ttv_outputs.zip"
+    assert {arcname for _, arcname in captured["files"]} == {
+        "corner.png",
+        "samples.csv.gz",
+    }
+
+
+def test_ttv_fit_stuck_job_sync_and_cancel(monkeypatch, tmp_path):
+    from muscat_db import ttv_fit as ttv
+    from muscat_db.job_store import get_job_store
+
+    monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path))
+    monkeypatch.setenv("MUSCAT_DB_PATH", str(tmp_path / "muscat.db"))
+
+    store = get_job_store()
+    # Save a running TTV fit job with sinistro prefix
+    store.save(
+        type_="ttv_fit",
+        inst="sinistro",
+        date="250710",
+        target="HIP67522",
+        state="running",
+        returncode=None,
+        elapsed=0,
+        started_at=100.0,
+        run_type="full",
+        run_id="default",
+        run_name="default",
+        user_name="jerome",
+    )
+
+    # Verify it is stored and shows as running
+    jobs_in_db = store.all()
+    assert any(j["key"] == "ttv_fit:sinistro/250710/HIP67522/default" and j["state"] == "running" for j in jobs_in_db)
+
+    # Call sync_jobs which should resolve it to error (Process lost) because the files don't exist
+    ttv.sync_jobs()
+
+    # Verify it got updated to error and not left running
+    jobs_in_db = store.all()
+    target_job = next(j for j in jobs_in_db if j["key"] == "ttv_fit:sinistro/250710/HIP67522/default")
+    assert target_job["state"] == "error"
+    assert target_job["error_desc"] == "Process lost (server restart)"
+
+    # Now let's save another running job to test cancel
+    store.save(
+        type_="ttv_fit",
+        inst="sinistro",
+        date="250710",
+        target="HIP67522",
+        state="running",
+        returncode=None,
+        elapsed=0,
+        started_at=200.0,
+        run_type="full",
+        run_id="default",
+        run_name="default",
+        user_name="jerome",
+    )
+
+    # Cancel it through cancel_ttv_fit API helper
+    res = ttv.cancel_ttv_fit("HIP67522", "default")
+    assert res["ok"] is True
+
+    # Verify it was successfully cancelled in the DB
+    jobs_in_db = store.all()
+    target_job = next(j for j in jobs_in_db if j["key"] == "ttv_fit:sinistro/250710/HIP67522/default")
+    assert target_job["state"] == "cancelled"

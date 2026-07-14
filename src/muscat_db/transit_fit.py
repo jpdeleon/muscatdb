@@ -103,7 +103,9 @@ def fit_output_dir(inst: str, date: str, target: str, run_id: str | None = None)
     overwrite each other. ``run_id=None`` reproduces the legacy ``{target}/``
     path so pre-existing fits keep resolving.
     """
-    base = pathlib.Path(os.environ.get("MUSCAT_TIMER_DIR", "/ut2/jerome/ql/timer")).expanduser().resolve(strict=False)
+    base = pathlib.Path(
+        os.environ.get("MUSCAT_TIMER_DIR", str(pathlib.Path.home() / "ql" / "timer"))
+    ).expanduser().resolve(strict=False)
     parts = [base, inst, date, _target_dir_name(target)]
     if run_id:
         parts.append(_run_dir_name(run_id))
@@ -177,51 +179,65 @@ def fit_job_key(inst: str, date: str, target: str, run_id: str = "") -> str:
     return f"{base}/{run_id}" if run_id else base
 
 
-def csv_site_mode(name: str) -> tuple[str | None, str | None]:
-    """``(site, canonical_mode)`` parsed from a sinistro lightcurve CSV name.
+def csv_site_mode(name: str) -> tuple[str | None, str | None, str | None]:
+    """``(site, telescope, canonical_mode)`` parsed from a sinistro lightcurve
+    CSV name.
 
-    Mirrors prose ``build_stem``: the LCO site is an ``_<site>_`` token and the
-    readout mode is the trailing ``_full`` token (``full_frame``; absence means
-    ``central_2k_2x2``). ``site`` is ``None`` when no site token is present.
+    Mirrors prose ``build_stem``: the LCO site is an ``_<site>_`` token, the
+    physical telescope is an ``_tel<NN>_`` token right after it (a TELESCOP
+    header value compacted, e.g. ``'1m0-05'`` -> ``'tel05'``), and the readout
+    mode is the trailing ``_full`` token (``full_frame``; absence means
+    ``central_2k_2x2``). ``site``/``telescope`` are ``None`` when their token
+    is absent.
     """
     stem = name[:-4] if name.lower().endswith(".csv") else name
     mode = "central_2k_2x2"
     if stem.endswith("_full"):
         mode = "full_frame"
         stem = stem[:-5]
-    site = next((t for t in stem.lower().split("_") if t in SINISTRO_SITES), None)
-    return site, mode
+    tokens = stem.lower().split("_")
+    site = next((t for t in tokens if t in SINISTRO_SITES), None)
+    telescope = next(
+        (f"1m0-{t[3:]}" for t in tokens if t.startswith("tel") and t[3:].isdigit()),
+        None,
+    )
+    return site, telescope, mode
 
 
-def selected_site_mode(inst: str, csv_names: list[str]) -> tuple[str, str]:
-    """Derive ``(site_token, mode_token)`` for a run from its selected CSVs.
+def selected_site_mode(inst: str, csv_names: list[str]) -> tuple[str, str, str]:
+    """Derive ``(site_token, telescope_token, mode_token)`` for a run from its
+    selected CSVs.
 
     Single shared value -> that value; more than one -> ``mixed`` (mixing is
     allowed); none / non-sinistro -> ``""``. Used to compose the run id.
     """
     if inst != "sinistro" or not csv_names:
-        return "", ""
-    sites = {s for s, _ in map(csv_site_mode, csv_names) if s}
-    modes = {m for _, m in map(csv_site_mode, csv_names) if m}
+        return "", "", ""
+    parsed = [csv_site_mode(n) for n in csv_names]
+    sites = {s for s, _tel, _m in parsed if s}
+    telescopes = {tel for _s, tel, _m in parsed if tel}
+    modes = {m for _s, _tel, m in parsed if m}
     site = next(iter(sites)) if len(sites) == 1 else ("mixed" if sites else "")
+    telescope = next(iter(telescopes)) if len(telescopes) == 1 else ("mixed" if telescopes else "")
     mode = next(iter(modes)) if len(modes) == 1 else ("mixed" if modes else "")
-    return site, mode
+    return site, telescope, mode
 
 
 def validate_no_duplicate_datasets(inst: str, date: str, csvs: list[pathlib.Path]) -> str | None:
-    """Ensure no selected lightcurves represent the same physical dataset (site, mode, band)."""
+    """Ensure no selected lightcurves represent the same physical dataset (site, telescope, mode, band)."""
     seen_keys = set()
     for c in csvs:
         parts = c.name.split(f"_{inst}_")
         raw_band = parts[1].split(f"_{date}")[0] if len(parts) > 1 else "gp"
         mapped_band = _normalize_band(raw_band)
-        site, mode = csv_site_mode(c.name)
-        key = (site or "", mode or "", mapped_band)
+        site, telescope, mode = csv_site_mode(c.name)
+        key = (site or "", telescope or "", mode or "", mapped_band)
         if key in seen_keys:
             if inst == "sinistro":
                 site_str = f" (site: {site})" if site else ""
+                telescope_str = f" (telescope: {telescope})" if telescope else ""
                 mode_str = f" (mode: {mode})" if mode else ""
-                return f"Multiple lightcurves selected for the same dataset: band '{mapped_band}'{site_str}{mode_str}. Please select only one run."
+                return f"Multiple lightcurves selected for the same dataset: band '{mapped_band}'{site_str}{telescope_str}{mode_str}. Please select only one run."
             else:
                 return f"Multiple lightcurves selected for the same band '{mapped_band}'. Please select only one run."
         seen_keys.add(key)
@@ -669,6 +685,12 @@ def _normalize_band(raw: str) -> str:
         if low.startswith(f"{site}_"):
             low = low[len(site) + 1:]
             break
+    # Strip a physical-telescope prefix if present (e.g. tel05_ from a TELESCOP
+    # header value compacted by prose's build_stem), which can follow the site
+    # token above.
+    m = re.match(r"tel[0-9]+_", low)
+    if m:
+        low = low[m.end():]
     # Sodium D: real tokens start with "na" (Na_D, NaD, Na). Narrow Sloan tokens
     # start with their filter letter (e.g. "i_narrow"), so this is unambiguous.
     if low.startswith("na"):
@@ -704,13 +726,15 @@ def _write_fit_inputs(
     run_name: str = "",
     run_id: str = "",
     run_type: str = "",
+    telescope: str = "",
 ) -> None:
     """Copy light-curve CSVs into ``rdir`` and write fit.yaml / sys.yaml.
 
     Shared by :func:`start_fit` (real run directory) and :func:`compute_logp`
     (throwaway temp directory) so both build identical timer inputs from the
-    form options. ``site``/``mode``/``run_name``/``run_id`` are recorded in
-    meta.yaml so run discovery never has to parse the directory name.
+    form options. ``site``/``telescope``/``mode``/``run_name``/``run_id`` are
+    recorded in meta.yaml so run discovery never has to parse the directory
+    name.
     """
     for c in csvs:
         shutil.copy2(c, rdir / c.name)
@@ -1070,6 +1094,7 @@ def _write_fit_inputs(
         "date": date,
         "target": target,
         "site": site or "",
+        "telescope": telescope or "",
         "mode": mode or "",
         "run_name": run_name or "",
         "run_id": run_id or "",
@@ -1215,12 +1240,13 @@ def start_fit(
     if err:
         return {"ok": False, "error": err}
 
-    # Identify this run: site/mode derived from the selected lightcurves (mixing
-    # allowed -> "mixed"), plus the user's run-name label. The run id isolates the
-    # working directory so distinct runs never overwrite each other.
+    # Identify this run: site/telescope/mode derived from the selected
+    # lightcurves (mixing allowed -> "mixed"), plus the user's run-name label.
+    # The run id isolates the working directory so distinct runs never
+    # overwrite each other.
     run_name = str(options.get("run_name") or "").strip()
-    site, mode = selected_site_mode(inst, [c.name for c in csvs])
-    run_id = build_run_id(site, mode, run_name)
+    site, telescope, mode = selected_site_mode(inst, [c.name for c in csvs])
+    run_id = build_run_id(site, mode, run_name, telescope=telescope)
     try:
         rdir = fit_output_dir(inst, date, target, run_id)
     except ValueError as exc:
@@ -1252,7 +1278,7 @@ def start_fit(
     key = fit_job_key(inst, date, target, run_id)
     params_json = json.dumps(
         {"test_run": test_run, "options": options, "selected_csvs": selected_csvs,
-         "run_id": run_id, "site": site, "mode": mode, "run_name": run_name},
+         "run_id": run_id, "site": site, "telescope": telescope, "mode": mode, "run_name": run_name},
         separators=(",", ":"),
     )
 
@@ -1262,7 +1288,12 @@ def start_fit(
         if existing is not None and existing.proc.poll() is None:
             return {"ok": True, "key": key, "already_running": True, "run_id": run_id}
 
-        at_capacity = run_type == "full" and _count_running_full() >= _MAX_FULL_JOBS
+        # Claim a cross-process concurrency slot for full jobs (test jobs are
+        # never capacity-gated). Not yet claimed here just means queue below.
+        claimed_slot = False
+        if run_type == "full":
+            claimed_slot = get_job_store().claim_slot("transit_fit", key, _MAX_FULL_JOBS)
+        at_capacity = run_type == "full" and not claimed_slot
 
         # Queue full jobs when at capacity
         if at_capacity:
@@ -1290,7 +1321,7 @@ def start_fit(
     # trace (20 draws) and exits immediately, misleading the user into thinking
     # their full-fit request was silently ignored.
     _write_fit_inputs(rdir, inst, date, target, csvs, options,
-                      site=site, mode=mode, run_name=run_name, run_id=run_id,
+                      site=site, telescope=telescope, mode=mode, run_name=run_name, run_id=run_id,
                       run_type=run_type)
 
     # Clear cached outputs so the next page load reads fresh results from disk.
@@ -1320,6 +1351,8 @@ def start_fit(
         except Exception:
             logger.debug("failed to write timer-fit.pid in %s", rdir, exc_info=True)
     except (FileNotFoundError, OSError) as exc:
+        if claimed_slot:
+            get_job_store().release_slot("transit_fit", key)
         logf.write(f"\nfailed to launch fitting: {exc}\n")
         logf.close()
         return {"ok": False, "error": f"failed to launch fitting: {exc}"}
@@ -1328,7 +1361,7 @@ def start_fit(
         _FIT_JOBS[key] = TransitFitJob(
             key=key, inst=inst, date=date, target=target,
             cmd=cmd, proc=proc, logf=logf, log_path=log_path,
-            run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name,
+            run_type=run_type, run_id=run_id, site=site, telescope=telescope, mode=mode, run_name=run_name,
         )
         # Record new job in the database
         get_job_store().save(
@@ -1718,13 +1751,19 @@ def _get_fit_outputs_mtime(
                 outputs["plots"].append(plot_info)
             outputs["has_any"] = True
 
-    # Collect any other output files for download (exclude plots already shown
-    # and files that get their own dedicated link below).
+    # Collect any other output files for individual download (exclude plots,
+    # dedicated links, and internal correlation/pickle artifacts).
     _linked = {"summary.csv"}
     for p in sorted(out_dir.iterdir()):
         if not p.is_file():
             continue
-        if p.suffix.lower() == ".png" or p.name in _linked:
+        name_lower = p.name.lower()
+        if (
+            p.suffix.lower() == ".png"
+            or p.name in _linked
+            or name_lower.endswith("-cor.csv")
+            or p.suffix.lower() == ".pkl"
+        ):
             continue
         outputs["extra_files"].append(p.name)
         outputs["has_any"] = True
@@ -1757,6 +1796,7 @@ def _get_fit_outputs_mtime(
 class RunDescriptor:
     run_id: str
     site: str
+    telescope: str
     mode: str
     run_name: str
     mtime: float
@@ -1781,23 +1821,25 @@ def _run_has_outputs(d: pathlib.Path) -> bool:
         return False
 
 
-def _parse_run_dir_name(name: str) -> tuple[str, str, str]:
-    """Best-effort split of a run-id dir name into (site, mode, run_name).
+def _parse_run_dir_name(name: str) -> tuple[str, str, str, str]:
+    """Best-effort split of a run-id dir name into (site, telescope, mode, run_name).
 
     Used only as a fallback when meta.yaml lacks identity keys. Components are
     hyphen-joined and never themselves contain ``-``. Newer sinistro run ids
-    omit the default ``central_2k_2x2`` mode, so a site-prefixed name with no
-    explicit mode is treated as central mode.
+    omit the default ``central_2k_2x2`` mode, so a site/telescope-prefixed name
+    with no explicit mode is treated as central mode.
     """
     parts = name.split("-")
-    site = mode = ""
+    site = telescope = mode = ""
     if parts and parts[0] in (set(SINISTRO_SITES) | {"mixed"}):
         site, parts = parts[0], parts[1:]
+    if parts and (parts[0] == "mixed" or (parts[0].startswith("tel") and parts[0][3:].isdigit())):
+        telescope, parts = parts[0], parts[1:]
     if parts and parts[0] in (set(SINISTRO_MODES) | {"mixed"}):
         mode, parts = parts[0], parts[1:]
-    elif site:
+    elif site or telescope:
         mode = "central_2k_2x2"
-    return site, mode, "-".join(parts)
+    return site, telescope, mode, "-".join(parts)
 
 
 def list_fit_runs(inst: str, date: str, target: str) -> list[RunDescriptor]:
@@ -1821,6 +1863,7 @@ def list_fit_runs(inst: str, date: str, target: str) -> list[RunDescriptor]:
         runs.append(RunDescriptor(
             run_id="",
             site=str(meta.get("site") or ""),
+            telescope=str(meta.get("telescope") or ""),
             mode=str(meta.get("mode") or ""),
             run_name=str(meta.get("run_name") or "") or "legacy",
             mtime=(tdir / "out").stat().st_mtime,
@@ -1833,13 +1876,15 @@ def list_fit_runs(inst: str, date: str, target: str) -> list[RunDescriptor]:
         meta = _read_run_meta(d)
         if meta.get("run_id") or meta.get("run_name"):
             site = str(meta.get("site") or "")
+            telescope = str(meta.get("telescope") or "")
             mode = str(meta.get("mode") or "")
             run_name = str(meta.get("run_name") or "")
         else:
-            site, mode, run_name = _parse_run_dir_name(d.name)
+            site, telescope, mode, run_name = _parse_run_dir_name(d.name)
         runs.append(RunDescriptor(
             run_id=d.name,
             site=site,
+            telescope=telescope,
             mode=mode,
             run_name=run_name or d.name,
             mtime=(d / "out").stat().st_mtime,
@@ -1885,7 +1930,9 @@ def _discover_orphan_fits(existing: set[str]) -> list[dict]:
     ``transit_fit:{inst}/{date}/{target}``) and per-run ``{target}/<run_id>/out/``
     (key ``…/{target}/{run_id}``) — whose key is not in *existing*.
     """
-    base = pathlib.Path(os.environ.get("MUSCAT_TIMER_DIR", "/ut2/jerome/ql/timer"))
+    base = pathlib.Path(
+        os.environ.get("MUSCAT_TIMER_DIR", str(pathlib.Path.home() / "ql" / "timer"))
+    )
     orphans: list[dict] = []
     if not base.is_dir():
         return orphans
@@ -2092,11 +2139,18 @@ def sync_jobs() -> None:
                 )
                 database.refresh_target_status(target)
 
+        # Release any concurrency slot whose claimant's persisted job row is
+        # no longer 'running' (crashed/restarted without releasing cleanly).
+        # Checked against the durable jobs table, so this is safe to run from
+        # any process -- unlike the per-process _FIT_JOBS dict above, it does
+        # not assume this process is the one that held the slot.
+        store.reconcile_slots("transit_fit")
+
         # Launch pending full jobs if capacity allows
-        if _count_running_full() < _MAX_FULL_JOBS:
+        if store.count_claimed("transit_fit") < _MAX_FULL_JOBS:
             pending = store.pending("transit_fit")
             for entry in pending:
-                if _count_running_full() >= _MAX_FULL_JOBS:
+                if store.count_claimed("transit_fit") >= _MAX_FULL_JOBS:
                     break
                 # The DB key is prefixed ("transit_fit:..."), so compare against the
                 # in-memory job key (unprefixed) to detect a job that is already
@@ -2119,6 +2173,7 @@ def sync_jobs() -> None:
                 selected_csvs = p.get("selected_csvs")
                 run_id = p.get("run_id") or entry.get("run_id", "")
                 site = p.get("site", "")
+                telescope = p.get("telescope", "")
                 mode = p.get("mode", "")
                 run_name = p.get("run_name", "")
                 inst, date, target = entry["inst"], entry["date"], entry["target"]
@@ -2142,13 +2197,18 @@ def sync_jobs() -> None:
                     run_name=run_name,
                 )
                     continue
+                # Atomic: at most one process/caller ever wins this claim for a
+                # given key, so two workers draining the same pending row can
+                # never both launch it.
+                if not store.claim_slot("transit_fit", key, _MAX_FULL_JOBS):
+                    continue
                 rdir.mkdir(parents=True, exist_ok=True)
                 csvs = get_csv_lightcurves(inst, date, target)
                 if selected_csvs is not None:
                     selected = set(str(p) for p in selected_csvs)
                     csvs = [c for c in csvs if str(c) in selected]
                 _write_fit_inputs(rdir, inst, date, target, csvs, opts,
-                                  site=site, mode=mode, run_name=run_name, run_id=run_id,
+                                  site=site, telescope=telescope, mode=mode, run_name=run_name, run_id=run_id,
                                   run_type=run_type)
                 _fit_outputs_cache.clear()
                 cmd = [*_timer_prefix(), "-v", str(rdir)]
@@ -2168,10 +2228,11 @@ def sync_jobs() -> None:
                 except (FileNotFoundError, OSError) as exc:
                     try: logf.close()
                     except OSError: pass
+                    store.release_slot("transit_fit", key)
                     store.save(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc=f"Failed to launch: {exc}", run_name=run_name)
                     continue
                 run_type = "test" if test_run else "full"
-                _FIT_JOBS[key] = TransitFitJob(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=log_path, run_type=run_type, run_id=run_id, site=site, mode=mode, run_name=run_name)
+                _FIT_JOBS[key] = TransitFitJob(key=key, inst=inst, date=date, target=target, cmd=cmd, proc=proc, logf=logf, log_path=log_path, run_type=run_type, run_id=run_id, site=site, telescope=telescope, mode=mode, run_name=run_name)
                 try:
                     store.save(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="running", returncode=None, elapsed=0, started_at=_FIT_JOBS[key].started_at, run_type=run_type, params=entry.get("params", ""), run_name=run_name)
                 except Exception:
@@ -2181,4 +2242,5 @@ def sync_jobs() -> None:
                     try: logf.close()
                     except OSError: pass
                     _FIT_JOBS.pop(key, None)
+                    store.release_slot("transit_fit", key)
                     store.save(type_="transit_fit", inst=inst, date=date, target=target, run_id=run_id, state="error", returncode=-1, elapsed=0, started_at=entry["started_at"], error_desc="Database error", run_name=run_name)

@@ -6,10 +6,11 @@
   {# Single target view #}
   <h1>Target: {{ target_name }}</h1>
   <div class="hint" style="display: flex; gap: 1rem; margin: -0.5rem 0 1rem 0; line-height: 1.6; word-break: break-all;">
-    <a href="https://exoplanetarchive.ipac.caltech.edu/overview/{{ target_name | urlencode }}" target="_blank" rel="noopener">NASA Archive ↗</a>
-    <a href="https://exofop.ipac.caltech.edu/tess/target.php?id={{ exofop_target_id | urlencode }}" target="_blank" rel="noopener">ExoFOP-TESS ↗</a>
+    <a href="https://exoplanetarchive.ipac.caltech.edu/overview/{{ target_name | urlencode }}" target="_blank" rel="noopener">NASA Archive</a>
+    <a href="https://exofop.ipac.caltech.edu/tess/target.php?id={{ exofop_target_id | urlencode }}" target="_blank" rel="noopener">ExoFOP-TESS</a>
     {% if target_tic_id %}
-        <a href="https://tess.cuikaiming.com/{{ target_tic_id | urlencode }}" target="_blank" rel="noopener">TESS Viewer ↗</a>
+        <a href="https://tess.cuikaiming.com/{{ target_tic_id | urlencode }}" target="_blank" rel="noopener">TESS Viewer</a>
+        <a href="/tess-quicklook/" target="_blank" rel="noopener noreferrer">TESS quicklook</a>
     {% endif %}
 </div>
   <script>

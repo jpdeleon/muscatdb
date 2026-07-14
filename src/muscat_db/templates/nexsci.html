@@ -7,6 +7,8 @@
   .nx-meta { color: var(--text-dim); font-size: 0.85rem; margin: 0.25rem 0 1rem; }
   .chip-bar { display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.5rem; }
   .chip-bar .chip-label { font-size: 0.85rem; color: var(--text-dim); font-weight: 500; min-width: 6rem; }
+  .logic-indicator { font-size: 0.65rem; font-weight: 600; color: var(--accent); background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 4px; padding: 0.05rem 0.25rem; margin-left: 0.25rem; vertical-align: middle; }
   .nx-chip { cursor: pointer; }
   .nx-section > summary { cursor: pointer; padding: 0.5rem 0; color: var(--text-dim); font-size: 1rem; font-weight: 600; }
   #nx-table th, #nx-table td { white-space: nowrap; }
@@ -37,42 +39,42 @@
   <input id="nx-search" type="text" placeholder="Search planet, host, or TIC ID…" autocomplete="off">
   <span id="nx-count" class="hint"></span>
   <button id="nx-clear" type="button" class="csv-btn" style="display: none; background: var(--border); color: var(--text); border: none; cursor: pointer; margin-right: 0.25rem;">✕ Clear filters</button>
-  <a id="nx-export" href="#" class="csv-btn" download="nexsci_filtered.csv">⬇ CSV (filtered)</a>
+  <a id="nx-export" href="#" class="csv-btn" download="nexsci_filtered.csv">CSV (filtered)</a>
 </div>
 
 <div class="chip-bar">
-  <span class="chip-label">Disc. method:</span>
-  <span class="badge instrument-badge nx-chip" data-group="method" data-key="Transit">Transit</span>
-  <span class="badge instrument-badge nx-chip" data-group="method" data-key="Radial Velocity">Radial Velocity</span>
-  <span class="badge instrument-badge nx-chip" data-group="method" data-key="Imaging">Imaging</span>
-  <span class="badge instrument-badge nx-chip" data-group="method" data-key="Microlensing">Microlensing</span>
-  <span class="badge instrument-badge nx-chip" data-group="method" data-key="Transit Timing Variations">TTV</span>
-  <span class="badge instrument-badge nx-chip" data-group="method" data-key="Other">Other</span>
+  <span class="chip-label">Disc. method <span class="logic-indicator" title="Matching any of the checked discovery methods">OR</span>:</span>
+  <span class="badge instrument-badge nx-chip" data-group="method" data-key="Transit" title="discoverymethod = Transit">Transit</span>
+  <span class="badge instrument-badge nx-chip" data-group="method" data-key="Radial Velocity" title="discoverymethod = Radial Velocity">Radial Velocity</span>
+  <span class="badge instrument-badge nx-chip" data-group="method" data-key="Imaging" title="discoverymethod = Imaging">Imaging</span>
+  <span class="badge instrument-badge nx-chip" data-group="method" data-key="Microlensing" title="discoverymethod = Microlensing">Microlensing</span>
+  <span class="badge instrument-badge nx-chip" data-group="method" data-key="Transit Timing Variations" title="discoverymethod = Transit Timing Variations">TTV</span>
+  <span class="badge instrument-badge nx-chip" data-group="method" data-key="Other" title="discoverymethod is not Transit, Radial Velocity, Imaging, Microlensing, or Transit Timing Variations">Other</span>
 </div>
 <div class="chip-bar">
-  <span class="chip-label">Planet type:</span>
-  <span class="badge instrument-badge nx-chip" data-group="size" data-key="Jupiter-size">Jupiter-size</span>
-  <span class="badge instrument-badge nx-chip" data-group="size" data-key="Neptune-size">Neptune-size</span>
-  <span class="badge instrument-badge nx-chip" data-group="size" data-key="Sub-Neptune">Sub-Neptune</span>
-  <span class="badge instrument-badge nx-chip" data-group="size" data-key="Super-Earth">Super-Earth</span>
-  <span class="badge instrument-badge nx-chip" data-group="size" data-key="Earth-size">Earth-size</span>
+  <span class="chip-label">Planet type <span class="logic-indicator" title="Matching any of the checked size classes">OR</span>:</span>
+  <span class="badge instrument-badge nx-chip" data-group="size" data-key="Jupiter-size" title="Rₚ ≥ 8 R⊕">Jupiter-size</span>
+  <span class="badge instrument-badge nx-chip" data-group="size" data-key="Neptune-size" title="4 ≤ Rₚ &lt; 8 R⊕">Neptune-size</span>
+  <span class="badge instrument-badge nx-chip" data-group="size" data-key="Sub-Neptune" title="2 ≤ Rₚ &lt; 4 R⊕">Sub-Neptune</span>
+  <span class="badge instrument-badge nx-chip" data-group="size" data-key="Super-Earth" title="1.25 ≤ Rₚ &lt; 2 R⊕">Super-Earth</span>
+  <span class="badge instrument-badge nx-chip" data-group="size" data-key="Earth-size" title="Rₚ &lt; 1.25 R⊕">Earth-size</span>
 </div>
 <div class="chip-bar">
-  <span class="chip-label">Host star:</span>
-  <span class="badge instrument-badge nx-chip" data-group="star" data-key="M">M dwarf</span>
-  <span class="badge instrument-badge nx-chip" data-group="star" data-key="K">K type</span>
-  <span class="badge instrument-badge nx-chip" data-group="star" data-key="G">G type</span>
-  <span class="badge instrument-badge nx-chip" data-group="star" data-key="F">F type</span>
-  <span class="badge instrument-badge nx-chip" data-group="star" data-key="A+">A / hotter</span>
+  <span class="chip-label">Host star <span class="logic-indicator" title="Matching any of the checked spectral types">OR</span>:</span>
+  <span class="badge instrument-badge nx-chip" data-group="star" data-key="M" title="T_eff &lt; 3900 K">M dwarf</span>
+  <span class="badge instrument-badge nx-chip" data-group="star" data-key="K" title="3900 ≤ T_eff &lt; 5300 K">K type</span>
+  <span class="badge instrument-badge nx-chip" data-group="star" data-key="G" title="5300 ≤ T_eff &lt; 6000 K">G type</span>
+  <span class="badge instrument-badge nx-chip" data-group="star" data-key="F" title="6000 ≤ T_eff &lt; 7300 K">F type</span>
+  <span class="badge instrument-badge nx-chip" data-group="star" data-key="A+" title="T_eff ≥ 7300 K">A / hotter</span>
 </div>
 <div class="chip-bar">
-  <span class="chip-label">Multiplicity:</span>
+  <span class="chip-label">Multiplicity <span class="logic-indicator" title="Matching all checked flags (AND)">AND</span>:</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="binary" title="Host system has exactly 2 stars (sy_snum = 2)">Binary</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="tertiary" title="Host system has 3+ stars (sy_snum ≥ 3)">Tertiary+</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="cb" title="Circumbinary planet — orbits both stars of a binary (cb_flag = 1)">Circumbinary</span>
 </div>
 <div class="chip-bar">
-  <span class="chip-label">System:</span>
+  <span class="chip-label">System <span class="logic-indicator" title="Matching all checked flags (AND)">AND</span>:</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="young" title="Upper bound of stellar age < 1 Gyr (st_age + st_ageerr1, respecting st_agelim)">Young (&lt;1 Gyr)</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="nearby" title="System distance < 100 pc (sy_dist)">Nearby (&lt;100 pc)</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="bright" title="Gaia magnitude < 12 (sy_gaiamag)">Bright (G&lt;12)</span>
@@ -81,14 +83,22 @@
 </div>
 
 <div class="chip-bar">
-  <span class="chip-label">External data:</span>
+  <span class="chip-label">Observability <span class="logic-indicator" title="Depth and TESS-magnitude limits are ANDed; declination hemispheres are ORed">AND / OR</span>:</span>
+  <span class="badge instrument-badge nx-chip" data-group="obs" data-key="depth" title="Transit depth > 1 ppt (0.1%)">depth &gt; 1ppt</span>
+  <span class="badge instrument-badge nx-chip" data-group="obs" data-key="tmag" title="TESS magnitude < 12">Tmag &lt; 12</span>
+  <span class="badge instrument-badge nx-chip" data-group="obs" data-key="north" title="Declination > 0°">Dec &gt; 0</span>
+  <span class="badge instrument-badge nx-chip" data-group="obs" data-key="south" title="Declination < 0°">Dec &lt; 0</span>
+</div>
+
+<div class="chip-bar">
+  <span class="chip-label">External data <span class="logic-indicator" title="Matching all checked flags (AND)">AND</span>:</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="harps" title="Coordinate-matched to the public HARPS RVBank catalog">has HARPS RV</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="jwst" title="Only planets with JWST Atmospheric Observation List (NExoList) data">has JWST data</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="spectra" title="Has time-series spectra available in the Atmospheric Spectroscopy table">has time-series spectra</span>
 </div>
 
 <div class="chip-bar">
-  <span class="chip-label">muscat-db:</span>
+  <span class="chip-label">muscat-db <span class="logic-indicator" title="Matching checked flag (AND)">AND</span>:</span>
   <span class="badge instrument-badge nx-chip" data-group="indb" data-key="1" title="Only planets whose host star has data in muscat-db">★ In muscat-db</span>
 </div>
 
@@ -350,6 +360,7 @@
   const selectedStar = new Set();
   const selectedIndb = new Set();
   const selectedFlags = new Set();
+  const selectedObservability = new Set();
   let sortState = { key: null, dir: 0 };   // dir: 1 asc, -1 desc
 
   function setForGroup(group) {
@@ -357,6 +368,7 @@
          : group === 'size'   ? selectedSize
          : group === 'star'   ? selectedStar
          : group === 'flags'  ? selectedFlags
+         : group === 'obs'    ? selectedObservability
          : selectedIndb;
   }
 
@@ -369,7 +381,21 @@
       const p = build(inp.value);
       inp.classList.remove('invalid');
       if (p === 'INVALID') { inp.classList.add('invalid'); return; }
-      if (p) preds.push({ key: c.key, fn: p });
+      if (p) {
+        if (c.key === 'tic') {
+          preds.push({
+            key: c.key,
+            fn: val => {
+              if (val == null) return false;
+              const s = String(val);
+              const clean = s.replace(/\D/g, '');
+              return p(s) || p('tic-' + clean) || p('tic ' + clean) || p('tic' + clean) || p(clean);
+            }
+          });
+        } else {
+          preds.push({ key: c.key, fn: p });
+        }
+      }
     });
     return preds;
   }
@@ -382,10 +408,15 @@
     const useStar = selectedStar.size > 0;
     const useIndb = selectedIndb.size > 0;
     const flagList = Array.from(selectedFlags);
+    const useDepth = selectedObservability.has('depth');
+    const useTmag = selectedObservability.has('tmag');
+    const hemisphereFilters = ['north', 'south'].filter(k => selectedObservability.has(k));
     const out = [];
     for (let i = 0; i < N; i++) {
       if (q) {
-        const hay = (NEXSCI.name[i] + ' ' + NEXSCI.host[i] + ' ' + NEXSCI.tic[i]).toLowerCase();
+        const ticRaw = NEXSCI.tic[i] || '';
+        const ticClean = ticRaw.replace(/\D/g, '');
+        const hay = (NEXSCI.name[i] + ' ' + NEXSCI.host[i] + ' ' + ticRaw + ' tic-' + ticClean + ' tic ' + ticClean + ' tic' + ticClean).toLowerCase();
         if (hay.indexOf(q) === -1) continue;
       }
       let ok = true;
@@ -398,6 +429,12 @@
       if (useStar && !selectedStar.has(starClass[i])) continue;
       if (useIndb && !NEXSCI.indb[i]) continue;
       if (flagList.length && !flagList.every(f => FLAG_TESTS[f](i))) continue;
+      // NExScI pl_trandep is expressed as percent, so 1 ppt = 0.1%.
+      if (useDepth && !(NEXSCI.trandep[i] != null && NEXSCI.trandep[i] > 0.1)) continue;
+      if (useTmag && !(NEXSCI.tmag[i] != null && NEXSCI.tmag[i] < 12)) continue;
+      if (hemisphereFilters.length && !hemisphereFilters.some(h =>
+        h === 'north' ? NEXSCI.dec[i] > 0 : NEXSCI.dec[i] < 0
+      )) continue;
       out.push(i);
     }
     if (sortState.key) applySort(out);
@@ -873,6 +910,7 @@
     if (state.star && state.star.length) parts.push('star=' + state.star.join(','));
     if (state.indb && state.indb.length) parts.push('indb=' + state.indb.join(','));
     if (state.flags && state.flags.length) parts.push('flags=' + state.flags.join(','));
+    if (state.obs && state.obs.length) parts.push('obs=' + state.obs.join(','));
     if (state.sort && state.sort.key) parts.push('sort=' + state.sort.key + ':' + state.sort.dir);
     if (state.plot) {
       if (state.plot.x) parts.push('x=' + state.plot.x);
@@ -902,7 +940,7 @@
     const state = {};
     const params = new URLSearchParams(hash);
     if (params.has('q')) searchEl.value = decodeURIComponent(params.get('q'));
-    ['method', 'size', 'star', 'indb', 'flags'].forEach(k => {
+    ['method', 'size', 'star', 'indb', 'flags', 'obs'].forEach(k => {
       if (params.has(k)) state[k] = params.get(k).split(',');
     });
     if (params.has('sort')) {
@@ -936,7 +974,7 @@
       q: searchEl.value,
       method: Array.from(selectedMethod), size: Array.from(selectedSize),
       star: Array.from(selectedStar), indb: Array.from(selectedIndb),
-      flags: Array.from(selectedFlags),
+      flags: Array.from(selectedFlags), obs: Array.from(selectedObservability),
       sort: sortState,
       plot: { x: selX.value, y: selY.value, color: selColor.value,
               logx: logXEl.checked, logy: logYEl.checked, size: sizeEl.value,
@@ -971,6 +1009,11 @@
     (s.star || []).forEach(k => selectedStar.add(k));
     (s.indb || []).forEach(k => selectedIndb.add(k));
     (s.flags || []).forEach(k => selectedFlags.add(k));
+    const restoredObservability = (s.obs || []).filter(k => ['depth', 'tmag', 'north', 'south'].includes(k));
+    restoredObservability.filter(k => k !== 'north' && k !== 'south').forEach(k => selectedObservability.add(k));
+    // North wins if a legacy URL or saved setting selected both hemispheres.
+    if (restoredObservability.includes('north')) selectedObservability.add('north');
+    else if (restoredObservability.includes('south')) selectedObservability.add('south');
     chips.forEach(ch => {
       if (setForGroup(ch.dataset.group).has(ch.dataset.key)) ch.classList.add('active');
     });
@@ -1023,7 +1066,7 @@
     const hasSearch = !!searchEl.value.trim();
     const hasColFilters = colInputs.some(inp => !!inp.value.trim());
     const hasChips = selectedMethod.size > 0 || selectedSize.size > 0 || selectedStar.size > 0 ||
-      selectedIndb.size > 0 || selectedFlags.size > 0;
+      selectedIndb.size > 0 || selectedFlags.size > 0 || selectedObservability.size > 0;
     clearEl.style.display = (hasSearch || hasColFilters || hasChips) ? 'inline-flex' : 'none';
   }
 
@@ -1036,6 +1079,7 @@
       selectedStar.clear();
       selectedIndb.clear();
       selectedFlags.clear();
+      selectedObservability.clear();
       chips.forEach(ch => ch.classList.remove('active'));
       apply();
     });
@@ -1063,6 +1107,13 @@
   chips.forEach(ch => ch.addEventListener('click', function () {
     const set = setForGroup(ch.dataset.group);
     const key = ch.dataset.key;
+    // The two declination chips are alternatives, not cumulative filters.
+    if (ch.dataset.group === 'obs' && (key === 'north' || key === 'south')) {
+      const other = key === 'north' ? 'south' : 'north';
+      set.delete(other);
+      chips.filter(c => c.dataset.group === 'obs' && c.dataset.key === other)
+        .forEach(c => c.classList.remove('active'));
+    }
     if (set.has(key)) { set.delete(key); ch.classList.remove('active'); }
     else { set.add(key); ch.classList.add('active'); }
     apply();
