@@ -1,7 +1,10 @@
-* Check if there is a way to restrict delete button depending on the user. For example, only user who ran photometry and transit fit jobs can delete their outputs but not other users.
-* github auto showcase; gif; dummy website
+* modular install; make toi, nexsci, tess-quicklook and other routers as extras
+* add lco observation monitoring and auto download and ingest
+* update notebooks
+* add a static version but navigable pages in github pages as visual documentation
+* improve test coverage
+* setting user permissions
 * audit database check/health
-* group test
 * photometry: use median for best reference band?
 * add github CI
 * celery+redis migration
@@ -11,4 +14,3 @@
 
 Done
 * funpack+scan+ingest-date button
-
