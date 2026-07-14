@@ -51,7 +51,8 @@ the science lives in the packages themselves.
 - Python ≥ 3.12
 - FITS files below the common data root (`MUSCAT_DATA_DIR`, default `/data`) in
   `MuSCAT`, `MuSCAT2`, `MuSCAT3`, `MuSCAT4`, and `Sinistro` subdirectories
-- Obslog output directories (`/ut2/muscat/obslog/`)
+- A writable obslog directory (`MUSCAT_OBSLOG_DIR`, default
+  `$HOME/muscat/obslog`)
 
 ## Installation and usage
 

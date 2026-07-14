@@ -13,7 +13,7 @@ This audit reveals three interconnected architectural debts in the application l
 **Layered structure (data flows top→bottom):**
 
 ```
-Obslog CSVs (/ut3/muscat/obslog, shared mount)
+Obslog CSVs (`$MUSCAT_OBSLOG_DIR`, shared mount in multi-host deployments)
         │  daily cronjob → database.build_db()  (atomic tmp-file rebuild)
         ▼
 muscat.db (SQLite, WAL)   tables: frames → summaries → targets (materialized), 

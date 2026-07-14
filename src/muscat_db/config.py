@@ -43,7 +43,11 @@ ENV_VARS: tuple[EnvVar, ...] = (
         "/data",
         "Common raw FITS root containing MuSCAT, MuSCAT2, MuSCAT3, MuSCAT4, and Sinistro",
     ),
-    EnvVar("MUSCAT_OBSLOG_DIR", "/ut2/muscat/obslog", "Shared obslog CSV base (muscat-db + prose2)"),
+    EnvVar(
+        "MUSCAT_OBSLOG_DIR",
+        str(Path.home() / "muscat" / "obslog"),
+        "Obslog CSV base shared by muscat-db and prose2",
+    ),
     EnvVar(
         "MUSCAT_PROSE_DIR",
         str(Path.home() / "ql" / "prose"),
