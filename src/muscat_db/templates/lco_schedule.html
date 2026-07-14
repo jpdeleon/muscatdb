@@ -11,7 +11,7 @@
      target) rather than trusting a possibly-stale leftover from another one. */
   .ephem-src {
     display: inline-block; font-size: 0.62rem; font-weight: 600;
-    letter-spacing: 0.03em; text-transform: uppercase; vertical-align: middle;
+    letter-spacing: 0.03em; vertical-align: middle;
     padding: 0.02rem 0.32rem; margin-left: 0.25rem; border-radius: 0.6rem;
     background: color-mix(in srgb, var(--accent) 16%, transparent);
     color: var(--accent);
@@ -29,29 +29,29 @@
 <div class="lco-section">
   <h3>Target &amp; Transit Windows</h3>
   <div class="lco-grid">
-    <div class="lco-field"><label for="sch-target">Target</label><input id="sch-target" type="text" placeholder="WASP-12"></div>
-    <div class="lco-field"><label for="sch-planet">Planet</label><input id="sch-planet" type="text" placeholder="b" style="max-width: 90px;"></div>
-    <div class="lco-field"><label for="sch-source" title="Where t0 / period come from. 'linear fit' refines the ephemeris across all of this target's completed transit fits; individual datasets use that fit's t0/period directly (same as the Planetary Reference Ephemerides on the Ephemeris page). Click 'Fetch ephemeris' to populate datasets.">Ephemeris source</label>
+    <div class="lco-field"><label for="sch-target">Target <span class="help-tooltip" title="Target star name. Matches normalized names from muscat-db (e.g. HIP 67522, TOI-1234).">?</span></label><input id="sch-target" type="text" placeholder="WASP-12" list="target-datalist" autocomplete="off"><datalist id="target-datalist"></datalist></div>
+    <div class="lco-field"><label for="sch-planet">Planet <span class="help-tooltip" title="Planet letter identifier (e.g. b, c). Used to look up the ephemeris for this planet.">?</span></label><input id="sch-planet" type="text" placeholder="b" style="max-width: 90px;"></div>
+    <div class="lco-field"><label for="sch-source">Ephemeris source <span class="help-tooltip" title="Where t0 / period come from. 'linear fit' refines the ephemeris across all of this target's completed transit fits; individual datasets use that fit's t0/period directly (same as the Planetary Reference Ephemerides on the Ephemeris page). Click 'Fetch ephemeris' to populate datasets.">?</span></label>
       <select id="sch-source">
         <option value="">Auto</option>
         <option value="nasa">NASA catalog</option>
         <option value="toi">TOI catalog</option>
         <option value="linear">linear fit</option>
       </select></div>
-    <div class="lco-field"><label for="sch-coords">RA, Dec (deg) <span class="ephem-src none" id="src-coords">—</span></label><input id="sch-coords" type="text" placeholder="e.g. 97.64, 29.67"></div>
-    <div class="lco-field"><label for="sch-range-start">Range start (UTC)</label><input id="sch-range-start" type="date"></div>
-    <div class="lco-field"><label for="sch-range-end">Range end (UTC)</label><input id="sch-range-end" type="date"></div>
-    <div class="lco-field"><label for="sch-t0" title="BJD_TDB. Enter mean,uncertainty. Populated by Fetch ephemeris; editable.">t0 (BJD) <span class="ephem-src none" id="src-t0">—</span></label><input id="sch-t0" type="text" inputmode="decimal" placeholder="e.g. 2459000.5,0.0003"></div>
-    <div class="lco-field"><label for="sch-period">Period (days) <span class="ephem-src none" id="src-period">—</span></label><input id="sch-period" type="text" inputmode="decimal" placeholder="e.g. 1.0914,0.00001"></div>
-    <div class="lco-field"><label for="sch-duration" title="From the catalog when available; override here. Enter mean,uncertainty.">Duration (hr) <span class="ephem-src none" id="src-duration">—</span></label><input id="sch-duration" type="text" inputmode="decimal" placeholder="e.g. 2.5,0.1"></div>
-    <div class="lco-field"><label for="sch-pad-before">Pre-ingress (min)</label><input id="sch-pad-before" type="number" step="any" value="45"></div>
-    <div class="lco-field"><label for="sch-pad-after">Post-egress (min)</label><input id="sch-pad-after" type="number" step="any" value="45"></div>
-    <div class="lco-field"><label for="sch-include-padding" style="margin: 0;" title="When on, the padded baseline (start→end) must also be observable for a transit to rate 'full'. When off, padding is used only for the displayed span and the observability check spans just the transit (mid ± duration/2).">Include padding in obs check</label>
+    <div class="lco-field"><label for="sch-coords">RA, Dec (deg) <span class="ephem-src none" id="src-coords">—</span> <span class="help-tooltip" title="Target coordinates in decimal degrees (RA, Dec). Auto-filled by Fetch ephemeris from the catalog.">?</span></label><input id="sch-coords" type="text" placeholder="e.g. 97.64, 29.67"></div>
+    <div class="lco-field"><label for="sch-range-start">Range start (UTC) <span class="help-tooltip" title="Start of the scheduling search window in UTC. Only transits with mid-point inside this range are considered.">?</span></label><input id="sch-range-start" type="date"></div>
+    <div class="lco-field"><label for="sch-range-end">Range end (UTC) <span class="help-tooltip" title="End of the scheduling search window in UTC.">?</span></label><input id="sch-range-end" type="date"></div>
+    <div class="lco-field"><label for="sch-t0">t0 (BJD) <span class="ephem-src none" id="src-t0">—</span> <span class="help-tooltip" title="BJD_TDB. Enter mean,uncertainty. Populated by Fetch ephemeris; editable.">?</span></label><input id="sch-t0" type="text" inputmode="decimal" placeholder="e.g. 2459000.5,0.0003"></div>
+    <div class="lco-field"><label for="sch-period">Period (d) <span class="ephem-src none" id="src-period">—</span> <span class="help-tooltip" title="Orbital period in days. Auto-filled by Fetch ephemeris. Enter mean,uncertainty (e.g. 1.0914,0.00001).">?</span></label><input id="sch-period" type="text" inputmode="decimal" placeholder="e.g. 1.0914,0.00001"></div>
+    <div class="lco-field"><label for="sch-duration">Duration (hr) <span class="ephem-src none" id="src-duration">—</span> <span class="help-tooltip" title="From the catalog when available; override here. Enter mean,uncertainty.">?</span></label><input id="sch-duration" type="text" inputmode="decimal" placeholder="e.g. 2.5,0.1"></div>
+    <div class="lco-field"><label for="sch-pad-before">Pre-ingress (min) <span class="help-tooltip" title="Minutes to add before ingress (start of transit). Extends the scheduling window earlier to ensure baseline coverage.">?</span></label><input id="sch-pad-before" type="number" step="any" value="45"></div>
+    <div class="lco-field"><label for="sch-pad-after">Post-egress (min) <span class="help-tooltip" title="Minutes to add after egress (end of transit). Extends the scheduling window later to ensure baseline coverage.">?</span></label><input id="sch-pad-after" type="number" step="any" value="45"></div>
+    <div class="lco-field"><label for="sch-include-padding" style="margin: 0;">Include padding in obs check <span class="help-tooltip" title="When on, the padded baseline (start→end) must also be observable for a transit to rate 'full'. When off, padding is used only for the displayed span and the observability check spans just the transit (mid ± duration/2).">?</span></label>
       <input id="sch-include-padding" type="checkbox" checked></div>
   </div>
   <div class="lco-grid" style="margin-top: 0.6rem;">
     <div class="lco-field">
-      <label for="sch-sites" title="Site to evaluate for the 'Transit obs' column. 'All sites' evaluates the full LCO network; this is independent of the imaging instrument chosen below.">Site(s)</label>
+      <label for="sch-sites">Site(s) <span class="help-tooltip" title="Site to evaluate for the 'Transit obs' column. 'All sites' evaluates the full LCO network; this is independent of the imaging instrument chosen below.">?</span></label>
       <select id="sch-sites">
         <option value="">All sites</option>
         <option value="ogg">ogg (MuSCAT3, 2m)</option>
@@ -62,14 +62,14 @@
         <option value="elp">elp (1m)</option>
       </select>
     </div>
-    <div class="lco-field"><label for="sch-twilight" title="How dark it must be for a transit to count as observable.">Twilight</label>
+    <div class="lco-field"><label for="sch-twilight">Twilight <span class="help-tooltip" title="How dark it must be for a transit to count as observable.">?</span></label>
       <select id="sch-twilight">
         <option value="civil">Civil (−6°)</option>
         <option value="nautical" selected>Nautical (−12°)</option>
         <option value="astronomical">Astronomical (−18°)</option>
       </select></div>
-    <div class="lco-field"><label for="sch-obs-airmass">Max airmass</label><input id="sch-obs-airmass" type="number" step="any" value="2"></div>
-    <div class="lco-field"><label for="sch-moon-sep">Min lunar (deg)</label><input id="sch-moon-sep" type="number" step="any" value="30"></div>
+    <div class="lco-field"><label for="sch-obs-airmass">Max airmass <span class="help-tooltip" title="Maximum airmass for a transit to count as observable. Lower values mean better image quality. 2.0 is typical; 1.5 for high-precision work.">?</span></label><input id="sch-obs-airmass" type="number" step="any" value="2"></div>
+    <div class="lco-field"><label for="sch-moon-sep">Min lunar (deg) <span class="help-tooltip" title="Minimum angular distance from the Moon (degrees) for a transit to count as observable. Higher values avoid moonlight contamination.">?</span></label><input id="sch-moon-sep" type="number" step="any" value="30"></div>
     <button class="btn" type="button" id="btn-fov" title="Optimize field-of-view pointing for this target">Show FOV</button>
   </div>
   <div class="lco-actions">
@@ -100,7 +100,7 @@
     <div id="vis-plot" style="width: 100%; height: 420px; border: 1px solid var(--border); border-radius: 8px;"></div>
     <p class="lco-note" style="margin-top: 0.4rem;">
       Computed with astropy. The shaded band is the full transit; cross-check against the
-      <a id="lco-vis-link" href="#" target="_blank" rel="noopener">LCO visibility figure ↗</a>.
+      <a id="lco-vis-link" href="#" target="_blank" rel="noopener">LCO visibility figure</a>.
     </p>
   </div>
   <p class="lco-note">Windows are coarse scheduling bounds. t0 is usually BJD_TDB; the ≤8&nbsp;min barycentric offset is absorbed by the padding above.</p>
@@ -110,22 +110,22 @@
 <div class="lco-section">
   <h3>Imaging Request</h3>
   <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
-    <div class="lco-field"><label for="sch-proposal">Proposal ID</label>
+    <div class="lco-field"><label for="sch-proposal">Proposal ID <span class="help-tooltip" title="LCO proposal ID. Required for submission. Loaded from your LCO account settings.">?</span></label>
       <select id="sch-proposal">
         <option value="">none</option>
       </select>
     </div>
-    <div class="lco-field"><label for="sch-kind">Instrument</label>
+    <div class="lco-field"><label for="sch-kind">Instrument <span class="help-tooltip" title="Imaging instrument. MuSCAT (2m) has 4 simultaneous bands; Sinistro (1m) uses a single filter.">?</span></label>
       <select id="sch-kind">
         <option value="sinistro">1M0-SCICAM-SINISTRO</option>
         <option value="muscat">2M0-SCICAM-MUSCAT</option>
       </select>
     </div>
-    <div class="lco-field"><label for="sch-name">Request name</label><input id="sch-name" type="text" placeholder="WASP-12b transit"></div>
-    <div class="lco-field muscat-only"><label for="sch-count">Exp count</label>
+    <div class="lco-field"><label for="sch-name">Request name <span class="help-tooltip" title="Human-readable name for this LCO request. Shown in the observing queue.">?</span></label><input id="sch-name" type="text" placeholder="WASP-12b transit"></div>
+    <div class="lco-field muscat-only"><label for="sch-count">Exp count <span class="help-tooltip" title="Number of exposures per visit. Each exposure covers all 4 bands simultaneously.">?</span></label>
       <input id="sch-count" type="number" min="1" value="1"></div>
-    <div class="lco-field sinistro-only"><label for="sch-sin-count">Exp count</label><input id="sch-sin-count" type="number" min="1" value="1"></div>
-    <div class="lco-field"><label>Site</label>
+    <div class="lco-field sinistro-only"><label for="sch-sin-count">Exp count <span class="help-tooltip" title="Number of exposures per visit.">?</span></label><input id="sch-sin-count" type="number" min="1" value="1"></div>
+    <div class="lco-field"><label>Site <span class="help-tooltip" title="Observing site. For MuSCAT3 choose ogg (Maui) or coj (Siding Spring); for Sinistro choose any LCO 1m node.">?</span></label>
       <div class="muscat-only" style="display: none;">
         <select id="sch-muscat-site">
           <option value="">— select —</option>
@@ -146,7 +146,7 @@
       </div>
     </div>
     <div class="lco-field sinistro-only" style="display: none;">
-      <label for="sch-effective-filter">Filter</label>
+      <label for="sch-effective-filter">Filter <span class="help-tooltip" title="Sloan-like filter for Sinistro observations.">?</span></label>
       <select id="sch-effective-filter">
         <option value="rp">rp</option>
         <option value="up">up</option>
@@ -159,50 +159,51 @@
   <div class="lco-msg" id="msg-proposals" style="margin-top: 0.4rem;"></div>
 
   <div class="muscat-only" style="margin-top: 0.6rem;">
-    <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dim); margin-bottom: 0.4rem;">Exposure times per band:</div>
+    <div style="font-size: 0.85rem; font-weight: 600; text-transform: lowercase; color: var(--text-dim); margin-bottom: 0.4rem;">Exposure times per band:</div>
     <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 0.5rem 1rem;">
-      <div class="lco-field"><label for="sch-exp-g">g (s)</label><input id="sch-exp-g" type="number" step="any" placeholder="30"></div>
-      <div class="lco-field"><label for="sch-exp-r">r (s)</label><input id="sch-exp-r" type="number" step="any" placeholder="30"></div>
-      <div class="lco-field"><label for="sch-exp-i">i (s)</label><input id="sch-exp-i" type="number" step="any" placeholder="30"></div>
-      <div class="lco-field"><label for="sch-exp-z">z (s)</label><input id="sch-exp-z" type="number" step="any" placeholder="30"></div>
+      <div class="lco-field"><label for="sch-exp-g">g (s) <span class="help-tooltip" title="Exposure time in seconds for the g band.">?</span></label><input id="sch-exp-g" type="number" step="any" placeholder="30"></div>
+      <div class="lco-field"><label for="sch-exp-r">r (s) <span class="help-tooltip" title="Exposure time in seconds for the r band.">?</span></label><input id="sch-exp-r" type="number" step="any" placeholder="30"></div>
+      <div class="lco-field"><label for="sch-exp-i">i (s) <span class="help-tooltip" title="Exposure time in seconds for the i band.">?</span></label><input id="sch-exp-i" type="number" step="any" placeholder="30"></div>
+      <div class="lco-field"><label for="sch-exp-z">z (s) <span class="help-tooltip" title="Exposure time in seconds for the z band.">?</span></label><input id="sch-exp-z" type="number" step="any" placeholder="30"></div>
     </div>
     <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dim); margin-top: 0.6rem; margin-bottom: 0.4rem;">Settings:</div>
     <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.5rem 1rem;">
-      <div class="lco-field"><label for="sch-exp-mode">Exp mode</label>
+      <div class="lco-field"><label for="sch-exp-mode">Exp mode <span class="help-tooltip" title="Async returns immediately after exposure; Sync blocks until data is available.">?</span></label>
         <select id="sch-exp-mode"><option value="ASYNCHRONOUS" selected>Async</option><option value="SYNCHRONOUS">Sync</option></select></div>
-      <div class="lco-field"><label for="sch-readout">Readout mode</label><select id="sch-readout" style="font-size: 0.8rem;"><option value="MUSCAT_FAST">MUSCAT_FAST</option><option value="MUSCAT_SLOW">MUSCAT_SLOW</option></select></div>
+      <div class="lco-field"><label for="sch-readout">Readout mode <span class="help-tooltip" title="MUSCAT_FAST is faster but noisier; MUSCAT_SLOW is slower but lower read noise.">?</span></label><select id="sch-readout" style="font-size: 0.8rem;"><option value="MUSCAT_FAST">MUSCAT_FAST</option><option value="MUSCAT_SLOW">MUSCAT_SLOW</option></select></div>
     </div>
-    <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dim); margin-top: 0.6rem; margin-bottom: 0.4rem;">Narrowband filters:</div>
+    <div style="font-size: 0.85rem; font-weight: 600; text-transform: lowercase; color: var(--text-dim); margin-top: 0.6rem; margin-bottom: 0.4rem;">Narrowband filters:</div>
     <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap: 0.5rem 1rem;">
-      <div class="lco-field"><label for="sch-nb-g">gp</label><select id="sch-nb-g"><option value="out">out</option><option value="in">in</option></select></div>
-      <div class="lco-field"><label for="sch-nb-r">rp</label><select id="sch-nb-r"><option value="out">out</option><option value="in">in</option></select></div>
-      <div class="lco-field"><label for="sch-nb-i">ip</label><select id="sch-nb-i"><option value="out">out</option><option value="in">in</option></select></div>
-      <div class="lco-field"><label for="sch-nb-z">zs</label><select id="sch-nb-z"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-g">gp <span class="help-tooltip" title="gp narrowband filter: in or out of the beam.">?</span></label><select id="sch-nb-g"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-r">rp <span class="help-tooltip" title="rp narrowband filter: in or out of the beam.">?</span></label><select id="sch-nb-r"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-i">ip <span class="help-tooltip" title="ip narrowband filter: in or out of the beam.">?</span></label><select id="sch-nb-i"><option value="out">out</option><option value="in">in</option></select></div>
+      <div class="lco-field"><label for="sch-nb-z">zs <span class="help-tooltip" title="zs narrowband filter: in or out of the beam.">?</span></label><select id="sch-nb-z"><option value="out">out</option><option value="in">in</option></select></div>
     </div>
   </div>
 
   <div class="lco-grid" style="margin-top: 0.6rem; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
-    <div class="lco-field"><label for="sch-ipp">IPP value</label><input id="sch-ipp" type="number" step="any" value="1.0"></div>
-    <div class="lco-field"><label for="sch-type">Type</label>
+    <div class="lco-field"><label for="sch-ipp">IPP value <span class="help-tooltip" title="Observing Priority Parity. Higher values (e.g. 2.0) increase priority in the LCO queue. Default is 1.0.">?</span></label><input id="sch-ipp" type="number" step="any" value="1.0"></div>
+    <div class="lco-field"><label for="sch-type">Type <span class="help-tooltip" title="REPEAT_EXPOSE runs the exposure sequence once per visit. EXPOSE runs a single exposure.">?</span></label>
       <select id="sch-type">
         <option value="REPEAT_EXPOSE">REPEAT_EXPOSE</option>
         <option value="EXPOSE">EXPOSE</option>
       </select>
     </div>
-    <div class="lco-field"><label for="sch-observation-type">Obs type</label>
+    <div class="lco-field"><label for="sch-observation-type">Obs type <span class="help-tooltip" title="TIME_CRITICAL requests get higher priority but may not fill the queue. NORMAL requests fill gaps.">?</span></label>
       <select id="sch-observation-type">
         <option value="NORMAL">NORMAL</option>
         <option value="TIME_CRITICAL">TIME_CRITICAL</option>
       </select>
     </div>
-    <div class="lco-field"><label for="sch-guiding-config">Guiding</label>
+    <div class="lco-field"><label for="sch-guiding-config">Guiding <span class="help-tooltip" title="Guide star acquisition: ON uses the guider for precise tracking; OFF uses blind offsets.">?</span></label>
       <select id="sch-guiding-config">
         <option value="ON">ON</option>
-        <option value="OFF">OFF</option>
+        <option value="OFF" selected>OFF</option>
       </select>
     </div>
-    <div class="lco-field sinistro-only"><label for="sch-effective-exptime">Exp time (s)</label><input id="sch-effective-exptime" type="text" inputmode="decimal" placeholder="60"></div>
-    <div class="lco-field sinistro-only"><label for="sch-effective-mode">Readout</label>
+    <div class="lco-field"><label for="sch-defocus">Defocus (mm) <span class="help-tooltip" id="hint-defocus" title="Secondary-mirror offset from focus, in mm, to prevent CCD saturation on bright targets. 0 = focused. Limits: ±8mm for MuSCAT, ±5mm for Sinistro.">?</span></label><input id="sch-defocus" type="number" step="any" value="0" min="-8" max="8"></div>
+    <div class="lco-field sinistro-only"><label for="sch-effective-exptime">Exp time (s) <span class="help-tooltip" title="Exposure time in seconds for Sinistro observations.">?</span></label><input id="sch-effective-exptime" type="text" inputmode="decimal" placeholder="60"></div>
+    <div class="lco-field sinistro-only"><label for="sch-effective-mode">Readout <span class="help-tooltip" title="Readout mode for Sinistro: 2k 2x2 uses central CCD region; full uses entire frame.">?</span></label>
       <select id="sch-effective-mode">
         <option value="central_2k_2x2">2k 2x2</option>
         <option value="full_frame">full</option>
@@ -211,15 +212,29 @@
   </div>
   <div class="lco-actions">
     <button class="btn" type="button" id="btn-exp" title="Calculate exposure times for this target">Show Exp</button>
+    <button class="btn" type="button" id="btn-test-observation" title="Plan a guarded closed-loop test observation">Test observation</button>
+    <div class="lco-field" style="max-width: 150px;"><label for="sch-test-budget">Test budget (s) <span class="help-tooltip" title="Maximum cumulative exposure time for the test observation, in seconds. Candidate exposures beyond this budget are dropped from the plan. Excludes acquisition/readout.">?</span></label><input id="sch-test-budget" type="number" min="1" step="1" value="600"></div>
   </div>
   <p class="lco-note">These scheduling inputs are separate from the archive page.</p>
 </div>
+
+<dialog id="test-observation-dialog" style="max-width: 850px; width: 92%;">
+  <h3>Test observation review</h3>
+  <p class="lco-note">Exposure budget excludes acquisition/readout. Review all removed combinations and warnings before validation.</p>
+  <pre id="test-observation-summary" class="lco-pre" style="max-height: 55vh; overflow: auto; white-space: pre-wrap;"></pre>
+  <div class="lco-msg" id="msg-test-observation"></div>
+  <div class="lco-actions">
+    <button class="btn primary" type="button" id="btn-test-dry-run">Check settings</button>
+    <button class="btn danger" type="button" id="btn-test-submit" disabled>Submit TEST</button>
+    <button class="btn" type="button" id="btn-test-close">Close</button>
+  </div>
+</dialog>
 
 <div class="lco-section" id="split-section" style="display: none;">
   <h3>Split Request (two-site relay)</h3>
   <p class="lco-note" id="split-note"></p>
   <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
-    <div class="lco-field"><label for="sch-site-a">Leg A site (ingress)</label>
+    <div class="lco-field"><label for="sch-site-a">Leg A site (ingress) <span class="help-tooltip" title="LCO site for the ingress leg of a split relay request. Choose a site where ingress is observable.">?</span></label>
       <select id="sch-site-a">
         <option value="">— select —</option>
         <option value="ogg">ogg</option>
@@ -230,7 +245,7 @@
         <option value="elp">elp</option>
       </select>
     </div>
-    <div class="lco-field"><label for="sch-site-b">Leg B site (egress)</label>
+    <div class="lco-field"><label for="sch-site-b">Leg B site (egress) <span class="help-tooltip" title="LCO site for the egress leg of a split relay request. Choose a site where egress is observable.">?</span></label>
       <select id="sch-site-b">
         <option value="">— select —</option>
         <option value="ogg">ogg</option>
@@ -325,6 +340,11 @@
     e.className = 'lco-msg' + (kind ? ' ' + kind : '');
   }
 
+  function updateGenWindowsButtonState() {
+    el('btn-gen-windows').disabled = !val('sch-coords');
+  }
+  el('sch-coords').addEventListener('input', updateGenWindowsButtonState);
+
   // --- Ephemeris field provenance -----------------------------------------
   // These four fields are target-scoped: their value only makes sense for the
   // target it was resolved for. We track which target the current values belong
@@ -351,6 +371,7 @@
   }
   function clearEphemFields() {
     EPHEM_FIELDS.forEach(function (id) { setVal(id, ''); setFieldSource(id, ''); });
+    updateGenWindowsButtonState();
   }
   function parseTupleValue(raw) {
     var s = (raw || '').trim();
@@ -393,9 +414,9 @@
     'sch-kind','sch-name','sch-count','sch-exp-g','sch-exp-r','sch-exp-i','sch-exp-z',
     'sch-exp-mode','sch-readout','sch-muscat-site','sch-nb-g','sch-nb-r','sch-nb-i','sch-nb-z',
     'sch-sin-count','sch-site','sch-site-a','sch-site-b',
-    'sch-type','sch-observation-type','sch-guiding-config',
+    'sch-type','sch-observation-type','sch-guiding-config','sch-defocus',
     'sch-effective-filter','sch-effective-exptime','sch-effective-mode',
-    'sch-obs-airmass','sch-moon-sep','sch-ipp'
+    'sch-obs-airmass','sch-moon-sep','sch-ipp','sch-test-budget'
   ];
 
   var CHECK_IDS = ['sch-include-padding'];
@@ -606,6 +627,20 @@
     }
   }
 
+  function updateDefocusLimits() {
+    var muscat = val('sch-kind') !== 'sinistro';
+    var limit = muscat ? 8 : 5;
+    var defocusEl = el('sch-defocus');
+    var hint = el('hint-defocus');
+    if (defocusEl) {
+      defocusEl.min = -limit;
+      defocusEl.max = limit;
+      var current = num('sch-defocus');
+      if (current !== null && Math.abs(current) > limit) setVal('sch-defocus', 0);
+    }
+    if (hint) hint.title = 'Secondary-mirror offset from focus, in mm, to prevent CCD saturation on bright targets. 0 = focused. Limit for this instrument: ±' + limit + 'mm.';
+  }
+
   function applyKind() {
     var k = val('sch-kind');
     var muscat = k === 'muscat' || k === 'muscat3' || k === 'muscat4';
@@ -613,15 +648,15 @@
     if (!prevMuscat) rememberSinistroFields();
     document.querySelectorAll('.muscat-only').forEach(function (e) { e.style.display = muscat ? 'block' : 'none'; });
     document.querySelectorAll('.sinistro-only').forEach(function (e) { e.style.display = muscat ? 'none' : 'block'; });
+    updateDefocusLimits();
     var effExp = el('sch-effective-exptime');
     var effMode = el('sch-effective-mode');
     var effFilter = el('sch-effective-filter');
     if (effExp) effExp.readOnly = muscat;
     if (effMode) effMode.disabled = muscat;
     if (effFilter) effFilter.disabled = muscat;
-    if (muscat) {
-      setSelectValue('sch-guiding-config', 'OFF');
-    } else {
+    setSelectValue('sch-guiding-config', 'OFF');
+    if (!muscat) {
       if (effMode) {
         effMode.innerHTML = 
           '<option value="central_2k_2x2">central_2k_2x2</option>' +
@@ -759,6 +794,7 @@
     }
     setVal('sch-coords', coords.ra.toFixed(5) + ', ' + coords.dec.toFixed(5));
     setFieldSource('sch-coords', String(coords.source || 'catalog').toUpperCase());
+    updateGenWindowsButtonState();
     saveOptions();
   }
 
@@ -1556,7 +1592,8 @@
       twilight: val('sch-twilight'),
       type: val('sch-type'),
       observation_type: val('sch-observation-type'),
-      guiding_config: val('sch-guiding-config')
+      guiding_config: val('sch-guiding-config'),
+      defocus: num('sch-defocus')
     };
     if (kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4') {
       p.exposure_times = {};
@@ -1914,6 +1951,66 @@
     window.location.href = url;
   });
 
+  var currentTestRecord = null;
+  var currentTestHash = null;
+  function testKind(params) {
+    if (params.kind === 'sinistro') return 'sinistro';
+    if (params.site === 'ogg') return 'muscat3';
+    if (params.site === 'coj') return 'muscat4';
+    return '';
+  }
+  el('btn-test-observation').addEventListener('click', function () {
+    var p = buildParams();
+    p.kind = testKind(p);
+    if (!p.kind) { showMessageModal('Unsupported test', 'Select MuSCAT site OGG (MuSCAT3), COJ (MuSCAT4), or Sinistro.'); return; }
+    if (!p.target_name || p.ra === null || p.dec === null || !p.windows.length) {
+      showMessageModal('Incomplete schedule', 'Enter a target and coordinates, then select a transit window.'); return;
+    }
+    p.exposure_budget_s = num('sch-test-budget') || 600;
+    p.defocus_mm = p.defocus;
+    p.test_window = p.windows[0];
+    p.transit = { planet: val('sch-planet'), t0: val('sch-t0'), period: val('sch-period'), duration_h: val('sch-duration') };
+    p.provenance = { schedule_state: 'lco_schedule', assumed_airmass: p.max_airmass, lunar_distance_deg: p.min_lunar_distance };
+    msg('msg-test-observation', 'Optimizing FOV and generating plan…');
+    fetch('/api/lco/test-observations/plan', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(p) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) throw new Error(d.error || 'Could not generate test plan');
+        currentTestRecord = d.record; currentTestHash = null;
+        el('btn-test-submit').disabled = true;
+        el('test-observation-summary').textContent = JSON.stringify(d.record.plan, null, 2);
+        msg('msg-test-observation', 'Draft generated. Review before checking settings.');
+        el('test-observation-dialog').showModal();
+      }).catch(function (e) { showMessageModal('Test plan failed', String(e)); });
+  });
+  el('btn-test-close').addEventListener('click', function () { el('test-observation-dialog').close(); });
+  // Clicking the backdrop hits the <dialog> element itself (its content sits
+  // in child elements), so a click whose target is the dialog itself is
+  // outside the visible panel.
+  el('test-observation-dialog').addEventListener('click', function (e) {
+    if (e.target === e.currentTarget) e.currentTarget.close();
+  });
+  el('btn-test-dry-run').addEventListener('click', function () {
+    if (!currentTestRecord) return;
+    var p = buildParams(); p.kind = currentTestRecord.instrument;
+    msg('msg-test-observation', 'Running guarded LCO dry-run…');
+    fetch('/api/lco/test-observations/' + encodeURIComponent(currentTestRecord.id) + '/ipp', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(p) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) throw new Error(d.error || 'Validation failed');
+        currentTestHash = d.payload_hash; el('btn-test-submit').disabled = false;
+        msg('msg-test-observation', 'Validated · hash ' + currentTestHash.slice(0, 12));
+      }).catch(function (e) { currentTestHash = null; el('btn-test-submit').disabled = true; msg('msg-test-observation', String(e), 'err'); });
+  });
+  el('btn-test-submit').addEventListener('click', function () {
+    if (!currentTestRecord || !currentTestHash) return;
+    showConfirmModal('Submit TEST observation?', 'This books the displayed telescope time and requires server-side live submission to be enabled.', {confirmLabel: 'Submit TEST', confirmClass: 'btn danger'}).then(function (confirmed) {
+      if (!confirmed) return;
+      var p = buildParams(); p.kind = currentTestRecord.instrument; p.confirm = true; p.dry_run_hash = currentTestHash;
+      fetch('/api/lco/test-observations/' + encodeURIComponent(currentTestRecord.id) + '/submit', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(p) })
+        .then(function (r) { return r.json(); }).then(function (d) { if (!d.ok) throw new Error(d.error || 'Submission failed'); msg('msg-test-observation', 'Submitted successfully.'); el('btn-test-submit').disabled = true; })
+        .catch(function (e) { msg('msg-test-observation', String(e), 'err'); });
+    });
+  });
+
   // An explicit ?target= is a deliberate navigation from another page (ephemeris,
   // target, …) and must win over the target restored from localStorage. Returns
   // true when it replaced the restored one, so the caller knows the restored
@@ -1940,8 +2037,19 @@
     }).catch(function () {});
   }
 
+  fetch('/api/ephemeris/targets').then(function (r) { return r.json(); }).then(function (res) {
+    if (res.ok && res.targets) {
+      var dl = document.getElementById('target-datalist');
+      res.targets.forEach(function (t) {
+        var opt = document.createElement('option');
+        opt.value = t;
+        dl.appendChild(opt);
+      });
+    }
+  }).catch(function () {});
   loadProposals();
   restoreOptions();
+  updateGenWindowsButtonState();
   ensureDefaultRange();
   applyKind();
   updateScheduleFields();

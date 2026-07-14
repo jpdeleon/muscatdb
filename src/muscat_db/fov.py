@@ -166,6 +166,14 @@ DEFAULT_PA_STEP_DEG = 15.0
 # candidates, so off-center pointings still see their neighbourhood.
 QUERY_RADIUS_FACTOR = 1.6
 
+# How many in-field stars to report in FovResult.brightest_in_field, sorted
+# by Gmag ascending, *before* comparison-usefulness weighting is applied.
+# This exists because the weighted `comps` list can exclude the very stars
+# most likely to cap the exposure time: BRIGHT_PENALTY/WEIGHT_FLOOR and the
+# caller's own mag_min filter can all push a bright, saturation-risky star
+# out of `comps` even though it still physically lands in the footprint.
+BRIGHTEST_IN_FIELD_N = 5
+
 
 # ===========================================================================
 # Footprint geometry
@@ -690,6 +698,11 @@ class FovResult:
     comps: list[dict] = field(default_factory=list)
     n_comps: int = 0
     total_weight: float = 0.0
+    # Top BRIGHTEST_IN_FIELD_N in-field stars by Gmag ascending, independent
+    # of comparison-usefulness weighting (see BRIGHTEST_IN_FIELD_N docstring).
+    # Same per-star dict shape as `comps` (plus "weight", which may be 0 for
+    # a star that was excluded from `comps`).
+    brightest_in_field: list[dict] = field(default_factory=list)
     catalog: str = "Gaia DR3"
     avoid_mag: float | None = None
     n_avoided: int = 0
@@ -947,6 +960,32 @@ def optimize(
     res.comps = comps
     res.n_comps = len(comps)
     res.total_weight = round(float(weights[in_field].sum()), 2)
+
+    # --- brightest in-field stars, regardless of comparison weight ---
+    # Unlike `comps` this ignores weights/mag filters entirely: any star
+    # physically inside the winning footprint (other than the target) is a
+    # saturation-risk candidate the exposure calculator needs to know about.
+    bright_mask = sol.in_field.copy()
+    if t_idx is not None:
+        bright_mask[t_idx] = False
+    bright_idx = np.where(bright_mask)[0]
+    bright_idx = bright_idx[np.argsort(stars.gmag[bright_idx])][:BRIGHTEST_IN_FIELD_N]
+    brightest_in_field = []
+    for i in bright_idx:
+        brightest_in_field.append(
+            {
+                "ra": float(stars.ra[i]),
+                "dec": float(stars.dec[i]),
+                "gmag": float(stars.gmag[i]),
+                "bp_rp": (float(stars.bp_rp[i]) if np.isfinite(stars.bp_rp[i]) else None),
+                "weight": round(float(weights[i]), 3),
+                "dmag": round(float(stars.gmag[i] - res.target_gmag), 2),
+                "sep_arcsec": round(float(math.hypot(east[i], north[i])), 1),
+                "pmra": _pm_at(stars.pmra, i, n_stars),
+                "pmdec": _pm_at(stars.pmdec, i, n_stars),
+            }
+        )
+    res.brightest_in_field = brightest_in_field
 
     # --- too-bright stars the field was steered around (for display) ---
     avoided = []

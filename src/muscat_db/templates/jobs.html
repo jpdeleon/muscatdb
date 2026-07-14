@@ -22,7 +22,7 @@
     {% set link_url -%}
       {%- if j.type == 'photometry' -%}/photometry?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}{% if j.run_id %}&run={{ j.run_id }}{% endif %}
       {%- elif j.type == 'transit_fit' -%}/transit-fit?inst={{ j.inst }}&date={{ j.date }}&target={{ j.target | urlencode }}{% if j.run_id %}&run={{ j.run_id }}{% endif %}
-      {%- elif j.type == 'ttv_fit' -%}/ephemeris?targets={{ j.target | urlencode }}
+      {%- elif j.type == 'ttv_fit' -%}/ephemeris?targets={{ j.target | urlencode }}{% if j.run_id %}&run={{ j.run_id }}{% endif %}
       {%- else -%}/lco/archive
       {%- endif -%}
     {%- endset %}
@@ -54,11 +54,11 @@
       <td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ j.run_name or '' }}">
         {{ j.run_name or ('default' if j.type == 'ttv_fit' else '—') }}
       </td>
+      {% if j.type != 'ttv_fit' %}
       <td class="inst-cell"><span class="badge badge-blue">{{ j.inst }}</span></td>
+      {% endif %}
       {% if j.type != 'ttv_fit' %}
       <td class="mono">{{ j.date }}</td>
-      {% else %}
-      <td class="mono">—</td>
       {% endif %}
       <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">{{ j.user_name or '—' }}</td>
       <td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">
@@ -132,7 +132,7 @@
       {% endif %}
     </tr>
     <tr class="log-row" style="display:none;">
-      <td colspan="11">
+      <td colspan="{% if j.type == 'ttv_fit' %}8{% else %}10{% endif %}">
         <pre class="log-content">Loading…</pre>
       </td>
     </tr>
@@ -216,8 +216,6 @@
       <tr>
         <th data-sort-attr="target" class="sortable">Target</th>
         <th data-sort-attr="run_name" class="sortable">Run Name</th>
-        <th data-sort-attr="instrument" class="sortable">Instrument</th>
-        <th data-sort-attr="obsdate" class="sortable">Date Obs</th>
         <th data-sort-attr="userName" class="sortable">User</th>
         <th data-sort-attr="startedAt" data-sort-type="number" class="sortable">Date Run</th>
         <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
@@ -255,7 +253,7 @@
     <tbody>
       {{ render_job_rows(lco_archive_jobs) }}
       <tr class="empty-job-row" data-empty-for="lco_archive_download" {% if lco_archive_jobs %}style="display:none;"{% endif %}>
-        <td colspan="11" style="color:var(--text-dim);text-align:center;padding:1rem;">
+        <td colspan="10" style="color:var(--text-dim);text-align:center;padding:1rem;">
           No LCO archive downloads are currently tracked in this server process.
         </td>
       </tr>
@@ -678,7 +676,17 @@
     var date   = btn.getAttribute('data-date');
     var target = btn.getAttribute('data-target');
     var runId  = btn.getAttribute('data-run') || '';
-    var url    = type === 'transit_fit' ? '/api/transit-fit/cancel' : (type === 'ttv_fit' ? '/api/ttv-fit/cancel' : '/api/photometry/cancel');
+    var url, body;
+    if (type === 'ttv_fit') {
+      url = '/api/ttv-fit/cancel';
+      body = JSON.stringify({ target: target, run_name: runId });
+    } else if (type === 'transit_fit') {
+      url = '/api/transit-fit/cancel';
+      body = JSON.stringify({ inst: inst, date: date, target: target, run_id: runId });
+    } else {
+      url = '/api/photometry/cancel';
+      body = JSON.stringify({ inst: inst, date: date, target: target, run_id: runId });
+    }
 
     btn.disabled = true;
     btn.innerText = 'Cancelling…';
@@ -686,7 +694,7 @@
     fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })
+      body: body
     })
     .then(function(r) { if (!r.ok) return r.json().then(function(e) { throw new Error(e.error || 'Failed'); }); return r.json(); })
     .then(function() {
@@ -751,8 +759,14 @@
 
     logRow.style.display = '';
     pre.textContent = 'Loading…';
-    var url = '/api/jobs/log/' + encodeURIComponent(type) + '/' + encodeURIComponent(inst) + '/' + encodeURIComponent(date) + '/' + encodeURIComponent(target);
-    if (runId) url += '?run=' + encodeURIComponent(runId);
+    var url;
+    if (type === 'ttv_fit') {
+      url = '/api/jobs/ttv-log/' + encodeURIComponent(target);
+      if (runId) url += '?run=' + encodeURIComponent(runId);
+    } else {
+      url = '/api/jobs/log/' + encodeURIComponent(type) + '/' + encodeURIComponent(inst) + '/' + encodeURIComponent(date) + '/' + encodeURIComponent(target);
+      if (runId) url += '?run=' + encodeURIComponent(runId);
+    }
     fetch(url)
       .then(function(r) { if (!r.ok) throw new Error('Log not found'); return r.text(); })
       .then(function(text) { pre.textContent = text; })

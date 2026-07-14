@@ -30,14 +30,14 @@
   }
   .fov-actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-top: 0.9rem; }
   button.fov-btn {
-    background: var(--accent); color: #06121b; border: none; border-radius: 8px;
+    background: var(--accent); color: var(--bg); border: none; border-radius: 8px;
     padding: 0.55rem 1.1rem; font-size: 0.9rem; font-weight: 600; cursor: pointer; font-family: inherit;
   }
   button.fov-btn[disabled] { opacity: 0.55; cursor: progress; }
   button.fov-btn.ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
   .fov-msg { font-size: 0.82rem; margin-top: 0.6rem; min-height: 1em; }
-  .fov-msg.err { color: #e07b53; }
-  .fov-msg.ok { color: #2ecc71; }
+  .fov-msg.err { color: var(--red); }
+  .fov-msg.ok { color: var(--green); }
 
   .fov-summary { display: grid; gap: 0.6rem 1rem; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   .fov-stat { display: flex; flex-direction: column; gap: 0.15rem; }
@@ -90,14 +90,14 @@
       <h3>Target &amp; Instrument</h3>
       <div class="fov-grid">
         <div class="fov-field" style="grid-column: span 1;">
-          <label for="fov-target">Target name</label>
+          <label for="fov-target">Target name <span class="help-tooltip" title="Name of the target star, resolved by Sesame.">?</span></label>
           <input id="fov-target" type="text" placeholder="e.g. WASP-12" value="{{ sel_target }}">
         </div>
         <div class="fov-field" style="display: flex; align-items: flex-end;">
           <button id="fov-resolve" class="fov-btn ghost" type="button" title="Look up RA/Dec for the target name">Resolve</button>
         </div>
         <div class="fov-field">
-          <label for="fov-inst">Instrument</label>
+          <label for="fov-inst">Instrument <span class="help-tooltip" title="The instrument to use for the observation. The FOV size is determined by the instrument.">?</span></label>
           <select id="fov-inst">
             {% for name in instruments %}
             <option value="{{ name }}"{% if name == sel_inst %} selected{% endif %}>{{ name }} ({{ fov_sizes[name] }}′)</option>
@@ -105,34 +105,34 @@
           </select>
         </div>
         <div class="fov-field" id="fov-readout-mode-field">
-          <label for="fov-sinistro-mode">Readout mode</label>
+          <label for="fov-sinistro-mode">Readout mode <span class="help-tooltip" title="The readout mode of the instrument.">?</span></label>
           <select id="fov-sinistro-mode">
             {% for mode in readout_modes.get(sel_inst or instruments[0], [{"value": "MUSCAT_FAST", "label": "MUSCAT_FAST"}]) %}
             <option value="{{ mode.value }}">{{ mode.label }}</option>
             {% endfor %}
           </select>
         </div>
-        <div class="fov-field"><label for="fov-ra">RA (deg)</label><input id="fov-ra" type="text" inputmode="decimal" placeholder="optional"></div>
-        <div class="fov-field"><label for="fov-dec">Dec (deg)</label><input id="fov-dec" type="text" inputmode="decimal" placeholder="optional"></div>
-        <div class="fov-field"><label for="fov-margin" title="Keep the target at least this far from any field edge.">Target margin (″)</label><input id="fov-margin" type="number" step="any" value="30"></div>
-        <div class="fov-field"><label for="fov-comp-margin" title="Keep comparisons at least this far from any field edge. Leave empty to use target margin.">Comp margin (″)</label><input id="fov-comp-margin" type="number" step="any" placeholder="(use target)"></div>
+        <div class="fov-field"><label for="fov-ra">RA (deg) <span class="help-tooltip" title="Right Ascension of the target in degrees. Can be looked up by resolving the target name.">?</span></label><input id="fov-ra" type="text" inputmode="decimal" placeholder="optional"></div>
+        <div class="fov-field"><label for="fov-dec">Dec (deg) <span class="help-tooltip" title="Declination of the target in degrees. Can be looked up by resolving the target name.">?</span></label><input id="fov-dec" type="text" inputmode="decimal" placeholder="optional"></div>
+        <div class="fov-field"><label for="fov-margin">Target margin (″) <span class="help-tooltip" title="Keep the target at least this far from any field edge.">?</span></label><input id="fov-margin" type="number" step="any" value="30"></div>
+        <div class="fov-field"><label for="fov-comp-margin">Comp margin (″) <span class="help-tooltip" title="Keep comparisons at least this far from any field edge. Leave empty to use target margin.">?</span></label><input id="fov-comp-margin" type="number" step="any" placeholder="(use target)"></div>
         <div class="fov-field">
-          <label for="fov-mag-mode">Mag filter mode</label>
+          <label for="fov-mag-mode">Mag filter mode <span class="help-tooltip" title="Filter comparison candidates by magnitude, either with absolute limits or relative to the target's G-band magnitude.">?</span></label>
           <select id="fov-mag-mode">
             <option value="absolute">Absolute limits</option>
             <option value="relative">Delta Gmag (relative)</option>
           </select>
         </div>
         <div class="fov-field" id="fov-mag-range-field">
-          <label for="fov-mag-range" title="Brighter and faint Gmag limits for comparison candidates, separated by a comma (min, max).">Gmag range (min, max)</label>
+          <label for="fov-mag-range">Gmag range (min, max) <span class="help-tooltip" title="Brighter and faint Gmag limits for comparison candidates, separated by a comma (min, max).">?</span></label>
           <input id="fov-mag-range" type="text" placeholder="e.g. 10, 18" value="10, 18">
         </div>
         <div class="fov-field" id="fov-mag-delta-field" style="display: none;">
-          <label for="fov-mag-delta" title="Keep comps within this delta magnitude of the target (target G ± delta).">Delta Gmag</label>
+          <label for="fov-mag-delta">Delta Gmag <span class="help-tooltip" title="Keep comps within this delta magnitude of the target (target G ± delta).">?</span></label>
           <input id="fov-mag-delta" type="number" step="any" value="3">
         </div>
         <div class="fov-field">
-          <label for="fov-avoid-mag" title="Reject any pointing whose footprint contains a star brighter than this Gmag (saturation, bleeding, scattered light). The science target is exempt. Leave empty to disable.">Avoid brighter than (Gmag)</label>
+          <label for="fov-avoid-mag">Avoid brighter than (Gmag) <span class="help-tooltip" title="Reject any pointing whose footprint contains a star brighter than this Gmag (saturation, bleeding, scattered light). The science target is exempt. Leave empty to disable.">?</span></label>
           <input id="fov-avoid-mag" type="number" step="any" placeholder="(off)">
         </div>
       </div>
@@ -163,8 +163,10 @@
       </div>
       <div class="fov-actions">
         <button id="fov-copy-center" class="fov-btn ghost" type="button" title="Copy field center coordinates as RA, Dec">Copy FOV center</button>
+        <button id="fov-check-saturation" class="fov-btn ghost" type="button" style="display: none;" title="Send the target and brightest in-field stars to the Exposure Calculator to check whether any of them would saturate">Check saturation in Exp Calc &rarr;</button>
       </div>
       <div class="fov-note" id="r-note"></div>
+      <div class="fov-note" id="r-bright-note" style="display: none;"></div>
     </div>
 
   </div>
@@ -361,6 +363,21 @@
     }
     $('r-note').textContent = note;
     $('fov-results').style.display = '';
+
+    // --- brightest in-field star advisory + Exp Calc handoff ---
+    const brightest = result.brightest_in_field || [];
+    const brightNote = $('r-bright-note');
+    const satBtn = $('fov-check-saturation');
+    if (brightest.length) {
+      const b0 = brightest[0];
+      brightNote.textContent = `Brightest in-field star: Gmag ${b0.gmag.toFixed(2)}, ${b0.sep_arcsec.toFixed(0)}″ away` +
+        (b0.dmag < 0 ? ` (${Math.abs(b0.dmag).toFixed(1)} mag brighter than the target — may cap the exposure).` : '.');
+      brightNote.style.display = '';
+      satBtn.style.display = '';
+    } else {
+      brightNote.style.display = 'none';
+      satBtn.style.display = 'none';
+    }
 
     // --- comparison table ---
     const body = $('fov-comps-body');
@@ -811,6 +828,40 @@
     });
   }
 
+  // How many brightest in-field stars to hand off to the Exposure Calculator.
+  // The backend reports up to BRIGHTEST_IN_FIELD_N (5); we only send the
+  // top few so the Exp Calc page doesn't fire off a pile of catalog lookups
+  // for stars unlikely to matter.
+  const COMP_HANDOFF_N = 3;
+  const COMP_HANDOFF_KEY = 'fov.compHandoff.v1';
+
+  function checkSaturationInExpCalc() {
+    if (!lastResult) {
+      setMsg('Run an optimization first.', 'err');
+      return;
+    }
+    const inst = $('fov-inst').value;
+    const payload = {
+      target: lastResult.target || '',
+      ra: lastResult.ra,
+      dec: lastResult.dec,
+      instrument: inst,
+      sinistro_mode: inst === 'sinistro' ? $('fov-sinistro-mode').value : null,
+      comps: (lastResult.brightest_in_field || []).slice(0, COMP_HANDOFF_N),
+    };
+    try {
+      sessionStorage.setItem(COMP_HANDOFF_KEY, JSON.stringify(payload));
+    } catch (e) {
+      setMsg('Could not stash comparison stars for handoff: ' + e, 'err');
+      return;
+    }
+    const sp = new URLSearchParams();
+    if (inst) sp.set('inst', inst);
+    if (payload.target) sp.set('target', payload.target);
+    sp.set('fromFov', '1');
+    window.location.href = '/exposure?' + sp.toString();
+  }
+
   function copyFovCenter() {
     if (!lastResult) {
       setMsg('Run an optimization first.', 'err');
@@ -836,6 +887,7 @@
   $('fov-resolve').addEventListener('click', resolveTarget);
   $('fov-reset-view').addEventListener('click', () => recenter(lastResult));
   $('fov-copy-center').addEventListener('click', copyFovCenter);
+  $('fov-check-saturation').addEventListener('click', checkSaturationInExpCalc);
   $('fov-inst').addEventListener('change', () => updateReadoutModeOptions($('fov-inst').value));
   $('fov-dec').addEventListener('change', updateInstrumentAvailability);
   $('fov-target').addEventListener('keydown', (e) => { if (e.key === 'Enter') resolveTarget(); });

@@ -198,7 +198,7 @@ def scan_all(
         console.print("[yellow]No new dates found[/]")
 
 
-@app.command(cls=_Cmd)
+@app.command(name="scan-yesterday", cls=_Cmd)
 def scan_yesterday_cmd(
     workers: int | None = _WORKER_OPTION,
 ):

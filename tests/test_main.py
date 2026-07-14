@@ -74,7 +74,7 @@ def tmp_data(monkeypatch):
     td = tempfile.mkdtemp()
     patched = {}
     for name, cfg in INSTRUMENTS.items():
-        patched[name] = replace(cfg, data_dir=f"{td}/{name}")
+        patched[name] = replace(cfg, data_subdir=f"{td}/{name}")
     for m in _INST_MODULES:
         monkeypatch.setattr(f"{m}.INSTRUMENTS", patched)
     yield td
@@ -844,7 +844,7 @@ class TestCLI:
 
     def test_all_commands_have_help(self):
         for cmd in ["scan", "scan-missing", "scan-all",
-                      "scan-yesterday-cmd", "summary",
+                      "scan-yesterday", "summary",
                       "ingest-date",
                       "build-db", "serve"]:
             r = self._invoke(cmd, "--help")

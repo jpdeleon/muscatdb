@@ -48,6 +48,13 @@ body {
 }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
+/* Bare links advertise whether their destination downloads or opens separately.
+   Buttons are excluded: their label/icon is part of the control design. */
+a:not(.btn)[download]::before { content: "⬇ "; }
+a:not(.btn)[target="_blank"]::after { content: " ↗"; }
+/* Figure previews already communicate their destination visually. */
+figure a[download]::before,
+figure a[target="_blank"]::after { content: none; }
 h1 { font-size: 1.5rem; font-weight: 600; margin-bottom: 1.5rem; }
 h2 { font-size: 1.15rem; font-weight: 500; margin-bottom: 1rem; color: var(--text-dim); }
 .mono { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.8rem; }
@@ -101,9 +108,25 @@ nav .spacer { flex: 1; }
 .card .meta  { font-size: 0.85rem; color: var(--text-dim); margin-top: 0.35rem; }
 
 /* ---------- Tables ---------- */
-table {
+table:not(#toi-table):not(#nx-table) {
   width: 100%; border-collapse: collapse; margin: 1rem 0;
   font-size: 0.85rem;
+}
+/* Catalog tables should use their intrinsic column widths. Their .csv-wrap
+   containers provide horizontal scrolling instead of squeezing/truncating
+   headers and values into the viewport width. */
+#toi-table, #nx-table {
+  width: max-content;
+  table-layout: auto;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 0.85rem;
+}
+#toi-table th, #toi-table td,
+#nx-table th, #nx-table td {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
 }
 table.resizable-init { table-layout: fixed; }
 .csv-wrap { overflow-x: auto; margin-top: 0.5rem; }
@@ -466,7 +489,7 @@ tr.filter-row th input::placeholder { color: var(--text-dim); font-style: italic
   cursor: pointer; font-size: 0.85rem; color: var(--text);
   white-space: nowrap;
 }
-.opt-check-item input { cursor: pointer; }
+.opt-check-item input, .opt-check-item select { cursor: pointer; }
 
 /* Heading that spans a full .opt-grid row. */
 .opt-section-title {
@@ -887,6 +910,29 @@ th.drag-over-right {
   gap: 0.5rem;
   justify-content: flex-end;
   flex-wrap: wrap;
+}
+
+/* ---------- Native <dialog> ---------- */
+/* The UA default for <dialog> is unthemed (canvas/canvastext colors, plain
+   border), so without this it's the only surface on the site that ignores
+   light/dark mode. Match the .modal-box treatment used by the custom overlay
+   modals above so every "popup" surface looks like one system. */
+dialog {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+dialog h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+  color: var(--text);
 }
 
 /* ---------- LCO Schedule page ---------- */
