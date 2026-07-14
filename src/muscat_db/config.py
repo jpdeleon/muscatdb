@@ -73,7 +73,7 @@ ENV_VARS: tuple[EnvVar, ...] = (
     ),
     EnvVar(
         "MUSCAT_BOYLE_CATALOG",
-        "<repo>/../wakai/data/Boyle2026/final_catalog.feather",
+        "<repo>/data/Boyle2026/final_catalog.feather",
         "Optional Boyle2026 stellar-rotation catalog used by the TOI browser",
     ),
     EnvVar(
