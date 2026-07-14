@@ -214,7 +214,7 @@
 
   <div id="output-area">
   {% if outputs and outputs.has_any %}
-    {% set file_base = '/api/photometry/file/' ~ sel_inst ~ '/' ~ sel_date ~ (('/' ~ sel_target ~ '/run/' ~ sel_run) if sel_run else '') %}
+    {% set file_base = '/api/photometry/file/' ~ sel_inst ~ '/' ~ sel_date ~ (('/' ~ dataset_target ~ '/run/' ~ sel_run) if sel_run else '') %}
     {% if outputs.summary %}
     <details class="phot-section phot-fold" open>
       <summary>
@@ -338,7 +338,7 @@
 
     <div class="phot-section">
       <div class="dl-row">
-        {% set dl_all_url = '/api/photometry/download-all/' ~ sel_inst ~ '/' ~ sel_date ~ '/' ~ sel_target ~ (('/run/' ~ sel_run) if sel_run else '') %}
+        {% set dl_all_url = '/api/photometry/download-all/' ~ sel_inst ~ '/' ~ sel_date ~ '/' ~ dataset_target ~ (('/run/' ~ sel_run) if sel_run else '') %}
         <a href="{{ dl_all_url }}" download style="font-weight: 600; color: var(--accent2);">📦 Download all output (.zip)</a>
         {% if outputs.npz %}<a href="{{ file_base }}/{{ outputs.npz }}" download>data archive (.npz)</a>{% endif %}
         {% if outputs.log %}<a href="{{ file_base }}/{{ outputs.log }}" target="_blank">📄 pipeline log</a>{% endif %}
@@ -650,7 +650,8 @@
 (function () {
   var inst   = {{ sel_inst|tojson }};
   var date   = {{ sel_date|tojson }};
-  var target = {{ sel_target|tojson }};
+  var routeTarget = {{ sel_target|tojson }};
+  var target = {{ dataset_target|tojson }};
   var runId  = {{ sel_run|tojson }};
   var rawMissing = {{ raw_missing|tojson }};
   var siteSel = document.getElementById('opt-site');
@@ -664,7 +665,7 @@
 
   // ----- restore the last selection on a bare /photometry visit -----
   (function () {
-    if (inst || date || target || window.location.search) return;
+    if (inst || date || routeTarget || window.location.search) return;
     var saved = MuscatStorage.getJSON(SEL_KEY, null);
     if (saved && saved.inst) {
       var qs = ['inst', 'date', 'target'].filter(function (k) { return saved[k]; })
@@ -674,10 +675,10 @@
   })();
   // ...and remember the current selection for next time.
   if (inst) {
-    MuscatStorage.setJSON(SEL_KEY, { inst: inst, date: date, target: target });
+    MuscatStorage.setJSON(SEL_KEY, { inst: inst, date: date, target: routeTarget });
   }
   if (inst && date && target && window.MuscatRouteState) {
-    window.MuscatRouteState.rememberPhotometry({ inst: inst, date: date, target: target, run: runId || '' });
+    window.MuscatRouteState.rememberPhotometry({ inst: inst, date: date, target: routeTarget, run: runId || '' });
     window.MuscatRouteState.applyNavbar();
   }
 

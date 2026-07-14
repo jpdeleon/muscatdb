@@ -17,7 +17,7 @@ _DB_LOCK = threading.Lock()
 import csv
 import io
 from contextlib import asynccontextmanager
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import Body, FastAPI, HTTPException, Request
@@ -922,6 +922,31 @@ def _telescope_required_error(db: str, inst: str, date: str, target: str, option
     return None
 
 
+def _resolve_dataset_target(requested: str, candidates: list[str]) -> str:
+    """Resolve a canonical target name to one unambiguous raw dataset key.
+
+    Photometry products and obslog rows are keyed by the original OBJECT value,
+    while catalog/target-page links use normalized identities.  Preserve exact
+    raw requests; otherwise translate only when normalization yields one match.
+    Ambiguous aliases remain unresolved so the route never selects the wrong
+    observation or reduction products.
+    """
+    if not requested or requested in candidates:
+        return requested
+    compact_matches = [
+        candidate for candidate in candidates
+        if candidate.replace(" ", "") == requested
+    ]
+    if len(compact_matches) == 1:
+        return compact_matches[0]
+    normalized = _normalize_target_name(requested)
+    matches = [
+        candidate for candidate in candidates
+        if _normalize_target_name(candidate) == normalized
+    ]
+    return matches[0] if len(matches) == 1 else requested
+
+
 @app.get("/photometry", response_class=HTMLResponse)
 def photometry_page(inst: str = "", date: str = "", target: str = "", site: str = "", telescope: str = "", mode: str = "", run: str = "", overwrite: str = ""):
     db = _db_path()
@@ -943,6 +968,24 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
     mode = mode.strip().lower()
     if inst != "sinistro" or mode not in phot.SINISTRO_MODES:
         mode = ""
+
+    route_target = target.replace(" ", "")
+    if route_target != target:
+        query = {
+            key: value for key, value in (
+                ("inst", inst),
+                ("date", date),
+                ("target", route_target),
+                ("site", site),
+                ("telescope", telescope),
+                ("mode", mode),
+                ("run", run),
+                ("overwrite", overwrite),
+            )
+            if value
+        }
+        return RedirectResponse(f"/photometry?{urlencode(query)}", status_code=307)
+    target = route_target
 
     # Parse overwrite from query parameter (overrides defaults for this session)
     run_defaults_override = {}
@@ -969,7 +1012,13 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         date_set.update(phot.output_dates(inst))
         dates = sorted(date_set, reverse=True)
     if inst and date:
-        targets = sorted(_get_objects(db, inst, date))
+        raw_targets = sorted(_get_objects(db, inst, date))
+        target = _resolve_dataset_target(route_target, raw_targets)
+        public_targets = {name.replace(" ", "") for name in raw_targets}
+        if route_target and target in raw_targets:
+            public_targets.discard(target.replace(" ", ""))
+            public_targets.add(route_target)
+        targets = sorted(public_targets)
     obs_type = ""
     is_narrowband = False
     available_bands: list[str] = []
@@ -1073,7 +1122,8 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
     resp = _render(
         "photometry.html",
         instruments=list(INSTRUMENTS),
-        sel_inst=inst, sel_date=date, sel_target=target,
+        sel_inst=inst, sel_date=date, sel_target=route_target,
+        dataset_target=target,
         sel_site=(outputs.get("site") if outputs else "") or "",
         sel_telescope=(outputs.get("telescope") if outputs else "") or "",
         sel_mode=(outputs.get("mode") if outputs else "") or "",
@@ -1124,6 +1174,27 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
 
     run = (run or "").strip()
 
+    # prose filenames, timer result directories, and pipeline job keys all use
+    # the target with spaces removed.  Canonicalize the public route the same
+    # way so raw obslog names (``HIP 67522``) and discovered product stems
+    # (``HIP67522``) cannot create duplicate dropdown entries or URL aliases.
+    compact_target = target.replace(" ", "")
+    if compact_target != target:
+        query = {
+            key: value for key, value in (
+                ("inst", inst),
+                ("date", date),
+                ("target", compact_target),
+                ("site", site),
+                ("telescope", telescope),
+                ("mode", mode),
+                ("run", run),
+            )
+            if value
+        }
+        return RedirectResponse(f"/transit-fit?{urlencode(query)}", status_code=307)
+    target = compact_target
+
     dates: list[str] = []
     targets: list[str] = []
     outputs = None
@@ -1145,7 +1216,7 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
     if inst and date:
         obj_set = set(_get_objects(db, inst, date))
         obj_set.update(phot.discovered_targets(inst, date))
-        targets = sorted(obj_set)
+        targets = sorted({name.replace(" ", "") for name in obj_set})
     if inst and date and target:
         import datetime
         rows = []
@@ -1244,6 +1315,29 @@ async def transit_fit_query_archive(target: str, source: str = "nasa"):
     import re
 
     target = target.strip()
+
+    def clean_archive_name(value: str) -> str:
+        return re.sub(r"[^0-9a-zA-Z]", "", value or "").lower()
+
+    def is_planet_of_lookup_name(clean_planet_name: str) -> bool:
+        """Match ``HOST b`` while rejecting arbitrary prefix continuations."""
+        return any(
+            clean_planet_name.startswith(name)
+            and clean_planet_name[len(name):] in set("bcdefgh")
+            for name in nasa_lookup_names
+            if name
+        )
+
+    # NASA's confirmed-planet name may differ from its TOI designation
+    # (TOI-179 is HD 18599 b).  Resolve the exact TIC alias so the NASA lookup
+    # can cross-match identities without accepting unsafe numeric prefixes.
+    nasa_lookup_names = {clean_archive_name(target)}
+    normalized_target = _normalize_target_name(target)
+    resolved_tic_id = ""
+    if re.fullmatch(r"TOI\d+", normalized_target):
+        resolved_tic_id = _target_tic_id(normalized_target)
+        if resolved_tic_id:
+            nasa_lookup_names.add(clean_archive_name(f"TIC {resolved_tic_id}"))
 
     def get_unc(err1, err2):
         if err1 is None and err2 is None:
@@ -1361,11 +1455,8 @@ async def transit_fit_query_archive(target: str, source: str = "nasa"):
         if not csv_path.is_file():
             return None
             
-        target_clean = re.sub(r"[^0-9a-zA-Z]", "", target).lower()
         best_row_line = None
         best_score = -1
-        
-        clean_re = re.compile(r"[^0-9a-zA-Z]")
         
         with open(csv_path, mode='r', encoding='utf-8', errors='ignore') as f:
             header_line = f.readline()
@@ -1377,18 +1468,22 @@ async def transit_fit_query_archive(target: str, source: str = "nasa"):
                 hostname = parts[2].strip('"')
                 hd_name = parts[3].strip('"')
                 hip_name = parts[4].strip('"')
+                tic_id = parts[5].strip('"')
                 
-                pl_clean = clean_re.sub('', pl_name).lower()
-                host_clean = clean_re.sub('', hostname).lower()
-                hip_clean = clean_re.sub('', hip_name).lower()
-                hd_clean = clean_re.sub('', hd_name).lower()
+                pl_clean = clean_archive_name(pl_name)
+                host_clean = clean_archive_name(hostname)
+                hip_clean = clean_archive_name(hip_name)
+                hd_clean = clean_archive_name(hd_name)
+                tic_clean = clean_archive_name(tic_id)
                 
                 score = -1
-                if target_clean == pl_clean:
+                if pl_clean in nasa_lookup_names:
                     score = 3
-                elif target_clean in (host_clean, hip_clean, hd_clean):
+                elif nasa_lookup_names.intersection(
+                    (host_clean, hip_clean, hd_clean, tic_clean),
+                ):
                     score = 2
-                elif (pl_clean and pl_clean in target_clean) or (host_clean and host_clean in target_clean):
+                elif is_planet_of_lookup_name(pl_clean):
                     score = 1
                     
                 if score > -1:
@@ -1548,7 +1643,8 @@ async def transit_fit_query_archive(target: str, source: str = "nasa"):
                 return JSONResponse({"ok": True, **local_res})
 
         cols = [
-            "pl_name", "st_teff", "st_tefferr1", "st_tefferr2",
+            "pl_name", "hostname", "hip_name", "hd_name", "tic_id",
+            "st_teff", "st_tefferr1", "st_tefferr2",
             "st_logg", "st_loggerr1", "st_loggerr2",
             "st_met", "st_meterr1", "st_meterr2",
             "pl_orbper", "pl_orbpererr1", "pl_orbpererr2",
@@ -1581,6 +1677,8 @@ async def transit_fit_query_archive(target: str, source: str = "nasa"):
                 f"hip_name = {norm_lit}",
                 f"hd_name = {norm_lit}"
             ])
+        if resolved_tic_id:
+            conditions.append(f"tic_id = {_adql_literal(f'TIC {resolved_tic_id}')}")
 
         q = f"SELECT {col_str} FROM pscomppars WHERE " + " OR ".join(conditions)
 
@@ -1591,28 +1689,30 @@ async def transit_fit_query_archive(target: str, source: str = "nasa"):
             res = response.json()
             if res:
                 # Score and rank matching rows in memory
-                target_clean = re.sub(r"[^0-9a-zA-Z]", "", target).lower()
                 best_row = None
                 best_score = -1
-                clean_re = re.compile(r"[^0-9a-zA-Z]")
 
                 for row in res:
                     pl_name = (row.get("pl_name") or "").strip()
                     hostname = (row.get("hostname") or "").strip()
                     hip_name = (row.get("hip_name") or "").strip()
                     hd_name = (row.get("hd_name") or "").strip()
+                    tic_id = (row.get("tic_id") or "").strip()
 
-                    pl_clean = clean_re.sub('', pl_name).lower()
-                    host_clean = clean_re.sub('', hostname).lower()
-                    hip_clean = clean_re.sub('', hip_name).lower()
-                    hd_clean = clean_re.sub('', hd_name).lower()
+                    pl_clean = clean_archive_name(pl_name)
+                    host_clean = clean_archive_name(hostname)
+                    hip_clean = clean_archive_name(hip_name)
+                    hd_clean = clean_archive_name(hd_name)
+                    tic_clean = clean_archive_name(tic_id)
 
                     score = -1
-                    if target_clean == pl_clean:
+                    if pl_clean in nasa_lookup_names:
                         score = 3
-                    elif target_clean in (host_clean, hip_clean, hd_clean):
+                    elif nasa_lookup_names.intersection(
+                        (host_clean, hip_clean, hd_clean, tic_clean),
+                    ):
                         score = 2
-                    elif (pl_clean and target_clean in pl_clean) or (host_clean and target_clean in host_clean):
+                    elif is_planet_of_lookup_name(pl_clean):
                         score = 1
 
                     if score > best_score:

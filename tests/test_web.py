@@ -1766,6 +1766,49 @@ def test_toi_page_includes_boyle_payload(monkeypatch):
     assert 'NASA confirmed' in r.text
 
 
+def test_toi_decorated_db_target_uses_canonical_link_and_dataset(mock_db, monkeypatch):
+    from muscat_db import web
+
+    raw_object = "TOI-179b_231015 J025710-560913"
+    with sqlite3.connect(mock_db) as conn:
+        conn.execute(
+            """INSERT INTO targets
+               (object, n_dates, n_frames, instruments, dates, inst_dates,
+                filters, total_exptime, is_identified, phot_status, fit_status)
+               VALUES (?, 1, 5609, 'muscat4', '231015', 'muscat4:231015',
+                       'gp,rp,ip,zs', 36216, 1, 'none', 'none')""",
+            (raw_object,),
+        )
+        conn.execute(
+            """INSERT INTO summaries
+               (instrument, obsdate, ccd, object, nframes, filter)
+               VALUES ('muscat4', '231015', 1, ?, 5609, 'gp')""",
+            (raw_object,),
+        )
+
+    web._toi_db_cache.clear()
+    cat_data = {
+        "toi": ["179.01"],
+        "tic": ["207141131"],
+        "name": ["TOI-179.01"],
+    }
+    indb, target_names = web._toi_db_membership(cat_data, mock_db)
+    assert indb == [1]
+    assert target_names == ["TOI179"]
+
+    datasets, _last_updated = web._get_datasets_for_normalized_target(mock_db, "TOI179")
+    assert [(d["object"], d["date"], d["instrument"]) for d in datasets] == [
+        (raw_object, "231015", "muscat4")
+    ]
+
+    # The homepage uses the same normalizer for its target link.
+    web._index_cache.clear()
+    homepage = TestClient(app).get("/")
+    assert homepage.status_code == 200
+    assert 'data-norm-name="TOI179"' in homepage.text
+    assert 'href="/target?name=TOI179"' in homepage.text
+
+
 def _nexsci_cat_data(names, hosts, tics):
     """Build a full nexsci column dict (all keys the loader produces) with the
     given string columns and null numerics, for monkeypatching the loader."""
