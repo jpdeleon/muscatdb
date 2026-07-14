@@ -120,4 +120,6 @@ def get_instrument(name: str) -> InstrumentConfig:
 # during the celery/redis multi-server migration. .env is loaded in __init__ before
 # this module is imported, so the override is picked up. Must be a shared path
 # (NOT $HOME-derived) -- every worker + the web host read the same obslogs.
-OBSLOG_BASE = os.environ.get("MUSCAT_OBSLOG_DIR", "/ut2/muscat/obslog")
+OBSLOG_BASE = os.environ.get(
+    "MUSCAT_OBSLOG_DIR", str(Path.home() / "muscat" / "obslog")
+)

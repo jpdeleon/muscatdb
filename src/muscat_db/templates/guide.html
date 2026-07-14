@@ -254,7 +254,7 @@
           <pre class="mermaid" style="width: 100%; text-align: center;">
 graph TD
     %% Data Ingestion Stage
-    A["Raw FITS Files\n(/data/MuSCAT* and Sinistro)"]:::default -->|1. scan| B["Observation CSV Logs\n(/ut2/muscat/obslog/)"]:::default
+    A["Raw FITS Files\n(MUSCAT_DATA_DIR)"]:::default -->|1. scan| B["Observation CSV Logs\n($MUSCAT_OBSLOG_DIR)"]:::default
     B -->|2. build-db| C["SQLite Database\n(muscat.db)"]:::db
 
     %% Web UI
@@ -1178,7 +1178,7 @@ erDiagram
           <div class="faq-answer">
             <p>The database is a SQLite file (<code>muscat.db</code>) that stores observation metadata extracted from FITS headers. The pipeline has two stages:</p>
             <ol>
-              <li><strong>Scan</strong> — <code>muscat-db scan &lt;inst&gt; &lt;yymmdd&gt;</code> reads every FITS file in the raw data directory, extracts HEADER keywords (OBJECT, FILTER, RA, DEC, EXPTIME, etc.), and writes a CSV log per CCD under <code>/ut2/muscat/obslog/</code>. Calibration frames (bias, dark, flat) are excluded; only science frames are recorded.</li>
+              <li><strong>Scan</strong> — <code>muscat-db scan &lt;inst&gt; &lt;yymmdd&gt;</code> reads every FITS file in the raw data directory, extracts HEADER keywords (OBJECT, FILTER, RA, DEC, EXPTIME, etc.), and writes a CSV log per CCD under <code>$MUSCAT_OBSLOG_DIR</code> (default <code>$HOME/muscat/obslog</code>). Calibration frames (bias, dark, flat) are excluded; only science frames are recorded.</li>
               <li><strong>Build</strong> — <code>muscat-db build-db</code> ingests all scanned CSV logs into SQLite with indexes on instrument, date, object, and filter. The resulting DB powers the web GUI's browse, search, and target discovery features.</li>
             </ol>
             <p>The DB also persists background job state (photometry and transit fit runs) so running jobs survive a server restart.</p>
@@ -1193,7 +1193,7 @@ erDiagram
           <div class="faq-answer">
             <p>The database is rebuilt automatically once per day at <strong>5:00 PM</strong> local time via a cronjob:</p>
             <pre>30 17 * * * cd /raid_ut2/home/jerome/github/research/project/muscat-db && uv run muscat-db build-db &gt;&gt; /raid_ut2/home/jerome/github/research/project/muscat-db/logs/build-db.log 2&gt;&amp;1</pre>
-            <p>This re-scans all CSV observation logs under <code>/ut2/muscat/obslog/</code> and rebuilds the <code>summaries</code> and <code>targets</code> tables to reflect any new or corrected scans. Log output is written to <code>logs/build-db.log</code> for troubleshooting.</p>
+            <p>This re-scans all CSV observation logs under <code>$MUSCAT_OBSLOG_DIR</code> and rebuilds the <code>summaries</code> and <code>targets</code> tables to reflect any new or corrected scans. Log output is written to <code>logs/build-db.log</code> for troubleshooting.</p>
             <p>To trigger a manual rebuild at any time, run <code>muscat-db build-db</code> from the repo root.</p>
           </div>
         </div>
