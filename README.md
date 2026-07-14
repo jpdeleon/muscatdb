@@ -120,7 +120,8 @@ Variables the app and the jobs it spawns inherit include `MUSCAT_DB_PATH`,
 `MUSCAT_PROSE_CONDA_ENV`, `MUSCAT_TIMER_DIR`, the `MUSCAT_PHOT_*` job-lifecycle
 timeouts, `MUSCAT_TMPDIR`, `ASTROMETRY_NET_API_KEY`, `LCO_API_TOKEN`,
 `MUSCAT_LCO_DIR`, `MUSCAT_LCO_ALLOW_SUBMIT`, `MUSCAT_DB_SECRET` (per-user LCO
-token encryption), `MUSCAT_NGINX_GROUP` (htpasswd file group ownership), and
+token encryption), the `MUSCAT_LCO_MONITOR_*` request-monitor settings,
+`MUSCAT_NGINX_GROUP` (htpasswd file group ownership), and
 `MUSCAT_BOYLE_CATALOG` (optional TOI stellar-rotation catalog), and
 `ADS_API_TOKEN`/`ADS_DEV_KEY` (target-page NASA ADS publication search) (see
 below). At startup the server prints each registered variable's status
@@ -248,6 +249,16 @@ requires an additional safety gate:
 ```bash
 export MUSCAT_LCO_ALLOW_SUBMIT=1  # Only set when intentionally going live
 ```
+
+Every request accepted through the scheduler is recorded locally by child LCO
+Request ID. The restart-safe monitor waits until the observing window, checks
+request-scoped archive results with an initial five-minute cadence and bounded
+backoff, and downloads new final BANZAI (reduction level 91) products as they
+appear. After the LCO request is terminal and every raw science frame has a
+level-91 counterpart, it scans each affected instrument/date and ingests the
+new observation logs into SQLite. Progress and errors appear in **Submitted
+Request Monitoring** on the scheduling page. Configure the cadence with the
+`MUSCAT_LCO_MONITOR_*` variables documented in `.env.example`.
 
 The page is linked from the navigation bar and also reachable via 
 `/lco?view=<slug>` after saving an ephemeris view on the **Ephemeris** page.
