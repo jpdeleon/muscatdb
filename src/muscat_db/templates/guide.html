@@ -347,8 +347,8 @@ graph TD
     A["Raw Science FITS Files\n(Calibrated e91.fits)"]:::default --> B["Band Grouping\n(Grouped by gp, rp, ip, zs filters)"]:::default
     
     %% Setup & Reference Frame
-    B --> C["Reference Frame Selection\n(single frame: first for self-reference, middle for --ref_band,\nor quality pre-check pick if --ref_select quality)"]:::default
-    C --> D["Point Source Detection\n(Brightest stars on reference frame)"]:::default
+    B --> C["Reference Construction\n(position: first/middle frame; quality: clean local anchor\n+ registered top-K temporal persistence)"]:::default
+    C --> D["Point Source Detection\n(Persistent stars on the quality anchor; single-frame detections in position mode)"]:::default
     D --> E["Celestial Target Identification\n(WCS matching / MAST coordinate resolution)"]:::default
     E --> F["Gaia Contamination Sizing\n(Sizes sky annulus RIN & ROUT to exclude contaminants)"]:::default
     F --> G["Aperture Sizing Grid\n(Multiple radii defined from FWHM up to RIN)"]:::default
@@ -1215,8 +1215,8 @@ erDiagram
             <p>The prose pipeline processes calibrated FITS frames through a sequence of steps:</p>
             <ol>
               <li><strong>Band grouping</strong> — science frames are sorted into photometric bands using the FILTER header keyword</li>
-              <li><strong>Reference frame selection</strong> — one frame serves as the reference for alignment: by default the first frame (self-reference) or the middle frame of the reference band (<code>--ref_band</code>); when <code>--ref_select quality</code> is enabled, a fast header + pixel quality check instead picks the sharpest available frame (see FAQ below)</li>
-              <li><strong>Source detection</strong> — point sources are identified on the reference frame</li>
+              <li><strong>Reference construction</strong> — one real frame remains the alignment anchor: by default the first frame (self-reference) or the middle frame of the reference band (<code>--ref_band</code>); with <code>--ref_select quality</code>, the pipeline selects a clean anchor and uses registered catalogs from nearby candidates to reject transient detections (see FAQ below)</li>
+              <li><strong>Source detection</strong> — point sources are identified on the anchor; quality mode retains only sources that recur across the candidate catalogs</li>
               <li><strong>Target identification</strong> — the target is located via WCS matching against the resolved sky coordinates (from MAST/SIMBAD name resolution)</li>
               <li><strong>Gaia-based aperture sizing</strong> — annulus and aperture radii are set to avoid contaminating sources</li>
               <li><strong>Parallel reduction</strong> — each frame is aligned, centroided, and photometered in parallel</li>
@@ -1235,10 +1235,10 @@ erDiagram
           <div class="faq-answer">
             <p>By default (<code>position</code>) the reference frame is chosen positionally — the first frame for self-reference, or the middle frame of the reference band when <code>--ref_band</code> is set — with no check on whether that frame is actually any good (clouds, poor focus, and high airmass can all silently become the reference). <code>--ref_select quality</code> replaces this with a two-tier pre-check that runs before the full reduction:</p>
             <ol>
-              <li><strong>Header triage (Tier 1, MuSCAT3/MuSCAT4/Sinistro only)</strong> — every frame's header is scanned (no pixel data read, sub-second even for hundreds of frames) for BANZAI's own per-frame FWHM estimate (<code>L1FWHM</code>), airmass, focus position, humidity, and background level. Frames with physically broken values (e.g. airmass &gt; 3.5, humidity &gt; 95%) are excluded; the rest are ranked by a composite score dominated by FWHM, and the top-K candidates (<code>--ref_select_top_k</code>, default 5) move on to Tier 2.</li>
-              <li><strong>Pixel validation (Tier 2, all instruments)</strong> — the shortlisted candidates (or, for MuSCAT/MuSCAT2, which have no header FWHM proxy, K frames sampled evenly across the whole night) are run through the same source-detection pipeline used to build the reference today, in parallel. The candidate with the best combination of confirmed target match, non-outlier star count, low measured FWHM, and an unsaturated target wins.</li>
+              <li><strong>Header triage (Tier 1, MuSCAT3/MuSCAT4/Sinistro only)</strong> — every frame's header is scanned without reading pixel data for BANZAI's per-frame FWHM estimate (<code>L1FWHM</code>), airmass, focus position, humidity, and background level. Frames with physically broken values (e.g. airmass &gt; 3.5, humidity &gt; 95%) are excluded, and a composite score dominated by FWHM identifies the best-quality anchor. The candidate window is then formed from viable frames nearest that anchor in time, limiting telescope drift.</li>
+              <li><strong>Pixel validation and persistence (Tier 2, all instruments)</strong> — the local candidates (<code>--ref_select_top_k</code>, default 5) are run through the normal source-detection pipeline in parallel and ranked using target match, non-outlier star count, measured FWHM, and target saturation. Their catalogs are registered to the selected anchor, and a detection is retained only when it occurs in at least 60% of the registered catalogs (3 of 5 by default). This removes one-frame cosmic-ray and hot-pixel detections while preserving the WCS-selected or explicit target. MuSCAT/MuSCAT2 use a local window around the positional midpoint because they lack the BANZAI header proxy.</li>
             </ol>
-            <p>An explicit <strong>Reference frame ID</strong> always overrides quality selection. The chosen frame and the full Tier 1/Tier 2 comparison are written to a <code>*_ref_selection.txt</code> sidecar (linked from the results page as "view ref selection") so the automatic choice can be audited without re-running anything. Quality mode adds cost (roughly proportional to top_k candidates, not the full reduction) on top of the otherwise-instant positional lookup, so it is opt-in rather than the default.</p>
+            <p>An explicit <strong>Reference frame ID</strong> always overrides quality selection. If fewer than two candidate catalogs can be registered, the pipeline safely keeps the anchor catalog instead of applying an unreliable persistence filter. The chosen frame, candidate comparison, registration status, and persistence counts are written to a <code>*_ref_selection.txt</code> sidecar (linked from the results page as "view ref selection") so the decision can be audited without re-running anything. Quality mode adds work roughly proportional to top-K, so it remains opt-in.</p>
           </div>
         </div>
 

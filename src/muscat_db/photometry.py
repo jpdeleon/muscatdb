@@ -67,9 +67,9 @@ RUN_DEFAULTS: dict = {
     "bands": DEFAULT_BANDS,
     "ref_band": "",            # "" -> per-band self-reference (pipeline default)
     "refid": "",               # "" -> pipeline default (0 / middle frame, or the
-                               # quality pre-check's pick when ref_select=quality)
-    "ref_select": "position",  # position (default, unchanged legacy behavior) | quality
-    "ref_select_top_k": 5,     # candidates pixel-validated in Tier 2 when ref_select=quality
+                               # quality mode's persistent-catalog anchor)
+    "ref_select": "position",  # position (legacy) | quality (local temporal persistence)
+    "ref_select_top_k": 5,     # local catalogs registered when ref_select=quality
     "aper_radii": "",          # "MIN,MAX,DR"; "" -> Gaia heuristic
     "annulus": "",             # "RIN,ROUT"; required with aper_radii
     "aper_unit": "pix",        # pix | fwhm (only applies with aper_radii)
