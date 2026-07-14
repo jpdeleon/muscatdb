@@ -1386,6 +1386,91 @@ class TestRoutes:
         assert "Per-band products" in r.text
         assert "MuscatRouteState.rememberPhotometry" in r.text
 
+    def test_photometry_page_resolves_unique_normalized_target(
+        self, client, prose_dir, tmp_path,
+    ):
+        import sqlite3
+
+        raw_target = "TOI-179b_231015 J025710-560913"
+        inst = "muscat4"
+        date = "231015"
+        stem = f"{raw_target.replace(' ', '')}_{inst}_{date}"
+        result_dir = prose_dir / inst / date
+        result_dir.mkdir(parents=True)
+        (result_dir / f"{stem}_lightcurves.png").write_bytes(b"\x89PNG\r\n")
+
+        with sqlite3.connect(tmp_path / "muscat.db") as conn:
+            conn.execute(
+                "INSERT INTO frames (instrument,obsdate,ccd,filename,object) "
+                "VALUES (?,?,?,?,?)",
+                (inst, date, 1, "frame.fits", raw_target),
+            )
+            conn.execute(
+                "INSERT INTO summaries (instrument,obsdate,ccd,object,nframes) "
+                "VALUES (?,?,?,?,?)",
+                (inst, date, 1, raw_target, 1),
+            )
+
+        response = client.get(
+            "/photometry",
+            params={"inst": inst, "date": date, "target": "TOI179"},
+        )
+
+        assert response.status_code == 200
+        assert '<option value="TOI179" selected>' in response.text
+        assert f"{stem}_lightcurves.png" in response.text
+
+    def test_photometry_target_resolution_refuses_ambiguous_alias(self):
+        from muscat_db.web import _resolve_dataset_target
+
+        candidates = [
+            "TOI-179b_231015 J025710-560913",
+            "TOI-179.01",
+        ]
+
+        assert _resolve_dataset_target("TOI179", candidates) == "TOI179"
+        assert _resolve_dataset_target(candidates[0], candidates) == candidates[0]
+
+    def test_photometry_page_canonicalizes_space_only_target_alias(
+        self, client, prose_dir, tmp_path,
+    ):
+        import sqlite3
+
+        raw_target = "HIP 67522"
+        compact_target = "HIP67522"
+        inst = "muscat4"
+        date = "260511"
+        result_dir = prose_dir / inst / date
+        result_dir.mkdir(parents=True)
+        (result_dir / f"{compact_target}_{inst}_{date}_lightcurves.png").write_bytes(
+            b"\x89PNG\r\n",
+        )
+        with sqlite3.connect(tmp_path / "muscat.db") as conn:
+            conn.execute(
+                "INSERT INTO summaries (instrument,obsdate,ccd,object,nframes) "
+                "VALUES (?,?,?,?,?)",
+                (inst, date, 1, raw_target, 1),
+            )
+
+        legacy = client.get(
+            "/photometry",
+            params={"inst": inst, "date": date, "target": raw_target},
+            follow_redirects=False,
+        )
+        assert legacy.status_code == 307
+        assert legacy.headers["location"].endswith(
+            "/photometry?inst=muscat4&date=260511&target=HIP67522"
+        )
+
+        canonical = client.get(
+            "/photometry",
+            params={"inst": inst, "date": date, "target": compact_target},
+        )
+        assert canonical.status_code == 200
+        assert canonical.text.count('<option value="HIP67522" selected>') == 1
+        assert '<option value="HIP 67522"' not in canonical.text
+        assert f"{compact_target}_{inst}_{date}_lightcurves.png" in canonical.text
+
     def test_photometry_page_versions_artifact_urls(self, client):
         r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
         assert r.status_code == 200
@@ -1779,6 +1864,42 @@ class TestRoutes:
         assert "Created:" in r.text
         assert "MuscatRouteState.rememberTransitFit" in r.text
 
+    def test_transit_fit_page_deduplicates_space_only_target_aliases(
+        self, client, tmp_path, mocker,
+    ):
+        csv_path = tmp_path / "HIP67522_muscat4_gp_260511.csv"
+        csv_path.write_text("BJD_TDB,Flux\n1,1\n")
+        mocker.patch("muscat_db.web._get_dates", return_value=[])
+        mocker.patch("muscat_db.web._get_objects", return_value=["HIP 67522"])
+        mocker.patch("muscat_db.photometry.discovered_targets", return_value=["HIP67522"])
+        get_csvs = mocker.patch(
+            "muscat_db.transit_fit.get_csv_lightcurves",
+            return_value=[csv_path],
+        )
+        mocker.patch("muscat_db.transit_fit.list_fit_runs", return_value=[])
+        mocker.patch("muscat_db.transit_fit.get_fit_outputs", return_value=None)
+        mocker.patch("muscat_db.transit_fit.get_target_parameters", return_value={})
+
+        canonical = client.get(
+            "/transit-fit",
+            params={"inst": "muscat4", "date": "260511", "target": "HIP67522"},
+        )
+
+        assert canonical.status_code == 200
+        assert canonical.text.count('<option value="HIP67522" selected>') == 1
+        assert '<option value="HIP 67522"' not in canonical.text
+        get_csvs.assert_called_once_with("muscat4", "260511", "HIP67522")
+
+        legacy = client.get(
+            "/transit-fit",
+            params={"inst": "muscat4", "date": "260511", "target": "HIP 67522"},
+            follow_redirects=False,
+        )
+        assert legacy.status_code == 307
+        assert legacy.headers["location"].endswith(
+            "/transit-fit?inst=muscat4&date=260511&target=HIP67522"
+        )
+
     def test_transit_fit_sinistro_site_mode_chips(self, client, tmp_path, mocker):
         import os
         # two sites (cpt, lsc); lsc also has a full_frame variant.
@@ -1856,6 +1977,72 @@ class TestRoutes:
         assert data["ok"] is True
         assert data["pl_name"] == "WASP-104 b"
         assert data["params"]["teff"] == 5475.0
+
+    def test_transit_fit_query_archive_toi_uses_exact_tic_crossmatch(
+        self, client, monkeypatch, tmp_path,
+    ):
+        """TOI-179 must resolve to HD 18599 b, never prefix-match TOI-1798."""
+        import httpx
+        from muscat_db import web
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        (data_dir / "TOIs.csv").write_text(
+            "toi,planet name,tic id\n"
+            "179.01,TOI-179.01,207141131\n",
+        )
+        (data_dir / "nexsci_ps.csv").write_text(
+            "pl_name,pl_letter,hostname,hd_name,hip_name,tic_id,gaia_id,gaia_dr3_id,default_flag\n"
+            "TOI-1798.01,b,TOI-1798,,,TIC 198153540,Gaia 1,Gaia 1,1\n"
+            "HD 18599 b,b,HD 18599,HD 18599,HIP 13754,TIC 207141131,Gaia 2,Gaia 2,1\n",
+        )
+        monkeypatch.setattr(web, "HERE", tmp_path / "src" / "muscat_db")
+        monkeypatch.setattr(web, "_target_tic_id", lambda target, datasets=None: "207141131")
+
+        async def false_prefix_response(url, **kwargs):
+            return httpx.Response(
+                200,
+                json=[{"pl_name": "TOI-1798.01", "hostname": "TOI-1798"}],
+                request=httpx.Request("GET", url),
+            )
+
+        monkeypatch.setattr(web, "_async_get", false_prefix_response)
+
+        response = client.get(
+            "/api/transit-fit/query-archive",
+            params={"target": "TOI-179", "source": "nasa"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+        assert response.json()["pl_name"] == "HD 18599 b"
+
+    def test_transit_fit_query_archive_rejects_numeric_prefix_match(
+        self, client, monkeypatch, tmp_path,
+    ):
+        import httpx
+        from muscat_db import web
+
+        monkeypatch.setattr(web, "HERE", tmp_path / "src" / "muscat_db")
+        monkeypatch.setattr(web, "_target_tic_id", lambda target, datasets=None: "")
+
+        async def false_prefix_response(url, **kwargs):
+            return httpx.Response(
+                200,
+                json=[{"pl_name": "TOI-1798.01", "hostname": "TOI-1798"}],
+                request=httpx.Request("GET", url),
+            )
+
+        monkeypatch.setattr(web, "_async_get", false_prefix_response)
+
+        response = client.get(
+            "/api/transit-fit/query-archive",
+            params={"target": "TOI-179", "source": "nasa"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["ok"] is False
+        assert "No parameters found" in response.json()["error"]
 
     def test_transit_fit_query_archive_escapes_adql_literals(self, client, mocker):
         import httpx
@@ -2173,6 +2360,10 @@ class TestRoutes:
         assert _normalize_target_name("TOI06109.01") == "TOI6109"
         assert _normalize_target_name("TOI06109.02") == "TOI6109"
         assert _normalize_target_name("TOI 06109 b") == "TOI6109"
+        assert _normalize_target_name("TOI-179b_231015 J025710-560913") == "TOI179"
+        # An underscore can be part of a legitimate TOI spelling; only the
+        # recognized date + coordinate decoration may be removed.
+        assert _normalize_target_name("TOI_2457") == "TOI2457"
         assert _normalize_target_name("HIP 67522") == "HIP67522"
 
     def test_target_name_normalization_does_not_reinterpret_malformed_tois(self):
