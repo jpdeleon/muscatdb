@@ -72,6 +72,11 @@ ENV_VARS: tuple[EnvVar, ...] = (
         "Loopback backend for the TESS QuickLook companion application",
     ),
     EnvVar(
+        "MUSCAT_BOYLE_CATALOG",
+        "<repo>/../wakai/data/Boyle2026/final_catalog.feather",
+        "Optional Boyle2026 stellar-rotation catalog used by the TOI browser",
+    ),
+    EnvVar(
         "MUSCAT_TMPDIR",
         str(Path.home() / "temp"),
         "Temp dir handed to spawned jobs (must be on a non-full filesystem)",
