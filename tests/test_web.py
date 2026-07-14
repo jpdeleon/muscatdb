@@ -437,15 +437,15 @@ def test_target_detail_has_lco_schedule_and_archive_buttons(mock_db, monkeypatch
     assert 'href="/lco/archive?target=V1298TAU"' in html
     assert (
         '<a href="https://exoplanetarchive.ipac.caltech.edu/overview/V1298TAU" '
-        'target="_blank" rel="noopener">NASA Archive ↗</a>'
+        'target="_blank" rel="noopener">NASA Archive</a>'
     ) in html
     assert (
         '<a href="https://exofop.ipac.caltech.edu/tess/target.php?id=12345" '
-        'target="_blank" rel="noopener">ExoFOP-TESS ↗</a>'
+        'target="_blank" rel="noopener">ExoFOP-TESS</a>'
     ) in html
     assert (
         '<a href="https://tess.cuikaiming.com/12345" '
-        'target="_blank" rel="noopener">TESS Viewer ↗</a>'
+        'target="_blank" rel="noopener">TESS Viewer</a>'
     ) in html
     assert 'then save your token in <a href="/settings">Settings</a>.' in html
     assert "then set the token as" not in html
