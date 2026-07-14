@@ -188,6 +188,63 @@ CREATE TABLE IF NOT EXISTS test_observations (
     updated_at          TEXT NOT NULL
 );
 
+-- Every child Request accepted by LCO through the scheduler is monitored until
+-- its final BANZAI products have been downloaded, scanned, and ingested.  Keep
+-- this app-owned state outside the daily frames/summaries rebuild set.
+CREATE TABLE IF NOT EXISTS lco_observation_requests (
+    request_id          INTEGER PRIMARY KEY,
+    requestgroup_id     INTEGER NOT NULL,
+    name                TEXT NOT NULL DEFAULT '',
+    proposal            TEXT NOT NULL DEFAULT '',
+    target              TEXT NOT NULL DEFAULT '',
+    instrument          TEXT NOT NULL DEFAULT '',
+    user_name           TEXT NOT NULL DEFAULT '',
+    request_state       TEXT NOT NULL DEFAULT 'PENDING',
+    monitor_state       TEXT NOT NULL DEFAULT 'monitoring',
+    window_start        TEXT NOT NULL DEFAULT '',
+    window_end          TEXT NOT NULL DEFAULT '',
+    payload_json        TEXT NOT NULL DEFAULT '{}',
+    result_json         TEXT NOT NULL DEFAULT '{}',
+    raw_frame_count     INTEGER NOT NULL DEFAULT 0,
+    reduced_frame_count INTEGER NOT NULL DEFAULT 0,
+    downloaded_count    INTEGER NOT NULL DEFAULT 0,
+    download_job_id     TEXT NOT NULL DEFAULT '',
+    next_poll_at        REAL NOT NULL DEFAULT 0,
+    unchanged_polls     INTEGER NOT NULL DEFAULT 0,
+    error_count         INTEGER NOT NULL DEFAULT 0,
+    last_error          TEXT NOT NULL DEFAULT '',
+    last_polled_at      REAL,
+    terminal_seen_at    REAL,
+    created_at          REAL NOT NULL,
+    updated_at          REAL NOT NULL,
+    completed_at        REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_lco_observation_due
+    ON lco_observation_requests(monitor_state, next_poll_at);
+
+CREATE TABLE IF NOT EXISTS lco_observation_frames (
+    request_id      INTEGER NOT NULL,
+    frame_id        TEXT NOT NULL,
+    observation_id  TEXT NOT NULL DEFAULT '',
+    filename        TEXT NOT NULL,
+    instrument      TEXT NOT NULL,
+    obsdate         TEXT NOT NULL,
+    state           TEXT NOT NULL DEFAULT 'pending',
+    error           TEXT NOT NULL DEFAULT '',
+    metadata_json   TEXT NOT NULL,
+    updated_at      REAL NOT NULL,
+    PRIMARY KEY (request_id, frame_id),
+    FOREIGN KEY (request_id) REFERENCES lco_observation_requests(request_id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS lco_monitor_leases (
+    name        TEXT PRIMARY KEY,
+    owner       TEXT NOT NULL,
+    expires_at  REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS ephemeris_views (
     slug         TEXT PRIMARY KEY,
     state_hash   TEXT NOT NULL,
@@ -583,7 +640,9 @@ def _set_temp_store_dir(conn: sqlite3.Connection, db_file: str) -> None:
 # rebuilds the observation tables (frames/summaries/targets) from scratch, so
 # these must be copied across the atomic swap or the daily cron silently wipes
 # user notes, manual identification overrides, exposure calibration coefficients,
-# job history, and saved ephemeris views on every successful build.
+# job history, saved ephemeris views, closed-loop test observations, and LCO
+# request-monitoring state on every successful build.  Monitor leases are
+# deliberately excluded because they are process-local and must be reacquired.
 _APP_OWNED_TABLES = (
     "jobs",
     "users",
@@ -591,6 +650,9 @@ _APP_OWNED_TABLES = (
     "target_notes",
     "target_overrides",
     "exposure_coeffs",
+    "test_observations",
+    "lco_observation_requests",
+    "lco_observation_frames",
 )
 
 

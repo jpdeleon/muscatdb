@@ -43,6 +43,7 @@ from muscat_db import transit_obs
 from muscat_db import fov as fov_opt
 from muscat_db import ephemeris_math
 from muscat_db import test_observations
+from muscat_db import lco_monitor
 from muscat_db import http_client
 from muscat_db.catalog import (
     _adql_literal,
@@ -144,9 +145,16 @@ async def _lifespan(app: FastAPI):
     from muscat_db import proxy, http_client
     await proxy.startup()
     await http_client.startup()
+    observation_monitor = None
+    if os.environ.get("MUSCAT_LCO_MONITOR_ENABLED", "1") == "1":
+        observation_monitor = lco_monitor.ObservationMonitor(db)
+        observation_monitor.start()
+        app.state.lco_observation_monitor = observation_monitor
     try:
         yield
     finally:
+        if observation_monitor is not None:
+            observation_monitor.stop()
         await http_client.shutdown()
         await proxy.shutdown()
 
@@ -2566,6 +2574,32 @@ def api_lco_ipp(request: Request, payload: dict = Body(...)):
         return _lco_error_response(e)
 
 
+def _record_lco_submission(result: dict, requestgroup: dict, params: dict, user: str | None) -> dict:
+    """Persist an accepted booking without ever disguising it as a failed submit.
+
+    Once LCO accepts telescope time it cannot be rolled back here.  A local
+    persistence error is therefore returned as an explicit monitoring warning,
+    while the enclosing submission response remains successful so a user does
+    not retry and accidentally create a duplicate booking.
+    """
+    monitor_payload = {**params, "requests": requestgroup.get("requests") or []}
+    try:
+        rows = lco_monitor.record_submission(result, monitor_payload, user)
+        return {"ok": True, "request_ids": [row["request_id"] for row in rows]}
+    except Exception as exc:
+        logger.exception("LCO booking accepted but local monitoring registration failed")
+        return {"ok": False, "error": str(exc)}
+
+
+def _submitted_request_ids(result: dict) -> list[int]:
+    ids = []
+    for child in result.get("requests") or []:
+        value = child.get("id") if isinstance(child, dict) else child
+        if value is not None:
+            ids.append(int(value))
+    return ids
+
+
 @lco_router.post("/test-observations/plan", response_class=JSONResponse)
 def api_lco_test_plan(payload: dict = Body(...)):
     """Generate and persist a deterministic, observer-reviewable test plan."""
@@ -2633,9 +2667,11 @@ def api_lco_test_submit(observation_id: str, request: Request, payload: dict = B
         if not payload.get("dry_run_hash") or payload["dry_run_hash"] != digest or record["payload_hash"] != digest:
             return JSONResponse({"ok": False, "error": "no matching test-observation dry-run; run the dry-run again"}, status_code=409)
         result = lco.submit_requestgroup(rg, _request_user(request))
-        ids = result.get("requests") or result.get("request_ids") or ([result["id"]] if result.get("id") is not None else [])
+        ids = _submitted_request_ids(result)
         record = test_observations.update_record(observation_id, state="submitted", request_ids=ids)
-        return JSONResponse({"ok": True, "result": result, "record": record})
+        params = {**payload, "kind": record["plan"]["kind"], "target_name": record["plan"].get("target") or ""}
+        monitoring = _record_lco_submission(result, rg, params, _request_user(request))
+        return JSONResponse({"ok": True, "result": result, "record": record, "monitoring": monitoring})
     except KeyError:
         return JSONResponse({"ok": False, "error": "test observation not found"}, status_code=404)
     except lco.LcoError as exc:
@@ -2669,8 +2705,10 @@ def api_lco_submit(request: Request, payload: dict = Body(...)):
                 },
                 status_code=409,
             )
-        result = lco.submit_requestgroup(rg, _request_user(request))
-        return JSONResponse({"ok": True, "result": result})
+        user = _request_user(request)
+        result = lco.submit_requestgroup(rg, user)
+        monitoring = _record_lco_submission(result, rg, payload, user)
+        return JSONResponse({"ok": True, "result": result, "monitoring": monitoring})
     except lco.LcoError as e:
         return _lco_error_response(e)
 
@@ -2754,6 +2792,8 @@ def api_lco_split_submit(request: Request, payload: dict = Body(...)):
         # Neither leg is booked yet.
         return _lco_split_error_response(e, "leg_a")
 
+    monitoring_a = _record_lco_submission(result_a, rg_a, leg_a_params, user)
+
     try:
         result_b = lco.submit_requestgroup(rg_b, user)
     except lco.LcoError as e:
@@ -2762,13 +2802,24 @@ def api_lco_split_submit(request: Request, payload: dict = Body(...)):
                 "ok": False,
                 "partial": True,
                 "error": "leg A booked, leg B failed to submit",
-                "leg_a": {"result": result_a},
+                "leg_a": {"result": result_a, "monitoring": monitoring_a},
                 "leg_b": e.to_dict(),
             },
             status_code=e.status,
         )
 
-    return JSONResponse({"ok": True, "leg_a": {"result": result_a}, "leg_b": {"result": result_b}})
+    monitoring_b = _record_lco_submission(result_b, rg_b, leg_b_params, user)
+    return JSONResponse({
+        "ok": True,
+        "leg_a": {"result": result_a, "monitoring": monitoring_a},
+        "leg_b": {"result": result_b, "monitoring": monitoring_b},
+    })
+
+
+@lco_router.get("/monitored-requests", response_class=JSONResponse)
+def api_lco_monitored_requests():
+    """Return locally persisted scheduler requests and pipeline progress."""
+    return JSONResponse({"ok": True, "requests": lco_monitor.list_requests()})
 
 
 @lco_router.get("/archive/frames", response_class=JSONResponse)

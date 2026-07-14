@@ -441,6 +441,30 @@ def test_transit_fit_archive_query_modal_uses_shared_style_variants():
     assert "', 'success')" in html
 
 
+def test_ephemeris_disclosure_triangles_use_standard_size():
+    html = _read_template("ephemeris.html")
+    css = STYLES_CSS.read_text()
+
+    # Every fold on this page uses one deterministic indicator instead of a
+    # mix of undersized custom glyphs and browser-dependent native markers.
+    assert html.count("ephemeris-fold") == 7
+    rule = re.search(
+        r"\.ephemeris-fold\s*>\s*summary::before\s*\{(?P<body>[^}]*)\}",
+        css,
+    )
+    assert rule is not None
+    assert "font-size: 1rem" in rule.group("body")
+
+    assert html.count("phot-section phot-fold ephemeris-fold") == 3
+    top_level_rule = re.search(
+        r"\.ephemeris-fold\.phot-fold\s*>\s*summary::before\s*"
+        r"\{(?P<body>[^}]*)\}",
+        css,
+    )
+    assert top_level_rule is not None
+    assert "font-size: 1.35rem" in top_level_rule.group("body")
+
+
 # --------------------------------------------------------------------------- #
 # Endpoint coverage: frontend fetch targets have backend handlers
 # --------------------------------------------------------------------------- #

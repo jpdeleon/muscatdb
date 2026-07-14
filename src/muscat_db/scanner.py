@@ -155,8 +155,17 @@ def _process_single_file(filepath: str, inst: InstrumentConfig) -> dict[str, str
     return row
 
 
-def _find_fits_files(inst: InstrumentConfig, obsdate: str, ccd: int) -> list[str]:
-    datadir = f"{inst.data_dir}/{obsdate}"
+def _find_fits_files(
+    inst: InstrumentConfig,
+    obsdate: str,
+    ccd: int,
+    data_root: str | os.PathLike[str] | None = None,
+) -> list[str]:
+    if data_root is None:
+        instrument_dir = pathlib.Path(inst.data_dir)
+    else:
+        instrument_dir = pathlib.Path(data_root).expanduser() / inst.data_subdir
+    datadir = str(instrument_dir / obsdate)
     if not os.path.isdir(datadir):
         return []
     if inst.ep_names:
@@ -176,6 +185,7 @@ def scan_date(
     obsdate: str,
     max_workers: int | None = None,
     progress=None,
+    data_root: str | os.PathLike[str] | None = None,
 ) -> dict:
     """Scan all CCDs for a date.
 
@@ -191,7 +201,7 @@ def scan_date(
 
     file_ccd_pairs: list[tuple[str, int]] = []
     for ccd in range(inst.nccd):
-        for fp in _find_fits_files(inst, obsdate, ccd):
+        for fp in _find_fits_files(inst, obsdate, ccd, data_root=data_root):
             file_ccd_pairs.append((fp, ccd))
 
     if not file_ccd_pairs:
@@ -214,15 +224,26 @@ def scan_date(
     paths = [fp for fp, _ in file_ccd_pairs]
     ccds  = [ccd for _, ccd in file_ccd_pairs]
     chunksize = max(1, total // (max_workers * 4))
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        for (fp, ccd, row) in zip(
-            paths, ccds,
-            executor.map(_process_single_file, paths, [inst] * total, chunksize=chunksize),
-        ):
+    if max_workers == 1:
+        # Automatic LCO ingestion runs from a monitor thread. Forking a process
+        # pool from a multithreaded web server is unsafe; the default monitor
+        # therefore uses this deterministic serial path. Operators can opt into
+        # a larger worker count when their process-start method is configured
+        # appropriately.
+        processed = map(_process_single_file, paths, [inst] * total)
+        executor = None
+    else:
+        executor = ProcessPoolExecutor(max_workers=max_workers)
+        processed = executor.map(_process_single_file, paths, [inst] * total, chunksize=chunksize)
+    try:
+        for fp, ccd, row in zip(paths, ccds, processed):
             if row:
                 rows_by_ccd.setdefault(ccd, []).append(row)
             if progress is not None:
                 progress.update(task_id, advance=1, filename=os.path.basename(fp))
+    finally:
+        if executor is not None:
+            executor.shutdown()
 
     for ccd in sorted(rows_by_ccd):
         csv_path = f"{logdir}/obslog-{inst_name}-{obsdate}-ccd{ccd}.csv"

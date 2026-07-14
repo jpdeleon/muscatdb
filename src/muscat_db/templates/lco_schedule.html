@@ -309,7 +309,18 @@
     <div class="lco-note" id="ipp-summary"></div>
     <pre class="lco-pre" id="payload-pre"></pre>
   </div>
-</div>
+</details>
+
+<details class="lco-section section-fold" open>
+  <summary><h3>Submitted Request Monitoring</h3></summary>
+  <p class="lco-note">Accepted requests are checked after their observing window. Final BANZAI products are downloaded incrementally; scan and database ingestion start after every raw frame has a level-91 counterpart.</p>
+  <div class="lco-table-wrap">
+    <table class="lco-table" id="monitor-table">
+      <thead><tr><th>Request</th><th>Target</th><th>Instrument</th><th>LCO state</th><th>Pipeline</th><th>Frames</th><th>Last update</th><th>Detail</th></tr></thead>
+      <tbody id="monitor-body"><tr><td colspan="8" style="color: var(--text-dim); text-align: center;">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</details>
 {% endblock %}
 
 {% block scripts %}
@@ -1743,6 +1754,44 @@
     }).join(', ');
   }
 
+  function monitoringWarning(monitoring) {
+    if (!monitoring || monitoring.ok !== false) return '';
+    return ' — WARNING: booking succeeded, but automatic monitoring was not registered: ' +
+      escapeHtml(monitoring.error || 'unknown database error');
+  }
+
+  function monitorDate(value) {
+    if (!value) return '—';
+    var date = new Date(Number(value) * 1000);
+    return isNaN(date.getTime()) ? '—' : date.toISOString().replace('T', ' ').slice(0, 19) + 'Z';
+  }
+
+  function refreshMonitoredRequests() {
+    fetch('/api/lco/monitored-requests').then(function (r) { return r.json(); }).then(function (d) {
+      var body = el('monitor-body');
+      if (!body || !d.ok) return;
+      var rows = d.requests || [];
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="8" style="color: var(--text-dim); text-align: center;">No scheduler requests are being monitored yet.</td></tr>';
+        return;
+      }
+      body.innerHTML = rows.map(function (row) {
+        var href = 'https://observe.lco.global/requests/' + encodeURIComponent(row.request_id);
+        var frames = escapeHtml(row.downloaded_count + ' downloaded · ' + row.reduced_frame_count + '/' + row.raw_frame_count + ' reduced');
+        var detail = row.last_error ? '<span style="color: var(--red);">' + escapeHtml(row.last_error) + '</span>' : '—';
+        return '<tr>' +
+          '<td><a href="' + href + '" target="_blank" rel="noopener">' + escapeHtml(row.request_id) + '</a></td>' +
+          '<td>' + escapeHtml(row.target || row.name || '—') + '</td>' +
+          '<td>' + escapeHtml(row.instrument || '—') + '</td>' +
+          '<td>' + escapeHtml(row.request_state || '—') + '</td>' +
+          '<td>' + escapeHtml(row.monitor_state || '—') + '</td>' +
+          '<td>' + frames + '</td>' +
+          '<td>' + escapeHtml(monitorDate(row.updated_at)) + '</td>' +
+          '<td>' + detail + '</td></tr>';
+      }).join('');
+    }).catch(function () {});
+  }
+
   function submitLcoRequest() {
     var body = buildParams();
     body.confirm = true;
@@ -1751,11 +1800,12 @@
     fetch('/api/lco/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       .then(function (r) { return r.json(); }).then(function (d) {
         if (!d.ok) { msg('msg-ipp', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
+        refreshMonitoredRequests();
         var ids = extractRequestIds(d.result);
         if (ids.length) {
-          msgHtml('msg-ipp', 'Submitted: ' + requestLinksHtml(ids), 'ok');
+          msgHtml('msg-ipp', 'Submitted: ' + requestLinksHtml(ids) + monitoringWarning(d.monitoring), d.monitoring && d.monitoring.ok === false ? 'err' : 'ok');
         } else {
-          msg('msg-ipp', 'Submitted: ' + JSON.stringify(d.result || {}), 'ok');
+          msgHtml('msg-ipp', 'Submitted: ' + escapeHtml(JSON.stringify(d.result || {})) + monitoringWarning(d.monitoring), d.monitoring && d.monitoring.ok === false ? 'err' : 'ok');
         }
       }).catch(function (e) { msg('msg-ipp', String(e), 'err'); });
   }
@@ -1845,6 +1895,7 @@
     fetch('/api/lco/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       .then(function (r) { return r.json(); }).then(function (d) {
         if (!d.ok) { msg('msg-split-ipp', 'Leg ' + which.toUpperCase() + ' failed: ' + (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
+        refreshMonitoredRequests();
         var ids = extractRequestIds(d.result);
         // This leg is now a real booking -- disable its own button and
         // "Submit both" (which would otherwise try to book it again).
@@ -1853,7 +1904,7 @@
         lastSplitDryRunHashes[which] = null;
         if (which === 'a') { lastSplitLegAResult = d.result; } else { lastSplitLegBResult = d.result; }
         el('split-partial-warning').style.display = 'none';
-        msgHtml('msg-split-ipp', 'Leg ' + which.toUpperCase() + ' booked: ' + requestLinksHtml(ids), 'ok');
+        msgHtml('msg-split-ipp', 'Leg ' + which.toUpperCase() + ' booked: ' + requestLinksHtml(ids) + monitoringWarning(d.monitoring), d.monitoring && d.monitoring.ok === false ? 'err' : 'ok');
       }).catch(function (e) { msg('msg-split-ipp', String(e), 'err'); });
   }
 
@@ -1888,6 +1939,7 @@
     fetch('/api/lco/split-submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       .then(function (r) { return r.json(); }).then(function (d) {
         if (d.ok) {
+          refreshMonitoredRequests();
           // Both legs are now real bookings -- disable every submit button so
           // a stray click can't book either leg a second time.
           el('btn-submit-leg-a').disabled = true;
@@ -1896,11 +1948,14 @@
           lastSplitDryRunHashes = null;
           var idsA = extractRequestIds(d.leg_a.result);
           var idsB = extractRequestIds(d.leg_b.result);
-          msgHtml('msg-split-ipp', 'Submitted — leg A: ' + requestLinksHtml(idsA) + ' · leg B: ' + requestLinksHtml(idsB), 'ok');
+          var warningA = monitoringWarning(d.leg_a && d.leg_a.monitoring);
+          var warningB = monitoringWarning(d.leg_b && d.leg_b.monitoring);
+          msgHtml('msg-split-ipp', 'Submitted — leg A: ' + requestLinksHtml(idsA) + ' · leg B: ' + requestLinksHtml(idsB) + warningA + warningB, warningA || warningB ? 'err' : 'ok');
           el('split-partial-warning').style.display = 'none';
           return;
         }
         if (d.partial) {
+          refreshMonitoredRequests();
           // Leg A is already a real booking -- disable both its own button
           // and "Submit both" so neither can re-submit (and re-book) leg A;
           // "Submit Leg B only" (if leg B's dry-run passed) is safe from here.
@@ -1911,7 +1966,8 @@
           var bookedIds = extractRequestIds(lastSplitLegAResult);
           el('split-partial-text').innerHTML = 'Leg A (' + escapeHtml((val('sch-site-a') || '').toUpperCase()) +
             ') is booked: ' + requestLinksHtml(bookedIds) + '. Leg B failed: ' +
-            escapeHtml((d.leg_b && d.leg_b.error) || 'failed') + '. Use "Submit Leg B only" to retry it.';
+            escapeHtml((d.leg_b && d.leg_b.error) || 'failed') + '. Use "Submit Leg B only" to retry it.' +
+            monitoringWarning(d.leg_a && d.leg_a.monitoring);
           el('split-partial-warning').style.display = '';
           msg('msg-split-ipp', 'Leg A booked, leg B failed — see the warning above.', 'err');
           return;
@@ -2006,7 +2062,13 @@
       if (!confirmed) return;
       var p = buildParams(); p.kind = currentTestRecord.instrument; p.confirm = true; p.dry_run_hash = currentTestHash;
       fetch('/api/lco/test-observations/' + encodeURIComponent(currentTestRecord.id) + '/submit', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(p) })
-        .then(function (r) { return r.json(); }).then(function (d) { if (!d.ok) throw new Error(d.error || 'Submission failed'); msg('msg-test-observation', 'Submitted successfully.'); el('btn-test-submit').disabled = true; })
+        .then(function (r) { return r.json(); }).then(function (d) {
+          if (!d.ok) throw new Error(d.error || 'Submission failed');
+          refreshMonitoredRequests();
+          var warning = monitoringWarning(d.monitoring);
+          msgHtml('msg-test-observation', 'Submitted successfully.' + warning, warning ? 'err' : 'ok');
+          el('btn-test-submit').disabled = true;
+        })
         .catch(function (e) { msg('msg-test-observation', String(e), 'err'); });
     });
   });
@@ -2063,6 +2125,8 @@
   var targetFromQuery = prefillTargetFromQuery(urlParams);
   if (val('sch-target')) refreshTargetFields({ silent: true, isInitialLoad: !targetFromQuery });
   prefillFromView(urlParams);
+  refreshMonitoredRequests();
+  window.setInterval(refreshMonitoredRequests, 30000);
 })();
 </script>
 {% endblock %}

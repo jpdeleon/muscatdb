@@ -721,6 +721,12 @@ def test_lco_pages_render_and_nav_links_it():
     archive = client.get("/lco/archive")
     assert archive.status_code == 200
     assert "Search LCO Archive" in archive.text and "Download selected" in archive.text
+    assert "Submitted Request Monitoring" in page.text
+    assert "/api/lco/monitored-requests" in page.text
+    assert page.text.count('class="lco-section section-fold"') == 5
+    assert archive.text.count('class="lco-section section-fold"') == 3
+    assert "<summary><h3>Target &amp; Transit Windows</h3></summary>" in page.text
+    assert "<summary><h3>Results</h3></summary>" in archive.text
     # Nav (from base.html) links to /lco/schedule on every page.
     assert 'href="/lco/schedule"' in client.get("/logs").text
 
@@ -949,16 +955,82 @@ def test_lco_submit_rejected_without_matching_dry_run(monkeypatch):
     assert "dry-run" in r.json()["error"].lower()
 
 
-def test_lco_submit_succeeds_with_matching_hash(monkeypatch):
+def test_lco_submit_succeeds_with_matching_hash(mock_db, monkeypatch):
     import muscat_db.lco as _lco
     params = _ipp_params()
     good_hash = _lco.payload_hash(_lco.build_requestgroup(params["kind"], params))
-    monkeypatch.setattr("muscat_db.lco.submit_requestgroup",
-                        lambda payload, token=None: {"id": 12345, "state": "PENDING"})
+    monkeypatch.setattr(
+        "muscat_db.lco.submit_requestgroup",
+        lambda payload, token=None: {
+            "id": 12345,
+            "name": params["name"],
+            "proposal": params["proposal"],
+            "state": "PENDING",
+            "requests": [{"id": 67890, "state": "PENDING", "windows": params["windows"]}],
+        },
+    )
     r = TestClient(app).post("/api/lco/submit",
                              json={**params, "confirm": True, "dry_run_hash": good_hash})
     assert r.status_code == 200
     assert r.json()["result"]["id"] == 12345
+    assert r.json()["monitoring"] == {"ok": True, "request_ids": [67890]}
+    with sqlite3.connect(mock_db) as conn:
+        row = conn.execute(
+            "SELECT requestgroup_id,target,instrument,request_state FROM lco_observation_requests "
+            "WHERE request_id=67890"
+        ).fetchone()
+    assert row == (12345, "WASP-12 b", "sinistro", "PENDING")
+
+    monitored = TestClient(app).get("/api/lco/monitored-requests").json()
+    assert monitored["ok"] is True
+    assert monitored["requests"][0]["request_id"] == 67890
+    assert "payload_json" not in monitored["requests"][0]
+    assert "result_json" not in monitored["requests"][0]
+
+
+def test_lco_split_partial_booking_still_registers_successful_leg(mock_db, monkeypatch):
+    import muscat_db.lco as _lco
+
+    leg_a = {**_ipp_params(), "name": "relay A", "site": "lsc", "type": "EXPOSE"}
+    leg_b = {**_ipp_params(), "name": "relay B", "site": "cpt", "type": "EXPOSE"}
+    rg_a = _lco.build_requestgroup(leg_a["kind"], leg_a)
+    rg_b = _lco.build_requestgroup(leg_b["kind"], leg_b)
+    calls = 0
+
+    def fake_submit(payload, token=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {
+                "id": 2001,
+                "name": "relay A",
+                "proposal": leg_a["proposal"],
+                "state": "PENDING",
+                "requests": [{"id": 2002, "state": "PENDING", "windows": leg_a["windows"]}],
+            }
+        raise _lco.LcoError("leg B rejected", status=503)
+
+    monkeypatch.setattr("muscat_db.lco.submit_requestgroup", fake_submit)
+    response = TestClient(app).post(
+        "/api/lco/split-submit",
+        json={
+            "leg_a": leg_a,
+            "leg_b": leg_b,
+            "confirm": True,
+            "dry_run_hash_a": _lco.payload_hash(rg_a),
+            "dry_run_hash_b": _lco.payload_hash(rg_b),
+        },
+    )
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["partial"] is True
+    assert body["leg_a"]["monitoring"] == {"ok": True, "request_ids": [2002]}
+    with sqlite3.connect(mock_db) as conn:
+        rows = conn.execute(
+            "SELECT request_id,requestgroup_id,name FROM lco_observation_requests"
+        ).fetchall()
+    assert rows == [(2002, 2001, "relay A")]
 
 
 def test_lco_archive_frames_search(monkeypatch):
