@@ -109,6 +109,13 @@
   .rec-box .rec-main { display: flex; flex-direction: column; gap: 0.15rem; }
   .rec-box .rec-label { font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
   .rec-box .rec-val { font-size: 1.8rem; font-weight: 700; color: var(--accent2); line-height: 1; font-variant-numeric: tabular-nums; }
+  .rec-box .rec-val.rec-bands { display: flex; flex-wrap: wrap; gap: 0.45rem; margin: 0.25rem 0; }
+  .rec-band-row { display: flex; flex-basis: 100%; flex-wrap: wrap; gap: 0.45rem; }
+  .rec-band { display: inline-flex; align-items: baseline; gap: 0.3rem; padding: 0.35rem 0.5rem; background: var(--input-bg); border: 1px solid var(--border); border-radius: 7px; }
+  .rec-band-name { font-size: 0.68rem; color: var(--text-dim); }
+  .rec-band-time { font-size: 1.05rem; color: var(--accent2); }
+  .rec-band-row.narrow .rec-band { border-color: color-mix(in srgb, #45d6b5 50%, var(--border)); background: color-mix(in srgb, #45d6b5 8%, var(--input-bg)); }
+  .rec-band-row.narrow .rec-band-name, .rec-band-row.narrow .rec-band-time { color: #28a98d; }
   .rec-box .rec-note { font-size: 0.72rem; color: var(--text-dim); }
   .copy-btn { background: var(--input-bg); border: 1px solid var(--border); color: var(--text-dim); border-radius: 7px; padding: 0.4rem 0.7rem; font-size: 0.78rem; cursor: pointer; white-space: nowrap; }
   .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
@@ -132,6 +139,14 @@
   .chip { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 0.4rem 0.65rem; display: flex; flex-direction: column; gap: 0.1rem; }
   .chip .ck { font-size: 0.62rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
   .chip .cv { font-size: 0.9rem; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+
+  .coeff-toolbar { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin: 0.55rem 0; }
+  .coeff-view-btn, .coeff-param { background: var(--input-bg); color: var(--text-dim); border: 1px solid var(--border); border-radius: 6px; padding: 0.3rem 0.55rem; font: inherit; font-size: 0.74rem; }
+  .coeff-view-btn { cursor: pointer; }
+  .coeff-view-btn.active { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--input-bg)); }
+  .coeff-param { margin-left: auto; }
+  .coeff-plot { width: 100%; min-height: 280px; }
+  .coeff-plot svg { display: block; width: 100%; height: auto; }
 
   .dev-banner {
     background: linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(245, 158, 11, 0.12) 100%);
@@ -488,6 +503,8 @@
   // Resolved comparison stars handed off from the FOV page:
   // [{label, sepArcsec, gmag, mags: {band: mag} | null, source, isApprox}]
   var currentComps = [];
+  var coeffView = 'table';
+  var coeffParameter = 'coef';
 
   var STORE_KEY = 'expcalc.v1';
   var COMP_HANDOFF_KEY = 'fov.compHandoff.v1';
@@ -544,7 +561,8 @@
       localStorage.setItem(STORE_KEY, JSON.stringify({
         inst: selInst.value, confmode: selConfmode.value, target: targetName.value, mags: mags,
         focus: focusMm.value, airmass: airmass.value, satFrac: satFrac.value, customAdu: customAdu.value,
-        showNarrow: showNarrow.checked, comps: currentComps
+        showNarrow: showNarrow.checked, comps: currentComps,
+        coeffView: coeffView, coeffParameter: coeffParameter
       }));
     } catch (e) {}
   }
@@ -561,6 +579,8 @@
     if (s.satFrac) { satFrac.value = s.satFrac; customAduField.style.display = s.satFrac === 'custom' ? '' : 'none'; }
     if (s.customAdu) customAdu.value = s.customAdu;
     if (s.showNarrow !== undefined) showNarrow.checked = s.showNarrow;
+    if (s.coeffView === 'table' || s.coeffView === 'plot') coeffView = s.coeffView;
+    if (s.coeffParameter === 'coef' || s.coeffParameter === 'fwhm_pix') coeffParameter = s.coeffParameter;
     if (Array.isArray(s.comps) && s.comps.length) { currentComps = s.comps; renderComps(); }
     syncFocus(); syncAirmass();
   }
@@ -884,19 +904,65 @@
       resultsTableWrap.appendChild(note2);
     }
 
-    if (mode === 'exptime' && data.recommended_exptime) {
+    if (mode === 'exptime' && rows.length) {
       recBox.style.display = 'flex';
-      recVal.textContent = data.recommended_exptime + ' s';
-      recNote.textContent = hasComps
-        ? 'conservative — keeps the target and comparison star(s) below the selected saturation limit'
-        : 'conservative — keeps every band below the selected saturation limit';
+      var isMuscat = String(data.instrument || '').indexOf('muscat') === 0;
+      recVal.innerHTML = '';
+      recVal.classList.toggle('rec-bands', isMuscat);
+
+      if (isMuscat) {
+        var recommendations = [];
+        rows.forEach(function (r) {
+          var existing = recommendations.find(function (item) { return item.band === r.band; });
+          if (existing) {
+            existing.exptime = Math.min(existing.exptime, Number(r.exptime));
+          } else {
+            recommendations.push({band: r.band, exptime: Number(r.exptime)});
+          }
+        });
+        recommendations.forEach(function (item) {
+          var bandRec = document.createElement('span');
+          bandRec.className = 'rec-band';
+          var bandName = document.createElement('span');
+          bandName.className = 'rec-band-name';
+          bandName.textContent = item.band;
+          var bandTime = document.createElement('span');
+          bandTime.className = 'rec-band-time';
+          bandTime.textContent = item.exptime.toFixed(1) + ' s';
+          bandRec.appendChild(bandName);
+          bandRec.appendChild(bandTime);
+          recVal.appendChild(bandRec);
+        });
+        recVal.dataset.copyText = recommendations.map(function (item) {
+          return item.band + ': ' + item.exptime.toFixed(1) + ' s';
+        }).join(', ');
+        var broadRow = document.createElement('span');
+        broadRow.className = 'rec-band-row broad';
+        var narrowRow = document.createElement('span');
+        narrowRow.className = 'rec-band-row narrow';
+        Array.from(recVal.children).forEach(function (badge, index) {
+          (broadBands.indexOf(recommendations[index].band) !== -1 ? broadRow : narrowRow).appendChild(badge);
+        });
+        recVal.appendChild(broadRow);
+        if (narrowRow.children.length) recVal.appendChild(narrowRow);
+        recNote.textContent = hasComps
+          ? 'per-band limits — each keeps the target and comparison star(s) below the selected saturation limit'
+          : 'per-band limits — each keeps that band below the selected saturation limit';
+      } else {
+        recVal.textContent = data.recommended_exptime + ' s';
+        recVal.dataset.copyText = recVal.textContent;
+        recNote.textContent = hasComps
+          ? 'conservative — keeps the target and comparison star(s) below the selected saturation limit'
+          : 'conservative — keeps every band below the selected saturation limit';
+      }
     } else {
       recBox.style.display = 'none';
+      recVal.dataset.copyText = '';
     }
   }
 
   copyRec.addEventListener('click', function () {
-    var v = (recVal.textContent || '').replace(/[^0-9.]/g, '');
+    var v = recVal.dataset.copyText || recVal.textContent || '';
     if (!v) return;
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(v).then(function () {
@@ -955,18 +1021,97 @@
       var n = data.coeffs.length;
       if (n === 0) { slot.textContent = 'No DB calibration — using empirical MuSCAT3 coefficients (scaled).'; return; }
       var t = '<p style="margin-bottom:0.4rem;">Calibrated coefficients: <strong>' + n + '</strong></p>' +
-        '<table style="font-size:0.74rem;"><thead><tr><th>Band</th><th>Focus (mm)</th><th>Coef</th><th>FWHM (pix)</th><th>N</th></tr></thead><tbody>';
+        '<div class="coeff-toolbar"><button type="button" class="coeff-view-btn active" data-view="table">Table</button>' +
+        '<button type="button" class="coeff-view-btn" data-view="plot">Plot</button>' +
+        '<select class="coeff-param" aria-label="Plot parameter"><option value="coef">Coefficient</option><option value="fwhm_pix">FWHM (pix)</option></select></div>' +
+        '<div class="coeff-table"><table style="font-size:0.74rem;"><thead><tr><th>Band</th><th>Focus (mm)</th><th>Coef</th><th>FWHM (pix)</th><th>N</th></tr></thead><tbody>';
       data.coeffs.slice(0, 20).forEach(function (c) {
         t += '<tr><td>' + c.band + '</td><td>' + c.focus_mm + '</td><td>' + Number(c.coef).toFixed(3) + '</td><td>' + Number(c.fwhm_pix).toFixed(2) + '</td><td>' + c.n_frames + '</td></tr>';
       });
       if (n > 20) t += '<tr><td colspan="5" style="text-align:center;">… and ' + (n - 20) + ' more</td></tr>';
-      t += '</tbody></table>';
+      t += '</tbody></table></div><div class="coeff-plot" style="display:none;"></div>';
       slot.innerHTML = t;
+      var tableView = slot.querySelector('.coeff-table');
+      var plotView = slot.querySelector('.coeff-plot');
+      var param = slot.querySelector('.coeff-param');
+      slot.querySelectorAll('.coeff-view-btn').forEach(function (button) {
+        button.addEventListener('click', function () {
+          var showPlot = button.dataset.view === 'plot';
+          coeffView = button.dataset.view;
+          tableView.style.display = showPlot ? 'none' : 'block';
+          plotView.style.display = showPlot ? 'block' : 'none';
+          param.style.display = showPlot ? 'block' : 'none';
+          slot.querySelectorAll('.coeff-view-btn').forEach(function (b) { b.classList.toggle('active', b === button); });
+          if (showPlot) renderCoeffPlot(data.coeffs, param.value, plotView);
+          saveState();
+        });
+      });
+      param.value = coeffParameter;
+      param.addEventListener('change', function () {
+        coeffParameter = param.value;
+        renderCoeffPlot(data.coeffs, param.value, plotView);
+        saveState();
+      });
+      slot.querySelector('.coeff-view-btn[data-view="' + coeffView + '"]').click();
     }).catch(function () {
       var slot = document.getElementById('coeff-slot'); if (slot) slot.textContent = '';
     });
   }
   function chip(k, v) { return '<div class="chip"><span class="ck">' + k + '</span><span class="cv">' + v + '</span></div>'; }
+
+  function renderCoeffPlot(coeffs, parameter, container) {
+    var values = coeffs.filter(function (c) {
+      var focus = Number(c.focus_mm);
+      return Number.isFinite(focus) && focus <= 6 && Number.isFinite(Number(c[parameter]));
+    });
+    container.innerHTML = '';
+    if (!values.length) { container.textContent = 'No values available for this parameter.'; return; }
+
+    var width = 720, height = 300, left = 52, right = 115, top = 18, bottom = 42;
+    var plotWidth = width - left - right, plotHeight = height - top - bottom;
+    var xs = values.map(function (c) { return Number(c.focus_mm); });
+    var ys = values.map(function (c) { return Number(c[parameter]); });
+    var xMin = Math.min.apply(null, xs), xMax = Math.max.apply(null, xs);
+    var yMin = Math.min.apply(null, ys), yMax = Math.max.apply(null, ys);
+    if (xMin === xMax) { xMin -= 0.5; xMax += 0.5; }
+    if (yMin === yMax) { yMin -= 0.5; yMax += 0.5; }
+    var yPad = (yMax - yMin) * 0.08; yMin -= yPad; yMax += yPad;
+    function sx(x) { return left + (x - xMin) / (xMax - xMin) * plotWidth; }
+    function sy(y) { return top + (yMax - y) / (yMax - yMin) * plotHeight; }
+    function add(name, attrs, text) {
+      var el = document.createElementNS('http://www.w3.org/2000/svg', name);
+      Object.keys(attrs || {}).forEach(function (key) { el.setAttribute(key, attrs[key]); });
+      if (text !== undefined) el.textContent = text;
+      svg.appendChild(el); return el;
+    }
+    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', (parameter === 'coef' ? 'Coefficient' : 'FWHM') + ' by focus and band');
+    container.appendChild(svg);
+    for (var tick = 0; tick <= 4; tick += 1) {
+      var tx = left + plotWidth * tick / 4;
+      var ty = top + plotHeight * tick / 4;
+      add('line', {x1:left, y1:ty, x2:left + plotWidth, y2:ty, stroke:'var(--border)', 'stroke-width':'1'});
+      add('text', {x:tx, y:height - 20, fill:'var(--text-dim)', 'font-size':'11', 'text-anchor':'middle'}, (xMin + (xMax - xMin) * tick / 4).toFixed(1));
+      add('text', {x:left - 8, y:ty + 4, fill:'var(--text-dim)', 'font-size':'11', 'text-anchor':'end'}, (yMax - (yMax - yMin) * tick / 4).toFixed(parameter === 'coef' ? 3 : 2));
+    }
+    add('line', {x1:left, y1:top, x2:left, y2:top + plotHeight, stroke:'var(--text-dim)'});
+    add('line', {x1:left, y1:top + plotHeight, x2:left + plotWidth, y2:top + plotHeight, stroke:'var(--text-dim)'});
+    add('text', {x:left + plotWidth / 2, y:height - 4, fill:'var(--text-dim)', 'font-size':'12', 'text-anchor':'middle'}, 'Focus (mm)');
+    add('text', {x:14, y:top + plotHeight / 2, fill:'var(--text-dim)', 'font-size':'12', 'text-anchor':'middle', transform:'rotate(-90 14 ' + (top + plotHeight / 2) + ')'}, parameter === 'coef' ? 'Coefficient' : 'FWHM (pix)');
+
+    var bands = [];
+    values.forEach(function (c) { if (bands.indexOf(c.band) === -1) bands.push(c.band); });
+    bands.forEach(function (band, bandIndex) {
+      var series = values.filter(function (c) { return c.band === band; }).sort(function (a, b) { return Number(a.focus_mm) - Number(b.focus_mm); });
+      var color = BAND_COLORS[band] || ['#4f9eff', '#e0564a', '#8e44ad', '#28a98d'][bandIndex % 4];
+      add('polyline', {points:series.map(function (c) { return sx(Number(c.focus_mm)) + ',' + sy(Number(c[parameter])); }).join(' '), fill:'none', stroke:color, 'stroke-width':'2'});
+      series.forEach(function (c) { add('circle', {cx:sx(Number(c.focus_mm)), cy:sy(Number(c[parameter])), r:'3.5', fill:color}); });
+      add('circle', {cx:left + plotWidth + 18, cy:top + 14 + bandIndex * 18, r:'4', fill:color});
+      add('text', {x:left + plotWidth + 28, y:top + 18 + bandIndex * 18, fill:'var(--text-dim)', 'font-size':'11'}, band);
+    });
+  }
 
   selInst.addEventListener('change', function () { renderInstParams(this.value); });
 

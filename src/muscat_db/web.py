@@ -201,6 +201,13 @@ async def _nginx_auth_middleware(request: Request, call_next):
     finally:
         _CURRENT_USER.reset(token)
 
+# Register the companion-application gateway before the broad observation-page
+# routes below (``/{instrument}``, ``/{instrument}/{obsdate}``, ...). Starlette
+# resolves routes in registration order, so adding this router at the end makes
+# a request such as ``/tess-quicklook/available-sectors`` look like an
+# instrument/date page and returns HTML where the QuickLook client expects JSON.
+app.include_router(proxy_router)
+
 # Mount static assets (shared stylesheet, etc.) before the dynamic routes so a
 # request like /static/styles.css is not captured by the /{inst}/{date} route.
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -4076,4 +4083,3 @@ app.include_router(fov_router)
 app.include_router(lco_router)
 app.include_router(settings_router)
 app.include_router(ads_router)
-app.include_router(proxy_router)

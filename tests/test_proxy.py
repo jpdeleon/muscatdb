@@ -3,9 +3,12 @@ import asyncio
 import httpx
 import pytest
 from fastapi import Request
+from fastapi.testclient import TestClient
+from starlette.responses import JSONResponse
 from starlette.websockets import WebSocket
 
 import muscat_db.proxy as proxy
+import muscat_db.web as web
 from muscat_db.auth import trusted_forwarded_user
 from muscat_db.proxy import (
     APPLICATIONS,
@@ -168,6 +171,30 @@ def test_gateway_lets_authenticated_user_reach_backend():
 
     resp = asyncio.run(run())
     assert resp.status_code == 502
+
+
+def test_nested_gateway_path_is_not_shadowed_by_observation_page(monkeypatch):
+    """Two-segment companion paths must reach the gateway catch-all.
+
+    The observation page ``/{instrument}/{obsdate}`` is intentionally broad,
+    so router registration order must keep it from consuming paths such as
+    ``/tess-quicklook/available-sectors``.
+    """
+    async def fake_proxy_http(request, app, path):
+        return JSONResponse({"path": path, "query": request.url.query})
+
+    monkeypatch.setattr(proxy, "_proxy_http", fake_proxy_http)
+    client = TestClient(web.app, client=("127.0.0.1", 50000))
+    response = client.get(
+        "/tess-quicklook/available-sectors?name=TOI-123&pipeline=spoc",
+        headers={"X-Forwarded-User": "observer"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "path": "available-sectors",
+        "query": "name=TOI-123&pipeline=spoc",
+    }
 
 
 async def _empty_body_receive():

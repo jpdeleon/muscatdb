@@ -9,7 +9,42 @@ Migrate MuSCAT-DB background execution from in-process `subprocess.Popen` tracki
 - supports single-host rollout first, then multi-server workers
 - keeps the web UI, `jobs` table, and output directories consistent during and after migration
 
-This procedure is written for the current codebase as of 2026-07-01.
+This is a migration plan, not a record that Celery or Redis is already deployed. The latest host-level observations and the proposed worker placement are maintained in [SERVER_INVENTORY.md](SERVER_INVENTORY.md). Re-verify that inventory immediately before installing services or enabling the Celery feature flag; host load, package availability, firewall rules, and NTP state are operational facts that can change.
+
+This procedure is updated for the current codebase and host inventory as of 2026-07-13.
+
+---
+
+## Decisions (recorded 2026-07-13)
+
+These four decisions were made by the maintainer and govern the rest of this plan. Where they conflict with earlier prose below, these win.
+
+1. **Driver: multi-server scale.** The migration exists to spread photometry and transit-fit work across the multi-host cluster (ut3/ut6, later ut4/ut5/ut7 per [SERVER_INVENTORY.md](SERVER_INVENTORY.md)), not merely to harden the single host. This is what justifies Celery's added complexity. On a single host alone, Celery is mostly downside versus the existing `claim_slot()` serialization.
+
+2. **Job DB: single-writer callback.** Workers on other hosts must **not** write `muscat.db` directly (SQLite file-locking over NFS is unreliable → corruption / lost updates on the ~3 GB DB). All job-state writes are routed through **one writer on ut2**. Remote workers report lifecycle transitions back to ut2, which is the sole process that mutates the `jobs` table. SQLite stays as the durable UI-facing store (moving `jobs` to Postgres/Redis remains a non-goal).
+
+   - **Net-new code this implies (Phase 8, not Phase 1):** a `JobStateReporter` that POSTs state transitions to an internal ut2 endpoint, with:
+     - authentication on that endpoint (LAN workers mutating the jobs table),
+     - idempotent, `run_id`-keyed, retryable reports so a transient ut2 outage does not leave stuck `running` rows,
+     - `finalizing` resolution owned by the **worker** (it holds the process and the log mtime); ut2 stops resolving lifecycle itself and just persists what the worker reports.
+   - **Phase 1 defers all of the above:** on single-host ut2 the worker and DB are co-located, so the worker writes local SQLite exactly as today — no callback channel, no network, no auth. The callback layer is added only when workers move off-host.
+
+3. **Supervision: systemd units per host.** Redis and every Celery worker run as systemd services with restart policies (not under the existing `muscatdb-gui` tmux session, which supervises nothing and does not survive reboot). This requires root/sudo on each participating host. Worker units must pin `OMP_NUM_THREADS` / `MKL_NUM_THREADS` / `OPENBLAS_NUM_THREADS` to the host's real core budget — the ambient `OMP_NUM_THREADS=100` (see SERVER_INVENTORY.md risk #2) would otherwise oversubscribe ut2's 28 threads ~100×.
+
+4. **Rollout: single-host on ut2 first.** Stand up Redis + workers on ut2 only, prove the `finalizing` / cancel / status contract across the web↔worker process boundary behind `MUSCAT_CELERY_ENABLED`, and only then expand to multi-host (Phase 8). This cleanly separates "prove the execution-boundary contract" from "add the network."
+
+### Scope adjustment from these decisions
+
+- **Drop the hash-based percentage ramp** (`MUSCAT_CELERY_RAMP_PERCENT`, Appendix A). That pattern targets high-volume web traffic needing statistical exposure; this workload is a handful of named jobs per day. A simple per-job or global on/off flag is easier to reason about and to cancel cleanly. Appendix A's `JobRouter` dual-path is retained (it is the local↔celery seam); only the percentage-ramp machinery is cut unless explicitly reinstated.
+
+### Phase 1 definition of done (ut2 only)
+
+- Redis + one `photometry` worker (concurrency 1) + one `transit_fit` worker (concurrency 1) as **systemd units on ut2**, with the OMP/MKL/OpenBLAS thread caps pinned in the unit.
+- `claim_slot()` retired in favor of **queue concurrency = 1** (broker-native serialization replaces the SQLite slot gate).
+- `finalizing` grace logic runs **inside the worker**; the DB still persists `running` until the log is quiescent.
+- Cancel works for both queued (Celery revoke) and running (process-group SIGTERM) jobs.
+- All gated behind `MUSCAT_CELERY_ENABLED`; the local `Popen` path is untouched when the flag is off.
+- Its real payoff on a single host is narrow but worth proving: **jobs survive a web-process restart** because the worker is a separate systemd-supervised process, not a `Popen` child of the web app.
 
 ---
 
@@ -411,13 +446,15 @@ During rollout:
 
 ### Step 19. Use single-host production shadow rollout first
 
-Do not begin on the planned 48/120/120-core multi-server topology.
+Do not begin on the full multi-server topology.
 
 First run Celery + Redis on the current server:
 
 1. web process still on existing tmux-managed host
 2. Redis local to host
 3. Celery workers local to host
+
+The current web process is managed in the `muscatdb-gui` tmux session. Keep Redis and Celery under an explicit service/startup procedure as they are introduced; do not assume that the existing tmux session provides process supervision for them.
 
 This isolates orchestration changes from multi-host operational changes.
 
@@ -487,7 +524,7 @@ For Celery backend rows, `Process lost (server restart)` must no longer be emitt
 When the single-host Celery rollout is stable:
 
 1. move Redis to a reachable central service
-2. register workers on the 48/120/120-core servers
+2. register the verified worker candidates (ut3, ut4, and ut6), keeping ut4 on trial/light queues until its post-restoration smoke test and stability window pass
 3. pin queues by capability if needed
 4. ensure shared file paths are identical or mounted compatibly on all worker hosts
 
@@ -500,6 +537,8 @@ This is critical because current outputs and logs are file-path dependent:
 
 Do not move to multi-host workers until those paths are verified identical or abstracted.
 
+**For concrete host specifications, recommended role assignment (redis broker, photometry workers, transit-fit workers), and operational prerequisite checklist, see [SERVER_INVENTORY.md](SERVER_INVENTORY.md).** That document includes live CPU/RAM/OS/NTP specs and risk mitigation for the multi-server rollout.
+
 ### Step 25. Add routing by capability
 
 For multi-host deployment, define Celery routing rules such as:
@@ -510,6 +549,8 @@ For multi-host deployment, define Celery routing rules such as:
 - `transit_fit.test` -> lighter worker pool
 
 Queue naming should reflect capability, not just pipeline name, if the hardware split becomes important.
+
+The initial host mapping should prefer ut6/ut3 for full production work, use the newly restored ut4 for low-concurrency test or overflow queues, and leave ut5/ut7 capacity-gated according to live load. This is an initial operational policy, not static routing: recheck host availability before worker startup.
 
 ---
 
@@ -556,3 +597,363 @@ The migration is complete when all of the following are true:
 6. Fast tests pass, and Celery integration tests pass.
 7. Single-host production use is stable before multi-server expansion.
 
+---
+
+## Appendix A: Job Router And Dual-Mode Design
+
+> **Superseded in part by [Decisions](#decisions-recorded-2026-07-13):** the `JobRouter` local↔celery seam below is retained, but the **hash-based percentage ramp** (`MUSCAT_CELERY_RAMP_PERCENT`, `_choose_backend` sharding, and the "Gradual Ramp Strategy" section) is **cut** for this workload — use a simple global/per-job on/off flag instead. The ramp code is kept here only as reference in case it is ever reinstated.
+
+To keep the current system running while validating Celery, implement a **job router** that dispatches to either `local` (multiprocessing) or `celery` backend based on configuration and a gradual ramp strategy.
+
+### Router Concept
+
+```python
+# src/muscat_db/job_router.py
+
+class JobRouter:
+    """Routes jobs to local or Celery backend based on config and gradual ramp."""
+
+    def dispatch_photometry(self, job_payload: dict, run_id: str) -> str:
+        """
+        Returns: dispatch_id (DB row key or Celery task_id)
+        """
+        backend = self._choose_backend(pipeline='photometry', run_id=run_id)
+        if backend == 'local':
+            return self._local_dispatch.dispatch_photometry(job_payload, run_id)
+        else:
+            return self._celery_dispatch.dispatch_photometry(job_payload, run_id)
+
+    def dispatch_transit_fit(self, job_payload: dict, run_id: str) -> str:
+        """
+        Returns: dispatch_id
+        """
+        backend = self._choose_backend(pipeline='transit_fit', run_id=run_id)
+        if backend == 'local':
+            return self._local_dispatch.dispatch_transit_fit(job_payload, run_id)
+        else:
+            return self._celery_dispatch.dispatch_transit_fit(job_payload, run_id)
+
+    def cancel(self, run_id: str) -> None:
+        """Cancel a job, regardless of backend."""
+        job = self._job_store.get_by_run_id(run_id)
+        if job.backend == 'local':
+            self._local_dispatch.cancel(run_id)
+        else:
+            self._celery_dispatch.cancel(job.dispatch_id)
+
+    def get_status(self, run_id: str) -> dict:
+        """Unified status, regardless of backend."""
+        job = self._job_store.get_by_run_id(run_id)
+        if job.backend == 'local':
+            return self._local_status.get(run_id)
+        else:
+            return self._celery_status.get(job.dispatch_id)
+
+    def _choose_backend(self, pipeline: str, run_id: str) -> str:
+        """
+        Determines which backend to use.
+
+        Rules:
+        - If MUSCAT_CELERY_ENABLED=0, always 'local'
+        - If MUSCAT_CELERY_ENABLED=1:
+          - Use hash(run_id) % 100 to pick percentage of jobs for Celery
+          - Control percentage via MUSCAT_CELERY_RAMP_PERCENT (0-100)
+          - Example: MUSCAT_CELERY_RAMP_PERCENT=10 -> 10% to Celery, 90% local
+        """
+        if not self._celery_enabled:
+            return 'local'
+
+        ramp_percent = int(os.getenv('MUSCAT_CELERY_RAMP_PERCENT', '0'))
+        if ramp_percent == 0:
+            return 'local'
+        if ramp_percent >= 100:
+            return 'celery'
+
+        # Deterministic hash-based sharding
+        hash_value = int(hashlib.md5(run_id.encode()).hexdigest(), 16)
+        if (hash_value % 100) < ramp_percent:
+            return 'celery'
+        return 'local'
+```
+
+### Environment Variables
+
+Add to the deployment configuration:
+
+```bash
+# Feature flag: enable Celery backend
+MUSCAT_CELERY_ENABLED=0|1
+
+# Gradual ramp: percentage of new jobs routed to Celery (0-100)
+# Start at 0, gradually increase as validation succeeds
+MUSCAT_CELERY_RAMP_PERCENT=0
+
+# Existing Celery variables (from Phase 2)
+MUSCAT_REDIS_URL=redis://localhost:6379/0
+MUSCAT_CELERY_RESULT_URL=redis://localhost:6379/1
+MUSCAT_CELERY_PHOT_QUEUE=photometry
+MUSCAT_CELERY_FIT_QUEUE=transit_fit
+```
+
+### Database Backend Field
+
+The `jobs` table already gains a `backend` column in Step 2:
+
+```sql
+ALTER TABLE jobs ADD COLUMN backend TEXT NOT NULL DEFAULT 'local';
+```
+
+This is the single source of truth for which system owns the job.
+
+### Dispatch Backends
+
+#### LocalDispatcher
+
+Keep the existing behavior intact:
+
+```python
+# src/muscat_db/backends/local_dispatch.py
+
+class LocalDispatcher:
+    """Current multiprocessing backend."""
+
+    def dispatch_photometry(self, job_payload: dict, run_id: str) -> str:
+        # Write DB row as pending
+        job_id = self._job_store.create_job(
+            run_id=run_id,
+            backend='local',
+            state='pending',
+            params=json.dumps(job_payload)
+        )
+        # Enqueue in local queue (existing `_JOBS` dict)
+        photometry._JOBS[run_id] = {
+            'payload': job_payload,
+            'created_at': time.time()
+        }
+        return run_id  # use run_id as dispatch_id for local
+
+    def cancel(self, run_id: str) -> None:
+        # Mark DB as cancelled
+        # sync_jobs() will clean up the local queue entry
+        self._job_store.update_state(run_id, 'cancelled')
+```
+
+#### CeleryDispatcher
+
+New Celery backend:
+
+```python
+# src/muscat_db/backends/celery_dispatch.py
+
+class CeleryDispatcher:
+    """Celery task backend."""
+
+    def dispatch_photometry(self, job_payload: dict, run_id: str) -> str:
+        # Write DB row as pending
+        job_id = self._job_store.create_job(
+            run_id=run_id,
+            backend='celery',
+            state='pending',
+            params=json.dumps(job_payload)
+        )
+
+        # Dispatch Celery task
+        task = tasks.run_photometry_task.apply_async(
+            kwargs={'job_payload': job_payload, 'run_id': run_id},
+            queue=self._phot_queue,
+            task_id=run_id  # use run_id as Celery task_id for consistency
+        )
+
+        # Save dispatch_id to DB
+        self._job_store.update_dispatch_id(run_id, task.id)
+        return task.id
+
+    def cancel(self, task_id: str) -> None:
+        # Try to revoke before execution
+        self._celery_app.control.revoke(task_id, terminate=False)
+        # Worker will check DB state and terminate subprocess if needed
+```
+
+### Status Resolution
+
+Implement unified status that works for both backends:
+
+```python
+# src/muscat_db/job_status.py
+
+class UnifiedJobStatus:
+    """Resolves status from DB, runtime, and logs regardless of backend."""
+
+    def get(self, run_id: str) -> dict:
+        job = self._job_store.get_by_run_id(run_id)
+
+        if job.backend == 'local':
+            return self._resolve_local(job)
+        else:
+            return self._resolve_celery(job)
+
+    def _resolve_local(self, job: Job) -> dict:
+        """Use existing sync_jobs() logic."""
+        # Check if process is in _JOBS dict
+        # Poll process, check log mtime, resolve state
+        ...
+
+    def _resolve_celery(self, job: Job) -> dict:
+        """Check Celery task state + DB + logs."""
+        task = self._celery_app.AsyncResult(job.dispatch_id)
+
+        # Hierarchy: DB state if terminal, else Celery state, else pending
+        if job.state in ('done', 'error', 'cancelled'):
+            return {'state': job.state, 'return_code': job.return_code}
+
+        if task.state == 'PENDING':
+            return {'state': 'pending', 'backend': 'celery'}
+
+        if task.state == 'STARTED':
+            # Get worker info and log tail from runtime store
+            runtime = self._runtime_store.get(run_id)
+            return {
+                'state': 'running',
+                'worker_id': runtime.get('worker_id'),
+                'pid': runtime.get('pid'),
+                'log_tail': self._get_log_tail(job.log_file)
+            }
+
+        if task.state == 'RETRY':
+            return {'state': 'running', 'backend': 'celery'}
+
+        # Task failed or was revoked
+        if task.state in ('FAILURE', 'REVOKED'):
+            self._job_store.update_state(run_id, 'cancelled' if task.state == 'REVOKED' else 'error')
+            return {'state': job.state, 'error': str(task.info)}
+
+        return {'state': 'running', 'backend': 'celery'}
+```
+
+### Gradual Ramp Strategy
+
+The hash-based sharding in `_choose_backend()` enables safe gradual rollout:
+
+```python
+# Day 1: Deploy code, start Celery infrastructure
+MUSCAT_CELERY_ENABLED=1
+MUSCAT_CELERY_RAMP_PERCENT=0  # No traffic yet
+
+# Day 2: Monitor infrastructure, test manually
+# (run test jobs via explicit Celery dispatch)
+
+# Day 3: Start 5% gradual ramp
+MUSCAT_CELERY_RAMP_PERCENT=5
+# ~5 out of every 100 new jobs hash to Celery
+
+# Day 7: If all metrics green, ramp to 25%
+MUSCAT_CELERY_RAMP_PERCENT=25
+
+# Day 14: If still stable, ramp to 50%
+MUSCAT_CELERY_RAMP_PERCENT=50
+
+# Day 21: If no issues, go 100%
+MUSCAT_CELERY_RAMP_PERCENT=100
+# Now all new jobs use Celery; old local jobs still respected
+
+# Week 4+: Once old local jobs complete, remove LocalDispatcher code
+```
+
+### Monitoring And Metrics
+
+Track during rollout:
+
+```python
+# src/muscat_db/metrics.py
+
+class JobMetrics:
+    def record_dispatch(self, backend: str, pipeline: str):
+        """Increment dispatch counter."""
+        self.gauges[f'{pipeline}.dispatch.{backend}'].inc()
+
+    def record_completion(self, backend: str, pipeline: str,
+                          runtime_secs: float, success: bool):
+        """Record completion time and success/failure."""
+        self.histograms[f'{pipeline}.runtime.{backend}'].observe(runtime_secs)
+        self.gauges[f'{pipeline}.success.{backend}'].inc() if success \
+            else self.gauges[f'{pipeline}.failure.{backend}'].inc()
+
+    def get_summary(self) -> dict:
+        """Return dispatch distribution and latency summary."""
+        return {
+            'photometry': {
+                'local_jobs': self.gauges['photometry.dispatch.local'].get(),
+                'celery_jobs': self.gauges['photometry.dispatch.celery'].get(),
+                'local_avg_secs': self.histograms['photometry.runtime.local'].mean(),
+                'celery_avg_secs': self.histograms['photometry.runtime.celery'].mean(),
+                'local_success_rate': ...,
+                'celery_success_rate': ...
+            },
+            'transit_fit': { ... }
+        }
+```
+
+Add a metrics dashboard or endpoint that shows real-time dispatch distribution and latency comparison. This makes it obvious when Celery is ready to ramp.
+
+### Rollback
+
+If Celery exhibits issues, rollback is simple:
+
+```bash
+# Set ramp to 0
+MUSCAT_CELERY_RAMP_PERCENT=0
+
+# All new jobs route to local
+# Existing Celery jobs continue via workers
+
+# Once all Celery jobs finish, shut down workers
+celery -A muscat_db.celery_app control shutdown
+```
+
+No code changes needed; existing DB row tracking ensures both backends remain functional.
+
+### Testing The Dual-Mode Path
+
+```python
+# tests/test_dual_mode.py
+
+@pytest.mark.parametrize('backend,ramp', [
+    ('local', 0),
+    ('celery', 100),
+])
+def test_dispatch_and_status_both_backends(backend, ramp, app, job_store):
+    """Ensure router and status work for both backends."""
+    os.environ['MUSCAT_CELERY_RAMP_PERCENT'] = str(ramp)
+
+    router = JobRouter(celery_enabled=True, job_store=job_store)
+
+    payload = {'pipeline': 'photometry', 'inst': 'muscat3', ...}
+    run_id = 'test-run-1'
+
+    dispatch_id = router.dispatch_photometry(payload, run_id)
+    assert dispatch_id is not None
+
+    job = job_store.get_by_run_id(run_id)
+    assert job.backend == ('local' if ramp == 0 else 'celery')
+
+    status = router.get_status(run_id)
+    assert status['state'] == 'pending'
+
+def test_cancel_works_on_both_backends(router):
+    """Cancellation is transparent to backend."""
+    # Dispatch to local
+    dispatch_local = router.dispatch_photometry(payload, 'local-job')
+
+    # Dispatch to Celery
+    dispatch_celery = router.dispatch_photometry(payload, 'celery-job')
+
+    # Both cancel
+    router.cancel('local-job')
+    router.cancel('celery-job')
+
+    # Both show cancelled state
+    assert router.get_status('local-job')['state'] == 'cancelled'
+    assert router.get_status('celery-job')['state'] == 'cancelled'
+```
+
+This design lets you confidently run both backends in parallel, validate Celery under production traffic, and roll back instantly if needed.

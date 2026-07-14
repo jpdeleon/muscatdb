@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 # Ensure prose2 is in python path
-prose_path = "/ut2/jerome/github/research/project/ext_tools/prose2"
+prose_path = str(Path.home() / "github" / "research" / "project" / "ext_tools" / "prose2")
 if prose_path not in sys.path:
     sys.path.insert(0, prose_path)
 
@@ -104,4 +104,3 @@ def test_wcs_with_gaia_query_scaling():
                 break
                 
     assert solved, "Failed to solve WCS using the Gaia search radius scaling"
-

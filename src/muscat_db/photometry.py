@@ -53,16 +53,12 @@ logger = logging.getLogger(__name__)
 _HERE = Path(__file__).resolve().parent          # .../src/muscat_db
 _REPO_ROOT = _HERE.parent.parent                 # .../muscat-db
 _DEFAULT_PROSE_PROJECT = _REPO_ROOT.parent / "ext_tools" / "prose2"
-_DEFAULT_OUTPUT_BASE = "/ut2/jerome/ql/prose"
+_DEFAULT_OUTPUT_BASE = Path.home() / "ql" / "prose"
 # Temp dir for spawned pipeline jobs. The root filesystem holding /tmp is small
 # and prone to filling up (astropy's mmap probe and FITS I/O write ephemerals
-# there), so default to a roomy home-backed location instead of user-space /tmp.
-# Derived from the home directory rather than a hardcoded user path so it is
-# portable across machines/users (planned celery/redis multi-server setup).
-# ``Path.home()`` resolves via the password database, so this still works when
-# ``$HOME`` is unset (cron/systemd workers) -- unlike a literal ``$HOME`` in .env.
-# Override with ``MUSCAT_TMPDIR`` when home is on a small/full filesystem.
-_DEFAULT_TMPDIR = str(Path.home() / ".muscatdb" / "tmp")
+# there), so default to a user-owned directory outside /tmp. Override
+# MUSCAT_TMPDIR with another host-local path when needed.
+_DEFAULT_TMPDIR = str(Path.home() / "temp")
 
 # Default values for every optional run_photometry argument the form exposes.
 # Kept here so the template, normalizer, and command builder share one source.
