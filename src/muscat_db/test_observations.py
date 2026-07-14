@@ -12,7 +12,6 @@ import json
 import math
 import sqlite3
 import uuid
-from dataclasses import dataclass
 from typing import Any
 
 from muscat_db.database import db_path
