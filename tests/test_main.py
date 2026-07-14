@@ -74,7 +74,7 @@ def tmp_data(monkeypatch):
     td = tempfile.mkdtemp()
     patched = {}
     for name, cfg in INSTRUMENTS.items():
-        patched[name] = replace(cfg, data_dir=f"{td}/{name}")
+        patched[name] = replace(cfg, data_subdir=f"{td}/{name}")
     for m in _INST_MODULES:
         monkeypatch.setattr(f"{m}.INSTRUMENTS", patched)
     yield td

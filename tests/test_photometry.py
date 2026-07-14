@@ -103,9 +103,9 @@ class TestPaths:
         # Telescope is ignored (forced blank) for non-sinistro instruments.
         assert phot.build_run_id("muscat4", "", "", "default", telescope="1m0-05") == "default"
 
-    def test_raw_data_dir_uses_instrument_config(self):
-        # MUSCAT4.data_dir == /data/MuSCAT4
-        assert phot.raw_data_dir(INST, DATE) == Path("/data/MuSCAT4") / DATE
+    def test_raw_data_dir_uses_common_root_and_instrument_subdir(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_DATA_DIR", str(tmp_path))
+        assert phot.raw_data_dir(INST, DATE) == tmp_path / "MuSCAT4" / DATE
 
     def test_valid_date(self):
         assert phot.valid_date("250512")
@@ -164,7 +164,7 @@ class TestListOutputs:
 
     def test_discovers_masters_for_muscat(self, prose_dir, tmp_path):
         raw_base = tmp_path / "data"
-        mdir = raw_base / f"{DATE}_calibrated"
+        mdir = raw_base / "MuSCAT" / f"{DATE}_calibrated"
         mdir.mkdir(parents=True, exist_ok=True)
         (mdir / "master_flat_gp.png").write_bytes(b"\x89PNG\r\n")
         (mdir / "master_bias.png").write_bytes(b"\x89PNG\r\n")
@@ -858,7 +858,7 @@ class TestStartRun:
         from dataclasses import replace
         from muscat_db.instruments import INSTRUMENTS
         patched = dict(INSTRUMENTS)
-        patched[INST] = replace(INSTRUMENTS[INST], data_dir=str(tmp_path / "raw"))
+        patched[INST] = replace(INSTRUMENTS[INST], data_subdir=str(tmp_path / "raw"))
         monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
         r = phot.start_run(INST, DATE, TARGET)
         assert r["ok"] is False
@@ -881,7 +881,7 @@ class TestStartRun:
         stale_png.write_bytes(b"old")
 
         patched = dict(INSTRUMENTS)
-        patched[INST] = replace(INSTRUMENTS[INST], data_dir=str(raw_root))
+        patched[INST] = replace(INSTRUMENTS[INST], data_subdir=str(raw_root))
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(out_root))
         monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
         monkeypatch.setattr(phot.subprocess, "Popen", lambda *_a, **_k: pytest.fail("pipeline should not launch"))
@@ -934,7 +934,7 @@ class TestStartRun:
         other_target.write_text("keep\n")
 
         patched = dict(INSTRUMENTS)
-        patched[INST] = replace(INSTRUMENTS[INST], data_dir=str(raw_root))
+        patched[INST] = replace(INSTRUMENTS[INST], data_subdir=str(raw_root))
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(out_root))
         monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
         monkeypatch.setattr(phot, "get_job_store", lambda: Store())
@@ -987,7 +987,7 @@ class TestStartRun:
         (raw_root / DATE).mkdir(parents=True)
         monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path / "out"))
         patched = dict(INSTRUMENTS)
-        patched[INST] = replace(INSTRUMENTS[INST], data_dir=str(raw_root))
+        patched[INST] = replace(INSTRUMENTS[INST], data_subdir=str(raw_root))
         monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
         monkeypatch.setattr(phot, "_count_running_full", lambda: 1)
         monkeypatch.setattr(phot, "get_job_store", lambda: NoQueueStore())
@@ -1172,7 +1172,7 @@ class TestStartRun:
         raw = tmp_path / "raw" / DATE
         raw.mkdir(parents=True)
         patched = dict(_INST)
-        patched[INST] = replace(_INST[INST], data_dir=str(tmp_path / "raw"))
+        patched[INST] = replace(_INST[INST], data_subdir=str(tmp_path / "raw"))
         monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
 
         # Replace build_command so the "pipeline" is just `sleep 60`.
@@ -1445,7 +1445,7 @@ class TestRoutes:
     def test_file_route_serves_master_calibration(self, client, tmp_path, monkeypatch):
         raw_base = tmp_path / "data"
         monkeypatch.setenv("MUSCAT_DATA_DIR", str(raw_base))
-        mdir = raw_base / f"{DATE}_calibrated"
+        mdir = raw_base / "MuSCAT" / f"{DATE}_calibrated"
         mdir.mkdir(parents=True, exist_ok=True)
         (mdir / "master_bias.png").write_bytes(b"\x89PNG\r\n")
 

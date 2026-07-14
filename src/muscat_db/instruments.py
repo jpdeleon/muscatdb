@@ -1,12 +1,13 @@
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 @dataclass(frozen=True)
 class InstrumentConfig:
     name: str
     nccd: int
-    data_dir: str
+    data_subdir: str
     prefix: str
     ep_names: list[str] | None = None
     keys: list[str] = field(default_factory=list)
@@ -16,11 +17,20 @@ class InstrumentConfig:
     airmass_key: str = "SECZ"
     use_alt_ut_key: bool = False
 
+    @property
+    def data_dir(self) -> str:
+        """Absolute raw-data directory below the configured common root."""
+        subdir = Path(self.data_subdir)
+        if subdir.is_absolute():
+            return str(subdir)
+        root = Path(os.environ.get("MUSCAT_DATA_DIR", "/data")).expanduser()
+        return str(root / subdir)
+
 
 MUSCAT = InstrumentConfig(
     name="muscat",
     nccd=3,
-    data_dir="/data/MuSCAT",
+    data_subdir="MuSCAT",
     prefix="MSCT",
     keys=["OBJECT", "MJD-STRT", "EXP-STRT", "EXPTIME", "SPDTAB", "FILTER", "RA", "DEC", "SECZ", "FOC-VAL", "INST-PA"],
     csv_header="FRAME,OBJECT,JD-STRT,UT-STRT,EXPTIME (s),READ_MODE,FILTER,RA,DEC,SECZ,FOCUS (mm),PA (deg)",
@@ -33,7 +43,7 @@ MUSCAT = InstrumentConfig(
 MUSCAT2 = InstrumentConfig(
     name="muscat2",
     nccd=4,
-    data_dir="/data/MuSCAT2",
+    data_subdir="MuSCAT2",
     prefix="MCT2",
     keys=["OBJECT", "MJD-STRT", "EXP-STRT", "EXPTIME", "SPDTAB", "FILTER", "RA", "DEC", "AIRMASS", "FOC-VAL", "INST-PA"],
     csv_header="FRAME,OBJECT,JD-STRT,UT-STRT,EXPTIME (s),READ_MODE,FILTER,RA,DEC,AIRMASS,FOCUS (um),PA (deg)",
@@ -46,7 +56,7 @@ MUSCAT2 = InstrumentConfig(
 MUSCAT3 = InstrumentConfig(
     name="muscat3",
     nccd=4,
-    data_dir="/data/MuSCAT3",
+    data_subdir="MuSCAT3",
     prefix="ogg2m001-",
     ep_names=["ep02", "ep03", "ep04", "ep05"],
     keys=["OBJECT", "MJD-OBS", "UTSTART", "EXPTIME", "CONFMODE", "FILTER", "RA", "DEC", "AIRMASS", "FOCPOSN"],
@@ -63,7 +73,7 @@ _MUSCAT4_EP_NEW = ["ep06", "ep07", "ep08", "ep09"]
 MUSCAT4 = InstrumentConfig(
     name="muscat4",
     nccd=4,
-    data_dir="/data/MuSCAT4",
+    data_subdir="MuSCAT4",
     prefix="coj2m002-",
     ep_names=_MUSCAT4_EP_NEW,
     keys=["OBJECT", "MJD-OBS", "UTSTART", "EXPTIME", "CONFMODE", "FILTER", "RA", "DEC", "AIRMASS", "FOCPOSN"],
@@ -77,7 +87,7 @@ MUSCAT4 = InstrumentConfig(
 SINISTRO = InstrumentConfig(
     name="sinistro",
     nccd=1,
-    data_dir="/data/Sinistro",
+    data_subdir="Sinistro",
     prefix="",
     ep_names=[""],
     keys=["OBJECT", "MJD-OBS", "UTSTART", "EXPTIME", "CONFMODE", "FILTER", "RA", "DEC", "AIRMASS", "FOCPOSN"],
