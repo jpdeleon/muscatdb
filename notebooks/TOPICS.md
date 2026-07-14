@@ -1,47 +1,80 @@
-### I. Data Exploration & Visualization
+# Notebooks
 
-1.  **Interactive Target Lightcurve Analysis**:
-    *   **Purpose**: Showcase raw and differential lightcurve data for a specific exoplanet target.
-    *   **What it showcases**: Data loading, basic visualization (plotting different bands), interactive binning, and visual identification of transit events. This highlights the immediate scientific output of the photometry pipeline.
+Short, self-contained tutorials for the `muscat-db` pipeline. Each one reads
+real project data where practical (the `muscat.db` observing log, `prose2`
+lightcurve CSVs, and the `muscat_db` calculators) and falls back to a clear
+message or a small synthetic example when that data is not present, so every
+notebook opens and reads cleanly off-host.
 
-2.  **Astronomical Catalog Browsing and Filtering**:
-    *   **Purpose**: Demonstrate how to query and filter exoplanet and stellar catalogs.
-    *   **What it showcases**: Integration with TOI, NASA Exoplanet Archive, and Gaia DR3. Users can visualize population properties (e.g., period-radius diagrams, stellar parameters) and identify targets of interest.
+## Environment
 
-3.  **FITS Header Exploration and Metadata Visualization**:
-    *   **Purpose**: Illustrate the richness of metadata extracted from raw FITS files.
-    *   **What it showcases**: Extracting and visualizing key FITS header keywords (e.g., observing conditions, instrument settings, WCS information) across multiple frames, demonstrating the initial data ingestion step.
+Run these with the **`prose` conda kernel**, which provides the scientific
+stack (numpy, scipy, pandas, matplotlib, astropy, photutils):
 
-### II. Core Scientific Pipeline Demonstrations (Simplified)
+```bash
+conda activate prose
+jupyter lab   # from this directory
+```
 
-1.  **Mini-Photometry Workflow**:
-    *   **Purpose**: Provide a simplified, step-by-step walkthrough of the photometry process.
-    *   **What it showcases**: Core `prose2` concepts like source detection, aperture placement (manual vs. Gaia-based), and differential photometry on a small subset of frames. This can explain the logic behind the automated pipeline.
+Data locations (overridable by environment variable):
 
-2.  **Conceptual Transit Model Visualization**:
-    *   **Purpose**: Explain how transit lightcurve models are constructed and parameterized.
-    *   **What it showcases**: Interactive plots of `batman` or `starry` models, allowing users to adjust parameters (e.g., planet radius, period, impact parameter, limb darkening) and immediately see their effect on the lightcurve shape.
+| Source | Default | Used by |
+|--------|---------|---------|
+| `muscat.db` | repo root (`../muscat.db`) or `$MUSCAT_DB_PATH` | 01, exposure, crossmatch |
+| prose2 lightcurve CSVs | `$MUSCAT_PROSE_DIR` (`~/ql/prose`) | 01, 02 |
+| bundled catalogs | `../data/` | crossmatch |
 
-3.  **O-C Diagram Generation and Linear Ephemeris Fitting**:
-    *   **Purpose**: Demonstrate the process of creating Observed-minus-Calculated (O-C) diagrams.
-    *   **What it showcases**: Loading transit midpoints, fitting a linear ephemeris, calculating O-C residuals, and plotting the results to visually identify potential TTVs.
+The `muscat_db` package is imported from `../src` (the exposure and FOV
+notebooks add a small `dotenv` fallback so the import works under the `prose`
+kernel, which does not ship `python-dotenv`).
 
-### III. Observation Planning & Optimization
+## Tutorials
 
-1.  **Field-of-View (FOV) Optimization Scenario**:
-    *   **Purpose**: Illustrate how the system optimizes telescope pointing.
-    *   **What it showcases**: Visualizing the stellar field (from Gaia), instrument footprint, and how adjusting pointing offsets and position angles can maximize comparison star coverage while keeping the target within the FOV.
+### 01. Target Lightcurve Analysis — `01_Target_Lightcurve_Analysis.ipynb`
+Look up a target's observing history in `muscat.db`, load its per-band `prose2`
+differential lightcurves, and plot flux, time-binning, and diagnostics (airmass,
+FWHM). Uses real data for a four-band MuSCAT3 observation of TOI-5191.
 
-2.  **Exposure Time Calculation & S/N Estimation**:
-    *   **Purpose**: Demonstrate how to calculate optimal exposure times or predict S/N for observations.
-    *   **What it showcases**: Using instrument characteristics and target magnitudes to determine exposure durations for desired S/N, and checking for potential detector saturation.
+### 02. Mini Photometry Walkthrough — `02_Mini_Photometry_Walkthrough.ipynb`
+The photometry steps on one synthetic frame: source detection, aperture
+photometry with sky annuli, and a differential target/comparison ratio. Ends by
+tying the result to a real `prose2` lightcurve. Uses `photutils`.
 
-### IV. Integration & Reproducibility
+### 03. Ephemeris and O-C Analysis — `03_Ephemeris_OC_Analysis.ipynb`
+Fit a linear transit ephemeris with the project's own fitter
+(`muscat_db.ephemeris_math`, the routine behind the web O-C tool) and build the
+Observed-minus-Calculated diagram. Shows how a slope means a wrong period and a
+wave means a transit-timing variation. Synthetic transit centers.
 
-1.  **Accessing `muscat-db` Data Programmatically**:
-    *   **Purpose**: Show how to query the internal SQLite database directly from Python.
-    *   **What it showcases**: Retrieving observation metadata, job results, or configured parameters, demonstrating the power of the `muscat.db` as a scientific data backend.
+### 04. FOV Optimization Concepts — `04_FOV_Optimization_Concepts.ipynb`
+The geometry of pointing and position-angle optimization: place a rotated camera
+footprint over a star field and grid-search for the pointing that captures the
+most comparison stars while keeping the target framed. Self-contained synthetic
+field; see `fov_optimization.ipynb` for the production version.
 
-2.  **Reproducing Pipeline Diagnostic Plots**:
-    *   **Purpose**: Verify the scientific output of the automated pipelines.
-    *   **What it showcases**: Loading the results of a `prose2` or `timer` run and regenerating key diagnostic plots (e.g., corner plots from MCMC, detailed lightcurve fits, FWHM/airmass trends) to highlight reproducibility and quality control.
+## Observation planning
+
+### Exposure Time Calculator — `exposure_time_calculator.ipynb`
+Estimate exposure times with `muscat_db.exposure` (the observation-planning
+calculator): per-band exposure to a target peak ADU, the airmass/extinction and
+defocus trade-offs, why a bright comparison star caps the exposure, and the
+per-instrument calibration status read from `muscat.db`.
+
+### FOV Pointing & Orientation Optimization — `fov_optimization.ipynb`
+The production `muscat_db.fov` pipeline end to end: instrument footprints from
+the VOTable XML, tangent-plane geometry, comparison-star weighting, and a
+pointing/PA optimizer over real Gaia DR3 stars (with a synthetic fallback when
+the network is unavailable). This is what the `/fov` web page calls.
+
+## Catalog work
+
+### Crossmatch: MuSCAT-db vs. TESS TOIs — `extras_crossmatch_toi_muscatdb.ipynb`
+Spatially crossmatch the observed targets in the live `muscat.db` against the
+TESS Objects of Interest catalog (`data/TOIs.csv`) with `astropy`, to see which
+observed fields are TOIs and their vetting disposition. The same workflow reuses
+any catalog with RA/Dec (e.g. `data/nexsci_pscomppars.csv`).
+
+## Utilities
+
+- `_csv_audit.py` — checks that a `muscatdb_targets.csv` export matches the live
+  `targets` table in `muscat.db`.
