@@ -10,7 +10,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 # Now we can import the necessary functions
-from test_exposure_predictions import measure_peak_from_dataset, _parse_sexagesimal
+from test_exposure_predictions import measure_peak_from_dataset
 from muscat_db.database import db_path
 
 # --- Configuration ---

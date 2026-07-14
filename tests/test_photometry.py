@@ -1221,9 +1221,15 @@ class TestFinalizeGrace:
     while the log grows, then go terminal once the log is quiescent — so the
     photometry page's live log does not freeze at parent-exit."""
 
-    def _make_job(self, monkeypatch, tmp_path):
+    @staticmethod
+    def _clear_jobs():
         with phot._LOCK:
+            for job in phot._JOBS.values():
+                job.logf.close()
             phot._JOBS.clear()
+
+    def _make_job(self, monkeypatch, tmp_path):
+        self._clear_jobs()
         rdir = tmp_path / INST / DATE
         rdir.mkdir(parents=True)
         log = phot._run_log_path(rdir, INST, DATE, TARGET)
@@ -1271,8 +1277,7 @@ class TestFinalizeGrace:
             assert s["state"] == "done"
             assert "lightcurve.csv" in s["log"]
         finally:
-            with phot._LOCK:
-                phot._JOBS.clear()
+            self._clear_jobs()
 
     def test_terminal_marker_shortens_finalize_window(self, monkeypatch, tmp_path):
         """Once prose logs a terminal result line, the finalize window shrinks to
@@ -1300,8 +1305,7 @@ class TestFinalizeGrace:
             _t.sleep(1.2)
             assert phot.job_status(INST, DATE, TARGET)["state"] == "done"
         finally:
-            with phot._LOCK:
-                phot._JOBS.clear()
+            self._clear_jobs()
 
     def test_partial_failure_marker_shortens_finalize_window(
         self, monkeypatch, tmp_path
@@ -1320,8 +1324,7 @@ class TestFinalizeGrace:
             _t.sleep(1.2)
             assert phot.job_status(INST, DATE, TARGET)["state"] == "error"
         finally:
-            with phot._LOCK:
-                phot._JOBS.clear()
+            self._clear_jobs()
 
     def test_cancelled_job_finalizes_immediately(self, monkeypatch, tmp_path):
         # A large grace window proves Cancel bypasses the finalize gate even
@@ -1335,8 +1338,7 @@ class TestFinalizeGrace:
                 f.write("INFO: still writing during cancel\n")
             assert phot.job_status(INST, DATE, TARGET)["state"] == "cancelled"
         finally:
-            with phot._LOCK:
-                phot._JOBS.clear()
+            self._clear_jobs()
 
     def test_sync_jobs_persists_finalizing_as_running(self, monkeypatch, tmp_path):
         """While finalizing, sync_jobs must persist the DB row as 'running' so the
@@ -1359,8 +1361,7 @@ class TestFinalizeGrace:
             assert phot_saves[-1]["state"] == "running"
             assert phot_saves[-1]["returncode"] is None
         finally:
-            with phot._LOCK:
-                phot._JOBS.clear()
+            self._clear_jobs()
 
 
 # ── routes (FastAPI TestClient) ──────────────────────────────────────────────
