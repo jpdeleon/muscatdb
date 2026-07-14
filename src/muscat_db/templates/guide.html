@@ -1192,7 +1192,7 @@ erDiagram
           </div>
           <div class="faq-answer">
             <p>The database is rebuilt automatically once per day at <strong>5:00 PM</strong> local time via a cronjob:</p>
-            <pre>30 17 * * * cd /raid_ut2/home/jerome/github/research/project/muscat-db && uv run muscat-db build-db &gt;&gt; /raid_ut2/home/jerome/github/research/project/muscat-db/logs/build-db.log 2&gt;&amp;1</pre>
+            <pre>30 17 * * * cd /path/to/muscat-db &amp;&amp; uv run muscat-db build-db &gt;&gt; logs/build-db.log 2&gt;&amp;1</pre>
             <p>This re-scans all CSV observation logs under <code>$MUSCAT_OBSLOG_DIR</code> and rebuilds the <code>summaries</code> and <code>targets</code> tables to reflect any new or corrected scans. Log output is written to <code>logs/build-db.log</code> for troubleshooting.</p>
             <p>To trigger a manual rebuild at any time, run <code>muscat-db build-db</code> from the repo root.</p>
           </div>
