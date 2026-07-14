@@ -731,7 +731,7 @@ def _load_toi_catalog() -> dict:
 # Path overridable so a refreshed/moved catalog doesn't require a code change.
 _BOYLE_PATH = pathlib.Path(os.environ.get(
     "MUSCAT_BOYLE_CATALOG",
-    str(HERE.parent.parent.parent / "wakai" / "data" / "Boyle2026" / "final_catalog.feather"),
+    str(HERE.parent.parent / "data" / "Boyle2026" / "final_catalog.feather"),
 ))
 
 # (feather column == json key, kind) — kind "f" float, "i" int, "b" bool→0/1,

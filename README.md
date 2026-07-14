@@ -130,6 +130,12 @@ below). At startup the server prints each registered variable's status
 Each instrument resolves below it using its canonical case-sensitive directory
 name, for example `$MUSCAT_DATA_DIR/MuSCAT3/<yymmdd>/`.
 
+The optional Boyle2026 rotation catalog is read from
+`data/Boyle2026/final_catalog.feather`. The repository contains a relative
+symlink to the sibling `wakai` checkout; if that target is unavailable, the TOI
+browser continues normally with its rotation columns empty. Set
+`MUSCAT_BOYLE_CATALOG` to use a catalog stored elsewhere.
+
 `MUSCAT_TMPDIR` (default `$HOME/temp`) routes the temp files of
 spawned pipeline jobs (`TMPDIR`/`TMP`/`TEMP`) onto a roomy raid-backed directory,
 avoiding `ENOSPC` failures when the root `/tmp` fills up.
