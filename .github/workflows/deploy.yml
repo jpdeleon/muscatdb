@@ -35,12 +35,16 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" << 'EOF'
             set -e
-            cd /raid_ut2/home/jerome/github/research/project/muscat-db
+            DEPLOY_PATH='${{ vars.DEPLOY_PATH }}'
+            DEPLOY_PATH="${DEPLOY_PATH:-$HOME/github/research/project/muscat-db}"
+            TMUX_SESSION='${{ vars.DEPLOY_TMUX_SESSION }}'
+            TMUX_SESSION="${TMUX_SESSION:-muscatdbgui}"
+            cd "$DEPLOY_PATH"
             git fetch origin main
             git reset --hard origin/main
             uv sync --dev
-            tmux send-keys -t muscatdb-gui "" C-c || true
+            tmux send-keys -t "$TMUX_SESSION" "" C-c || true
             sleep 2
-            tmux send-keys -t muscatdb-gui "uv run uvicorn muscat_db.web:app --host 127.0.0.1 --port 8001 --reload" Enter || \
-              tmux new-session -d -s muscatdb-gui "uv run uvicorn muscat_db.web:app --host 127.0.0.1 --port 8001 --reload"
+            tmux send-keys -t "$TMUX_SESSION" "uv run uvicorn muscat_db.web:app --host 127.0.0.1 --port 8001 --reload" Enter || \
+              tmux new-session -d -s "$TMUX_SESSION" "uv run uvicorn muscat_db.web:app --host 127.0.0.1 --port 8001 --reload"
           EOF

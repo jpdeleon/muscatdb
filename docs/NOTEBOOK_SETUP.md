@@ -5,21 +5,21 @@
 ### Option 1: Run from the project root directory (Recommended)
 
 ```bash
-cd /raid_ut2/home/jerome/github/research/project/muscat-db
+cd /path/to/muscat-db
 jupyter notebook notebooks/exposure_calculator_comparison.ipynb
 ```
 
 ### Option 2: Run from the notebooks directory
 
 ```bash
-cd /raid_ut2/home/jerome/github/research/project/muscat-db/notebooks
+cd /path/to/muscat-db/notebooks
 jupyter notebook exposure_calculator_comparison.ipynb
 ```
 
 ### Option 3: Use JupyterLab (if available)
 
 ```bash
-cd /raid_ut2/home/jerome/github/research/project/muscat-db
+cd /path/to/muscat-db
 jupyter lab notebooks/exposure_calculator_comparison.ipynb
 ```
 
@@ -34,7 +34,7 @@ The notebook automatically detects your project root by looking for the `src/` d
 ### Solution 1: Install in development mode
 
 ```bash
-cd /raid_ut2/home/jerome/github/research/project/muscat-db
+cd /path/to/muscat-db
 pip install -e .
 ```
 
@@ -43,14 +43,14 @@ This makes `muscat_db` importable from anywhere.
 ### Solution 2: Set PYTHONPATH manually
 
 ```bash
-export PYTHONPATH=/raid_ut2/home/jerome/github/research/project/muscat-db/src:$PYTHONPATH
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
 jupyter notebook notebooks/exposure_calculator_comparison.ipynb
 ```
 
 ### Solution 3: Run Jupyter from the project root
 
 ```bash
-cd /raid_ut2/home/jerome/github/research/project/muscat-db
+cd /path/to/muscat-db
 jupyter notebook
 # Then navigate to notebooks/exposure_calculator_comparison.ipynb in the browser
 ```
@@ -71,7 +71,7 @@ If successful, the first cell should output:
 
 ```
 ✓ Imports successful
-  - Project root: /raid_ut2/home/jerome/github/research/project/muscat-db
+  - Project root: /path/to/muscat-db
   - Legacy calculator: exp_time_calculator_legacy.exposure_time_calculator
   - Modern calculator: muscat_db.exposure.calc_exptime
 ```

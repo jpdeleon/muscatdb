@@ -29,7 +29,7 @@ These four decisions were made by the maintainer and govern the rest of this pla
      - `finalizing` resolution owned by the **worker** (it holds the process and the log mtime); ut2 stops resolving lifecycle itself and just persists what the worker reports.
    - **Phase 1 defers all of the above:** on single-host ut2 the worker and DB are co-located, so the worker writes local SQLite exactly as today — no callback channel, no network, no auth. The callback layer is added only when workers move off-host.
 
-3. **Supervision: systemd units per host.** Redis and every Celery worker run as systemd services with restart policies (not under the existing `muscatdb-gui` tmux session, which supervises nothing and does not survive reboot). This requires root/sudo on each participating host. Worker units must pin `OMP_NUM_THREADS` / `MKL_NUM_THREADS` / `OPENBLAS_NUM_THREADS` to the host's real core budget — the ambient `OMP_NUM_THREADS=100` (see SERVER_INVENTORY.md risk #2) would otherwise oversubscribe ut2's 28 threads ~100×.
+3. **Supervision: systemd units per host.** Redis and every Celery worker run as systemd services with restart policies (not under the existing `muscatdbgui` tmux session, which supervises nothing and does not survive reboot). This requires root/sudo on each participating host. Worker units must pin `OMP_NUM_THREADS` / `MKL_NUM_THREADS` / `OPENBLAS_NUM_THREADS` to the host's real core budget — the ambient `OMP_NUM_THREADS=100` (see SERVER_INVENTORY.md risk #2) would otherwise oversubscribe ut2's 28 threads ~100×.
 
 4. **Rollout: single-host on ut2 first.** Stand up Redis + workers on ut2 only, prove the `finalizing` / cancel / status contract across the web↔worker process boundary behind `MUSCAT_CELERY_ENABLED`, and only then expand to multi-host (Phase 8). This cleanly separates "prove the execution-boundary contract" from "add the network."
 
@@ -52,8 +52,8 @@ These four decisions were made by the maintainer and govern the rest of this pla
 
 Before changing anything, keep these invariants in mind:
 
-1. Photometry and transit-fit both already share the finalizing lifecycle logic in [`src/muscat_db/jobs.py`](/raid_ut2/home/jerome/github/research/project/muscat-db/src/muscat_db/jobs.py:1).
-2. The persistence seam already exists in [`src/muscat_db/job_store.py`](/raid_ut2/home/jerome/github/research/project/muscat-db/src/muscat_db/job_store.py:1). That is the swap point for Celery/Redis.
+1. Photometry and transit-fit both already share the finalizing lifecycle logic in [`src/muscat_db/jobs.py`](../src/muscat_db/jobs.py).
+2. The persistence seam already exists in [`src/muscat_db/job_store.py`](../src/muscat_db/job_store.py). That is the swap point for Celery/Redis.
 3. The web UI expects job states like `pending`, `running`, `cancelling`, `finalizing`, `done`, `error`, `cancelled`.
 4. `finalizing` is live-view-only. The DB should still persist `running` until the log is quiescent.
 5. Photometry must continue running through the `prose` conda environment and transit-fit through the `timer` environment.
@@ -252,8 +252,8 @@ Do not call route handlers from tasks. Call extracted pipeline helpers directly.
 
 Right now the launch logic is embedded in:
 
-- [`src/muscat_db/photometry.py`](/raid_ut2/home/jerome/github/research/project/muscat-db/src/muscat_db/photometry.py:1706)
-- [`src/muscat_db/transit_fit.py`](/raid_ut2/home/jerome/github/research/project/muscat-db/src/muscat_db/transit_fit.py:1910)
+- [`src/muscat_db/photometry.py`](../src/muscat_db/photometry.py)
+- [`src/muscat_db/transit_fit.py`](../src/muscat_db/transit_fit.py)
 
 Refactor each pipeline module to expose:
 
@@ -454,7 +454,7 @@ First run Celery + Redis on the current server:
 2. Redis local to host
 3. Celery workers local to host
 
-The current web process is managed in the `muscatdb-gui` tmux session. Keep Redis and Celery under an explicit service/startup procedure as they are introduced; do not assume that the existing tmux session provides process supervision for them.
+The current web process is managed in the `muscatdbgui` tmux session. Keep Redis and Celery under an explicit service/startup procedure as they are introduced; do not assume that the existing tmux session provides process supervision for them.
 
 This isolates orchestration changes from multi-host operational changes.
 

@@ -8,12 +8,14 @@ Compares three things:
 """
 import sqlite3
 import sys
+from pathlib import Path
 
-sys.path.insert(0, "../src")
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
 from muscat_db.database import get_targets, _populate_targets, _TARGET_EXCLUDE_EXACT  # noqa
 import muscat_db.database as dbmod  # noqa
 
-DB = "/raid_ut2/home/jerome/github/research/project/muscat-db/muscat.db"
+DB = ROOT / "muscat.db"
 
 # 1. What the CSV/homepage actually serve
 targets = get_targets(DB)
