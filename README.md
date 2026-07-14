@@ -121,8 +121,9 @@ Variables the app and the jobs it spawns inherit include `MUSCAT_DB_PATH`,
 timeouts, `MUSCAT_TMPDIR`, `ASTROMETRY_NET_API_KEY`, `LCO_API_TOKEN`,
 `MUSCAT_LCO_DIR`, `MUSCAT_LCO_ALLOW_SUBMIT`, `MUSCAT_DB_SECRET` (per-user LCO
 token encryption), `MUSCAT_NGINX_GROUP` (htpasswd file group ownership), and
+`MUSCAT_BOYLE_CATALOG` (optional TOI stellar-rotation catalog), and
 `ADS_API_TOKEN`/`ADS_DEV_KEY` (target-page NASA ADS publication search) (see
-below). At startup the server prints each variable's status
+below). At startup the server prints each registered variable's status
 (`set` / `default` / `unset`).
 
 `MUSCAT_DATA_DIR` is the common raw-data root, not one instrument's directory.
