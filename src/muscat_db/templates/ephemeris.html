@@ -28,7 +28,7 @@
   </div>
 
   <!-- Dynamic Planet Parameter Cards Container -->
-  <details class="adv" id="planet-cards-section" style="display: none; margin-bottom: 1.5rem;" open>
+  <details class="adv ephemeris-fold" id="planet-cards-section" style="display: none; margin-bottom: 1.5rem;" open>
     <summary>Planetary Reference Ephemerides</summary>
     <div id="planet-cards-container" class="card-grid" style="grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); margin-top: 1.5rem;">
       <!-- Dynamically filled with planet inputs -->
@@ -36,7 +36,7 @@
   </details>
 
   <!-- Dataset Checkbox List Table -->
-  <details class="adv" id="datasets-section" style="display: none; margin-bottom: 1.5rem;" open>
+  <details class="adv ephemeris-fold" id="datasets-section" style="display: none; margin-bottom: 1.5rem;" open>
     <summary>Select Datasets to Include in Fit</summary>
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; margin-top: 1rem;">
       <div style="display: flex; gap: 0.5rem;">
@@ -84,7 +84,7 @@
 </div>
 
 <!-- Interactive Plot Area -->
-<details class="phot-section phot-fold" id="plot-card" style="display: none;" open>
+<details class="phot-section phot-fold ephemeris-fold" id="plot-card" style="display: none;" open>
   <summary><h2>O-C Plot</h2></summary>
   <div class="card" style="min-height: 520px; margin-top: 1rem;">
   <div id="oc-plot"></div>
@@ -129,7 +129,7 @@
 </details>
 
 <!-- Fit Summary Panel -->
-<details class="phot-section phot-fold" id="results-card" style="display: none;">
+<details class="phot-section phot-fold ephemeris-fold" id="results-card" style="display: none;">
   <summary><h2>Linear Ephemeris Fit Results</h2></summary>
   <div id="results-grid" style="display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); margin-top: 1rem;">
     <!-- Filled on fit calculate response -->
@@ -142,7 +142,7 @@
 <div class="phot-section" id="ttv-outputs-container" style="display: none;"></div>
 
 <!-- Configure TTV Model Section -->
-<details class="phot-section phot-fold" id="ttv-section" style="display: none;">
+<details class="phot-section phot-fold ephemeris-fold" id="ttv-section" style="display: none;">
   <summary><h2>Configure & Run TTV Fitting</h2></summary>
   <div class="card" style="padding: 1.5rem; margin-top: 1rem;">
     <p style="font-size: 0.85rem; color: var(--text-dim); margin-bottom: 1.5rem;">
@@ -191,7 +191,7 @@
     </div>
 
     <!-- INI Config Editor (Advanced) -->
-    <details class="opt-collapse">
+    <details class="opt-collapse ephemeris-fold">
       <summary>INI Configuration <span class="help-tooltip" title="Raw INI configuration passed to harmonic. Auto-generated from the planet letters and the Planetary Reference Ephemerides above; edit here to override.">?</span></summary>
       <textarea id="opt-ini_content" rows="12" style="width: 100%;"></textarea>
       <div class="ini-help">
@@ -239,7 +239,7 @@
     </details>
 
     <!-- MCMC Options -->
-    <details class="opt-collapse">
+    <details class="opt-collapse ephemeris-fold">
       <summary>MCMC Sampler Options</summary>
       <div class="opt-grid" style="margin-top: 0.75rem;">
         <div class="opt">

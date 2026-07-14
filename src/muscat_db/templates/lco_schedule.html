@@ -26,8 +26,8 @@
   }
 </style>
 
-<div class="lco-section">
-  <h3>Target &amp; Transit Windows</h3>
+<details class="lco-section section-fold" open>
+  <summary><h3>Target &amp; Transit Windows</h3></summary>
   <div class="lco-grid">
     <div class="lco-field"><label for="sch-target">Target <span class="help-tooltip" title="Target star name. Matches normalized names from muscat-db (e.g. HIP 67522, TOI-1234).">?</span></label><input id="sch-target" type="text" placeholder="WASP-12" list="target-datalist" autocomplete="off"><datalist id="target-datalist"></datalist></div>
     <div class="lco-field"><label for="sch-planet">Planet <span class="help-tooltip" title="Planet letter identifier (e.g. b, c). Used to look up the ephemeris for this planet.">?</span></label><input id="sch-planet" type="text" placeholder="b" style="max-width: 90px;"></div>
@@ -105,10 +105,10 @@
   </div>
   <p class="lco-note">Windows are coarse scheduling bounds. t0 is usually BJD_TDB; the ≤8&nbsp;min barycentric offset is absorbed by the padding above.</p>
   <p class="lco-note">Window boundaries are always rounded to 5-minute intervals. When padding is 0 the rounded window may be slightly shorter than the transit visibility (floor for start, ceil for end). Verify for critical observations.</p>
-</div>
+</details>
 
-<div class="lco-section">
-  <h3>Imaging Request</h3>
+<details class="lco-section section-fold" open>
+  <summary><h3>Imaging Request</h3></summary>
   <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
     <div class="lco-field"><label for="sch-proposal">Proposal ID <span class="help-tooltip" title="LCO proposal ID. Required for submission. Loaded from your LCO account settings.">?</span></label>
       <select id="sch-proposal">
@@ -216,7 +216,7 @@
     <div class="lco-field" style="max-width: 150px;"><label for="sch-test-budget">Test budget (s) <span class="help-tooltip" title="Maximum cumulative exposure time for the test observation, in seconds. Candidate exposures beyond this budget are dropped from the plan. Excludes acquisition/readout.">?</span></label><input id="sch-test-budget" type="number" min="1" step="1" value="600"></div>
   </div>
   <p class="lco-note">These scheduling inputs are separate from the archive page.</p>
-</div>
+</details>
 
 <dialog id="test-observation-dialog" style="max-width: 850px; width: 92%;">
   <h3>Test observation review</h3>
@@ -230,8 +230,8 @@
   </div>
 </dialog>
 
-<div class="lco-section" id="split-section" style="display: none;">
-  <h3>Split Request (two-site relay)</h3>
+<details class="lco-section section-fold" id="split-section" style="display: none;" open>
+  <summary><h3>Split Request (two-site relay)</h3></summary>
   <p class="lco-note" id="split-note"></p>
   <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
     <div class="lco-field"><label for="sch-site-a">Leg A site (ingress) <span class="help-tooltip" title="LCO site for the ingress leg of a split relay request. Choose a site where ingress is observable.">?</span></label>
@@ -293,10 +293,10 @@
   <p class="lco-note">Each leg is an independent LCO booking. "Submit both" is not atomic — if leg B fails
     after leg A is booked, leg A stays booked (see the warning above); use "Submit Leg B only" to retry it.
     There is no automatic cancellation.</p>
-</div>
+</details>
 
-<div class="lco-section" id="single-submit-section">
-  <h3>Single site request</h3>
+<details class="lco-section section-fold" id="single-submit-section" open>
+  <summary><h3>Single site request</h3></summary>
   <div class="lco-actions">
     <button class="btn primary" type="button" id="btn-dry-run">Check settings</button>
     <button class="btn" type="button" id="btn-submit" disabled
