@@ -135,8 +135,8 @@ These live outside the repo and are invoked as subprocesses in separate conda en
 
 | Pipeline | Location | Environment | Purpose |
 |---|---|---|---|
-| **prose2** | `/ut2/jerome/.../ext_tools/prose2` | `conda env prose` | Photometry reduction (`run_photometry.py`) |
-| **timer** | `/ut2/jerome/.../ext_tools/timer` | (external) | Transit/inference fitting |
+| **prose2** | `$HOME/.../ext_tools/prose2` | `conda env prose` | Photometry reduction (`run_photometry.py`) |
+| **timer** | `$HOME/.../ext_tools/timer` | (external) | Transit/inference fitting |
 
 Both are invoked via `subprocess.Popen` with stdout/stderr logged to per-job files.
 

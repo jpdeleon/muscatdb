@@ -254,7 +254,7 @@
           <pre class="mermaid" style="width: 100%; text-align: center;">
 graph TD
     %% Data Ingestion Stage
-    A["Raw FITS Files\n(/data/MuSCAT* and Sinistro)"]:::default -->|1. scan| B["Observation CSV Logs\n(/ut3/muscat/obslog/)"]:::default
+    A["Raw FITS Files\n(/data/MuSCAT* and Sinistro)"]:::default -->|1. scan| B["Observation CSV Logs\n(/ut2/muscat/obslog/)"]:::default
     B -->|2. build-db| C["SQLite Database\n(muscat.db)"]:::db
 
     %% Web UI
@@ -1178,7 +1178,7 @@ erDiagram
           <div class="faq-answer">
             <p>The database is a SQLite file (<code>muscat.db</code>) that stores observation metadata extracted from FITS headers. The pipeline has two stages:</p>
             <ol>
-              <li><strong>Scan</strong> — <code>muscat-db scan &lt;inst&gt; &lt;yymmdd&gt;</code> reads every FITS file in the raw data directory, extracts HEADER keywords (OBJECT, FILTER, RA, DEC, EXPTIME, etc.), and writes a CSV log per CCD under <code>/ut3/muscat/obslog/</code>. Calibration frames (bias, dark, flat) are excluded; only science frames are recorded.</li>
+              <li><strong>Scan</strong> — <code>muscat-db scan &lt;inst&gt; &lt;yymmdd&gt;</code> reads every FITS file in the raw data directory, extracts HEADER keywords (OBJECT, FILTER, RA, DEC, EXPTIME, etc.), and writes a CSV log per CCD under <code>/ut2/muscat/obslog/</code>. Calibration frames (bias, dark, flat) are excluded; only science frames are recorded.</li>
               <li><strong>Build</strong> — <code>muscat-db build-db</code> ingests all scanned CSV logs into SQLite with indexes on instrument, date, object, and filter. The resulting DB powers the web GUI's browse, search, and target discovery features.</li>
             </ol>
             <p>The DB also persists background job state (photometry and transit fit runs) so running jobs survive a server restart.</p>
@@ -1193,7 +1193,7 @@ erDiagram
           <div class="faq-answer">
             <p>The database is rebuilt automatically once per day at <strong>5:00 PM</strong> local time via a cronjob:</p>
             <pre>30 17 * * * cd /raid_ut2/home/jerome/github/research/project/muscat-db && uv run muscat-db build-db &gt;&gt; /raid_ut2/home/jerome/github/research/project/muscat-db/logs/build-db.log 2&gt;&amp;1</pre>
-            <p>This re-scans all CSV observation logs under <code>/ut3/muscat/obslog/</code> and rebuilds the <code>summaries</code> and <code>targets</code> tables to reflect any new or corrected scans. Log output is written to <code>logs/build-db.log</code> for troubleshooting.</p>
+            <p>This re-scans all CSV observation logs under <code>/ut2/muscat/obslog/</code> and rebuilds the <code>summaries</code> and <code>targets</code> tables to reflect any new or corrected scans. Log output is written to <code>logs/build-db.log</code> for troubleshooting.</p>
             <p>To trigger a manual rebuild at any time, run <code>muscat-db build-db</code> from the repo root.</p>
           </div>
         </div>
@@ -1673,7 +1673,7 @@ erDiagram
             <span class="faq-icon">+</span>
           </div>
           <div class="faq-answer">
-            <p>TTV results are keyed on <strong>target alone</strong> — not instrument and date, unlike photometry — because a TTV fit spans every transit of that system regardless of which night or instrument produced each transit center. They live under <code>$MUSCAT_TTV_DIR/&lt;target&gt;/_runs/&lt;run_name&gt;/</code> (default <code>~/ql/harmonic</code>), mirroring the photometry <code>_runs/</code> convention.</p>
+            <p>TTV results are keyed on <strong>target alone</strong> — not instrument and date, unlike photometry — because a TTV fit spans every transit of that system regardless of which night or instrument produced each transit center. They live under <code>$MUSCAT_TTV_DIR/&lt;target&gt;/_runs/&lt;run_name&gt;/</code> (default <code>$HOME/ql/harmonic</code>), mirroring the photometry <code>_runs/</code> convention.</p>
             <p>Naming a run keeps it isolated, so you can compare, say, a two-planet fit against a fit with a non-transiting outer planet. The run chips above the results switch between stored runs, and <strong>Delete Results</strong> is scoped to the run currently on screen rather than the name typed in the box. A run directory without <code>samples.csv.gz</code> is treated as empty and hidden from the chip list.</p>
           </div>
         </div>

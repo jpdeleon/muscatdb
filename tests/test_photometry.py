@@ -19,7 +19,7 @@ INST = "muscat4"
 DATE = "250512"
 TARGET = "TOI-6715"
 BANDS = ["gp", "rp", "ip", "zs"]
-REAL_EXAMPLE = Path("/ut2/jerome/ql/prose/muscat4/250512")
+REAL_EXAMPLE = Path.home() / "ql" / "prose" / "muscat4" / "250512"
 
 
 def _make_outputs(base: Path) -> Path:
@@ -251,7 +251,7 @@ class TestListOutputs:
     def test_multi_site_detects_and_filters(self, monkeypatch, tmp_path):
         # A single sinistro date+target can hold two sites with identical bands.
         # list_outputs must surface both sites and show one at a time (not a
-        # newest-wins mix). Mirrors /ut2/jerome/ql/prose/sinistro/250710.
+        # newest-wins mix). Mirrors $HOME/ql/prose/sinistro/250710.
         import os
         base = tmp_path / "prose"
         base.mkdir()
@@ -2322,7 +2322,7 @@ class TestTransitFitOptions:
 @pytest.mark.skipif(not REAL_EXAMPLE.is_dir(), reason="example output not mounted")
 class TestRealExample:
     def test_real_outputs_classified(self):
-        # Uses the default MUSCAT_PROSE_DIR (/ut2/jerome/ql/prose).
+        # Uses the default MUSCAT_PROSE_DIR ($HOME/ql/prose).
         os.environ.pop("MUSCAT_PROSE_DIR", None)
         out = phot.list_outputs(INST, DATE, TARGET)
         assert out["has_any"]

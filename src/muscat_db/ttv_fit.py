@@ -94,7 +94,9 @@ def _write_log_banner(logf: IO, cmd: list[str], options: dict | None = None) -> 
 
 def ttv_output_dir(target: str, run_name: str = "") -> pathlib.Path:
     """Results directory for a TTV run: ``<base>/<target>/_runs/<run_name>``."""
-    base = pathlib.Path(os.environ.get("MUSCAT_TTV_DIR", "~/ql/harmonic")).expanduser().resolve(strict=False)
+    base = pathlib.Path(
+        os.environ.get("MUSCAT_TTV_DIR", str(pathlib.Path.home() / "ql" / "harmonic"))
+    ).expanduser().resolve(strict=False)
     parts = [base, _target_dir_name(target), _RUNS_DIR_NAME, slugify_run_name(run_name)]
     path = pathlib.Path(*[str(p) for p in parts]).resolve(strict=False)
     try:
@@ -184,7 +186,9 @@ def log_path(target: str, run_id: str = "") -> pathlib.Path | None:
     escape ``MUSCAT_TTV_DIR``.
     """
     try:
-        base = pathlib.Path(os.environ.get("MUSCAT_TTV_DIR", "~/ql/harmonic")).expanduser().resolve(strict=False)
+        base = pathlib.Path(
+            os.environ.get("MUSCAT_TTV_DIR", str(pathlib.Path.home() / "ql" / "harmonic"))
+        ).expanduser().resolve(strict=False)
         target_seg = _target_dir_name(target)
         # run_id is already a slug; empty run_id means the default run.
         run_seg = jobs.run_dir_name(run_id) if run_id else "default"

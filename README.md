@@ -1,14 +1,38 @@
-# muscat-db
+# muscatdb
 
+<!--
 #[![Documentation](https://readthedocs.org/projects/quicklook/badge/?version=latest)](https://quicklook.readthedocs.io/en/latest/)
-[![CI](https://github.com/jpdeleon/muscat-db/actions/workflows/ci.yml/badge.svg)](https://github.com/jpdeleon/muscatdb/actions/workflows/ci.yml)
 #[![PyPI](https://img.shields.io/pypi/v/muscat-db)](https://pypi.org/project/muscatdb/)
 #[![Python](https://img.shields.io/pypi/pyversions/muscat-db)](https://pypi.org/project/muscatdb/)
+[![CI](https://github.com/jpdeleon/muscat-db/actions/workflows/ci.yml/badge.svg)](https://github.com/jpdeleon/muscatdb/actions/workflows/ci.yml)
+-->
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/jpdeleon/muscatdb)
 
-MuSCAT observation log pipeline — scan FITS files, build a fast SQLite database, and browse results in a web UI.
+`muscat-db` is a web-based, closed-loop exoplanet observing and analysis workflow
+that integrates a central database with semi-automated, reproducible photometry,
+transit, ephemeris, and TTV analyses, enabling efficient LCO scheduling with
+optional FOV and exposure-time optimization and integration with external TOI
+and NExScI catalogs. Supported workflow pages expose a unique, shareable view state,
+allowing configurations, selections, and results to be reviewed transparently,
+reproduced consistently, and communicated easily among collaborators.
 
-Converted from the original Perl scripts (`mkobslog*.pl`, `auto_mkobslog.pl`, `show_obslog_summary.pl`) into a single Python project with a modern backend + frontend.
+## Typical workflow
+
+```mermaid
+flowchart TD
+    subgraph workflow[Closed-loop workflow]
+        direction TD
+        schedule["Transit prediction + LCO scheduling<br/>(Optional FOV and exp-time optimization)"] --> ingest["Download data and ingest into database<br/>(Optional TOI and NExScI catalog cross-referencing)"]
+        ingest --> browse["Target browser<br/>(Optional external catalog cross-referencing)"]
+        browse --> photometry["Photometry (prose)"]
+        photometry --> transit["Transit fit (timer)"]
+        transit --> oc["Ephemeris and O-C analysis<br/>(plus external timing data e.g. from TESS)"]
+        oc --> ttv["TTV fit (harmonic)"]
+        ttv --> schedule
+    end
+
+    workflow -. tracked by .-> jobs[Background jobs, live logs, and saved results in database]
+```
 
 ## Pipeline engines
 
@@ -26,13 +50,52 @@ the science lives in the packages themselves.
 
 - Python ≥ 3.12
 - FITS files on the standard data directories (`/data/MuSCAT*`, `/data/Sinistro`)
-- Obslog output directories (`/ut3/muscat/obslog/`)
+- Obslog output directories (`/ut2/muscat/obslog/`)
 
-## Install
+## Installation and usage
+
+Choose either workflow below. Commands elsewhere in this README use the
+installed `muscat-db` executable; when using `uv`, prefix those commands with
+`uv run`.
+
+<details>
+<summary><strong>uv (recommended for repository development)</strong></summary>
+
+Install the locked project environment from the repository root:
 
 ```bash
-pip install -e .
+uv sync
 ```
+
+Run the CLI or start the web interface inside that environment:
+
+```bash
+uv run muscat-db --help
+uv run muscat-db serve
+```
+
+</details>
+
+<details>
+<summary><strong>pip</strong></summary>
+
+Create and activate a virtual environment, then install the project in editable
+mode:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
+
+Run the installed CLI or start the web interface:
+
+```bash
+muscat-db --help
+muscat-db serve
+```
+
+</details>
 
 ## Configuration
 
@@ -60,14 +123,14 @@ token encryption), `MUSCAT_NGINX_GROUP` (htpasswd file group ownership), and
 below). At startup the server prints each variable's status
 (`set` / `default` / `unset`).
 
-`MUSCAT_TMPDIR` (default `/raid_ut2/home/jerome/tmp`) routes the temp files of
+`MUSCAT_TMPDIR` (default `$HOME/temp`) routes the temp files of
 spawned pipeline jobs (`TMPDIR`/`TMP`/`TEMP`) onto a roomy raid-backed directory,
 avoiding `ENOSPC` failures when the root `/tmp` fills up.
 
 Note: the auto-load covers the web app and the photometry/transit-fit jobs it
 launches. **Manual** `run_photometry` invocations in the conda `prose` shell do
 not import `muscat_db`, so set the shell directly (e.g.
-`export TMPDIR=/raid_ut2/home/jerome/tmp`) or `source .env` for those.
+`export TMPDIR="$HOME/temp"`) or `source .env` for those.
 
 ### WCS solving (muscat / muscat2 only)
 
@@ -114,7 +177,7 @@ transit-fit jobs.
 
 Results are keyed on **target alone** (not instrument/date, unlike photometry) and
 stored under `$MUSCAT_TTV_DIR/<target>/_runs/<run_name>/` (default `$MUSCAT_TTV_DIR`
-is `~/ql/harmonic`), mirroring the photometry `_runs/` convention. Each run holds
+is `$HOME/ql/harmonic`), mirroring the photometry `_runs/` convention. Each run holds
 `samples.csv.gz` (the posterior), `harmonic.log`, `meta.yaml` (muscat-db and harmonic
 versions plus the full option set), the `data.csv`/`config.ini` inputs, and harmonic's
 plots (`corner.png`, `trace.png`, `fit.png`, `init.png`). Naming a run keeps it
@@ -198,6 +261,20 @@ browser/SSH tunnel -> nginx 127.0.0.1:8000
                    -> companion apps such as TESS quicklook 127.0.0.1:5000
 ```
 
+The TESS QuickLook companion application is exposed through muscat-db at
+`/tess-quicklook`, including nested HTTP routes and WebSocket connections. Its
+backend defaults to `http://127.0.0.1:5000`; override it with
+`MUSCAT_QUICKLOOK_URL` when the local service uses another loopback port:
+
+```bash
+export MUSCAT_QUICKLOOK_URL="http://127.0.0.1:5001"
+```
+
+For security, this setting accepts loopback hosts only (`127.0.0.1`, `::1`, or
+`localhost`). The companion application must honor `X-Forwarded-Prefix` (or an
+equivalent script-root setting) so generated links remain under
+`/tess-quicklook`.
+
 For a first-time setup, run the installer from the repository root. It installs
 nginx and OpenSSL, enables `deploy/nginx.conf`, creates the protected htpasswd
 file, and starts nginx:
@@ -272,7 +349,7 @@ muscat-db scan-all 26          # all instruments
 muscat-db scan-yesterday
 ```
 
-### Print a summary (like the original `show_obslog_summary.pl`)
+### Print a summary
 
 ```bash
 muscat-db summary muscat3 260423 0
@@ -301,6 +378,8 @@ Observation-log navigation is **Logs** → **Dates** → **CCD summaries** →
 
 - **Transit Fitting Run Modes**: When launching transit fits, choose between a **New Fit** (start fresh, clobbering existing traces) or **Continue Sampling** (load the previous trace and append more MCMC draws, available if previous results exist). A **Secondary eclipse** checkbox fits an eclipse at orbital phase 0.5 instead of a primary transit.
 - **Download all output**: Photometry, transit-fit, and TTV-fit result pages offer a single button that zips every product file for that run (recursively, for run-scoped reductions) server-side and streams it back for download.
+- **Exposure calculator**: MuSCAT calculations report a separate recommended exposure time for each band, conservatively limited by the target and any selected comparison stars. Stored calibration coefficients can be inspected as a table or plotted against focus by band for either coefficient or FWHM.
+- **Sinistro telescope selection**: Photometry can be filtered by LCO site, physical telescope (`TELESCOP`), and readout mode. When a target/date contains multiple physical telescopes, a telescope must be selected before reduction so frames from different cameras are not combined into one run.
 - **Field-of-View (FOV) Optimizer**: Accessible from the navbar or observation scheduler to plan pointing offsets and instrument position angle (PA) based on Gaia DR3 comparison star heuristics, with an optional bright-star avoidance constraint.
 - **Ephemeris O-C Export Headers**: Exported O-C ephemeris text starts with descriptive `#` comments specifying the BJD_TDB time standard and column formats (planet, epoch, tc, tc_unc) for easy external parsing. Each ephemeris field (RA/Dec, T0, period, duration) carries a provenance badge (NASA/TOI/AUTO/LINEAR/FIT/manual) and hand-entered values are preserved across a same-target re-fetch instead of being overwritten by a catalog miss.
 - **TTV Fitting**: The same page runs multi-harmonic TTV fits on the transit times behind the O-C plot via the `harmonic` package, with named runs, live logs, and per-run results (see [TTV Fitting](#ttv-fitting-harmonic) above).
@@ -325,8 +404,8 @@ again makes its row visible.
 
 Photometry run logs are isolated by instrument, date, and target. Transit-fit
 outputs are stored under `$MUSCAT_TIMER_DIR/<instrument>/<date>/<target>/`
-(default `$MUSCAT_TIMER_DIR` is `/ut2/jerome/ql/timer`), and TTV-fit outputs under
-`$MUSCAT_TTV_DIR/<target>/_runs/<run_name>/` (default `~/ql/harmonic`). Spaces are
+(default `$MUSCAT_TIMER_DIR` is `$HOME/ql/timer`), and TTV-fit outputs under
+`$MUSCAT_TTV_DIR/<target>/_runs/<run_name>/` (default `$HOME/ql/harmonic`). Spaces are
 removed from the target directory name; empty names and names containing `..`, `/`,
 or `\` are rejected.
 
@@ -342,7 +421,7 @@ Interactive API references are auto-generated from the OpenAPI schema of the Fas
 - **Swagger UI**: Available at `/docs` (e.g., [http://localhost:8000/docs](http://localhost:8000/docs)) to interactively test endpoints.
 - **ReDoc**: Available at `/redoc` (e.g., [http://localhost:8000/redoc](http://localhost:8000/redoc)) for a clean, documentation-focused layout.
 
-For an alternative modern documentation interface with client code snippet generators, you can also serve a custom wrapper using **Scalar** via CDN integration referencing `/openapi.json` (see [docs/audit_api.md](file:///ut2/jerome/github/research/project/muscat-db/docs/audit_api.md) for details).
+For an alternative modern documentation interface with client code snippet generators, you can also serve a custom wrapper using **Scalar** via CDN integration referencing `/openapi.json` (see [docs/audit_api.md](docs/audit_api.md) for details).
 
 ## Cron (daily)
 
@@ -359,6 +438,18 @@ CLI (typer)
 ├── build-db     → database.py   → walks CSVs → SQLite (frames + summaries)
 └── serve        → web.py        → FastAPI + Jinja2 → browser
 ```
+
+## Naming conventions
+
+The project uses four related names in different technical contexts. Keep these
+spellings consistent when writing documentation, commands, imports, or paths:
+
+| Context | Canonical name |
+|---|---|
+| Product and repository | `muscatdb` |
+| Python import package | `muscat_db` |
+| CLI command and Python distribution | `muscat-db` |
+| SQLite database file | `muscat.db` |
 
 ### Instrument support
 
@@ -383,13 +474,3 @@ scale in arcsec/pixel, and aperture in metres.
 | muscat3 | 99,000 | 1.8 | 0.267 | 2.0 |
 | muscat4 | 99,000 | 1.8 | 0.267 | 2.0 |
 | sinistro | 100,000 | 1.5 | 0.39 | 1.0 |
-
-### Migration from Perl
-
-| Perl script | Python equivalent |
-|---|---|
-| `mkobslog.pl muscat 240101` | `muscat-db scan muscat 240101` |
-| `mkobslog_muscat3.pl 240101` | `muscat-db scan muscat3 240101` |
-| `auto_mkobslog.pl muscat3 24` | `muscat-db scan-missing muscat3 24` |
-| `show_obslog_summary.pl muscat3 240101 0` | `muscat-db summary muscat3 240101 0` |
-| `auto_mkobslog_muscat2.sh` (cron) | `muscat-db scan-yesterday` |

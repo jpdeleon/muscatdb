@@ -103,7 +103,9 @@ def fit_output_dir(inst: str, date: str, target: str, run_id: str | None = None)
     overwrite each other. ``run_id=None`` reproduces the legacy ``{target}/``
     path so pre-existing fits keep resolving.
     """
-    base = pathlib.Path(os.environ.get("MUSCAT_TIMER_DIR", "/ut2/jerome/ql/timer")).expanduser().resolve(strict=False)
+    base = pathlib.Path(
+        os.environ.get("MUSCAT_TIMER_DIR", str(pathlib.Path.home() / "ql" / "timer"))
+    ).expanduser().resolve(strict=False)
     parts = [base, inst, date, _target_dir_name(target)]
     if run_id:
         parts.append(_run_dir_name(run_id))
@@ -1928,7 +1930,9 @@ def _discover_orphan_fits(existing: set[str]) -> list[dict]:
     ``transit_fit:{inst}/{date}/{target}``) and per-run ``{target}/<run_id>/out/``
     (key ``…/{target}/{run_id}``) — whose key is not in *existing*.
     """
-    base = pathlib.Path(os.environ.get("MUSCAT_TIMER_DIR", "/ut2/jerome/ql/timer"))
+    base = pathlib.Path(
+        os.environ.get("MUSCAT_TIMER_DIR", str(pathlib.Path.home() / "ql" / "timer"))
+    )
     orphans: list[dict] = []
     if not base.is_dir():
         return orphans
