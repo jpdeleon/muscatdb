@@ -489,6 +489,9 @@ def test_ephemeris_csv_preview_labels_notes_and_centers_dialog():
     assert "<th>New epoch</th>" in html
     assert "<th>Note</th>" in html
     assert "<th>Page epoch</th>" not in html
+    assert 'id="transit-csv-instrument"' in html
+    assert "instrument: instrument" in html
+    assert "const instrument = document.getElementById('transit-csv-instrument').value.trim()" in html
     dialog_rule = re.search(
         r"#transit-csv-dialog\s*\{(?P<body>[^}]*)\}", html
     )
