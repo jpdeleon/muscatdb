@@ -543,6 +543,18 @@ def test_ephemeris_utc_axis_preserves_plot_area_height():
     assert "height: 600 + (showTwin ? OC_PLOT_UTC_AXIS_EXTRA_HEIGHT : 0)" in html
 
 
+def test_ephemeris_csv_import_saves_datasetless_view_before_success():
+    html = _read_template("ephemeris.html")
+
+    save_now = _function_body(html, "saveEphemerisViewNow")
+    assert "loadedTargets.length === 0" in save_now
+    assert "combinedDatasets.length" not in save_now
+    assert "updateViewUrl(res.slug)" in save_now
+    assert "window.importTransitCSVRows = async function()" in html
+    assert "await saveEphemerisViewNow()" in html
+    assert "added and saved in this view" in html
+
+
 # --------------------------------------------------------------------------- #
 # Endpoint coverage: frontend fetch targets have backend handlers
 # --------------------------------------------------------------------------- #

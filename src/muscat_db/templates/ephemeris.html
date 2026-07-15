@@ -726,29 +726,37 @@
     }
   }
 
+  async function saveEphemerisViewNow() {
+    // CSV/manual-only analyses are valid saved views even when this target has
+    // no completed muscat-db transit-fit dataset.
+    if (loadedTargets.length === 0) return null;
+    if (viewSaveTimer) {
+      clearTimeout(viewSaveTimer);
+      viewSaveTimer = null;
+    }
+    const state = collectEphemerisViewState();
+    const stateJson = JSON.stringify(state);
+    if (stateJson === lastSavedViewJson) return null;
+    const response = await fetch('/api/ephemeris/view', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state })
+    });
+    const res = await response.json();
+    if (!response.ok || !res.ok) {
+      throw new Error(res.error || `HTTP ${response.status}`);
+    }
+    lastSavedViewJson = stateJson;
+    updateViewUrl(res.slug);
+    return res;
+  }
+
   function scheduleSaveView(delay = 600) {
-    if (loadedTargets.length === 0 || combinedDatasets.length === 0) return;
+    if (loadedTargets.length === 0) return;
     if (viewSaveTimer) clearTimeout(viewSaveTimer);
     viewSaveTimer = setTimeout(() => {
       viewSaveTimer = null;
-      const state = collectEphemerisViewState();
-      const stateJson = JSON.stringify(state);
-      if (stateJson === lastSavedViewJson) return;
-      fetch('/api/ephemeris/view', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state })
-      })
-      .then(r => r.json())
-      .then(res => {
-        if (!res.ok) {
-          console.warn('Failed to save ephemeris view:', res.error || res);
-          return;
-        }
-        lastSavedViewJson = stateJson;
-        updateViewUrl(res.slug);
-      })
-      .catch(e => console.warn('Failed to save ephemeris view:', e));
+      saveEphemerisViewNow().catch(e => console.warn('Failed to save ephemeris view:', e));
     }, delay);
   }
 
@@ -1717,7 +1725,7 @@
     transitCSVPreview = null;
   };
 
-  window.importTransitCSVRows = function() {
+  window.importTransitCSVRows = async function() {
     if (!transitCSVPreview) return;
     const rows = transitCSVPreview.rows.filter(row => !row.blocked);
     const instrument = document.getElementById('transit-csv-instrument').value.trim();
@@ -1741,9 +1749,17 @@
     saveManualPoints();
     renderDatasetsTable(combinedDatasets);
     scheduleComputeFit();
-    scheduleSaveView();
     closeTransitCSVDialog();
-    showMessageModal('Transit centers imported', `${count} row${count === 1 ? '' : 's'} added to the ephemeris table.`, {kind: 'success'});
+    try {
+      await saveEphemerisViewNow();
+      showMessageModal('Transit centers imported', `${count} row${count === 1 ? '' : 's'} added and saved in this view.`, {kind: 'success'});
+    } catch (error) {
+      showMessageModal(
+        'Transit centers imported locally',
+        `${count} row${count === 1 ? '' : 's'} added, but the shareable view could not be saved: ${error.message}`,
+        {kind: 'error'}
+      );
+    }
   };
 
   function escapeAttr(v) {

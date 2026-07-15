@@ -704,6 +704,29 @@ def test_imported_source_epoch_is_preserved_but_page_epoch_drives_fit(
     assert point["time_system"] == "BJD_TDB"
 
 
+def test_ephemeris_view_round_trips_imported_csv_points(mock_db):
+    state = {
+        "targets": ["HIP67522"],
+        "checked_datasets": {},
+        "manual_points": [
+            {
+                "id": "csv-1", "instrument": "tess", "planet": "b",
+                "tc": "2458604.024028", "tc_unc": "0.000811",
+                "source_epoch": -183, "source_file": "ttv.csv",
+                "time_system": "BJD_TDB", "checked": True,
+            }
+        ],
+    }
+    client = TestClient(app)
+
+    saved = client.post("/api/ephemeris/view", json={"state": state})
+    assert saved.status_code == 200
+    restored = client.get(f"/api/ephemeris/view/{saved.json()['slug']}")
+
+    assert restored.status_code == 200
+    assert restored.json()["state"]["manual_points"] == state["manual_points"]
+
+
 def test_manual_transit_center_target_and_date_optional_overrides(
     mock_db, _isolate_ephemeris_jobs
 ):
