@@ -679,7 +679,7 @@ def list_outputs(
         if key != "nearby_stars"
     ]
 
-    # Strip internal keys and order bands canonically (gp, rp, ip, zs)
+    # Strip internal keys and order bands canonically (see band ordering below)
     out["summary_items"].sort(
         key=lambda item: (
             ["lightcurves", "raw_flux", "covariates", "stacks"].index(item["key"])
@@ -699,7 +699,14 @@ def list_outputs(
     out.pop("_npz_mtime", None)
     out.pop("_ref_header_mtime", None)
     out.pop("_ref_selection_mtime", None)
-    ordered = {b: out["bands"][b] for b in DEFAULT_BANDS if b in out["bands"]}
+    # Order band tabs canonically: broadband (gp, rp, ip, zs) then narrowband
+    # (g_narrow, Na_D, i_narrow, z_narrow); any unrecognized bands keep their
+    # discovered (filename) order after the known ones.
+    ordered = {
+        b: out["bands"][b]
+        for b in (*DEFAULT_BANDS, *NARROW_BANDS)
+        if b in out["bands"]
+    }
     for b, v in out["bands"].items():
         ordered.setdefault(b, v)
     out["bands"] = ordered
