@@ -451,6 +451,8 @@ graph TD
     G --> J
     H --> J
     I --> J
+    X["External Transit CSV\nplanet, epoch, tc, tc_unc"] --> Y["Import Preview\nheader mapping, validation, time-scale confirmation"]:::default
+    Y --> J
     K["Fitting Method\nUnweighted or Weighted"]:::default --> J
 
     %% Fit math
@@ -474,6 +476,14 @@ graph TD
     V --> W["harmonic TTV Fit\n(see next section)"]:::pipeline
           </pre>
         </div>
+
+        <p style="color: var(--text-dim); font-size: 0.9rem; line-height: 1.6;">
+          Use <strong>Import transit CSV</strong> beside the dataset table to add external timing measurements.
+          Headers such as <code>tc(BJD)</code> and <code>tc_unc(BJD)</code> are mapped to transit center and
+          uncertainty automatically. The preview reports invalid rows and compares a supplied CSV epoch with the
+          page epoch grid. A constant per-planet offset is a safe change of epoch zero-point; inconsistent offsets
+          are blocked. Files that say only BJD require confirmation that their time scale is BJD_TDB.
+        </p>
 
       </div>
     </div>

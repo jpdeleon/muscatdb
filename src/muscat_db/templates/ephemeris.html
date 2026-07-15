@@ -61,12 +61,38 @@
       </table>
     </div>
     <div style="display: flex; justify-content: flex-end; margin-top: 0.75rem;">
+      <input id="transit-csv-input" type="file" accept=".csv,.txt,text/csv,text/plain" hidden>
+      <button class="btn sm" type="button" onclick="chooseTransitCSV()"
+              title="Import planet, epoch, transit center, and uncertainty columns from a CSV file"
+              style="margin-right: 0.5rem;">Import transit CSV</button>
       <button class="btn sm primary" type="button" onclick="addManualPoint()"
               title="Add a transit center by hand (e.g. a literature value) to combine with the fitted datasets">
         + Add transit center
       </button>
     </div>
   </details>
+
+  <dialog id="transit-csv-dialog" aria-labelledby="transit-csv-title">
+    <div class="csv-import-dialog">
+      <h3 id="transit-csv-title">Import transit centers</h3>
+      <div id="transit-csv-summary" class="csv-import-summary"></div>
+      <div class="csv-wrap csv-import-preview-wrap">
+        <table class="csv-import-preview">
+          <thead><tr><th>Line</th><th>Planet</th><th>CSV epoch</th><th>Page epoch</th><th>Tc (BJD)</th><th>Unc. (d)</th><th>Status</th></tr></thead>
+          <tbody id="transit-csv-preview-body"></tbody>
+        </table>
+      </div>
+      <div id="transit-csv-errors" class="csv-import-errors"></div>
+      <label id="transit-csv-time-confirm-row" class="opt-check-item csv-time-confirm" style="display:none;">
+        <input id="transit-csv-time-confirm" type="checkbox">
+        <span>I confirm these transit-center times are BJD_TDB.</span>
+      </label>
+      <div class="modal-actions">
+        <button class="btn" type="button" onclick="closeTransitCSVDialog()">Cancel</button>
+        <button class="btn primary" id="transit-csv-import-btn" type="button" onclick="importTransitCSVRows()">Import</button>
+      </div>
+    </div>
+  </dialog>
 
   <!-- Automatic Fit Controls -->
   <div id="action-section" style="display: none; gap: 1rem; align-items: center; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 1.5rem;">
@@ -354,6 +380,14 @@
     border-left: 2px solid var(--red);
     padding-left: 0.6rem;
   }
+  .csv-import-dialog { width: min(1000px, 90vw); }
+  #transit-csv-dialog { max-width: none; }
+  .csv-import-summary { color: var(--text-dim); font-size: 0.85rem; line-height: 1.5; margin-bottom: 0.75rem; }
+  .csv-import-preview-wrap { max-height: 45vh; border: 1px solid var(--border); border-radius: 8px; }
+  .csv-import-preview { margin: 0; font-size: 0.82rem; }
+  .csv-import-preview th, .csv-import-preview td { white-space: nowrap; }
+  .csv-import-errors { color: var(--red); font-size: 0.82rem; margin-top: 0.75rem; white-space: pre-line; }
+  .csv-time-confirm { margin: 0.9rem 0; color: var(--text); }
 
   .planet-card {
     background: var(--surface2);
@@ -631,6 +665,9 @@
       tc: mp.tc,
       tc_unc: mp.tc_unc,
       note: mp.note || '',
+      source_epoch: mp.source_epoch,
+      source_file: mp.source_file || '',
+      time_system: mp.time_system || '',
       checked: !!mp.checked
     }));
 
@@ -1488,6 +1525,9 @@
       // "note" is a free-text annotation shown in the Run Name column; older
       // saved views stored it as "label", so fall back to that.
       note: mp.note != null ? mp.note : (mp.label || ''),
+      source_epoch: Number.isInteger(mp.source_epoch) ? mp.source_epoch : null,
+      source_file: mp.source_file || '',
+      time_system: mp.time_system || '',
       checked: mp.checked !== false
     }));
   }
@@ -1497,6 +1537,170 @@
       localStorage.setItem(manualStorageKey(), JSON.stringify(manualPoints));
     } catch (e) {}
   }
+
+  // ── CSV transit-center import ──────────────────────────────────────────
+  // Parsing is performed by the Python stdlib CSV reader through the preview
+  // endpoint. The browser sends file content, never a server filesystem path.
+  let transitCSVPreview = null;
+
+  window.chooseTransitCSV = function() {
+    if (loadedTargets.length === 0) {
+      showMessageModal('Select a target', 'Load a target before importing transit centers.');
+      return;
+    }
+    const input = document.getElementById('transit-csv-input');
+    input.value = '';
+    input.click();
+  };
+
+  function planetEpochForTC(planet, tc) {
+    const card = document.querySelector(`.planet-card[data-planet="${CSS.escape(planet)}"]`);
+    if (!card) return null;
+    const t0 = parseFloat(card.querySelector('.planet-t0')?.value);
+    const period = parseFloat(card.querySelector('.planet-period')?.value);
+    if (!Number.isFinite(t0) || !Number.isFinite(period) || period === 0) return null;
+    return Math.round((tc - t0) / period);
+  }
+
+  function analyzeTransitCSVRows(preview) {
+    const offsets = {};
+    const seenInFile = new Set();
+    preview.rows.forEach(row => {
+      row.blocked = '';
+      row.page_epoch = planetEpochForTC(row.planet, row.tc);
+      if (!combinedPlanets.includes(row.planet)) {
+        row.blocked = `planet ${row.planet} is not available for the loaded target`;
+      } else if (row.page_epoch === null) {
+        row.blocked = `planet ${row.planet} needs a valid T0 and period`;
+      }
+      if (Number.isInteger(row.source_epoch) && row.page_epoch !== null) {
+        const offset = row.page_epoch - row.source_epoch;
+        (offsets[row.planet] ||= new Set()).add(offset);
+      }
+      const duplicate = manualPoints.some(mp =>
+        mp.planet === row.planet && Number.isFinite(parseFloat(mp.tc))
+        && Math.abs(parseFloat(mp.tc) - row.tc) < 1e-10);
+      if (duplicate) row.blocked = 'already present in this view';
+      const fileKey = `${row.planet}|${row.tc}`;
+      if (seenInFile.has(fileKey)) row.blocked = 'duplicate row in this CSV';
+      seenInFile.add(fileKey);
+      if (preview.time_system.supported === false) {
+        row.blocked = `${preview.time_system.value} requires conversion to BJD_TDB before import`;
+      }
+    });
+    Object.keys(offsets).forEach(planet => {
+      if (offsets[planet].size > 1) {
+        preview.rows.forEach(row => {
+          if (row.planet === planet) row.blocked = 'CSV epochs are inconsistent with the page epoch grid';
+        });
+      }
+    });
+    preview.epoch_offsets = Object.fromEntries(
+      Object.entries(offsets).filter(([, values]) => values.size === 1)
+        .map(([planet, values]) => [planet, Array.from(values)[0]])
+    );
+  }
+
+  function updateTransitCSVImportButton() {
+    if (!transitCSVPreview) return;
+    const needsConfirmation = !transitCSVPreview.time_system.confirmed;
+    const confirmed = document.getElementById('transit-csv-time-confirm').checked;
+    const importable = transitCSVPreview.rows.filter(row => !row.blocked).length;
+    const button = document.getElementById('transit-csv-import-btn');
+    button.disabled = importable === 0 || (needsConfirmation && !confirmed);
+    button.textContent = `Import ${importable} transit center${importable === 1 ? '' : 's'}`;
+  }
+
+  function renderTransitCSVPreview(preview) {
+    analyzeTransitCSVRows(preview);
+    const mapped = Object.entries(preview.columns)
+      .map(([field, header]) => `${field} ← ${header}`).join(' · ');
+    const offsets = Object.entries(preview.epoch_offsets)
+      .map(([planet, offset]) => `${planet}: ${offset >= 0 ? '+' : ''}${offset}`).join(', ');
+    const importable = preview.rows.filter(row => !row.blocked).length;
+    document.getElementById('transit-csv-summary').innerHTML =
+      `<strong>${escapeAttr(preview.filename)}</strong> — ${preview.rows.length} valid parser row(s), ${preview.errors.length} invalid row(s).<br>`
+      + `Columns: ${escapeAttr(mapped)}.<br>Time system: <strong>${escapeAttr(preview.time_system.value)}</strong>.`
+      + (offsets ? `<br>Page epoch − CSV epoch: ${escapeAttr(offsets)} (a constant offset is safely re-zeroed).` : '')
+      + `<br>${importable} row(s) ready to import.`;
+
+    const tbody = document.getElementById('transit-csv-preview-body');
+    tbody.innerHTML = preview.rows.slice(0, 100).map(row => {
+      const status = row.blocked
+        ? `<span style="color:var(--red);">${escapeAttr(row.blocked)}</span>`
+        : '<span style="color:var(--green);">Ready</span>';
+      return `<tr><td>${row.line}</td><td>${escapeAttr(row.planet)}</td>`
+        + `<td>${row.source_epoch === null ? '—' : row.source_epoch}</td>`
+        + `<td>${row.page_epoch === null ? '—' : row.page_epoch}</td>`
+        + `<td class="mono">${Number(row.tc).toFixed(6)}</td>`
+        + `<td class="mono">${Number(row.tc_unc).toFixed(6)}</td><td>${status}</td></tr>`;
+    }).join('');
+
+    const messages = [];
+    (preview.warnings || []).forEach(message => messages.push(`Warning: ${message}`));
+    (preview.errors || []).slice(0, 20).forEach(error =>
+      messages.push(`Line ${error.line}: ${error.errors.join('; ')}`));
+    if (preview.rows.length > 100) messages.push(`Preview limited to the first 100 of ${preview.rows.length} valid rows.`);
+    document.getElementById('transit-csv-errors').textContent = messages.join('\n');
+
+    const confirmRow = document.getElementById('transit-csv-time-confirm-row');
+    const confirmBox = document.getElementById('transit-csv-time-confirm');
+    confirmRow.style.display = preview.time_system.confirmed ? 'none' : 'flex';
+    confirmBox.checked = preview.time_system.confirmed;
+    updateTransitCSVImportButton();
+  }
+
+  document.getElementById('transit-csv-time-confirm').addEventListener('change', updateTransitCSVImportButton);
+  document.getElementById('transit-csv-input').addEventListener('change', async function() {
+    const file = this.files && this.files[0];
+    if (!file) return;
+    try {
+      const response = await fetch('/api/ephemeris/import-csv', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({filename: file.name, content: await file.text()})
+      });
+      const preview = await response.json();
+      if (!response.ok || !preview.ok) throw new Error(preview.error || `HTTP ${response.status}`);
+      transitCSVPreview = preview;
+      renderTransitCSVPreview(preview);
+      document.getElementById('transit-csv-dialog').showModal();
+    } catch (error) {
+      showMessageModal('CSV import failed', error.message, {kind: 'error'});
+    }
+  });
+
+  window.closeTransitCSVDialog = function() {
+    document.getElementById('transit-csv-dialog').close();
+    transitCSVPreview = null;
+  };
+
+  window.importTransitCSVRows = function() {
+    if (!transitCSVPreview) return;
+    const rows = transitCSVPreview.rows.filter(row => !row.blocked);
+    const timeSystem = 'BJD_TDB';
+    rows.forEach(row => manualPoints.push({
+      id: 'csv-' + (++manualIdSeq) + '-' + Date.now(),
+      instrument: 'csv',
+      target: '',
+      date: '',
+      planet: row.planet,
+      tc: String(row.tc),
+      tc_unc: String(row.tc_unc),
+      note: transitCSVPreview.filename,
+      source_epoch: row.source_epoch,
+      source_file: transitCSVPreview.filename,
+      time_system: timeSystem,
+      checked: true
+    }));
+    const count = rows.length;
+    saveManualPoints();
+    renderDatasetsTable(combinedDatasets);
+    scheduleComputeFit();
+    scheduleSaveView();
+    closeTransitCSVDialog();
+    showMessageModal('Transit centers imported', `${count} row${count === 1 ? '' : 's'} added to the ephemeris table.`, {kind: 'success'});
+  };
 
   function escapeAttr(v) {
     return String(v == null ? '' : v)
@@ -1517,6 +1721,9 @@
     // first loaded target, and the UTC date derived from the BJD.
     const datePlaceholder = jdToYYMMDD(parseFloat(mp.tc)) || 'auto';
     const targetHint = (loadedTargets.slice().sort()[0]) || 'target';
+    const sourceEpoch = Number.isInteger(mp.source_epoch)
+      ? `<span class="badge" style="font-size:0.7rem;white-space:nowrap;" title="Epoch supplied by ${escapeAttr(mp.source_file || 'the imported CSV')}; the fit uses the page epoch grid">CSV E=${mp.source_epoch}</span>`
+      : '';
 
     const inputStyle = 'box-sizing:border-box;background:var(--input-bg);color:var(--text);' +
       'border:1px solid var(--border);border-radius:4px;padding:0.25rem 0.4rem;' +
@@ -1565,6 +1772,7 @@
           <input type="number" step="any" min="0" class="manual-unc" value="${escapeAttr(mp.tc_unc)}" placeholder="unc (d)"
                  oninput="updateManualField('${mp.id}', 'tc_unc', this.value)"
                  style="width: 90px; ${inputStyle}">
+          ${sourceEpoch}
           <span class="manual-flag" style="display: none; color: var(--red); font-weight: bold; cursor: help;"
                 title="More than 5σ from the linear ephemeris — check for a wrong epoch, a JD/BJD offset, or a UTC/TDB time-system mismatch">⚠</span>
           <button class="btn sm" type="button" onclick="removeManualPoint('${mp.id}')" title="Remove this transit center"
@@ -1586,6 +1794,9 @@
       tc: '',
       tc_unc: '',
       note: '',
+      source_epoch: null,
+      source_file: '',
+      time_system: '',
       checked: true
     });
     saveManualPoints();
@@ -1644,6 +1855,9 @@
         tc: parseFloat(mp.tc),
         tc_unc: parseFloat(mp.tc_unc),
         note: mp.note || '',
+        source_epoch: mp.source_epoch,
+        source_file: mp.source_file || '',
+        time_system: mp.time_system || '',
         checked: !!mp.checked
       }));
   }
