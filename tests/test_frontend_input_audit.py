@@ -483,6 +483,22 @@ def test_ephemeris_disclosure_triangles_use_standard_size():
     assert "font-size: 1.35rem" in top_level_rule.group("body")
 
 
+def test_ephemeris_csv_preview_labels_notes_and_centers_dialog():
+    html = _read_template("ephemeris.html")
+
+    assert "<th>New epoch</th>" in html
+    assert "<th>Note</th>" in html
+    assert "<th>Page epoch</th>" not in html
+    dialog_rule = re.search(
+        r"#transit-csv-dialog\s*\{(?P<body>[^}]*)\}", html
+    )
+    assert dialog_rule is not None
+    body = dialog_rule.group("body")
+    assert "position: fixed" in body
+    assert "inset: 0" in body
+    assert "margin: auto" in body
+
+
 # --------------------------------------------------------------------------- #
 # Endpoint coverage: frontend fetch targets have backend handlers
 # --------------------------------------------------------------------------- #
