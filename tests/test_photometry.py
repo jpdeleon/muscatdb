@@ -204,6 +204,31 @@ class TestListOutputs:
         assert set(out["bands"]["Na_D"]) == {"csv", "ref"}
         assert phot.discovered_targets("muscat2", "250424") == ["TOI07147.01"]
 
+    def test_bands_ordered_canonically_including_narrowbands(self, monkeypatch, tmp_path):
+        # Bands are discovered in filename order but must be presented
+        # canonically: broadband (gp, rp, ip, zs) then narrowband (g_narrow,
+        # Na_D, i_narrow, z_narrow), regardless of the order they are found in.
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "muscat2" / "250424"
+        rdir.mkdir(parents=True)
+        # Write in a deliberately scrambled order.
+        for band in ("z_narrow", "ip", "Na_D", "gp", "i_narrow", "zs", "g_narrow", "rp"):
+            bstem = f"TOI-1234_muscat2_{band}_250424"
+            (rdir / (bstem + ".csv")).write_text("BJD_TDB,Flux\n1,1\n")
+        out = phot.list_outputs("muscat2", "250424", "TOI-1234")
+        assert list(out["bands"]) == [
+            "gp",
+            "rp",
+            "ip",
+            "zs",
+            "g_narrow",
+            "Na_D",
+            "i_narrow",
+            "z_narrow",
+        ]
+
     def test_classifies_sinistro_site_token(self, monkeypatch, tmp_path):
         # Sinistro reduced with --site embeds the site between inst and the
         # band/date: <target>_sinistro_<site>_<date> (summary) and
