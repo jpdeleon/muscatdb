@@ -4265,6 +4265,37 @@ def ttv_fit_status(target: str = "", run_name: str = ""):
     return JSONResponse(status)
 
 
+# Text-like TTV output extensions the browser should render in a new tab
+# instead of downloading. FileResponse only adds Content-Disposition when a
+# ``filename`` is passed, so we leave that unset and just force a
+# browser-renderable media type (the guessed type for e.g. .csv/.yaml would
+# otherwise trigger a download).
+_INLINE_TEXT_EXTS = {".csv", ".ini", ".log", ".txt", ".yaml", ".yml", ".cfg", ".dat", ".tsv"}
+
+
+def _inline_output_file(path: pathlib.Path) -> FileResponse:
+    """Serve a TTV output file so browsers open it in a new tab rather than
+    prompting a download.
+
+    Text-like files are forced to ``text/plain``; gzipped text such as
+    ``samples.csv.gz`` is served with ``Content-Encoding: gzip`` so the browser
+    transparently decompresses and renders the underlying text inline (the
+    GZip middleware passes it through untouched since the header is set here).
+    """
+    suffixes = [s.lower() for s in path.suffixes]
+    headers = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+    media_type: str | None = None
+    if suffixes and suffixes[-1] == ".gz":
+        headers["Content-Encoding"] = "gzip"
+        inner = suffixes[-2] if len(suffixes) >= 2 else ""
+        media_type = "application/json" if inner == ".json" else "text/plain; charset=utf-8"
+    elif suffixes and suffixes[-1] in _INLINE_TEXT_EXTS:
+        media_type = "text/plain; charset=utf-8"
+    # Other types (.json, .png, images) already render inline under their
+    # guessed media type, so leave media_type=None for those.
+    return FileResponse(str(path), media_type=media_type, headers=headers)
+
+
 @ttv_fit_router.get("/output-file", response_class=FileResponse)
 def ttv_fit_output_file(target: str = "", run_name: str = "", file: str = ""):
     if not target:
@@ -4274,7 +4305,7 @@ def ttv_fit_output_file(target: str = "", run_name: str = "", file: str = ""):
         if not file or pathlib.PurePath(file).name != file:
             raise HTTPException(400, "invalid filename")
         raise HTTPException(404, f"file not found: {file}")
-    return FileResponse(str(filepath))
+    return _inline_output_file(filepath)
 
 
 @ttv_fit_router.get("/download-all", response_class=FileResponse)

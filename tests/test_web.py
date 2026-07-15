@@ -124,6 +124,45 @@ def test_ttv_output_file_rejects_paths_outside_run(tmp_path, monkeypatch):
     assert response.json()["detail"] == "invalid filename"
 
 
+def test_ttv_output_file_opens_inline_not_download(tmp_path, monkeypatch):
+    """TTV output files should render in a new tab, never prompt a download."""
+    import gzip
+
+    monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path / "ttv"))
+    run_dir = tmp_path / "ttv" / "TOI123" / "_runs" / "default"
+    run_dir.mkdir(parents=True)
+    (run_dir / "data.csv").write_text("bjd,flux\n1.0,0.99\n")
+    (run_dir / "config.ini").write_text("[params]\nfoo=bar\n")
+    (run_dir / "harmonic.log").write_text("INFO starting\n")
+    (run_dir / "args.txt").write_text("--walkers 100\n")
+    (run_dir / "fit_config.json").write_text('{"a": 1}\n')
+    (run_dir / "meta.yaml").write_text("key: value\n")
+    with gzip.open(run_dir / "samples.csv.gz", "wt") as fh:
+        fh.write("p0,p1\n0.1,0.2\n")
+
+    client = TestClient(app)
+    renderable = {"text/plain", "application/json"}
+    for name in [
+        "data.csv", "config.ini", "harmonic.log",
+        "args.txt", "fit_config.json", "meta.yaml", "samples.csv.gz",
+    ]:
+        resp = client.get(
+            "/api/ttv-fit/output-file", params={"target": "TOI123", "file": name}
+        )
+        assert resp.status_code == 200, name
+        assert "attachment" not in (resp.headers.get("content-disposition") or ""), name
+        base_type = resp.headers["content-type"].split(";")[0].strip()
+        assert base_type in renderable, f"{name}: {base_type}"
+
+    # samples.csv.gz is served gzip-encoded so the browser transparently
+    # decompresses and renders the underlying CSV inline.
+    resp = client.get(
+        "/api/ttv-fit/output-file", params={"target": "TOI123", "file": "samples.csv.gz"}
+    )
+    assert resp.headers.get("content-encoding") == "gzip"
+    assert resp.text == "p0,p1\n0.1,0.2\n"
+
+
 def test_jobs_status_elapsed_uses_latest_rerun_started_at(mock_db, monkeypatch):
     save_job(
         type_="photometry",

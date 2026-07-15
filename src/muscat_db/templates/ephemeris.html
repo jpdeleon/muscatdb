@@ -3024,13 +3024,16 @@
     
     if (files.length > 0) {
       html += '<div class="dl-row">';
+
+      // Match the transit-fit / photometry pages: "Download all" comes first,
+      // then plain filename links (no per-file icon).
+      const zipUrl = `/api/ttv-fit/download-all?target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}`;
+      html += `<a href="${zipUrl}" download style="font-weight: 600; color: var(--accent2);">📦 Download all output (.zip)</a>`;
+
       files.forEach(f => {
         const fileUrl = `/api/ttv-fit/output-file?target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}&file=${encodeURIComponent(f)}`;
-        html += `<a href="${fileUrl}" target="_blank">📁 ${f}</a>`;
+        html += `<a href="${fileUrl}" target="_blank">${f}</a>`;
       });
-
-      const zipUrl = `/api/ttv-fit/download-all?target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}`;
-      html += `<a href="${zipUrl}" download style="font-weight: 600; color: var(--accent2);">📦 Download all (.zip)</a>`;
       html += '</div>';
     }
     
