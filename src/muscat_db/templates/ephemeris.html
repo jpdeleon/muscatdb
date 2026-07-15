@@ -76,6 +76,12 @@
     <div class="csv-import-dialog">
       <h3 id="transit-csv-title">Import transit centers</h3>
       <div id="transit-csv-summary" class="csv-import-summary"></div>
+      <div class="csv-import-instrument">
+        <label for="transit-csv-instrument">Instrument name</label>
+        <input id="transit-csv-instrument" type="text" value="csv" maxlength="64"
+               placeholder="e.g. tess" required>
+        <span>Applied to every imported transit center.</span>
+      </div>
       <div class="csv-wrap csv-import-preview-wrap">
         <table class="csv-import-preview">
           <thead><tr><th>Line</th><th>Planet</th><th>CSV epoch</th><th>New epoch</th><th>Tc (BJD)</th><th>Unc. (d)</th><th>Note</th></tr></thead>
@@ -97,7 +103,7 @@
   <!-- Automatic Fit Controls -->
   <div id="action-section" style="display: none; gap: 1rem; align-items: center; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 1.5rem;">
     <div class="opt-check-row" title="Unweighted fit treats all transits equally. Weighted fit uses individual fit uncertainties." style="padding: 0; display: flex; align-items: center; gap: 0.85rem; min-height: 34px;">
-      <span style="font-size: 0.85rem; color: var(--text-dim); font-weight: 500; white-space: nowrap;">Fitting Method</span>
+      <span style="font-size: 0.85rem; color: var(--text-dim); font-weight: 500; white-space: nowrap;">Linear Fitting Method</span>
       <label class="opt-check-item" style="display: inline-flex; align-items: center; gap: 0.35rem; cursor: pointer;">
         <input type="radio" name="fit-method-type" value="unweighted" checked style="margin: 0;">
         <span style="font-size: 0.85rem;">Unweighted</span>
@@ -392,6 +398,18 @@
     box-sizing: border-box;
   }
   .csv-import-summary { color: var(--text-dim); font-size: 0.85rem; line-height: 1.5; margin-bottom: 0.75rem; }
+  .csv-import-instrument { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.9rem; }
+  .csv-import-instrument label { color: var(--text); font-size: 0.85rem; font-weight: 600; white-space: nowrap; }
+  .csv-import-instrument input {
+    width: 150px;
+    box-sizing: border-box;
+    background: var(--input-bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.4rem 0.55rem;
+  }
+  .csv-import-instrument span { color: var(--text-dim); font-size: 0.8rem; }
   .csv-import-preview-wrap { max-height: 45vh; border: 1px solid var(--border); border-radius: 8px; }
   .csv-import-preview { margin: 0; font-size: 0.82rem; }
   .csv-import-preview th, .csv-import-preview td { white-space: nowrap; }
@@ -1614,9 +1632,10 @@
     if (!transitCSVPreview) return;
     const needsConfirmation = !transitCSVPreview.time_system.confirmed;
     const confirmed = document.getElementById('transit-csv-time-confirm').checked;
+    const instrument = document.getElementById('transit-csv-instrument').value.trim();
     const importable = transitCSVPreview.rows.filter(row => !row.blocked).length;
     const button = document.getElementById('transit-csv-import-btn');
-    button.disabled = importable === 0 || (needsConfirmation && !confirmed);
+    button.disabled = importable === 0 || !instrument || (needsConfirmation && !confirmed);
     button.textContent = `Import ${importable} transit center${importable === 1 ? '' : 's'}`;
   }
 
@@ -1673,6 +1692,7 @@
   }
 
   document.getElementById('transit-csv-time-confirm').addEventListener('change', updateTransitCSVImportButton);
+  document.getElementById('transit-csv-instrument').addEventListener('input', updateTransitCSVImportButton);
   document.getElementById('transit-csv-input').addEventListener('change', async function() {
     const file = this.files && this.files[0];
     if (!file) return;
@@ -1700,10 +1720,12 @@
   window.importTransitCSVRows = function() {
     if (!transitCSVPreview) return;
     const rows = transitCSVPreview.rows.filter(row => !row.blocked);
+    const instrument = document.getElementById('transit-csv-instrument').value.trim();
+    if (!instrument) return;
     const timeSystem = 'BJD_TDB';
     rows.forEach(row => manualPoints.push({
       id: 'csv-' + (++manualIdSeq) + '-' + Date.now(),
-      instrument: 'csv',
+      instrument: instrument,
       target: '',
       date: '',
       planet: row.planet,
