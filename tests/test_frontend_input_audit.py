@@ -502,6 +502,14 @@ def test_ephemeris_csv_preview_labels_notes_and_centers_dialog():
     assert "margin: auto" in body
 
 
+def test_ephemeris_ttv_fit_log_has_dedicated_new_tab_link():
+    html = _read_template("ephemeris.html")
+
+    assert 'file=harmonic.log`' in html
+    assert 'target="_blank" rel="noopener">📄 fit run log</a>' in html
+    assert "f !== 'harmonic.log'" in html
+
+
 # --------------------------------------------------------------------------- #
 # Endpoint coverage: frontend fetch targets have backend handlers
 # --------------------------------------------------------------------------- #
