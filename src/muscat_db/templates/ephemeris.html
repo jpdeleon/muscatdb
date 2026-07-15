@@ -64,7 +64,7 @@
       <input id="transit-csv-input" type="file" accept=".csv,.txt,text/csv,text/plain" hidden>
       <button class="btn sm" type="button" onclick="chooseTransitCSV()"
               title="Import planet, epoch, transit center, and uncertainty columns from a CSV file"
-              style="margin-right: 0.5rem;">Import transit CSV</button>
+              style="margin-right: 0.5rem;">Import CSV</button>
       <button class="btn sm primary" type="button" onclick="addManualPoint()"
               title="Add a transit center by hand (e.g. a literature value) to combine with the fitted datasets">
         + Add transit center
@@ -2149,6 +2149,12 @@
     document.getElementById('results-card').style.display = 'block';
   }
 
+  // Plotly's default figure height is 450 px. The UTC twin axis needs 60 px
+  // more top margin and 45 px more bottom margin; grow the outer figure by
+  // that same 105 px so the data area keeps its original height/aspect ratio.
+  const OC_PLOT_BASE_HEIGHT = 450;
+  const OC_PLOT_UTC_AXIS_EXTRA_HEIGHT = 105;
+
   // Draw plot using Plotly
   function drawPlot() {
     if (!fitResults) return;
@@ -2163,8 +2169,10 @@
     const showExcluded = document.getElementById('show-excluded-checkbox').checked;
     const showTwin = document.getElementById('show-twin-checkbox').checked;
     const suptitle = document.getElementById('plot-suptitle-input').value.trim();
+    const plotHeight = OC_PLOT_BASE_HEIGHT + (showTwin ? OC_PLOT_UTC_AXIS_EXTRA_HEIGHT : 0);
 
-    plotCard.style.minHeight = showTwin ? '620px' : '520px';
+    plotDiv.style.height = plotHeight + 'px';
+    plotCard.style.minHeight = (plotHeight + 70) + 'px';
     
     const planets = Object.keys(fitResults).sort();
     if (planets.length === 0) {
@@ -2242,6 +2250,7 @@
         family: '-apple-system, BlinkMacSystemFont, sans-serif'
       },
       margin: { t: showTwin ? (suptitle ? 105 : 80) : (suptitle ? 45 : 20), b: showTwin ? 95 : 50, l: 65, r: 20 },
+      height: plotHeight,
       showlegend: true,
       legend: {
         orientation: 'h',
@@ -2482,7 +2491,7 @@
       Plotly.downloadImage(plotDiv, {
         format: 'png',
         width: 1200,
-        height: 600,
+        height: 600 + (showTwin ? OC_PLOT_UTC_AXIS_EXTRA_HEIGHT : 0),
         filename: filename,
         background: '#ffffff'
       }).then(() => {

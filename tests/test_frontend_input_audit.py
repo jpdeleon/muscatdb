@@ -532,6 +532,17 @@ def test_ephemeris_ttv_fit_log_has_dedicated_new_tab_link():
     assert "f !== 'harmonic.log'" in html
 
 
+def test_ephemeris_utc_axis_preserves_plot_area_height():
+    html = _read_template("ephemeris.html")
+
+    assert "const OC_PLOT_BASE_HEIGHT = 450" in html
+    assert "const OC_PLOT_UTC_AXIS_EXTRA_HEIGHT = 105" in html
+    assert "const plotHeight = OC_PLOT_BASE_HEIGHT +" in html
+    assert "plotDiv.style.height = plotHeight + 'px'" in html
+    assert "height: plotHeight" in html
+    assert "height: 600 + (showTwin ? OC_PLOT_UTC_AXIS_EXTRA_HEIGHT : 0)" in html
+
+
 # --------------------------------------------------------------------------- #
 # Endpoint coverage: frontend fetch targets have backend handlers
 # --------------------------------------------------------------------------- #
