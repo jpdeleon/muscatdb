@@ -682,6 +682,28 @@ def test_manual_transit_centers_are_fitted_and_placed_on_epoch_grid(
     assert all(p["flagged"] is False for p in points)
 
 
+def test_imported_source_epoch_is_preserved_but_page_epoch_drives_fit(
+    mock_db, _isolate_ephemeris_jobs
+):
+    planets_ephem = {"b": {"t0": 2458000.0, "period": 2.5}}
+    manual_points = [
+        {
+            "id": "csv0", "planet": "b", "tc": 2458010.0, "tc_unc": 0.001,
+            "source_epoch": -96, "source_file": "ttv.csv",
+            "time_system": "BJD_TDB", "checked": True,
+        }
+    ]
+
+    body = _post_manual_calculate(planets_ephem, manual_points).json()
+    point = body["results"]["b"]["points"][0]
+
+    assert point["epoch"] == 4
+    assert point["source_epoch"] == -96
+    assert point["epoch_offset"] == 100
+    assert point["source_file"] == "ttv.csv"
+    assert point["time_system"] == "BJD_TDB"
+
+
 def test_manual_transit_center_target_and_date_optional_overrides(
     mock_db, _isolate_ephemeris_jobs
 ):

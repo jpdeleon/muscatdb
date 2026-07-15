@@ -42,6 +42,7 @@ from muscat_db.lco import _annotate_lco_archive_results
 from muscat_db import transit_obs
 from muscat_db import fov as fov_opt
 from muscat_db import ephemeris_math
+from muscat_db import ephemeris_import
 from muscat_db import test_observations
 from muscat_db import lco_monitor
 from muscat_db import http_client
@@ -3366,6 +3367,18 @@ def api_ephemeris_target_info(target: str):
     })
 
 
+@ephemeris_router.post("/import-csv", response_class=JSONResponse)
+def api_ephemeris_import_csv(payload: dict = Body(...)):
+    """Parse an uploaded CSV preview without reading arbitrary server paths."""
+    text = payload.get("content")
+    filename = pathlib.PurePath(str(payload.get("filename") or "transit-times.csv")).name
+    try:
+        parsed = ephemeris_import.parse_transit_csv(text)
+    except ephemeris_import.EphemerisCSVError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "filename": filename, **parsed})
+
+
 @ephemeris_router.post("/calculate", response_class=JSONResponse)
 def api_ephemeris_calculate(payload: dict = Body(...)):
     target_param = payload.get("target")
@@ -3401,6 +3414,15 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
             continue
         if not (unc > 0):
             continue
+        source_epoch = None
+        raw_source_epoch = mp.get("source_epoch")
+        if raw_source_epoch is not None and not isinstance(raw_source_epoch, bool):
+            try:
+                source_epoch_number = float(raw_source_epoch)
+                if source_epoch_number.is_integer():
+                    source_epoch = int(source_epoch_number)
+            except (TypeError, ValueError):
+                pass
         manual_by_planet.setdefault(planet, []).append({
             "id": str(mp.get("id") or ""),
             "tc": tc,
@@ -3409,6 +3431,9 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
             "target": str(mp.get("target") or "").strip(),
             "date": str(mp.get("date") or "").strip(),
             "note": str(mp.get("note") or "").strip(),
+            "source_epoch": source_epoch,
+            "source_file": str(mp.get("source_file") or "").strip(),
+            "time_system": str(mp.get("time_system") or "").strip(),
             "checked": bool(mp.get("checked", True)),
         })
 
@@ -3507,6 +3532,9 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
                 "manual": True,
                 "manual_id": mp["id"],
                 "note": mp["note"],
+                "source_epoch": mp["source_epoch"],
+                "source_file": mp["source_file"],
+                "time_system": mp["time_system"],
             })
 
         # Perform straight line fit if possible. The weighted/unweighted
@@ -3560,6 +3588,13 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
                 point_out["manual"] = True
                 point_out["manual_id"] = p.get("manual_id", "")
                 point_out["note"] = p.get("note", "")
+                point_out["source_epoch"] = p.get("source_epoch")
+                point_out["epoch_offset"] = (
+                    p["epoch"] - p["source_epoch"]
+                    if p.get("source_epoch") is not None else None
+                )
+                point_out["source_file"] = p.get("source_file", "")
+                point_out["time_system"] = p.get("time_system", "")
                 point_out["flagged"] = bool(
                     was_fit and ephemeris_math.is_sigma_outlier(oc_days, p["unc"])
                 )
