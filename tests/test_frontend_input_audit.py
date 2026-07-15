@@ -243,6 +243,28 @@ def test_lco_required_fields_are_supplied_by_build_params():
     assert "parseCoords()" in build_params, "buildParams must derive ra/dec from parseCoords()"
 
 
+def test_lco_prediction_inputs_invalidate_generated_windows():
+    html = _read_template("lco_schedule.html")
+    registered = _js_string_array(html, "WINDOW_PREDICTION_IDS")
+    expected = {
+        "sch-target", "sch-planet", "sch-source", "sch-coords",
+        "sch-range-start", "sch-range-end", "sch-t0", "sch-period",
+        "sch-duration", "sch-pad-before", "sch-pad-after",
+        "sch-include-padding", "sch-sites", "sch-twilight",
+        "sch-obs-airmass", "sch-moon-sep",
+    }
+    assert registered == expected
+    assert "win-filter" not in registered
+
+    invalidate = _function_body(html, "invalidateGeneratedWindows")
+    assert "clearWindows()" in invalidate
+    assert "lastDryRunHash = null" in invalidate
+    assert "el('vis-figure').style.display = 'none'" in invalidate
+    assert "Generate windows" in invalidate
+    assert "node.addEventListener('input', invalidateGeneratedWindows)" in html
+    assert "node.addEventListener('change', invalidateGeneratedWindows)" in html
+
+
 def test_lco_submit_confirmation_uses_message_modal():
     """Live LCO submission must use the styled app modal, not a browser popup."""
     base = _read_template("base.html")

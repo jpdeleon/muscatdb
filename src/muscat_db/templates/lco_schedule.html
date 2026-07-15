@@ -432,6 +432,16 @@
 
   var CHECK_IDS = ['sch-include-padding'];
 
+  // Every value that contributes to /api/lco/windows. Editing any of these
+  // invalidates the rendered prediction; win-filter is deliberately absent
+  // because it only changes which already-current rows are displayed.
+  var WINDOW_PREDICTION_IDS = [
+    'sch-target','sch-planet','sch-source','sch-coords',
+    'sch-range-start','sch-range-end','sch-t0','sch-period','sch-duration',
+    'sch-pad-before','sch-pad-after','sch-include-padding',
+    'sch-sites','sch-twilight','sch-obs-airmass','sch-moon-sep'
+  ];
+
   // Site chosen for the Transit obs column; '' (All sites) => full LCO network.
   function selectedSites() {
     var s = val('sch-sites');
@@ -1199,6 +1209,26 @@
     saveScheduleState();
   }
 
+  function invalidateGeneratedWindows() {
+    // Avoid replacing ordinary pre-generation messages while the user is
+    // initially filling out the form. Once a result exists, remove every
+    // stale path to it (table, selected windows, plot, and submit hashes).
+    if (!lastWindows.length && el('windows-table').style.display === 'none') return;
+    lastDryRunHash = null;
+    el('btn-submit').disabled = true;
+    resetSplitSubmitState();
+    clearWindows();
+    el('vis-figure').style.display = 'none';
+    if (window.Plotly) Plotly.purge('vis-plot');
+    msg('msg-windows', 'Inputs changed — click “Generate windows” to update the prediction.');
+  }
+
+  WINDOW_PREDICTION_IDS.forEach(function (id) {
+    var node = el(id); if (!node) return;
+    node.addEventListener('input', invalidateGeneratedWindows);
+    node.addEventListener('change', invalidateGeneratedWindows);
+  });
+
   function saveScheduleState(extra) {
     var state = {
       windows: lastWindows,
@@ -1366,6 +1396,7 @@
   el('btn-fetch-ephem').addEventListener('click', function () {
     var target = val('sch-target');
     if (!target) { msg('msg-windows', 'Enter a target first', 'err'); return; }
+    invalidateGeneratedWindows();
     // Force a genuine re-pull from the catalogs/fits. The auto-triggers (typing,
     // blur, source/planet change) reuse fetchTargetInfo's cache, so an explicit
     // click here would otherwise just re-apply stale data. Invalidating the

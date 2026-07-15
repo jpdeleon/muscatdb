@@ -652,6 +652,11 @@ graph TD
     Y --> Z["Complete\nVisible on scheduler monitoring table"]:::default
           </pre>
         </div>
+        <p style="color: var(--text-dim); font-size: 0.9rem; line-height: 1.6;">
+          Generated transit windows are invalidated whenever a target, ephemeris, date range, padding, site, or
+          observability constraint changes. The old table and visibility plot are hidden until
+          <strong>Generate windows</strong> is clicked again, so stale predictions cannot be submitted.
+        </p>
       </div>
     </div>
 
