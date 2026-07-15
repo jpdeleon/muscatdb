@@ -3272,21 +3272,25 @@
     const files = [];
     if (outputs.has_data_csv) files.push('data.csv');
     if (outputs.has_config_ini) files.push('config.ini');
-    if (outputs.has_log) files.push('harmonic.log');
     if (outputs.has_samples) files.push('samples.csv.gz');
     if (outputs.extra_files) {
       outputs.extra_files.forEach(f => {
-        if (!files.includes(f)) files.push(f);
+        if (f !== 'harmonic.log' && !files.includes(f)) files.push(f);
       });
     }
     
-    if (files.length > 0) {
+    if (files.length > 0 || outputs.has_log) {
       html += '<div class="dl-row">';
 
       // Match the transit-fit / photometry pages: "Download all" comes first,
       // then plain filename links (no per-file icon).
       const zipUrl = `/api/ttv-fit/download-all?target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}`;
       html += `<a href="${zipUrl}" download style="font-weight: 600; color: var(--accent2);">📦 Download all output (.zip)</a>`;
+
+      if (outputs.has_log) {
+        const logUrl = `/api/ttv-fit/output-file?target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}&file=harmonic.log`;
+        html += `<a href="${logUrl}" target="_blank" rel="noopener">📄 fit run log</a>`;
+      }
 
       files.forEach(f => {
         const fileUrl = `/api/ttv-fit/output-file?target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}&file=${encodeURIComponent(f)}`;
