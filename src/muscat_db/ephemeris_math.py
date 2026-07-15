@@ -39,6 +39,35 @@ class EphemerisFit(TypedDict):
     E_center: int
 
 
+def assign_epoch(tc: float, t0: float, period: float) -> int:
+    """Nearest integer transit epoch for a transit center ``tc``.
+
+    ``E = round((tc - t0) / P)``, matching the epoch assignment historically
+    done inline in ``web.api_ephemeris_calculate`` (``int(round(...))``, i.e.
+    Python's round-half-to-even). Used both for database transit centers and
+    for manually entered ones so they land on the same epoch grid. ``period``
+    must be non-zero.
+    """
+    return int(round((tc - t0) / period))
+
+
+def is_sigma_outlier(oc_days: float, unc: float | None, n_sigma: float = 5.0) -> bool:
+    """True when an O-C residual exceeds ``n_sigma`` times its own uncertainty.
+
+    ``|O-C| > n_sigma * unc`` (strict; exactly ``n_sigma`` is not flagged),
+    magnitude only. Used to flag a manually entered transit center whose
+    deviation from the fitted linear ephemeris is too large to be a plausible
+    transit-timing variation -- typically a data-entry error such as a wrong
+    epoch alias, a JD-vs-BJD offset, or a UTC-vs-TDB time-system mismatch.
+
+    Returns False for a missing or non-positive ``unc`` (no meaningful sigma
+    scale); manual-point weighting requires ``unc > 0`` anyway.
+    """
+    if unc is None or unc <= 0:
+        return False
+    return abs(oc_days) > n_sigma * unc
+
+
 def fit_linear_ephemeris(
     epochs: Sequence[int],
     tcs: Sequence[float],

@@ -3050,6 +3050,24 @@ def api_lco_archive_download_status(job_id: str):
 
 
 # Helper to fetch fitted transit centers for a run
+def _bjd_to_yymmdd(bjd: float) -> str:
+    """UTC obsdate (YYMMDD) for a Barycentric Julian Date.
+
+    Used to give a manually entered transit center a display date matching the
+    project's obsdate convention (the Date column of the fitted-dataset rows).
+    The one-day-scale barycentric-vs-geocentric offset is irrelevant at date
+    granularity, so a plain JD->UTC conversion is used. Returns "" if the value
+    is not a finite, convertible number.
+    """
+    try:
+        unix = (float(bjd) - 2440587.5) * 86400.0
+        return datetime.datetime.fromtimestamp(
+            unix, tz=datetime.timezone.utc
+        ).strftime("%y%m%d")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+
+
 def _get_run_fitted_params(inst: str, date: str, target: str, run_id: str | None) -> dict:
     """Per-planet fitted ephemeris from a run's outputs (the Fitted Parameters
     Summary), not the input ``sys.yaml`` priors.
@@ -3364,7 +3382,36 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
         
     planets_ephem = payload.get("planets_ephem") or {}
     req_datasets = payload.get("datasets") or []
-    
+
+    # Manually entered transit centers (Reading-2 feature): user-supplied
+    # points that are merged into the per-planet series alongside database
+    # fits. Grouped by planet letter here; each requires a numeric tc and a
+    # positive uncertainty (weighting needs unc > 0), otherwise it is dropped.
+    manual_by_planet: dict[str, list[dict]] = {}
+    for mp in payload.get("manual_points") or []:
+        if not isinstance(mp, dict):
+            continue
+        planet = str(mp.get("planet") or "").strip()
+        if not planet:
+            continue
+        try:
+            tc = float(mp.get("tc"))
+            unc = float(mp.get("tc_unc"))
+        except (TypeError, ValueError):
+            continue
+        if not (unc > 0):
+            continue
+        manual_by_planet.setdefault(planet, []).append({
+            "id": str(mp.get("id") or ""),
+            "tc": tc,
+            "unc": unc,
+            "instrument": str(mp.get("instrument") or "").strip(),
+            "target": str(mp.get("target") or "").strip(),
+            "date": str(mp.get("date") or "").strip(),
+            "note": str(mp.get("note") or "").strip(),
+            "checked": bool(mp.get("checked", True)),
+        })
+
     # Build checked lookup: (target_normalized, inst, date, run_id) -> checked_bool
     checked_lookup = {}
     for d in req_datasets:
@@ -3423,9 +3470,9 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
                             break
                 if is_checked is None:
                     is_checked = True
-                    
-                epoch = int(round((val - T0) / P))
-                
+
+                epoch = ephemeris_math.assign_epoch(val, T0, P)
+
                 points.append({
                     "instrument": inst,
                     "date": date,
@@ -3437,7 +3484,31 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
                     "unc": unc,
                     "checked": is_checked
                 })
-                
+
+        # Merge manually entered transit centers for this planet. They share
+        # the same epoch grid and participate in the fit (when checked) exactly
+        # like database points; a UTC date is derived from the BJD for display.
+        manual_target = targets[0] if targets else ""
+        for mp in manual_by_planet.get(pl, []):
+            points.append({
+                # Instrument is free text (e.g. "tess"); blank falls back to
+                # "manual" so it still reads clearly and gets the manual marker.
+                "instrument": mp["instrument"] or "manual",
+                # Target and date are optional overrides: date defaults to the
+                # YYMMDD obsdate derived from the BJD, target to the loaded target.
+                "date": mp["date"] or _bjd_to_yymmdd(mp["tc"]),
+                "run_id": "",
+                "run_name": mp["note"],
+                "target": mp["target"] or manual_target,
+                "epoch": ephemeris_math.assign_epoch(mp["tc"], T0, P),
+                "tc": mp["tc"],
+                "unc": mp["unc"],
+                "checked": mp["checked"],
+                "manual": True,
+                "manual_id": mp["id"],
+                "note": mp["note"],
+            })
+
         # Perform straight line fit if possible. The weighted/unweighted
         # least-squares math (epoch-centering, variance propagation) lives in
         # ephemeris_math.fit_linear_ephemeris; only checked, positive-uncertainty
@@ -3468,8 +3539,8 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
             oc_days = p["tc"] - t_calc
             oc_min = oc_days * 1440.0
             oc_err_min = p["unc"] * 1440.0
-            
-            points_data.append({
+
+            point_out = {
                 "instrument": p["instrument"],
                 "date": p["date"],
                 "run_id": p["run_id"],
@@ -3481,8 +3552,19 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
                 "oc_min": round(oc_min, 4),
                 "oc_err_min": round(oc_err_min, 4),
                 "checked": p["checked"]
-            })
-            
+            }
+            if p.get("manual"):
+                # Flag a manual point that sits more than 5 sigma off the fitted
+                # linear ephemeris (a likely data-entry error). Warn-only: the
+                # point still participates in the fit and downstream TTV CSV.
+                point_out["manual"] = True
+                point_out["manual_id"] = p.get("manual_id", "")
+                point_out["note"] = p.get("note", "")
+                point_out["flagged"] = bool(
+                    was_fit and ephemeris_math.is_sigma_outlier(oc_days, p["unc"])
+                )
+            points_data.append(point_out)
+
         results[pl] = {
             "was_fit": was_fit,
             "fit_method": fit_method if was_fit else "none",
