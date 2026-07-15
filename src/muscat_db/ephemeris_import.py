@@ -11,6 +11,7 @@ from collections import Counter
 
 MAX_CSV_BYTES = 1_000_000
 MAX_CSV_ROWS = 5_000
+MIN_TC_UNC_DAYS = 1.0 / 1_440.0
 
 
 class EphemerisCSVError(ValueError):
@@ -18,16 +19,32 @@ class EphemerisCSVError(ValueError):
 
 
 _ALIASES = {
-    "planet": {"planet", "pl", "planetletter"},
-    "epoch": {"epoch", "e", "transitepoch"},
-    "tc": {"tc", "bjd", "transitcenter", "transitcentertime", "midtransittime"},
+    "planet": {"planet", "pl", "planetletter", "planetindex", "planetid", "companion"},
+    "epoch": {"epoch", "e", "transitepoch", "epochnumber"},
+    "tc": {
+        "tc",
+        "bjd",
+        "transitcenter",
+        "transitcentertime",
+        "transittime",
+        "midtransittime",
+        "midtime",
+        "midpoint",
+        "centertime",
+    },
     "tc_unc": {
         "tcunc",
+        "tcuncd",
         "unc",
         "uncertainty",
         "tcuncertainty",
+        "tcerr",
+        "tcerror",
         "transitcenteruncertainty",
         "sigmatc",
+        "sigma",
+        "err",
+        "error",
     },
 }
 
@@ -38,14 +55,16 @@ def _header_key(value: str) -> str:
     value = value.lstrip("\ufeff").strip().casefold()
     value = re.sub(r"\([^)]*\)|\[[^]]*\]", "", value)
     compact = re.sub(r"[^a-z0-9]+", "", value)
-    for unit in ("bjdtbd", "bjdtdb", "bjdutc", "bjd", "jd", "days", "day", "d"):
+    for unit in ("bjdtdb", "bjdutc", "bjd", "jd", "days", "day"):
         if compact.endswith(unit) and compact != unit:
             compact = compact[: -len(unit)]
             break
     return compact
 
 
-def _map_headers(fieldnames: list[str]) -> tuple[dict[str, str], dict[str, str]]:
+def _map_headers(
+    fieldnames: list[str],
+) -> tuple[dict[str, str], dict[str, str], list[str]]:
     mapped: dict[str, str] = {}
     original: dict[str, str] = {}
     for raw in fieldnames:
@@ -61,7 +80,26 @@ def _map_headers(fieldnames: list[str]) -> tuple[dict[str, str], dict[str, str]]
             "Missing required column(s): " + ", ".join(missing)
             + ". Expected planet, tc and tc_unc; epoch is optional."
         )
-    return mapped, original
+    used = set(mapped.values())
+    dropped = [raw.strip() for raw in fieldnames if raw not in used and raw.strip()]
+    return mapped, original, dropped
+
+
+def _planet_letter(value: object) -> str:
+    """Normalize letters or zero-based indices (0=b, 1=c, ..., 24=z)."""
+    text = str("" if value is None else value).strip().casefold()
+    if re.fullmatch(r"[b-z]", text):
+        return text
+    try:
+        index_number = float(text)
+    except ValueError:
+        return ""
+    if not math.isfinite(index_number) or not index_number.is_integer():
+        return ""
+    index = int(index_number)
+    if not 0 <= index <= 24:
+        return ""
+    return chr(ord("b") + index)
 
 
 def _time_system(text: str, headers: list[str]) -> dict[str, str | bool]:
@@ -101,7 +139,7 @@ def parse_transit_csv(text: str) -> dict:
     reader = csv.DictReader(io.StringIO("\n".join(line for _, line in retained)), dialect=dialect)
     if not reader.fieldnames:
         raise EphemerisCSVError("The CSV header could not be read.")
-    mapped, original = _map_headers(reader.fieldnames)
+    mapped, original, dropped = _map_headers(reader.fieldnames)
 
     rows: list[dict] = []
     errors: list[dict] = []
@@ -112,25 +150,35 @@ def parse_transit_csv(text: str) -> dict:
             raise EphemerisCSVError(f"CSV exceeds the {MAX_CSV_ROWS:,}-row import limit.")
         line_no = data_lines[index][0] if index < len(data_lines) else index + 2
         row_errors: list[str] = []
-        planet = str(raw.get(mapped["planet"], "") or "").strip().casefold()
+        planet_raw = str(raw.get(mapped["planet"], "") or "").strip()
+        planet = _planet_letter(planet_raw)
         if not planet:
-            row_errors.append("planet is blank")
+            row_errors.append(
+                "planet must be a letter from b to z or a zero-based index (0=b, 1=c, ...)"
+            )
 
+        tc_text = str(raw.get(mapped["tc"], "") or "").strip()
         try:
-            tc = float(str(raw.get(mapped["tc"], "") or "").strip())
+            tc = float(tc_text)
             if not math.isfinite(tc):
                 raise ValueError
         except ValueError:
             tc = None
             row_errors.append("tc is not a finite number")
 
+        tc_unc_text = str(raw.get(mapped["tc_unc"], "") or "").strip()
         try:
-            tc_unc = float(str(raw.get(mapped["tc_unc"], "") or "").strip())
+            tc_unc = float(tc_unc_text)
             if not math.isfinite(tc_unc) or tc_unc <= 0:
                 raise ValueError
         except ValueError:
             tc_unc = None
             row_errors.append("tc_unc must be a positive finite number")
+        if tc_unc is not None and tc_unc < MIN_TC_UNC_DAYS:
+            uncertainty_minutes = tc_unc * 1_440.0
+            row_errors.append(
+                f"uncertainty is {uncertainty_minutes:.6f} min; minimum is 1 min"
+            )
 
         source_epoch = None
         if "epoch" in mapped:
@@ -144,7 +192,18 @@ def parse_transit_csv(text: str) -> dict:
                 row_errors.append("epoch must be an integer")
 
         if row_errors:
-            errors.append({"line": line_no, "errors": row_errors})
+            errors.append(
+                {
+                    "line": line_no,
+                    "planet": planet or planet_raw,
+                    "source_epoch": source_epoch if source_epoch is not None else (
+                        epoch_text if "epoch" in mapped else None
+                    ),
+                    "tc": tc if tc is not None else tc_text,
+                    "tc_unc": tc_unc if tc_unc is not None else tc_unc_text,
+                    "errors": row_errors,
+                }
+            )
             continue
         assert tc is not None and tc_unc is not None
         seen[(planet, tc)] += 1
@@ -162,6 +221,8 @@ def parse_transit_csv(text: str) -> dict:
     warnings = []
     if duplicates:
         warnings.append(f"{duplicates} duplicate planet/transit-center row(s) detected.")
+    if dropped:
+        warnings.append("Extra column(s) will be dropped: " + ", ".join(dropped) + ".")
     time_system = _time_system(text, reader.fieldnames)
     if not time_system["confirmed"]:
         warnings.append(
@@ -176,6 +237,7 @@ def parse_transit_csv(text: str) -> dict:
         "errors": errors,
         "warnings": warnings,
         "columns": original,
+        "dropped_columns": dropped,
         "time_system": time_system,
         "delimiter": "tab" if dialect.delimiter == "\t" else dialect.delimiter,
     }

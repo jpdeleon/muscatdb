@@ -78,7 +78,7 @@
       <div id="transit-csv-summary" class="csv-import-summary"></div>
       <div class="csv-wrap csv-import-preview-wrap">
         <table class="csv-import-preview">
-          <thead><tr><th>Line</th><th>Planet</th><th>CSV epoch</th><th>Page epoch</th><th>Tc (BJD)</th><th>Unc. (d)</th><th>Status</th></tr></thead>
+          <thead><tr><th>Line</th><th>Planet</th><th>CSV epoch</th><th>New epoch</th><th>Tc (BJD)</th><th>Unc. (d)</th><th>Note</th></tr></thead>
           <tbody id="transit-csv-preview-body"></tbody>
         </table>
       </div>
@@ -188,11 +188,11 @@
         <input type="number" id="opt-mstar" value="1.0" min="0.1" step="0.01">
       </div>
       <div class="opt">
-        <label for="opt-mu_min_me">Mass prior min (M<sub>⊕</sub>) <span class="help-tooltip" title="Lower bound of the log-uniform mass-ratio prior in Earth masses (per Msun of host). Default 1 M⊕.">?</span></label>
+        <label for="opt-mu_min_me">Planet mass prior min (M<sub>⊕</sub>) <span class="help-tooltip" title="Lower bound of the log-uniform mass-ratio prior in Earth masses (per Msun of host). Default 1 M⊕.">?</span></label>
         <input type="number" id="opt-mu_min_me" value="1.0" min="0.01" step="0.5">
       </div>
       <div class="opt">
-        <label for="opt-mu_max_me">Mass prior max (M<sub>⊕</sub>) <span class="help-tooltip" title="Upper bound of the log-uniform mass-ratio prior in Earth masses (per Msun of host). Default 30 M⊕.">?</span></label>
+        <label for="opt-mu_max_me">Planet mass prior max (M<sub>⊕</sub>) <span class="help-tooltip" title="Upper bound of the log-uniform mass-ratio prior in Earth masses (per Msun of host). Default 30 M⊕.">?</span></label>
         <input type="number" id="opt-mu_max_me" value="30.0" min="0.1" step="5">
       </div>
       <div class="opt">
@@ -380,8 +380,17 @@
     border-left: 2px solid var(--red);
     padding-left: 0.6rem;
   }
-  .csv-import-dialog { width: min(1000px, 90vw); }
-  #transit-csv-dialog { max-width: none; }
+  .csv-import-dialog { width: 100%; box-sizing: border-box; }
+  #transit-csv-dialog {
+    position: fixed;
+    inset: 0;
+    width: min(1000px, 90vw);
+    max-width: none;
+    max-height: 90vh;
+    margin: auto;
+    overflow: auto;
+    box-sizing: border-box;
+  }
   .csv-import-summary { color: var(--text-dim); font-size: 0.85rem; line-height: 1.5; margin-bottom: 0.75rem; }
   .csv-import-preview-wrap { max-height: 45vh; border: 1px solid var(--border); border-radius: 8px; }
   .csv-import-preview { margin: 0; font-size: 0.82rem; }
@@ -1618,29 +1627,42 @@
     const offsets = Object.entries(preview.epoch_offsets)
       .map(([planet, offset]) => `${planet}: ${offset >= 0 ? '+' : ''}${offset}`).join(', ');
     const importable = preview.rows.filter(row => !row.blocked).length;
+    const dropped = (preview.dropped_columns || []).join(', ');
     document.getElementById('transit-csv-summary').innerHTML =
       `<strong>${escapeAttr(preview.filename)}</strong> — ${preview.rows.length} valid parser row(s), ${preview.errors.length} invalid row(s).<br>`
       + `Columns: ${escapeAttr(mapped)}.<br>Time system: <strong>${escapeAttr(preview.time_system.value)}</strong>.`
-      + (offsets ? `<br>Page epoch − CSV epoch: ${escapeAttr(offsets)} (a constant offset is safely re-zeroed).` : '')
+      + (dropped ? `<br>Extra columns dropped: ${escapeAttr(dropped)}.` : '')
+      + (offsets ? `<br>New epoch − CSV epoch: ${escapeAttr(offsets)} (a constant offset is safely re-zeroed).` : '')
       + `<br>${importable} row(s) ready to import.`;
 
     const tbody = document.getElementById('transit-csv-preview-body');
-    tbody.innerHTML = preview.rows.slice(0, 100).map(row => {
-      const status = row.blocked
-        ? `<span style="color:var(--red);">${escapeAttr(row.blocked)}</span>`
-        : '<span style="color:var(--green);">Ready</span>';
-      return `<tr><td>${row.line}</td><td>${escapeAttr(row.planet)}</td>`
-        + `<td>${row.source_epoch === null ? '—' : row.source_epoch}</td>`
-        + `<td>${row.page_epoch === null ? '—' : row.page_epoch}</td>`
-        + `<td class="mono">${Number(row.tc).toFixed(6)}</td>`
-        + `<td class="mono">${Number(row.tc_unc).toFixed(6)}</td><td>${status}</td></tr>`;
+    const previewRows = preview.rows.map(row => ({...row, valid: true}))
+      .concat((preview.errors || []).map(row => ({...row, valid: false})))
+      .sort((a, b) => a.line - b.line);
+    tbody.innerHTML = previewRows.slice(0, 100).map(row => {
+      let note;
+      if (!row.valid) {
+        note = `<span style="color:var(--red);">${escapeAttr(row.errors.join('; '))}</span>`;
+      } else if (row.blocked) {
+        note = `<span style="color:var(--red);">${escapeAttr(row.blocked)}</span>`;
+      } else if (Number.isInteger(row.source_epoch) && row.page_epoch !== row.source_epoch) {
+        const offset = row.page_epoch - row.source_epoch;
+        note = `<span style="color:var(--blue);">Epoch re-zeroed by ${offset >= 0 ? '+' : ''}${offset}</span>`;
+      } else {
+        note = '<span style="color:var(--green);">Ready</span>';
+      }
+      const tc = Number.isFinite(Number(row.tc)) ? Number(row.tc).toFixed(6) : escapeAttr(row.tc || '—');
+      const unc = Number.isFinite(Number(row.tc_unc)) ? Number(row.tc_unc).toFixed(6) : escapeAttr(row.tc_unc || '—');
+      const newEpoch = row.valid && row.page_epoch !== null ? row.page_epoch : '—';
+      const csvEpoch = row.source_epoch === null || row.source_epoch === '' ? '—' : escapeAttr(row.source_epoch);
+      return `<tr><td>${row.line}</td><td>${escapeAttr(row.planet || '—')}</td>`
+        + `<td>${csvEpoch}</td><td>${newEpoch}</td>`
+        + `<td class="mono">${tc}</td><td class="mono">${unc}</td><td>${note}</td></tr>`;
     }).join('');
 
     const messages = [];
-    (preview.warnings || []).forEach(message => messages.push(`Warning: ${message}`));
-    (preview.errors || []).slice(0, 20).forEach(error =>
-      messages.push(`Line ${error.line}: ${error.errors.join('; ')}`));
-    if (preview.rows.length > 100) messages.push(`Preview limited to the first 100 of ${preview.rows.length} valid rows.`);
+    (preview.warnings || []).filter(message => !message.startsWith('Extra column(s)'))
+      .forEach(message => messages.push(`Warning: ${message}`));
     document.getElementById('transit-csv-errors').textContent = messages.join('\n');
 
     const confirmRow = document.getElementById('transit-csv-time-confirm-row');

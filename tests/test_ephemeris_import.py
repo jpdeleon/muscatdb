@@ -35,6 +35,7 @@ def test_parses_allesfitter_ttv_headers_and_types():
         "confirmed": False,
         "supported": True,
     }
+    assert result["dropped_columns"] == []
 
 
 def test_accepts_export_comments_and_bjd_tdb_aliases():
@@ -71,12 +72,45 @@ c,1.5,nope,-1
     assert result["errors"] == [
         {
             "line": 3,
+            "planet": "c",
+            "source_epoch": "1.5",
+            "tc": "nope",
+            "tc_unc": "-1",
             "errors": [
                 "tc is not a finite number",
                 "tc_unc must be a positive finite number",
                 "epoch must be an integer",
             ],
         }
+    ]
+
+
+def test_numeric_planets_short_headers_and_extra_columns_are_reported():
+    text = """planet_index,tc,unc,sector,provenance
+0,2460000.1,0.001,11,allesfitter
+1,2460014.4,0.002,38,allesfitter
+"""
+
+    result = parse_transit_csv(text)
+
+    assert [row["planet"] for row in result["rows"]] == ["b", "c"]
+    assert result["columns"] == {
+        "planet": "planet_index", "tc": "tc", "tc_unc": "unc"
+    }
+    assert result["dropped_columns"] == ["sector", "provenance"]
+    assert "Extra column(s) will be dropped: sector, provenance." in result["warnings"]
+
+
+def test_uncertainty_below_one_minute_is_kept_in_preview_as_invalid():
+    result = parse_transit_csv(
+        "planet,tc,unc\n0,2460000.1,0.0005\n1,2460014.4,0.001\n"
+    )
+
+    assert [row["planet"] for row in result["rows"]] == ["c"]
+    assert result["errors"][0]["planet"] == "b"
+    assert result["errors"][0]["tc_unc"] == pytest.approx(0.0005)
+    assert result["errors"][0]["errors"] == [
+        "uncertainty is 0.720000 min; minimum is 1 min"
     ]
 
 

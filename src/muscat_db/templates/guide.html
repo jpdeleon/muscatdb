@@ -480,9 +480,11 @@ graph TD
         <p style="color: var(--text-dim); font-size: 0.9rem; line-height: 1.6;">
           Use <strong>Import transit CSV</strong> beside the dataset table to add external timing measurements.
           Headers such as <code>tc(BJD)</code> and <code>tc_unc(BJD)</code> are mapped to transit center and
-          uncertainty automatically. The preview reports invalid rows and compares a supplied CSV epoch with the
-          page epoch grid. A constant per-planet offset is a safe change of epoch zero-point; inconsistent offsets
-          are blocked. Files that say only BJD require confirmation that their time scale is BJD_TDB.
+          uncertainty automatically; numeric planet indices use <code>0=b</code>, <code>1=c</code>, and so on.
+          The preview retains invalid rows with a specific note, rejects uncertainties below one minute, lists extra
+          columns that will be dropped, and compares a supplied CSV epoch with the new page epoch. A constant
+          per-planet offset is a safe change of epoch zero-point; inconsistent offsets are blocked. Files that say
+          only BJD require confirmation that their time scale is BJD_TDB.
         </p>
 
       </div>
