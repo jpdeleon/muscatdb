@@ -103,6 +103,7 @@ def test_frame_identity_keeps_simultaneous_muscat_cameras_distinct():
 
 
 def test_monitor_downloads_final_frames_then_scans_and_ingests(monitor_db, tmp_path, monkeypatch):
+    monkeypatch.setenv("MUSCAT_LCO_DIR", str(tmp_path))
     result, payload = _submission(state="COMPLETED")
     lco_monitor.record_submission(result, payload, "alice", path=monitor_db, now=100)
     raw = _frame(0, 1)
@@ -183,7 +184,10 @@ def test_monitor_downloads_final_frames_then_scans_and_ingests(monitor_db, tmp_p
     assert ingested == [(monitor_db, "muscat3", "260720")]
 
 
-def test_monitor_downloads_incrementally_and_waits_for_every_raw_frame(monitor_db, monkeypatch):
+def test_monitor_downloads_incrementally_and_waits_for_every_raw_frame(
+    monitor_db, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MUSCAT_LCO_DIR", str(tmp_path))
     result, payload = _submission(state="COMPLETED")
     lco_monitor.record_submission(result, payload, None, path=monitor_db, now=100)
     raw = [_frame(0, 1), _frame(0, 2)]

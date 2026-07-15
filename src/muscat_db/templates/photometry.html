@@ -554,6 +554,10 @@
               <label for="opt-test_run_frames"># of test-run frames <span class="help-tooltip" title="Number of frames to process during a test-run reduction (corresponds to --test_run_frames).">?</span></label>
               <input type="number" id="opt-test_run_frames" value="{{ run_defaults.test_run_frames }}" min="1" style="width: 100%;">
             </div>
+            <div class="opt">
+              <label for="opt-display_stack_nframes">Display stack frames <span class="help-tooltip" title="For non-reference bands under a chosen reference band, number of the band's own frames aligned onto the shared reference grid and median-combined into the display image for the reference/apertures/cutouts/stacks plots. 1 = single representative frame; larger = higher-SNR aligned median stack (corresponds to --display_stack_nframes).">?</span></label>
+              <input type="number" id="opt-display_stack_nframes" value="{{ run_defaults.display_stack_nframes }}" min="1" style="width: 100%;">
+            </div>
           </div>
         </details>
         <details class="opt-collapse">
@@ -874,6 +878,7 @@
       max_num_stars: val('opt-max_num_stars'),
       n_stars_align: val('opt-n_stars_align'),
       cutout_size: val('opt-cutout_size'),
+      display_stack_nframes: val('opt-display_stack_nframes'),
       ccd_trim: val('opt-ccd_trim'),
       edge_margin: val('opt-edge_margin'),
       bin_size_minutes: val('opt-bin_size_minutes'),
@@ -910,7 +915,7 @@
     });
     ['run_name','ref_band','refid','ref_select','ref_select_top_k','aper_unit','aper_radii','annulus',
      'target_id','comparison_ids','avoid_comparison_ids','avoid_nearby_star_mode','avoid_nearby_star','target_coord','test_run_frames','min_star_separation','max_num_stars',
-       'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','centroid_method','cmap','site','telescope','mode'].forEach(function (id) {
+       'n_stars_align','cutout_size','display_stack_nframes','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','centroid_method','cmap','site','telescope','mode'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
     });
@@ -987,7 +992,7 @@
       });
       ['run_name','ref_band','refid','ref_select','ref_select_top_k','aper_unit','aper_radii','annulus',
        'target_id','comparison_ids','avoid_comparison_ids','avoid_nearby_star_mode','avoid_nearby_star','target_coord','test_run_frames','min_star_separation','max_num_stars',
-     'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','centroid_method','cmap','site','telescope','mode'].forEach(function (id) {
+     'n_stars_align','cutout_size','display_stack_nframes','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','centroid_method','cmap','site','telescope','mode'].forEach(function (id) {
         var el = document.getElementById('opt-'+id);
         if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';
       });

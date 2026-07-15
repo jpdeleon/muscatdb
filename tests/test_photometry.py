@@ -620,6 +620,7 @@ class TestRunOptions:
         cmd = phot.build_command(INST, DATE, TARGET, {}, test_run=False)
         # default numerics are NOT echoed
         for flag in ("--gif_stride", "--max_num_stars", "--cutout_size",
+                     "--display_stack_nframes",
                      "--ccd_trim", "--edge_margin", "--bin_size_minutes", "--ref_band",
                      "--ref_select", "--ref_select_top_k",
                      "--aper_radii", "--no_gif", "--use_barycorrpy"):
@@ -664,6 +665,29 @@ class TestRunOptions:
         assert "--use_barycorrpy" in cmd
         assert "--gif_stride 50" in s
         assert "--nan-imputation-method median" in s
+
+    def test_display_stack_nframes_emitted_only_when_changed(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        # changed from the default -> emitted (string from the GUI is coerced)
+        cmd = phot.build_command(
+            INST, DATE, TARGET, {"display_stack_nframes": "30"}, test_run=False
+        )
+        assert "--display_stack_nframes 30" in " ".join(cmd)
+        # single-frame request (1) is a change from the default and is emitted
+        cmd_one = phot.build_command(
+            INST, DATE, TARGET, {"display_stack_nframes": "1"}, test_run=False
+        )
+        assert "--display_stack_nframes 1" in " ".join(cmd_one)
+        # default value and blank are both omitted (pipeline keeps its default)
+        default = str(phot.RUN_DEFAULTS["display_stack_nframes"])
+        cmd_def = phot.build_command(
+            INST, DATE, TARGET, {"display_stack_nframes": default}, test_run=False
+        )
+        assert "--display_stack_nframes" not in cmd_def
+        cmd_blank = phot.build_command(
+            INST, DATE, TARGET, {"display_stack_nframes": ""}, test_run=False
+        )
+        assert "--display_stack_nframes" not in cmd_blank
 
     def test_ref_select_quality_default_top_k_not_echoed(self, monkeypatch, tmp_path):
         # ref_select_top_k left at the RUN_DEFAULTS value should not be echoed

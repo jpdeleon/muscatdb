@@ -82,6 +82,10 @@ RUN_DEFAULTS: dict = {
     "max_num_stars": 10,
     "n_stars_align": "",       # "" -> same as max_num_stars
     "cutout_size": 35,
+    "display_stack_nframes": 15,  # own frames aligned+median-stacked into the
+                                  # display reference for the ref/apertures/
+                                  # cutouts/stacks plots of non-reference bands
+                                  # under --ref_band (1 -> single frame)
     "ccd_trim": "",            # "Y,X"; "" -> no trim (pipeline default)
     "edge_margin": "",         # px from CCD edge to exclude comps; "" -> auto (half cutout), 0 -> off
     "bin_size_minutes": 10.0,
@@ -1074,7 +1078,7 @@ def normalize_run_options(raw: dict | None) -> dict:
             val = str(raw.get(key, "")).strip()
             o[key] = "" if val == "" else (_to_int(val) if _to_int(val) is not None else "")
 
-    for key in ("test_run_frames", "max_num_stars", "cutout_size", "gif_stride", "min_star_area", "edge_margin", "ref_select_top_k"):
+    for key in ("test_run_frames", "max_num_stars", "cutout_size", "display_stack_nframes", "gif_stride", "min_star_area", "edge_margin", "ref_select_top_k"):
         if str(raw.get(key, "")).strip() != "":
             iv = _to_int(raw[key])
             if iv is not None:
@@ -1245,6 +1249,7 @@ def build_command(
         ("--min_star_separation", "min_star_separation"),
         ("--max_num_stars", "max_num_stars"),
         ("--cutout_size", "cutout_size"),
+        ("--display_stack_nframes", "display_stack_nframes"),
         ("--bin_size_minutes", "bin_size_minutes"),
         ("--gif_stride", "gif_stride"),
         ("--sig_bkg", "sig_bkg"),
