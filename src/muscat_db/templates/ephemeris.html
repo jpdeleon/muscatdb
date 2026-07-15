@@ -38,11 +38,9 @@
   <!-- Dataset Checkbox List Table -->
   <details class="adv ephemeris-fold" id="datasets-section" style="display: none; margin-bottom: 1.5rem;" open>
     <summary>Select Datasets to Include in Fit</summary>
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; margin-top: 1rem;">
-      <div style="display: flex; gap: 0.5rem;">
-        <button class="btn sm" type="button" onclick="toggleAllDatasets(true)">Select All</button>
-        <button class="btn sm" type="button" onclick="toggleAllDatasets(false)">Deselect All</button>
-      </div>
+    <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem; margin-top: 1rem;">
+      <button class="btn sm" type="button" onclick="toggleAllDatasets(true)">Select All</button>
+      <button class="btn sm" type="button" onclick="toggleAllDatasets(false)">Deselect All</button>
     </div>
     <div class="csv-wrap" style="border: 1px solid var(--border); border-radius: 8px;">
       <table id="datasets-table" style="margin: 0;">
@@ -53,7 +51,7 @@
             <th style="width: 150px;">Target</th>
             <th style="width: 90px;">Date</th>
             <th style="width: 220px;">Run Name</th>
-            <th style="width: 120px;">Planet</th>
+            <th style="width: 120px; text-align: center;">Planet</th>
             <th>Transit Centers (BJD)</th>
           </tr>
         </thead>
@@ -61,6 +59,12 @@
           <!-- Dynamically filled -->
         </tbody>
       </table>
+    </div>
+    <div style="display: flex; justify-content: flex-end; margin-top: 0.75rem;">
+      <button class="btn sm primary" type="button" onclick="addManualPoint()"
+              title="Add a transit center by hand (e.g. a literature value) to combine with the fitted datasets">
+        + Add transit center
+      </button>
     </div>
   </details>
 
@@ -378,6 +382,19 @@
   tr.selected-row td {
     background: color-mix(in srgb, var(--accent) 3%, transparent);
   }
+  /* A manual transit center flagged as >5σ from the fitted ephemeris. */
+  tr.manual-flagged td {
+    background: color-mix(in srgb, var(--red) 8%, transparent);
+  }
+  /* Match the planet-card convention: no number-input spin buttons. */
+  .manual-row input[type="number"]::-webkit-outer-spin-button,
+  .manual-row input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .manual-row input[type="number"] {
+    -moz-appearance: textfield;
+  }
   .text-highlight {
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
     background: var(--surface2);
@@ -432,9 +449,19 @@
     return date.toISOString().slice(0, 10);
   }
 
+  // YYMMDD (UTC) — the project's obsdate convention, matching the Date column
+  // of the fitted-dataset rows. Used for the manual-row auto date.
+  function jdToYYMMDD(jd) {
+    const unixMs = (jd - 2440587.5) * 86400000;
+    const date = new Date(unixMs);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toISOString().slice(2, 10).replace(/-/g, '');
+  }
+
   // Instrument to Plotly Marker Symbol mapper
   function getSymbolForInstrument(inst) {
     const name = (inst || '').toLowerCase();
+    if (name.includes('manual')) return 'star';
     if (name.includes('muscat4')) return 'diamond';
     if (name.includes('muscat3')) return 'triangle-up';
     if (name.includes('muscat2')) return 'square';
@@ -454,6 +481,11 @@
   let combinedNasaEphem = {};
   let combinedToiEphem = {};
   let combinedDatasets = [];
+  // Manually entered transit centers, scoped to the current combined-target
+  // set (persisted under STORAGE_OPTS_PREFIX + combinedKey + '-manual' and in
+  // the saved view). Each: {id, planet, tc, tc_unc, label, checked}.
+  let manualPoints = [];
+  let manualIdSeq = 0;
   let fitResults = null;
   let pendingViewState = null;
   let viewSaveTimer = null;
@@ -521,6 +553,12 @@
         JSON.stringify(state.checked_datasets)
       );
     }
+    if (Array.isArray(state.manual_points)) {
+      localStorage.setItem(
+        STORAGE_OPTS_PREFIX + combinedKey + '-manual',
+        JSON.stringify(state.manual_points)
+      );
+    }
     if (state.planet_options && typeof state.planet_options === 'object') {
       localStorage.setItem(STORAGE_OPTS_PREFIX + combinedKey, JSON.stringify(state.planet_options));
     }
@@ -584,9 +622,22 @@
     });
     ttvFields.ini_content = document.getElementById('opt-ini_content')?.value || '';
 
+    const manualPointsState = manualPoints.map(mp => ({
+      id: mp.id,
+      instrument: mp.instrument || '',
+      target: mp.target || '',
+      date: mp.date || '',
+      planet: mp.planet,
+      tc: mp.tc,
+      tc_unc: mp.tc_unc,
+      note: mp.note || '',
+      checked: !!mp.checked
+    }));
+
     return {
       targets: loadedTargets.slice().sort(),
       checked_datasets: checkedDatasets,
+      manual_points: manualPointsState,
       fit_method: fitMethod,
       planet_options: planetOptions,
       planet_plot_settings: currentPlanetPlotSettings,
@@ -1055,6 +1106,7 @@
       fitResults = savedResults;
       renderFitResults(fitResults);
       drawPlot();
+      markFlaggedManualRows(fitResults);
     }
     scheduleComputeFit(0);
     scheduleSaveView(1200);
@@ -1340,14 +1392,16 @@
   function renderDatasetsTable(datasets) {
     const tbody = document.getElementById('datasets-body');
     tbody.innerHTML = '';
-    
-    if (datasets.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-dim);">No completed fits found.</td></tr>`;
+
+    const combinedKey = getCombinedStorageKey();
+    loadManualPoints();
+
+    if (datasets.length === 0 && manualPoints.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-dim);">No completed fits found. Use “+ Add transit center” to enter a transit time by hand.</td></tr>`;
       reinitResizableTable();
       return;
     }
 
-    const combinedKey = getCombinedStorageKey();
     let checkedMap = {};
     try {
       checkedMap = JSON.parse(localStorage.getItem(STORAGE_OPTS_PREFIX + combinedKey + '-checked') || '{}') || {};
@@ -1396,13 +1450,218 @@
           </a>
           ${runTypeBadge}
         </td>
-        <td class="mono">${d.planets_fitted}</td>
+        <td class="mono" style="text-align: center;">${d.planets_fitted}</td>
         <td>${transitsSummary}</td>
       `;
       tbody.appendChild(tr);
     });
-    
+
+    manualPoints.forEach(mp => renderManualRow(tbody, mp));
+
     reinitResizableTable();
+  }
+
+  // ── Manual transit centers ──────────────────────────────────────────────
+  // User-entered transit centers (e.g. literature values) merged into the
+  // per-planet O-C series alongside the fitted datasets. They flow through the
+  // same /api/ephemeris/calculate path, so they reach the O-C plot, tcs.txt,
+  // and the TTV CSV automatically.
+
+  function manualStorageKey() {
+    return STORAGE_OPTS_PREFIX + getCombinedStorageKey() + '-manual';
+  }
+
+  function loadManualPoints() {
+    let parsed = [];
+    try {
+      parsed = JSON.parse(localStorage.getItem(manualStorageKey()) || '[]');
+    } catch (e) {}
+    if (!Array.isArray(parsed)) parsed = [];
+    manualPoints = parsed.map(mp => ({
+      id: mp.id || ('m' + (++manualIdSeq) + '-' + Date.now()),
+      instrument: mp.instrument || '',
+      target: mp.target || '',
+      date: mp.date || '',
+      planet: mp.planet || (combinedPlanets[0] || 'b'),
+      tc: mp.tc != null ? String(mp.tc) : '',
+      tc_unc: mp.tc_unc != null ? String(mp.tc_unc) : '',
+      // "note" is a free-text annotation shown in the Run Name column; older
+      // saved views stored it as "label", so fall back to that.
+      note: mp.note != null ? mp.note : (mp.label || ''),
+      checked: mp.checked !== false
+    }));
+  }
+
+  function saveManualPoints() {
+    try {
+      localStorage.setItem(manualStorageKey(), JSON.stringify(manualPoints));
+    } catch (e) {}
+  }
+
+  function escapeAttr(v) {
+    return String(v == null ? '' : v)
+      .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function renderManualRow(tbody, mp) {
+    const tr = document.createElement('tr');
+    tr.className = 'manual-row';
+    tr.setAttribute('data-mid', mp.id);
+    if (mp.checked) tr.classList.add('selected-row');
+
+    const planetOpts = combinedPlanets.map(pl =>
+      `<option value="${escapeAttr(pl)}"${pl === mp.planet ? ' selected' : ''}>${pl.toLowerCase()}</option>`
+    ).join('');
+    // Placeholders surface the defaults used when the field is left blank: the
+    // first loaded target, and the UTC date derived from the BJD.
+    const datePlaceholder = jdToYYMMDD(parseFloat(mp.tc)) || 'auto';
+    const targetHint = (loadedTargets.slice().sort()[0]) || 'target';
+
+    const inputStyle = 'box-sizing:border-box;background:var(--input-bg);color:var(--text);' +
+      'border:1px solid var(--border);border-radius:4px;padding:0.25rem 0.4rem;' +
+      'font-size:0.85rem;font-family:\'JetBrains Mono\',monospace;';
+
+    tr.innerHTML = `
+      <td style="text-align: center;">
+        <input type="checkbox" class="manual-checkbox" ${mp.checked ? 'checked' : ''}
+               onchange="onManualCheckboxChange('${mp.id}', this)">
+      </td>
+      <td>
+        <input type="text" class="manual-instrument" value="${escapeAttr(mp.instrument)}" placeholder="e.g. tess"
+               oninput="updateManualField('${mp.id}', 'instrument', this.value)"
+               title="Free-text source of this transit center, e.g. tess"
+               style="width: 100%; ${inputStyle}">
+      </td>
+      <td>
+        <input type="text" class="manual-target" value="${escapeAttr(mp.target)}" placeholder="${escapeAttr(targetHint)}"
+               oninput="updateManualField('${mp.id}', 'target', this.value)"
+               title="Optional target label; defaults to the loaded target"
+               style="width: 100%; ${inputStyle}">
+      </td>
+      <td>
+        <input type="text" class="manual-date" value="${escapeAttr(mp.date)}" placeholder="${escapeAttr(datePlaceholder)}"
+               oninput="updateManualField('${mp.id}', 'date', this.value)"
+               title="Optional date; defaults to the UTC date derived from the BJD"
+               style="width: 100%; ${inputStyle}">
+      </td>
+      <td>
+        <input type="text" class="manual-note" value="${escapeAttr(mp.note)}" placeholder="manual"
+               oninput="updateManualField('${mp.id}', 'note', this.value)"
+               title="Optional note for your own reference"
+               style="width: 100%; ${inputStyle}">
+      </td>
+      <td>
+        <select class="manual-planet"
+                onchange="updateManualField('${mp.id}', 'planet', this.value)"
+                style="width: 100%; cursor: pointer; text-align: center; ${inputStyle}">${planetOpts}</select>
+      </td>
+      <td>
+        <div style="display: flex; align-items: center; gap: 0.35rem; flex-wrap: nowrap;">
+          <input type="number" step="any" class="manual-tc" value="${escapeAttr(mp.tc)}" placeholder="BJD_TDB"
+                 oninput="updateManualField('${mp.id}', 'tc', this.value)"
+                 style="width: 130px; ${inputStyle}">
+          <span style="color: var(--text-dim);">±</span>
+          <input type="number" step="any" min="0" class="manual-unc" value="${escapeAttr(mp.tc_unc)}" placeholder="unc (d)"
+                 oninput="updateManualField('${mp.id}', 'tc_unc', this.value)"
+                 style="width: 90px; ${inputStyle}">
+          <span class="manual-flag" style="display: none; color: var(--red); font-weight: bold; cursor: help;"
+                title="More than 5σ from the linear ephemeris — check for a wrong epoch, a JD/BJD offset, or a UTC/TDB time-system mismatch">⚠</span>
+          <button class="btn sm" type="button" onclick="removeManualPoint('${mp.id}')" title="Remove this transit center"
+                  style="border-color: var(--red); color: var(--red); padding: 0.1rem 0.45rem; line-height: 1;">×</button>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  window.addManualPoint = function() {
+    if (loadedTargets.length === 0) return;
+    manualPoints.push({
+      id: 'm' + (++manualIdSeq) + '-' + Date.now(),
+      instrument: '',
+      target: '',
+      date: '',
+      planet: combinedPlanets[0] || 'b',
+      tc: '',
+      tc_unc: '',
+      note: '',
+      checked: true
+    });
+    saveManualPoints();
+    renderDatasetsTable(combinedDatasets);
+    scheduleSaveView();
+  };
+
+  window.removeManualPoint = function(id) {
+    manualPoints = manualPoints.filter(mp => mp.id !== id);
+    saveManualPoints();
+    renderDatasetsTable(combinedDatasets);
+    scheduleComputeFit();
+    scheduleSaveView();
+  };
+
+  window.updateManualField = function(id, field, value) {
+    const mp = manualPoints.find(m => m.id === id);
+    if (!mp) return;
+    mp[field] = value;
+    saveManualPoints();
+    if (field === 'tc') {
+      // The Date field defaults to the UTC date derived from the BJD; keep that
+      // hint (the placeholder) current without clobbering a user-typed date.
+      const row = document.querySelector(`tr.manual-row[data-mid="${id}"]`);
+      const dateInput = row && row.querySelector('.manual-date');
+      if (dateInput) dateInput.placeholder = jdToYYMMDD(parseFloat(value)) || 'auto';
+    }
+    scheduleComputeFit();
+    scheduleSaveView();
+  };
+
+  window.onManualCheckboxChange = function(id, cb) {
+    const mp = manualPoints.find(m => m.id === id);
+    if (!mp) return;
+    mp.checked = cb.checked;
+    const row = cb.closest('tr');
+    if (row) row.classList.toggle('selected-row', cb.checked);
+    saveManualPoints();
+    scheduleComputeFit();
+    scheduleSaveView();
+  };
+
+  // Valid manual points (known planet, numeric tc, positive unc) as the
+  // /api/ephemeris/calculate payload expects them.
+  function collectManualPointsForRequest() {
+    return manualPoints
+      .filter(mp => combinedPlanets.includes(mp.planet)
+        && Number.isFinite(parseFloat(mp.tc))
+        && parseFloat(mp.tc_unc) > 0)
+      .map(mp => ({
+        id: mp.id,
+        instrument: mp.instrument || '',
+        target: mp.target || '',
+        date: mp.date || '',
+        planet: mp.planet,
+        tc: parseFloat(mp.tc),
+        tc_unc: parseFloat(mp.tc_unc),
+        note: mp.note || '',
+        checked: !!mp.checked
+      }));
+  }
+
+  // Mark manual rows the backend flagged as >5σ from the fitted ephemeris.
+  function markFlaggedManualRows(results) {
+    const flagged = new Set();
+    for (const pl in (results || {})) {
+      (results[pl].points || []).forEach(p => {
+        if (p.manual && p.flagged && p.manual_id) flagged.add(p.manual_id);
+      });
+    }
+    document.querySelectorAll('#datasets-body tr.manual-row').forEach(row => {
+      const on = flagged.has(row.getAttribute('data-mid'));
+      const flag = row.querySelector('.manual-flag');
+      if (flag) flag.style.display = on ? 'inline' : 'none';
+      row.classList.toggle('manual-flagged', on);
+    });
   }
 
   function reinitResizableTable() {
@@ -1452,7 +1711,16 @@
       if (checked) tr.classList.add('selected-row');
       else tr.classList.remove('selected-row');
     });
-    
+
+    // Manual rows share the Select All / Deselect All controls.
+    manualPoints.forEach(mp => { mp.checked = checked; });
+    document.querySelectorAll('#datasets-body tr.manual-row').forEach(row => {
+      const cb = row.querySelector('.manual-checkbox');
+      if (cb) cb.checked = checked;
+      row.classList.toggle('selected-row', checked);
+    });
+    saveManualPoints();
+
     if (loadedTargets.length > 0) {
       const combinedKey = getCombinedStorageKey();
       const checkedMap = {};
@@ -1521,6 +1789,8 @@
       });
     });
 
+    const manualReq = collectManualPointsForRequest();
+
     const loader = document.getElementById('loader');
     loader.style.display = 'flex';
 
@@ -1535,6 +1805,7 @@
         target: loadedTargets,
         planets_ephem: planetsEphem,
         datasets: datasetsReq,
+        manual_points: manualReq,
         fit_method: fitMethod
       })
     })
@@ -1551,6 +1822,7 @@
       } catch (e) {}
       renderFitResults(res.results);
       drawPlot();
+      markFlaggedManualRows(res.results);
     })
     .catch(e => {
       if (requestSeq !== computeFitRequestSeq) return;
@@ -1907,7 +2179,8 @@
     // Click event callback
     plotDiv.on('plotly_click', function(data) {
       const pt = data.points[0];
-      if (pt.customdata) {
+      // Manual points carry {manual:true} and have no transit-fit page.
+      if (pt.customdata && !pt.customdata.manual) {
         const cd = pt.customdata;
         const url = `/transit-fit?inst=${cd.inst}&date=${cd.date}&target=${encodeURIComponent(cd.target || loadedTargets[0] || '')}&run=${cd.run_id}`;
         window.open(url, '_blank');
@@ -2004,6 +2277,24 @@
         });
     });
 
+    // Provenance for manually entered transit centers included above.
+    const manualNotes = [];
+    Object.keys(fitResults).sort().forEach(planet => {
+      (fitResults[planet].points || [])
+        .filter(p => p.checked && p.manual)
+        .slice()
+        .sort((a, b) => a.epoch - b.epoch)
+        .forEach(p => {
+          const note = p.note ? ` note=${p.note}` : '';
+          manualNotes.push(`#   planet ${planet} epoch ${p.epoch}: instrument=${p.instrument || 'manual'}${note}${p.flagged ? ' [>5sigma]' : ''}`);
+        });
+    });
+    if (manualNotes.length > 0) {
+      rows.push('#');
+      rows.push('# Manually entered transit centers included above:');
+      manualNotes.forEach(n => rows.push(n));
+    }
+
     return rows.join('\n') + '\n';
   }
 
@@ -2049,15 +2340,35 @@
       const x = xType === 'bjd' ? (p.bjd - bjdOffset) : p.epoch;
       const y = p.oc_min;
       const err = p.oc_err_min;
-      const cd = { inst: p.instrument, date: p.date, run_id: p.run_id, target: p.target };
+      const isManual = !!p.manual;
+      // Manual points have no transit-fit page; flag them so plotly_click skips.
+      const cd = isManual
+        ? { manual: true }
+        : { inst: p.instrument, date: p.date, run_id: p.run_id, target: p.target };
       const symbol = settings.symbol === 'instrument' ? getSymbolForInstrument(p.instrument) : settings.symbol;
-      
-      const label = `<b>${p.instrument.toUpperCase()} (${p.date}) — ${p.run_name}</b><br>` +
-                    `Target: ${p.target}<br>` +
-                    `Epoch: ${p.epoch}<br>` +
-                    `BJD: ${p.bjd.toFixed(5)}<br>` +
-                    `O-C: ${p.oc_min.toFixed(2)} ± ${p.oc_err_min.toFixed(2)} min<br>` +
-                    `<i>Click point to view transit fit ↗</i>`;
+
+      const lines = [];
+      if (isManual) {
+        const instUp = (p.instrument || 'manual').toUpperCase();
+        lines.push(instUp === 'MANUAL'
+          ? `<b>Manual point</b>`
+          : `<b>${escapeAttr(instUp)} — manual point</b>`);
+        if (p.target) lines.push(`Target: ${escapeAttr(p.target)}`);
+        if (p.date) lines.push(`Date: ${escapeAttr(p.date)}`);
+      } else {
+        lines.push(`<b>${p.instrument.toUpperCase()} (${p.date}) — ${p.run_name}</b>`);
+        lines.push(`Target: ${p.target}`);
+      }
+      lines.push(`Epoch: ${p.epoch}`);
+      lines.push(`BJD: ${p.bjd.toFixed(5)}`);
+      lines.push(`O-C: ${p.oc_min.toFixed(2)} ± ${p.oc_err_min.toFixed(2)} min`);
+      if (isManual) {
+        if (p.note) lines.push(`Note: ${escapeAttr(p.note)}`);
+        if (p.flagged) lines.push(`<span style="color:#f87171;">⚠ &gt;5σ from linear ephemeris</span>`);
+      } else {
+        lines.push(`<i>Click point to view transit fit ↗</i>`);
+      }
+      const label = lines.join('<br>');
 
       if (p.checked) {
         fitX.push(x);

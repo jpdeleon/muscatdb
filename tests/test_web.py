@@ -581,6 +581,145 @@ def test_ephemeris_targets_are_normalized_unique_names(mock_db):
     assert response.json()["targets"] == ["HIP67522", "V1298TAU"]
 
 
+def _post_manual_calculate(planets_ephem, manual_points, fit_method="unweighted"):
+    """POST /api/ephemeris/calculate for a target with no database fits, so the
+    only points come from the manually entered transit centers under test."""
+    return TestClient(app).post(
+        "/api/ephemeris/calculate",
+        json={
+            "target": ["ZZZ_manual_only_target"],
+            "planets_ephem": planets_ephem,
+            "datasets": [],
+            "manual_points": manual_points,
+            "fit_method": fit_method,
+        },
+    )
+
+
+@pytest.fixture
+def _isolate_ephemeris_jobs(monkeypatch):
+    """Keep /api/ephemeris/calculate off the real filesystem so a manual-only
+    request is driven purely by the posted manual_points."""
+    monkeypatch.setattr("muscat_db.web.fit.sync_jobs", lambda: None)
+    monkeypatch.setattr("muscat_db.web.fit._discover_orphan_fits", lambda keys: [])
+
+
+def test_manual_transit_centers_are_fitted_and_placed_on_epoch_grid(
+    mock_db, _isolate_ephemeris_jobs
+):
+    """A clean set of manual transit centers is merged as points, assigned the
+    right epochs, fitted, and never flagged as 5-sigma outliers."""
+    planets_ephem = {"b": {"t0": 2458000.0, "period": 2.5}}
+    manual_points = [
+        {"id": "m0", "planet": "b", "tc": 2458000.0, "tc_unc": 0.001, "instrument": "tess", "note": "Patel+2022", "checked": True},
+        {"id": "m1", "planet": "b", "tc": 2458010.0, "tc_unc": 0.001, "checked": True},
+        {"id": "m2", "planet": "b", "tc": 2458020.0, "tc_unc": 0.001, "checked": True},
+    ]
+
+    res = _post_manual_calculate(planets_ephem, manual_points)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+
+    points = body["results"]["b"]["points"]
+    assert len(points) == 3
+    by_id = {p["manual_id"]: p for p in points}
+
+    # Every point is flagged as manual and lands on the nearest integer epoch
+    # of the reference ephemeris. Free-text instrument and note are preserved;
+    # a blank instrument falls back to "manual".
+    assert all(p["manual"] is True for p in points)
+    assert by_id["m0"]["instrument"] == "tess"
+    assert by_id["m0"]["note"] == "Patel+2022"
+    assert by_id["m1"]["instrument"] == "manual"
+    assert by_id["m0"]["epoch"] == 0
+    assert by_id["m1"]["epoch"] == 4
+    assert by_id["m2"]["epoch"] == 8
+    # Manual points get a derived YYMMDD obsdate (project convention).
+    assert len(by_id["m0"]["date"]) == 6 and by_id["m0"]["date"].isdigit()
+
+    # A perfectly linear series is fitted with no 5-sigma flags.
+    assert body["results"]["b"]["was_fit"] is True
+    assert all(p["flagged"] is False for p in points)
+
+
+def test_manual_transit_center_target_and_date_optional_overrides(
+    mock_db, _isolate_ephemeris_jobs
+):
+    """Target and date are optional: when supplied they are echoed back; when
+    blank they fall back to the loaded target and the BJD-derived UTC date."""
+    planets_ephem = {"b": {"t0": 2458000.0, "period": 2.5}}
+    manual_points = [
+        {"id": "override", "planet": "b", "tc": 2458000.0, "tc_unc": 0.001,
+         "target": "TOI-1234", "date": "2018 season", "checked": True},
+        {"id": "default", "planet": "b", "tc": 2458010.0, "tc_unc": 0.001, "checked": True},
+    ]
+
+    body = _post_manual_calculate(planets_ephem, manual_points).json()
+    by_id = {p["manual_id"]: p for p in body["results"]["b"]["points"]}
+
+    # Supplied values win verbatim (date may be a free-text label).
+    assert by_id["override"]["target"] == "TOI-1234"
+    assert by_id["override"]["date"] == "2018 season"
+    # Blank -> loaded target and a derived YYMMDD obsdate.
+    assert by_id["default"]["target"] == "ZZZ_manual_only_target"
+    assert len(by_id["default"]["date"]) == 6 and by_id["default"]["date"].isdigit()
+
+
+def test_manual_transit_center_outlier_is_flagged(mock_db, _isolate_ephemeris_jobs):
+    """A transit center far off the fitted line (e.g. a typo) is flagged, while
+    still participating in the fit (warn-only)."""
+    planets_ephem = {"b": {"t0": 2458000.0, "period": 2.5}}
+    manual_points = [
+        {"id": "good0", "planet": "b", "tc": 2458000.0, "tc_unc": 0.001, "checked": True},
+        {"id": "good1", "planet": "b", "tc": 2458010.0, "tc_unc": 0.001, "checked": True},
+        # Half a day off its epoch with a 0.001 d uncertainty -> ~500 sigma.
+        {"id": "bad", "planet": "b", "tc": 2458020.5, "tc_unc": 0.001, "checked": True},
+    ]
+
+    body = _post_manual_calculate(planets_ephem, manual_points).json()
+    by_id = {p["manual_id"]: p for p in body["results"]["b"]["points"]}
+    assert body["results"]["b"]["was_fit"] is True
+    assert by_id["bad"]["flagged"] is True
+
+
+def test_manual_transit_centers_require_positive_uncertainty(
+    mock_db, _isolate_ephemeris_jobs
+):
+    """Weighting requires a real uncertainty: manual points with a missing,
+    zero, negative, or non-numeric unc are dropped before the fit."""
+    planets_ephem = {"b": {"t0": 2458000.0, "period": 2.5}}
+    manual_points = [
+        {"id": "ok", "planet": "b", "tc": 2458000.0, "tc_unc": 0.001, "checked": True},
+        {"id": "zero", "planet": "b", "tc": 2458010.0, "tc_unc": 0.0, "checked": True},
+        {"id": "neg", "planet": "b", "tc": 2458015.0, "tc_unc": -0.5, "checked": True},
+        {"id": "nan", "planet": "b", "tc": 2458020.0, "tc_unc": "abc", "checked": True},
+        {"id": "notc", "planet": "b", "tc": None, "tc_unc": 0.001, "checked": True},
+    ]
+
+    body = _post_manual_calculate(planets_ephem, manual_points).json()
+    ids = {p["manual_id"] for p in body["results"]["b"]["points"]}
+    assert ids == {"ok"}
+
+
+def test_manual_unchecked_point_is_shown_but_excluded_from_fit(
+    mock_db, _isolate_ephemeris_jobs
+):
+    """An unchecked manual point is returned for plotting but does not count
+    toward the >=2-point fit threshold."""
+    planets_ephem = {"b": {"t0": 2458000.0, "period": 2.5}}
+    manual_points = [
+        {"id": "on", "planet": "b", "tc": 2458000.0, "tc_unc": 0.001, "checked": True},
+        {"id": "off", "planet": "b", "tc": 2458010.0, "tc_unc": 0.001, "checked": False},
+    ]
+
+    body = _post_manual_calculate(planets_ephem, manual_points).json()
+    points = body["results"]["b"]["points"]
+    assert {p["manual_id"] for p in points} == {"on", "off"}
+    # Only one checked point -> below the 2-point minimum, so no fit.
+    assert body["results"]["b"]["was_fit"] is False
+
+
 def test_jobs_rerun_restores_persisted_run_identity(mock_db, monkeypatch):
     import json
 
