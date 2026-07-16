@@ -4383,6 +4383,14 @@ def ttv_fit_runs(target: str = ""):
     return JSONResponse({"ok": True, "runs": ttv.list_ttv_runs(target.strip())})
 
 
+@ttv_fit_router.get("/model", response_class=JSONResponse)
+def ttv_fit_model(target: str = "", run_name: str = "", end_date: str = ""):
+    if not target:
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    result = ttv.get_ttv_model(target.strip(), run_name, end_date.strip())
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
 @ttv_fit_router.post("/start", response_class=JSONResponse)
 def api_start_ttv_fit(request: Request, payload: dict = Body(...)):
     target = (payload.get("target") or "").strip()

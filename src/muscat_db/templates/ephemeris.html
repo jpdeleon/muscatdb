@@ -143,19 +143,26 @@
         <input type="checkbox" id="show-epoch-checkbox">
         <span>Show epoch numbers</span>
       </label>
+      <div id="ttv-model-controls" style="display: none; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+        <label class="opt-check-item" title="Show the minimum-χ² posterior model from the selected TTV run.">
+          <input type="checkbox" id="show-ttv-model-checkbox">
+          <span>Show TTV best-fit model</span>
+        </label>
+        <label style="display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--text-dim);">
+          Extend through (UTC)
+          <input type="date" id="ttv-model-end-date" style="font: inherit; padding: 0.25rem 0.4rem; height: 30px;">
+        </label>
+        <span id="ttv-model-status" style="font-size: 0.8rem; color: var(--text-dim);"></span>
+      </div>
       <span style="border-left: 1px solid var(--border); height: 16px; margin: 0 0.5rem;"></span>
       <div style="display: flex; align-items: center; gap: 0.35rem;">
         <span style="font-size: 0.85rem; color: var(--text-dim); font-weight: 500; white-space: nowrap;">Plot Title:</span>
         <input type="text" id="plot-suptitle-input" style="font-family: inherit; font-size: 0.85rem; padding: 0.25rem 0.5rem; height: 30px; border: 1px solid var(--border); border-radius: 4px; background: var(--input-bg); color: var(--text); width: 180px; outline: none; transition: border-color 0.15s;" placeholder="e.g. WASP-12 b">
       </div>
     </div>
-    <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-      <a class="btn sm" id="oc-summary-link" href="#" target="_blank" rel="noopener" style="display: flex; align-items: center; gap: 0.35rem; font-weight: 500;">
-        tcs.txt
-      </a>
-      <button class="btn sm primary" type="button" id="download-plot-btn" style="display: flex; align-items: center; gap: 0.35rem; font-weight: 500;">
-        📥 Download PNG
-      </button>
+    <div class="dl-row" style="align-items: center; margin-top: 0;">
+      <a id="oc-summary-link" href="#" target="_blank" rel="noopener">tcs.txt</a>
+      <a id="download-plot-btn" href="#">📥 Download PNG</a>
     </div>
   </div>
     <div id="plot-planet-settings" style="margin-top: 0.75rem; border-top: 1px solid var(--border); padding-top: 0.75rem; display: none; flex-direction: column; gap: 0.5rem;">
@@ -612,6 +619,16 @@
         localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-twin', 'false');
       }
     }
+    if (typeof state.show_ttv_model === 'boolean') {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-ttv-model', String(state.show_ttv_model));
+      const cb = document.getElementById('show-ttv-model-checkbox');
+      if (cb) cb.checked = state.show_ttv_model;
+    }
+    if (typeof state.ttv_model_end_date === 'string') {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'ttv-model-end-date', state.ttv_model_end_date);
+      const input = document.getElementById('ttv-model-end-date');
+      if (input) input.value = state.ttv_model_end_date;
+    }
     if (typeof state.center_epoch === 'boolean') {
       localStorage.setItem(STORAGE_OPTS_PREFIX + 'center-epoch', String(state.center_epoch));
       const cb = document.getElementById('center-epoch-checkbox');
@@ -724,6 +741,8 @@
       show_excluded: Boolean(document.getElementById('show-excluded-checkbox')?.checked),
       show_utc: Boolean(document.getElementById('show-twin-checkbox')?.checked),
       show_epoch: Boolean(document.getElementById('show-epoch-checkbox')?.checked),
+      show_ttv_model: Boolean(document.getElementById('show-ttv-model-checkbox')?.checked),
+      ttv_model_end_date: document.getElementById('ttv-model-end-date')?.value || '',
       center_epoch: Boolean(document.getElementById('center-epoch-checkbox')?.checked),
       plot_title: plotTitle,
       ttv_opts: ttvFields
@@ -911,6 +930,30 @@
         localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-twin', 'false');
       }
       if (fitResults) drawPlot();
+      scheduleSaveView();
+    });
+
+    // Restore the selected-run TTV model controls. They are revealed only
+    // when that run has a complete harmonic posterior and configuration.
+    const showTTVModelCheckbox = document.getElementById('show-ttv-model-checkbox');
+    const savedShowTTVModel = localStorage.getItem(STORAGE_OPTS_PREFIX + 'show-ttv-model');
+    if (savedShowTTVModel !== null) {
+      showTTVModelCheckbox.checked = savedShowTTVModel === 'true';
+    }
+    const ttvModelEndDate = document.getElementById('ttv-model-end-date');
+    ttvModelEndDate.value = localStorage.getItem(STORAGE_OPTS_PREFIX + 'ttv-model-end-date') || '';
+    showTTVModelCheckbox.addEventListener('change', function() {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-ttv-model', String(this.checked));
+      if (this.checked) loadSelectedTTVModel();
+      else {
+        ttvModelData = null;
+        if (fitResults) drawPlot();
+      }
+      scheduleSaveView();
+    });
+    ttvModelEndDate.addEventListener('change', function() {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'ttv-model-end-date', this.value || '');
+      if (showTTVModelCheckbox.checked && selectedTTVRun) loadSelectedTTVModel();
       scheduleSaveView();
     });
 
@@ -2340,6 +2383,8 @@
     const showTwin = document.getElementById('show-twin-checkbox').checked;
     const showEpochTwin = document.getElementById('show-epoch-checkbox').checked
       && !showTwin;
+    const showTTVModel = document.getElementById('show-ttv-model-checkbox').checked
+      && ttvModelData && ttvModelRun === selectedTTVRun;
     const suptitle = document.getElementById('plot-suptitle-input').value.trim();
     const secondaryAxisExtraHeight = showTwin
       ? OC_PLOT_UTC_AXIS_EXTRA_HEIGHT
@@ -2368,10 +2413,23 @@
         }
       });
     });
+    const requestedModelEndBjd = ttvModelAvailable ? ttvModelEndBjd() : null;
+    if (showTTVModel) {
+      planets.forEach(pl => {
+        (ttvModelData.points?.[pl] || []).forEach(p => {
+          if (!Number.isFinite(requestedModelEndBjd) || Number(p.tc) <= requestedModelEndBjd) {
+            plottedX.push(Number(p.tc) - bjdOffset);
+          }
+        });
+      });
+    }
     const sharedXSpan = plottedX.length > 0 ? {
       min: Math.min(...plottedX),
       max: Math.max(...plottedX)
     } : null;
+    if (sharedXSpan && Number.isFinite(requestedModelEndBjd)) {
+      sharedXSpan.max = Math.max(sharedXSpan.max, requestedModelEndBjd - bjdOffset);
+    }
 
     let tickvals = [];
     let ticktext = [];
@@ -2486,6 +2544,10 @@
         // Build traces
         const plTraces = getPlotlyTracesForPlanet(res, pl, color, yaxisKey, isDark, showExcluded, bjdOffset);
         plTraces.forEach(t => traces.push(t));
+        if (showTTVModel) {
+          const modelTrace = getTTVModelTrace(res, pl, color, yaxisKey, bjdOffset, requestedModelEndBjd);
+          if (modelTrace) traces.push(modelTrace);
+        }
         addZeroLineShape(layout, yaxisKey, color);
       });
       
@@ -2545,8 +2607,21 @@
         const color = colors[i % colors.length];
         const plTraces = getPlotlyTracesForPlanet(res, pl, color, yaxisKey, isDark, showExcluded, bjdOffset);
         plTraces.forEach(t => traces.push(t));
+        if (showTTVModel) {
+          const modelTrace = getTTVModelTrace(res, pl, color, yaxisKey, bjdOffset, requestedModelEndBjd);
+          if (modelTrace) traces.push(modelTrace);
+        }
         addZeroLineShape(layout, yaxisKey, color);
       });
+    }
+
+    // A chosen date is an extension endpoint, never a request to hide data.
+    // Fix the right edge to that date only when it lies beyond observations.
+    if (Number.isFinite(requestedModelEndBjd) && sharedXSpan) {
+      const requestedEndX = requestedModelEndBjd - bjdOffset;
+      const right = Math.max(sharedXSpan.max, requestedEndX);
+      const span = Math.max(1, right - sharedXSpan.min);
+      layout.xaxis.range = [sharedXSpan.min - span * 0.02, right];
     }
 
     if (showTwin && tickvals.length > 0) {
@@ -2691,7 +2766,8 @@
     }, 5000);
   }
 
-  function downloadPlotPNG() {
+  function downloadPlotPNG(event) {
+    if (event) event.preventDefault();
     const plotDiv = document.getElementById('oc-plot');
     if (!plotDiv || !fitResults) return;
     const filename = 'oc_plot_' + (getCombinedStorageKey() || 'export');
@@ -2968,6 +3044,40 @@
     }
 
     return traces;
+  }
+
+  function ttvModelEndBjd() {
+    const value = document.getElementById('ttv-model-end-date')?.value || '';
+    if (!value) return null;
+    const milliseconds = Date.parse(value + 'T23:59:59.999Z');
+    return Number.isFinite(milliseconds) ? milliseconds / 86400000 + 2440587.5 : null;
+  }
+
+  function getTTVModelTrace(res, planet, color, yaxisKey, bjdOffset, endBjd) {
+    const t0 = Number(res?.t0_fit);
+    const period = Number(res?.period_fit);
+    if (!Number.isFinite(t0) || !Number.isFinite(period) || period <= 0) return null;
+    const modelPoints = (ttvModelData?.points?.[planet] || []).filter(p =>
+      Number.isFinite(Number(p.tc))
+      && (!Number.isFinite(endBjd) || Number(p.tc) <= endBjd)
+    );
+    if (modelPoints.length === 0) return null;
+    return {
+      x: modelPoints.map(p => Number(p.tc) - bjdOffset),
+      y: modelPoints.map(p => {
+        const tc = Number(p.tc);
+        const plotEpoch = Math.round((tc - t0) / period);
+        return (tc - (t0 + plotEpoch * period)) * 1440;
+      }),
+      mode: 'lines',
+      type: 'scatter',
+      name: `planet ${planet.toLowerCase()} TTV best fit (${ttvModelRun})`,
+      line: {color: color, width: 2, dash: 'dash'},
+      hovertemplate: 'BJD %{customdata:.6f}<br>O-C %{y:.3f} min<extra></extra>',
+      customdata: modelPoints.map(p => Number(p.tc)),
+      xaxis: 'x',
+      yaxis: yaxisKey
+    };
   }
 
   // ── TTV Fit Integration ─────────────────────────────────────────────────────
@@ -3452,6 +3562,10 @@
 
   // Run whose results are currently displayed. Also the run that Delete acts on.
   var selectedTTVRun = null;
+  var ttvModelData = null;
+  var ttvModelRun = null;
+  var ttvModelAvailable = false;
+  var ttvModelRequestSeq = 0;
   // The URL's ?run= is honored exactly once, on first load, so switching run
   // chips afterwards is not overridden on subsequent re-renders.
   var urlTTVRunApplied = false;
@@ -3583,6 +3697,7 @@
     
     container.innerHTML = html;
     container.style.display = 'block';
+    updateTTVModelControls(Boolean(outputs.has_model), runName);
 
     container.querySelectorAll('.site-chip').forEach(chip => {
       chip.addEventListener('click', () => {
@@ -3594,11 +3709,72 @@
 
   function hideTTVOutputs() {
     selectedTTVRun = null;
+    ttvModelData = null;
+    ttvModelRun = null;
+    ttvModelAvailable = false;
+    ttvModelRequestSeq += 1;
+    const modelControls = document.getElementById('ttv-model-controls');
+    if (modelControls) modelControls.style.display = 'none';
     const container = document.getElementById('ttv-outputs-container');
     if (container) {
       container.innerHTML = '';
       container.style.display = 'none';
     }
+    if (fitResults) drawPlot();
+  }
+
+  function updateTTVModelControls(hasModel, runName) {
+    const controls = document.getElementById('ttv-model-controls');
+    const checkbox = document.getElementById('show-ttv-model-checkbox');
+    const status = document.getElementById('ttv-model-status');
+    if (!controls || !checkbox || !status) return;
+    controls.style.display = hasModel ? 'flex' : 'none';
+    ttvModelAvailable = hasModel;
+    ttvModelData = null;
+    ttvModelRun = null;
+    ttvModelRequestSeq += 1;
+    status.textContent = hasModel ? `Run: ${runName}` : '';
+    if (hasModel && checkbox.checked) loadSelectedTTVModel();
+    else if (fitResults) drawPlot();
+  }
+
+  function loadSelectedTTVModel() {
+    const target = loadedTargets[0] || '';
+    const runName = selectedTTVRun || '';
+    const checkbox = document.getElementById('show-ttv-model-checkbox');
+    const status = document.getElementById('ttv-model-status');
+    if (!target || !runName || !checkbox?.checked || !status) return;
+    const endDate = document.getElementById('ttv-model-end-date')?.value || '';
+    const requestSeq = ++ttvModelRequestSeq;
+    ttvModelData = null;
+    ttvModelRun = null;
+    status.textContent = `Loading ${runName}…`;
+    if (fitResults) drawPlot();
+    const qs = new URLSearchParams({target: target, run_name: runName});
+    if (endDate) qs.set('end_date', endDate);
+    fetch('/api/ttv-fit/model?' + qs.toString())
+      .then(async response => {
+        const result = await response.json();
+        if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        return result;
+      })
+      .then(result => {
+        if (requestSeq !== ttvModelRequestSeq || selectedTTVRun !== runName) return;
+        ttvModelData = result;
+        ttvModelRun = runName;
+        const chi2 = Number(result.chi2);
+        status.textContent = Number.isFinite(chi2)
+          ? `Run: ${runName}; χ² ${chi2.toFixed(2)}`
+          : `Run: ${runName}`;
+        if (fitResults) drawPlot();
+      })
+      .catch(error => {
+        if (requestSeq !== ttvModelRequestSeq) return;
+        ttvModelData = null;
+        ttvModelRun = null;
+        status.textContent = error.message || 'Could not load TTV model';
+        if (fitResults) drawPlot();
+      });
   }
 
   function buildCSVContent() {
