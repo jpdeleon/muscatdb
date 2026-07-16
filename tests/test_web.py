@@ -681,6 +681,78 @@ def test_ephemeris_transit_coverage_uses_lightcurve_contacts(
     ) == expected
 
 
+@pytest.mark.parametrize("checked", [False, True])
+def test_ephemeris_calculate_only_returns_requested_production_datasets(
+    mock_db, monkeypatch, checked
+):
+    target = "ZZZ ephemeris calculate filter"
+    for date, run_id, run_type in (
+        ("260101", "production", "full"),
+        ("260102", "with_spline", "test"),
+        ("260103", "hidden_production", "full"),
+    ):
+        save_job(
+            type_="transit_fit",
+            inst="muscat4",
+            date=date,
+            target=target,
+            state="done",
+            returncode=0,
+            elapsed=10,
+            started_at=1000.0,
+            run_type=run_type,
+            run_id=run_id,
+            run_name=run_id,
+        )
+
+    monkeypatch.setattr("muscat_db.web.fit.sync_jobs", lambda: None)
+    monkeypatch.setattr("muscat_db.web.fit._discover_orphan_fits", lambda keys: [])
+    monkeypatch.setattr(
+        "muscat_db.web._get_run_fitted_params",
+        lambda inst, date, job_target, run_id: {
+            "b": {
+                "tc": 2458000.0 if run_id == "production" else 2458002.5,
+                "unc": 0.001,
+            }
+        },
+    )
+
+    response = TestClient(app).post(
+        "/api/ephemeris/calculate",
+        json={
+            "target": [target],
+            "planets_ephem": {"b": {"t0": 2458000.0, "period": 2.5}},
+            # Include the old hidden test row as a stale/forged request too:
+            # the calculation endpoint must enforce the table's production
+            # policy rather than trusting browser state alone.
+            "datasets": [
+                {
+                    "instrument": "muscat4",
+                    "date": "260101",
+                    "run_id": "production",
+                    "target": target,
+                    "checked": checked,
+                },
+                {
+                    "instrument": "muscat4",
+                    "date": "260102",
+                    "run_id": "with_spline",
+                    "target": target,
+                    "checked": True,
+                },
+            ],
+            "manual_points": [],
+            "fit_method": "unweighted",
+        },
+    )
+
+    assert response.status_code == 200
+    points = response.json()["results"]["b"]["points"]
+    assert [(point["date"], point["run_id"], point["checked"]) for point in points] == [
+        ("260101", "production", checked)
+    ]
+
+
 def _post_manual_calculate(planets_ephem, manual_points, fit_method="unweighted"):
     """POST /api/ephemeris/calculate for a target with no database fits, so the
     only points come from the manually entered transit centers under test."""

@@ -547,6 +547,7 @@
 
   const STORAGE_TARGET_KEY = 'muscat-ephem-selected-target';
   const STORAGE_OPTS_PREFIX = 'muscat-ephem-opts-';
+  const FIT_RESULTS_CACHE_VERSION = 2;
   
   // Combined data states
   let loadedTargets = [];
@@ -589,6 +590,17 @@
 
   function legacyDatasetStateKey(d) {
     return `${d.target}-${d.instrument}-${d.date}-${d.run_id}`;
+  }
+
+  function fitResultsCacheKey(combinedKey) {
+    return STORAGE_OPTS_PREFIX + combinedKey + '-results';
+  }
+
+  function fitRequestSignature(request) {
+    // JSON is sufficient here because this request is assembled in a stable
+    // DOM/dataset order. Keeping the full input signature also makes cache
+    // invalidation inspectable in browser developer tools.
+    return JSON.stringify(request);
   }
 
   function applyViewStateToStorage(state, combinedKey) {
@@ -1241,6 +1253,7 @@
     
     document.getElementById('results-card').style.display = 'none';
     document.getElementById('plot-card').style.display = 'none';
+    fitResults = null;
     
     // Show sections first so elements are visible and resizable tables can measure column widths properly
     document.getElementById('planet-cards-section').style.display = 'block';
@@ -1256,17 +1269,27 @@
     // 3. Render Planet Plot Style Customizer
     renderPlanetPlotSettings();
     
-    // 3. Restore previously calculated results if available
-    let savedResults = null;
+    // Restore only results generated from the exact current inputs. Older
+    // target-only cache entries can contain datasets that target-info now
+    // filters out (for example, historical test runs).
+    let fitCache = null;
     try {
-      savedResults = JSON.parse(localStorage.getItem(STORAGE_OPTS_PREFIX + combinedKey + '-results'));
+      fitCache = JSON.parse(localStorage.getItem(fitResultsCacheKey(combinedKey)));
     } catch (e) {}
-    
-    if (savedResults) {
-      fitResults = savedResults;
+
+    const cachedRequest = collectFitRequest(false);
+    const cacheMatches = cachedRequest
+      && fitCache
+      && fitCache.version === FIT_RESULTS_CACHE_VERSION
+      && fitCache.signature === fitRequestSignature(cachedRequest)
+      && fitCache.results;
+    if (cacheMatches) {
+      fitResults = fitCache.results;
       renderFitResults(fitResults);
       drawPlot();
       markFlaggedManualRows(fitResults);
+    } else if (fitCache) {
+      localStorage.removeItem(fitResultsCacheKey(combinedKey));
     }
     scheduleComputeFit(0);
     scheduleSaveView(1200);
@@ -2182,10 +2205,7 @@
     }, delay);
   }
 
-  function computeFit() {
-    if (loadedTargets.length === 0) return;
-    const requestSeq = ++computeFitRequestSeq;
-    
+  function collectFitRequest(showErrors = true) {
     const planetsEphem = {};
     let valid = true;
     document.querySelectorAll('#planet-cards-container .planet-card').forEach(card => {
@@ -2193,26 +2213,22 @@
       const t0 = parseFloat(card.querySelector('.planet-t0').value);
       const period = parseFloat(card.querySelector('.planet-period').value);
       if (isNaN(t0) || isNaN(period) || period <= 0) {
-        showMessageModal('Invalid orbital parameters', `Please enter valid orbital parameters for planet ${pl.toLowerCase()}`);
+        if (showErrors) {
+          showMessageModal('Invalid orbital parameters', `Please enter valid orbital parameters for planet ${pl.toLowerCase()}`);
+        }
         valid = false;
         return;
       }
       const epochShift = planetEpochShift(pl);
       planetsEphem[pl] = { t0: t0 + epochShift * period, period };
     });
-    
-    if (!valid) {
-      const loader = document.getElementById('loader');
-      if (loader) loader.style.display = 'none';
-      return;
-    }
+    if (!valid) return null;
 
-    // Collect datasets list with check values
-    const datasetsReq = [];
+    const datasets = [];
     document.querySelectorAll('.dataset-checkbox').forEach(box => {
       const idx = parseInt(box.getAttribute('data-index'));
       const ds = combinedDatasets[idx];
-      datasetsReq.push({
+      datasets.push({
         instrument: ds.instrument,
         date: ds.date,
         run_id: ds.run_id,
@@ -2221,25 +2237,35 @@
       });
     });
 
-    const manualReq = collectManualPointsForRequest();
+    const fitMethodRadio = document.querySelector('input[name="fit-method-type"]:checked');
+    return {
+      target: loadedTargets.slice(),
+      planets_ephem: planetsEphem,
+      datasets: datasets,
+      manual_points: collectManualPointsForRequest(),
+      fit_method: fitMethodRadio ? fitMethodRadio.value : 'unweighted'
+    };
+  }
+
+  function computeFit() {
+    if (loadedTargets.length === 0) return;
+    const requestSeq = ++computeFitRequestSeq;
+    const request = collectFitRequest(true);
+    if (!request) {
+      const loader = document.getElementById('loader');
+      if (loader) loader.style.display = 'none';
+      return;
+    }
 
     const loader = document.getElementById('loader');
     loader.style.display = 'flex';
 
     const combinedKey = getCombinedStorageKey();
-    const fitMethodRadio = document.querySelector('input[name="fit-method-type"]:checked');
-    const fitMethod = fitMethodRadio ? fitMethodRadio.value : 'unweighted';
 
     fetch('/api/ephemeris/calculate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        target: loadedTargets,
-        planets_ephem: planetsEphem,
-        datasets: datasetsReq,
-        manual_points: manualReq,
-        fit_method: fitMethod
-      })
+      body: JSON.stringify(request)
     })
     .then(r => r.json())
     .then(res => {
@@ -2250,7 +2276,11 @@
       }
       fitResults = res.results;
       try {
-        localStorage.setItem(STORAGE_OPTS_PREFIX + combinedKey + '-results', JSON.stringify(fitResults));
+        localStorage.setItem(fitResultsCacheKey(combinedKey), JSON.stringify({
+          version: FIT_RESULTS_CACHE_VERSION,
+          signature: fitRequestSignature(request),
+          results: fitResults
+        }));
       } catch (e) {}
       renderFitResults(res.results);
       drawPlot();

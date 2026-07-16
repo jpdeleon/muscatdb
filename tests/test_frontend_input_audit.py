@@ -723,9 +723,9 @@ def test_ephemeris_reference_epoch_can_center_on_included_dataset_midpoint():
     effective_ephem = _function_body(html, "effectivePlanetEphemeris")
     assert "ephem.t0 + epochShift * ephem.period" in effective_ephem
 
-    compute_fit = _function_body(html, "computeFit")
-    assert "const epochShift = planetEpochShift(pl)" in compute_fit
-    assert "t0: t0 + epochShift * period" in compute_fit
+    fit_request = _function_body(html, "collectFitRequest")
+    assert "const epochShift = planetEpochShift(pl)" in fit_request
+    assert "t0: t0 + epochShift * period" in fit_request
 
     view_state = _function_body(html, "collectEphemerisViewState")
     assert "center_epoch:" in view_state
@@ -762,6 +762,20 @@ def test_ephemeris_bjd_axis_offset_uses_effective_reference_epoch():
     assert "const referenceBjdOffset = plotBjdOffset(planets, showExcluded)" in draw_plot
     assert "const bjdOffset = foundBjdOffset ? referenceBjdOffset : 2450000" in draw_plot
     assert "`Time (BJD - ${bjdOffset})`" in draw_plot
+
+
+def test_ephemeris_cached_fit_results_match_current_inputs():
+    html = _read_template("ephemeris.html")
+
+    # A target-only cache key can retain points from datasets that the backend
+    # no longer returns. Cache entries must therefore be versioned and tied to
+    # the exact request that generated their Plotly results.
+    assert "const FIT_RESULTS_CACHE_VERSION = 2" in html
+    assert "function fitRequestSignature(request)" in html
+    assert "fitCache.version === FIT_RESULTS_CACHE_VERSION" in html
+    assert "fitCache.signature === fitRequestSignature(cachedRequest)" in html
+    assert "signature: fitRequestSignature(request)" in html
+    assert "localStorage.removeItem(fitResultsCacheKey(combinedKey))" in html
 
 
 def test_ephemeris_plot_primary_x_axis_is_only_integer_offset_bjd_time():

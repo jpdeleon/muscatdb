@@ -3565,6 +3565,26 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
         norm_t = _normalize_target_name(tgt) if tgt else None
         key = (norm_t, d.get("instrument"), d.get("date"), d.get("run_id") or "")
         checked_lookup[key] = bool(d.get("checked"))
+
+    def requested_dataset_state(job: dict) -> bool | None:
+        """Return the posted check state, or None when the row was not posted."""
+        inst = job["instrument"]
+        date = job["obsdate"]
+        run_id = job.get("run_id") or ""
+        norm_tgt = _normalize_target_name(job["target"])
+        exact_key = (norm_tgt, inst, date, run_id)
+        if exact_key in checked_lookup:
+            return checked_lookup[exact_key]
+        targetless_key = (None, inst, date, run_id)
+        if targetless_key in checked_lookup:
+            return checked_lookup[targetless_key]
+        # Backward compatibility for older clients that posted a target alias
+        # which normalizes differently. Presence is still mandatory: an
+        # unposted database job must never become an implicit plotted point.
+        for (key_target, key_inst, key_date, key_run_id), state in checked_lookup.items():
+            if key_inst == inst and key_date == date and key_run_id == run_id:
+                return state
+        return None
         
     # Get all completed runs for all requested targets
     with _DB_LOCK:
@@ -3579,7 +3599,13 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
         for target in targets:
             norm_t = _normalize_target_name(target)
             for j in all_jobs:
-                if j["type"] == "transit_fit" and j["state"] == "done" and _normalize_target_name(j["target"]) == norm_t:
+                if (
+                    j["type"] == "transit_fit"
+                    and j["state"] == "done"
+                    and _is_full_transit_fit_job(j)
+                    and _normalize_target_name(j["target"]) == norm_t
+                    and requested_dataset_state(j) is not None
+                ):
                     if j["key"] not in seen_keys:
                         seen_keys.add(j["key"])
                         completed.append(j)
@@ -3604,18 +3630,11 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
                 val = tcs[pl]["tc"]
                 unc = tcs[pl].get("unc")
                 
-                # Check status: target-specific lookup first, fallback to targetless
-                norm_tgt = _normalize_target_name(j["target"])
-                is_checked = checked_lookup.get((norm_tgt, inst, date, run_id))
+                is_checked = requested_dataset_state(j)
                 if is_checked is None:
-                    is_checked = checked_lookup.get((None, inst, date, run_id))
-                if is_checked is None:
-                    for (k_tgt, k_inst, k_date, k_run_id), val_cb in checked_lookup.items():
-                        if k_inst == inst and k_date == date and k_run_id == run_id:
-                            is_checked = val_cb
-                            break
-                if is_checked is None:
-                    is_checked = True
+                    # Defensive guard: completed is already restricted to
+                    # explicitly requested rows above.
+                    continue
 
                 epoch = ephemeris_math.assign_epoch(val, T0, P)
 
