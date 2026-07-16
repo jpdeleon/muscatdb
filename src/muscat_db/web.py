@@ -5,6 +5,7 @@ import datetime
 import contextvars
 import json
 import logging
+import math
 import os
 import pathlib
 import re
@@ -17,7 +18,7 @@ _DB_LOCK = threading.Lock()
 import csv
 import io
 from contextlib import asynccontextmanager
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import Body, FastAPI, HTTPException, Request
@@ -42,7 +43,9 @@ from muscat_db.lco import _annotate_lco_archive_results
 from muscat_db import transit_obs
 from muscat_db import fov as fov_opt
 from muscat_db import ephemeris_math
+from muscat_db import ephemeris_import
 from muscat_db import test_observations
+from muscat_db import lco_monitor
 from muscat_db import http_client
 from muscat_db.catalog import (
     _adql_literal,
@@ -144,9 +147,16 @@ async def _lifespan(app: FastAPI):
     from muscat_db import proxy, http_client
     await proxy.startup()
     await http_client.startup()
+    observation_monitor = None
+    if os.environ.get("MUSCAT_LCO_MONITOR_ENABLED", "1") == "1":
+        observation_monitor = lco_monitor.ObservationMonitor(db)
+        observation_monitor.start()
+        app.state.lco_observation_monitor = observation_monitor
     try:
         yield
     finally:
+        if observation_monitor is not None:
+            observation_monitor.stop()
         await http_client.shutdown()
         await proxy.shutdown()
 
@@ -914,6 +924,31 @@ def _telescope_required_error(db: str, inst: str, date: str, target: str, option
     return None
 
 
+def _resolve_dataset_target(requested: str, candidates: list[str]) -> str:
+    """Resolve a canonical target name to one unambiguous raw dataset key.
+
+    Photometry products and obslog rows are keyed by the original OBJECT value,
+    while catalog/target-page links use normalized identities.  Preserve exact
+    raw requests; otherwise translate only when normalization yields one match.
+    Ambiguous aliases remain unresolved so the route never selects the wrong
+    observation or reduction products.
+    """
+    if not requested or requested in candidates:
+        return requested
+    compact_matches = [
+        candidate for candidate in candidates
+        if candidate.replace(" ", "") == requested
+    ]
+    if len(compact_matches) == 1:
+        return compact_matches[0]
+    normalized = _normalize_target_name(requested)
+    matches = [
+        candidate for candidate in candidates
+        if _normalize_target_name(candidate) == normalized
+    ]
+    return matches[0] if len(matches) == 1 else requested
+
+
 @app.get("/photometry", response_class=HTMLResponse)
 def photometry_page(inst: str = "", date: str = "", target: str = "", site: str = "", telescope: str = "", mode: str = "", run: str = "", overwrite: str = ""):
     db = _db_path()
@@ -935,6 +970,24 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
     mode = mode.strip().lower()
     if inst != "sinistro" or mode not in phot.SINISTRO_MODES:
         mode = ""
+
+    route_target = target.replace(" ", "")
+    if route_target != target:
+        query = {
+            key: value for key, value in (
+                ("inst", inst),
+                ("date", date),
+                ("target", route_target),
+                ("site", site),
+                ("telescope", telescope),
+                ("mode", mode),
+                ("run", run),
+                ("overwrite", overwrite),
+            )
+            if value
+        }
+        return RedirectResponse(f"/photometry?{urlencode(query)}", status_code=307)
+    target = route_target
 
     # Parse overwrite from query parameter (overrides defaults for this session)
     run_defaults_override = {}
@@ -961,7 +1014,13 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
         date_set.update(phot.output_dates(inst))
         dates = sorted(date_set, reverse=True)
     if inst and date:
-        targets = sorted(_get_objects(db, inst, date))
+        raw_targets = sorted(_get_objects(db, inst, date))
+        target = _resolve_dataset_target(route_target, raw_targets)
+        public_targets = {name.replace(" ", "") for name in raw_targets}
+        if route_target and target in raw_targets:
+            public_targets.discard(target.replace(" ", ""))
+            public_targets.add(route_target)
+        targets = sorted(public_targets)
     obs_type = ""
     is_narrowband = False
     available_bands: list[str] = []
@@ -1065,7 +1124,8 @@ def photometry_page(inst: str = "", date: str = "", target: str = "", site: str 
     resp = _render(
         "photometry.html",
         instruments=list(INSTRUMENTS),
-        sel_inst=inst, sel_date=date, sel_target=target,
+        sel_inst=inst, sel_date=date, sel_target=route_target,
+        dataset_target=target,
         sel_site=(outputs.get("site") if outputs else "") or "",
         sel_telescope=(outputs.get("telescope") if outputs else "") or "",
         sel_mode=(outputs.get("mode") if outputs else "") or "",
@@ -1116,6 +1176,27 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
 
     run = (run or "").strip()
 
+    # prose filenames, timer result directories, and pipeline job keys all use
+    # the target with spaces removed.  Canonicalize the public route the same
+    # way so raw obslog names (``HIP 67522``) and discovered product stems
+    # (``HIP67522``) cannot create duplicate dropdown entries or URL aliases.
+    compact_target = target.replace(" ", "")
+    if compact_target != target:
+        query = {
+            key: value for key, value in (
+                ("inst", inst),
+                ("date", date),
+                ("target", compact_target),
+                ("site", site),
+                ("telescope", telescope),
+                ("mode", mode),
+                ("run", run),
+            )
+            if value
+        }
+        return RedirectResponse(f"/transit-fit?{urlencode(query)}", status_code=307)
+    target = compact_target
+
     dates: list[str] = []
     targets: list[str] = []
     outputs = None
@@ -1137,7 +1218,7 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
     if inst and date:
         obj_set = set(_get_objects(db, inst, date))
         obj_set.update(phot.discovered_targets(inst, date))
-        targets = sorted(obj_set)
+        targets = sorted({name.replace(" ", "") for name in obj_set})
     if inst and date and target:
         import datetime
         rows = []
@@ -1236,6 +1317,29 @@ async def transit_fit_query_archive(target: str, source: str = "nasa"):
     import re
 
     target = target.strip()
+
+    def clean_archive_name(value: str) -> str:
+        return re.sub(r"[^0-9a-zA-Z]", "", value or "").lower()
+
+    def is_planet_of_lookup_name(clean_planet_name: str) -> bool:
+        """Match ``HOST b`` while rejecting arbitrary prefix continuations."""
+        return any(
+            clean_planet_name.startswith(name)
+            and clean_planet_name[len(name):] in set("bcdefgh")
+            for name in nasa_lookup_names
+            if name
+        )
+
+    # NASA's confirmed-planet name may differ from its TOI designation
+    # (TOI-179 is HD 18599 b).  Resolve the exact TIC alias so the NASA lookup
+    # can cross-match identities without accepting unsafe numeric prefixes.
+    nasa_lookup_names = {clean_archive_name(target)}
+    normalized_target = _normalize_target_name(target)
+    resolved_tic_id = ""
+    if re.fullmatch(r"TOI\d+", normalized_target):
+        resolved_tic_id = _target_tic_id(normalized_target)
+        if resolved_tic_id:
+            nasa_lookup_names.add(clean_archive_name(f"TIC {resolved_tic_id}"))
 
     def get_unc(err1, err2):
         if err1 is None and err2 is None:
@@ -1353,11 +1457,8 @@ async def transit_fit_query_archive(target: str, source: str = "nasa"):
         if not csv_path.is_file():
             return None
             
-        target_clean = re.sub(r"[^0-9a-zA-Z]", "", target).lower()
         best_row_line = None
         best_score = -1
-        
-        clean_re = re.compile(r"[^0-9a-zA-Z]")
         
         with open(csv_path, mode='r', encoding='utf-8', errors='ignore') as f:
             header_line = f.readline()
@@ -1369,18 +1470,22 @@ async def transit_fit_query_archive(target: str, source: str = "nasa"):
                 hostname = parts[2].strip('"')
                 hd_name = parts[3].strip('"')
                 hip_name = parts[4].strip('"')
+                tic_id = parts[5].strip('"')
                 
-                pl_clean = clean_re.sub('', pl_name).lower()
-                host_clean = clean_re.sub('', hostname).lower()
-                hip_clean = clean_re.sub('', hip_name).lower()
-                hd_clean = clean_re.sub('', hd_name).lower()
+                pl_clean = clean_archive_name(pl_name)
+                host_clean = clean_archive_name(hostname)
+                hip_clean = clean_archive_name(hip_name)
+                hd_clean = clean_archive_name(hd_name)
+                tic_clean = clean_archive_name(tic_id)
                 
                 score = -1
-                if target_clean == pl_clean:
+                if pl_clean in nasa_lookup_names:
                     score = 3
-                elif target_clean in (host_clean, hip_clean, hd_clean):
+                elif nasa_lookup_names.intersection(
+                    (host_clean, hip_clean, hd_clean, tic_clean),
+                ):
                     score = 2
-                elif (pl_clean and pl_clean in target_clean) or (host_clean and host_clean in target_clean):
+                elif is_planet_of_lookup_name(pl_clean):
                     score = 1
                     
                 if score > -1:
@@ -1540,7 +1645,8 @@ async def transit_fit_query_archive(target: str, source: str = "nasa"):
                 return JSONResponse({"ok": True, **local_res})
 
         cols = [
-            "pl_name", "st_teff", "st_tefferr1", "st_tefferr2",
+            "pl_name", "hostname", "hip_name", "hd_name", "tic_id",
+            "st_teff", "st_tefferr1", "st_tefferr2",
             "st_logg", "st_loggerr1", "st_loggerr2",
             "st_met", "st_meterr1", "st_meterr2",
             "pl_orbper", "pl_orbpererr1", "pl_orbpererr2",
@@ -1573,6 +1679,8 @@ async def transit_fit_query_archive(target: str, source: str = "nasa"):
                 f"hip_name = {norm_lit}",
                 f"hd_name = {norm_lit}"
             ])
+        if resolved_tic_id:
+            conditions.append(f"tic_id = {_adql_literal(f'TIC {resolved_tic_id}')}")
 
         q = f"SELECT {col_str} FROM pscomppars WHERE " + " OR ".join(conditions)
 
@@ -1583,28 +1691,30 @@ async def transit_fit_query_archive(target: str, source: str = "nasa"):
             res = response.json()
             if res:
                 # Score and rank matching rows in memory
-                target_clean = re.sub(r"[^0-9a-zA-Z]", "", target).lower()
                 best_row = None
                 best_score = -1
-                clean_re = re.compile(r"[^0-9a-zA-Z]")
 
                 for row in res:
                     pl_name = (row.get("pl_name") or "").strip()
                     hostname = (row.get("hostname") or "").strip()
                     hip_name = (row.get("hip_name") or "").strip()
                     hd_name = (row.get("hd_name") or "").strip()
+                    tic_id = (row.get("tic_id") or "").strip()
 
-                    pl_clean = clean_re.sub('', pl_name).lower()
-                    host_clean = clean_re.sub('', hostname).lower()
-                    hip_clean = clean_re.sub('', hip_name).lower()
-                    hd_clean = clean_re.sub('', hd_name).lower()
+                    pl_clean = clean_archive_name(pl_name)
+                    host_clean = clean_archive_name(hostname)
+                    hip_clean = clean_archive_name(hip_name)
+                    hd_clean = clean_archive_name(hd_name)
+                    tic_clean = clean_archive_name(tic_id)
 
                     score = -1
-                    if target_clean == pl_clean:
+                    if pl_clean in nasa_lookup_names:
                         score = 3
-                    elif target_clean in (host_clean, hip_clean, hd_clean):
+                    elif nasa_lookup_names.intersection(
+                        (host_clean, hip_clean, hd_clean, tic_clean),
+                    ):
                         score = 2
-                    elif (pl_clean and target_clean in pl_clean) or (host_clean and target_clean in host_clean):
+                    elif is_planet_of_lookup_name(pl_clean):
                         score = 1
 
                     if score > best_score:
@@ -2566,6 +2676,32 @@ def api_lco_ipp(request: Request, payload: dict = Body(...)):
         return _lco_error_response(e)
 
 
+def _record_lco_submission(result: dict, requestgroup: dict, params: dict, user: str | None) -> dict:
+    """Persist an accepted booking without ever disguising it as a failed submit.
+
+    Once LCO accepts telescope time it cannot be rolled back here.  A local
+    persistence error is therefore returned as an explicit monitoring warning,
+    while the enclosing submission response remains successful so a user does
+    not retry and accidentally create a duplicate booking.
+    """
+    monitor_payload = {**params, "requests": requestgroup.get("requests") or []}
+    try:
+        rows = lco_monitor.record_submission(result, monitor_payload, user)
+        return {"ok": True, "request_ids": [row["request_id"] for row in rows]}
+    except Exception as exc:
+        logger.exception("LCO booking accepted but local monitoring registration failed")
+        return {"ok": False, "error": str(exc)}
+
+
+def _submitted_request_ids(result: dict) -> list[int]:
+    ids = []
+    for child in result.get("requests") or []:
+        value = child.get("id") if isinstance(child, dict) else child
+        if value is not None:
+            ids.append(int(value))
+    return ids
+
+
 @lco_router.post("/test-observations/plan", response_class=JSONResponse)
 def api_lco_test_plan(payload: dict = Body(...)):
     """Generate and persist a deterministic, observer-reviewable test plan."""
@@ -2633,9 +2769,11 @@ def api_lco_test_submit(observation_id: str, request: Request, payload: dict = B
         if not payload.get("dry_run_hash") or payload["dry_run_hash"] != digest or record["payload_hash"] != digest:
             return JSONResponse({"ok": False, "error": "no matching test-observation dry-run; run the dry-run again"}, status_code=409)
         result = lco.submit_requestgroup(rg, _request_user(request))
-        ids = result.get("requests") or result.get("request_ids") or ([result["id"]] if result.get("id") is not None else [])
+        ids = _submitted_request_ids(result)
         record = test_observations.update_record(observation_id, state="submitted", request_ids=ids)
-        return JSONResponse({"ok": True, "result": result, "record": record})
+        params = {**payload, "kind": record["plan"]["kind"], "target_name": record["plan"].get("target") or ""}
+        monitoring = _record_lco_submission(result, rg, params, _request_user(request))
+        return JSONResponse({"ok": True, "result": result, "record": record, "monitoring": monitoring})
     except KeyError:
         return JSONResponse({"ok": False, "error": "test observation not found"}, status_code=404)
     except lco.LcoError as exc:
@@ -2669,8 +2807,10 @@ def api_lco_submit(request: Request, payload: dict = Body(...)):
                 },
                 status_code=409,
             )
-        result = lco.submit_requestgroup(rg, _request_user(request))
-        return JSONResponse({"ok": True, "result": result})
+        user = _request_user(request)
+        result = lco.submit_requestgroup(rg, user)
+        monitoring = _record_lco_submission(result, rg, payload, user)
+        return JSONResponse({"ok": True, "result": result, "monitoring": monitoring})
     except lco.LcoError as e:
         return _lco_error_response(e)
 
@@ -2754,6 +2894,8 @@ def api_lco_split_submit(request: Request, payload: dict = Body(...)):
         # Neither leg is booked yet.
         return _lco_split_error_response(e, "leg_a")
 
+    monitoring_a = _record_lco_submission(result_a, rg_a, leg_a_params, user)
+
     try:
         result_b = lco.submit_requestgroup(rg_b, user)
     except lco.LcoError as e:
@@ -2762,13 +2904,24 @@ def api_lco_split_submit(request: Request, payload: dict = Body(...)):
                 "ok": False,
                 "partial": True,
                 "error": "leg A booked, leg B failed to submit",
-                "leg_a": {"result": result_a},
+                "leg_a": {"result": result_a, "monitoring": monitoring_a},
                 "leg_b": e.to_dict(),
             },
             status_code=e.status,
         )
 
-    return JSONResponse({"ok": True, "leg_a": {"result": result_a}, "leg_b": {"result": result_b}})
+    monitoring_b = _record_lco_submission(result_b, rg_b, leg_b_params, user)
+    return JSONResponse({
+        "ok": True,
+        "leg_a": {"result": result_a, "monitoring": monitoring_a},
+        "leg_b": {"result": result_b, "monitoring": monitoring_b},
+    })
+
+
+@lco_router.get("/monitored-requests", response_class=JSONResponse)
+def api_lco_monitored_requests():
+    """Return locally persisted scheduler requests and pipeline progress."""
+    return JSONResponse({"ok": True, "requests": lco_monitor.list_requests()})
 
 
 @lco_router.get("/archive/frames", response_class=JSONResponse)
@@ -2899,6 +3052,24 @@ def api_lco_archive_download_status(job_id: str):
 
 
 # Helper to fetch fitted transit centers for a run
+def _bjd_to_yymmdd(bjd: float) -> str:
+    """UTC obsdate (YYMMDD) for a Barycentric Julian Date.
+
+    Used to give a manually entered transit center a display date matching the
+    project's obsdate convention (the Date column of the fitted-dataset rows).
+    The one-day-scale barycentric-vs-geocentric offset is irrelevant at date
+    granularity, so a plain JD->UTC conversion is used. Returns "" if the value
+    is not a finite, convertible number.
+    """
+    try:
+        unix = (float(bjd) - 2440587.5) * 86400.0
+        return datetime.datetime.fromtimestamp(
+            unix, tz=datetime.timezone.utc
+        ).strftime("%y%m%d")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+
+
 def _get_run_fitted_params(inst: str, date: str, target: str, run_id: str | None) -> dict:
     """Per-planet fitted ephemeris from a run's outputs (the Fitted Parameters
     Summary), not the input ``sys.yaml`` priors.
@@ -2983,6 +3154,115 @@ def _get_run_fitted_params(inst: str, date: str, target: str, run_id: str | None
     except Exception:
         logger.debug("failed to read fitted transit params for %s/%s/%s/%s", inst, date, target, run_id, exc_info=True)
     return fitted
+
+
+def _transit_fit_observation_span(rdir: pathlib.Path) -> tuple[float, float] | None:
+    """Return the BJD span covered by a transit fit's input light curves."""
+    start: float | None = None
+    end: float | None = None
+    for csv_path in rdir.glob("*.csv"):
+        try:
+            with open(csv_path, newline="") as f:
+                reader = csv.DictReader(f)
+                if not reader.fieldnames:
+                    continue
+                time_key = next(
+                    (key for key in ("BJD_TDB", "BJD", "time", "#time") if key in reader.fieldnames),
+                    None,
+                )
+                if time_key is None:
+                    continue
+                for row in reader:
+                    try:
+                        value = float(row[time_key])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if not math.isfinite(value):
+                        continue
+                    start = value if start is None else min(start, value)
+                    end = value if end is None else max(end, value)
+        except OSError:
+            logger.debug("failed to read transit-fit input span from %s", csv_path, exc_info=True)
+    if start is None or end is None:
+        return None
+    return start, end
+
+
+def _classify_transit_coverage(
+    rdir: pathlib.Path,
+    planets_fitted: str,
+    planets_ephem: dict,
+    fitted: dict,
+) -> str:
+    """Classify the observed event as full, ingress-only, or egress-only.
+
+    The run type describes test versus production sampling and is unrelated to
+    event coverage. Coverage instead comes from the actual light-curve time
+    span relative to the fitted transit contacts. Input ephemerides are used
+    only when a fixed parameter is absent from the fitted summary.
+    """
+    span = _transit_fit_observation_span(rdir)
+    if span is None:
+        return ""
+    start, end = span
+    midpoint = (start + end) / 2.0
+
+    for planet in planets_fitted:
+        ephem = planets_ephem.get(planet) or {}
+        fit_params = fitted.get(planet) or {}
+        tc = fit_params.get("tc", ephem.get("t0"))
+        duration_hours = fit_params.get("dur", ephem.get("duration"))
+        try:
+            tc = float(tc)
+            duration_hours = float(duration_hours)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(tc) or not math.isfinite(duration_hours) or duration_hours <= 0:
+            continue
+
+        # An input catalog T0 can be many epochs away from the observation.
+        # Move it onto the observed epoch when a fitted local Tc is unavailable.
+        if fit_params.get("tc") is None:
+            try:
+                period = float(ephem.get("period"))
+                if period > 0:
+                    tc += round((midpoint - tc) / period) * period
+            except (TypeError, ValueError):
+                pass
+
+        half_duration_days = duration_hours / 48.0
+        ingress = tc - half_duration_days
+        egress = tc + half_duration_days
+        includes_ingress = start <= ingress <= end
+        includes_egress = start <= egress <= end
+        if includes_ingress and includes_egress:
+            return "full"
+        if includes_ingress:
+            return "ing"
+        if includes_egress:
+            return "egr"
+    return ""
+
+
+def _is_full_transit_fit_job(job: dict) -> bool:
+    """Return whether an ephemeris dataset came from a production fit run."""
+    run_type = str(job.get("run_type") or "").strip().lower()
+    if run_type:
+        return run_type == "full"
+    # Older persisted jobs predate the run_type column. Recover their mode from
+    # the immutable run metadata/log rather than silently treating them as test
+    # or dropping valid historical production fits.
+    try:
+        rdir = fit.fit_output_dir(
+            job["instrument"],
+            job["obsdate"],
+            job["target"],
+            (job.get("run_id") or "") or None,
+        )
+        return fit._detect_run_type(rdir) == "full"
+    except (KeyError, OSError):
+        logger.debug("failed to detect legacy ephemeris run type", exc_info=True)
+        return False
 
 
 @ads_router.get("/config", response_class=JSONResponse)
@@ -3078,6 +3358,7 @@ def api_ephemeris_target_info(target: str):
             j for j in all_jobs
             if j["type"] == "transit_fit"
             and j["state"] == "done"
+            and _is_full_transit_fit_job(j)
             and _normalize_target_name(j["target"]) == norm_t
             and fit.get_fit_outputs(
                 j["instrument"], j["obsdate"], j["target"], (j.get("run_id") or "") or None
@@ -3102,8 +3383,8 @@ def api_ephemeris_target_info(target: str):
         # Discover planets fitted and their periods/t0 in dataset
         planets_fitted = "b"
         planets_ephem = {}
+        rdir = fit.fit_output_dir(inst, date, j["target"], run_id or None)
         try:
-            rdir = fit.fit_output_dir(inst, date, j["target"], run_id or None)
             sys_yaml = rdir / "sys.yaml"
             if sys_yaml.is_file():
                 with open(sys_yaml) as f:
@@ -3126,6 +3407,14 @@ def api_ephemeris_target_info(target: str):
                             period_mean = period_list
                             period_unc = None
 
+                        duration_list = pl_params.get("dur", [None, None])
+                        if isinstance(duration_list, (list, tuple)):
+                            duration_days = duration_list[0] if len(duration_list) > 0 else None
+                            duration_unc_days = duration_list[1] if len(duration_list) > 1 else None
+                        else:
+                            duration_days = duration_list
+                            duration_unc_days = None
+
                         # t0 and duration are overridden below from the Fitted
                         # Parameters Summary; period stays from sys.yaml (it is
                         # held fixed in the fit and absent from the summary).
@@ -3134,8 +3423,8 @@ def api_ephemeris_target_info(target: str):
                             "t0_unc": float(t0_unc) if t0_unc is not None else None,
                             "period": float(period_mean),
                             "period_unc": float(period_unc) if period_unc is not None else None,
-                            "duration": None,
-                            "duration_unc": None,
+                            "duration": float(duration_days) * 24.0 if duration_days is not None else None,
+                            "duration_unc": float(duration_unc_days) * 24.0 if duration_unc_days is not None else None,
                         }
             fit_yaml = rdir / "fit.yaml"
             if fit_yaml.is_file():
@@ -3174,7 +3463,9 @@ def api_ephemeris_target_info(target: str):
             "planets_fitted": planets_fitted,
             "fitted_tcs": fitted,
             "planets_ephem": planets_ephem,
-            "run_type": j.get("run_type") or ""
+            "transit_coverage": _classify_transit_coverage(
+                rdir, planets_fitted, planets_ephem, fitted
+            ),
         })
         
     # Ensure all seen planets are initialized in all ephemerides
@@ -3197,6 +3488,18 @@ def api_ephemeris_target_info(target: str):
     })
 
 
+@ephemeris_router.post("/import-csv", response_class=JSONResponse)
+def api_ephemeris_import_csv(payload: dict = Body(...)):
+    """Parse an uploaded CSV preview without reading arbitrary server paths."""
+    text = payload.get("content")
+    filename = pathlib.PurePath(str(payload.get("filename") or "transit-times.csv")).name
+    try:
+        parsed = ephemeris_import.parse_transit_csv(text)
+    except ephemeris_import.EphemerisCSVError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "filename": filename, **parsed})
+
+
 @ephemeris_router.post("/calculate", response_class=JSONResponse)
 def api_ephemeris_calculate(payload: dict = Body(...)):
     target_param = payload.get("target")
@@ -3213,7 +3516,48 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
         
     planets_ephem = payload.get("planets_ephem") or {}
     req_datasets = payload.get("datasets") or []
-    
+
+    # Manually entered transit centers (Reading-2 feature): user-supplied
+    # points that are merged into the per-planet series alongside database
+    # fits. Grouped by planet letter here; each requires a numeric tc and a
+    # positive uncertainty (weighting needs unc > 0), otherwise it is dropped.
+    manual_by_planet: dict[str, list[dict]] = {}
+    for mp in payload.get("manual_points") or []:
+        if not isinstance(mp, dict):
+            continue
+        planet = str(mp.get("planet") or "").strip()
+        if not planet:
+            continue
+        try:
+            tc = float(mp.get("tc"))
+            unc = float(mp.get("tc_unc"))
+        except (TypeError, ValueError):
+            continue
+        if not (unc > 0):
+            continue
+        source_epoch = None
+        raw_source_epoch = mp.get("source_epoch")
+        if raw_source_epoch is not None and not isinstance(raw_source_epoch, bool):
+            try:
+                source_epoch_number = float(raw_source_epoch)
+                if source_epoch_number.is_integer():
+                    source_epoch = int(source_epoch_number)
+            except (TypeError, ValueError):
+                pass
+        manual_by_planet.setdefault(planet, []).append({
+            "id": str(mp.get("id") or ""),
+            "tc": tc,
+            "unc": unc,
+            "instrument": str(mp.get("instrument") or "").strip(),
+            "target": str(mp.get("target") or "").strip(),
+            "date": str(mp.get("date") or "").strip(),
+            "note": str(mp.get("note") or "").strip(),
+            "source_epoch": source_epoch,
+            "source_file": str(mp.get("source_file") or "").strip(),
+            "time_system": str(mp.get("time_system") or "").strip(),
+            "checked": bool(mp.get("checked", True)),
+        })
+
     # Build checked lookup: (target_normalized, inst, date, run_id) -> checked_bool
     checked_lookup = {}
     for d in req_datasets:
@@ -3221,6 +3565,26 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
         norm_t = _normalize_target_name(tgt) if tgt else None
         key = (norm_t, d.get("instrument"), d.get("date"), d.get("run_id") or "")
         checked_lookup[key] = bool(d.get("checked"))
+
+    def requested_dataset_state(job: dict) -> bool | None:
+        """Return the posted check state, or None when the row was not posted."""
+        inst = job["instrument"]
+        date = job["obsdate"]
+        run_id = job.get("run_id") or ""
+        norm_tgt = _normalize_target_name(job["target"])
+        exact_key = (norm_tgt, inst, date, run_id)
+        if exact_key in checked_lookup:
+            return checked_lookup[exact_key]
+        targetless_key = (None, inst, date, run_id)
+        if targetless_key in checked_lookup:
+            return checked_lookup[targetless_key]
+        # Backward compatibility for older clients that posted a target alias
+        # which normalizes differently. Presence is still mandatory: an
+        # unposted database job must never become an implicit plotted point.
+        for (key_target, key_inst, key_date, key_run_id), state in checked_lookup.items():
+            if key_inst == inst and key_date == date and key_run_id == run_id:
+                return state
+        return None
         
     # Get all completed runs for all requested targets
     with _DB_LOCK:
@@ -3235,7 +3599,13 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
         for target in targets:
             norm_t = _normalize_target_name(target)
             for j in all_jobs:
-                if j["type"] == "transit_fit" and j["state"] == "done" and _normalize_target_name(j["target"]) == norm_t:
+                if (
+                    j["type"] == "transit_fit"
+                    and j["state"] == "done"
+                    and _is_full_transit_fit_job(j)
+                    and _normalize_target_name(j["target"]) == norm_t
+                    and requested_dataset_state(j) is not None
+                ):
                     if j["key"] not in seen_keys:
                         seen_keys.add(j["key"])
                         completed.append(j)
@@ -3260,21 +3630,14 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
                 val = tcs[pl]["tc"]
                 unc = tcs[pl].get("unc")
                 
-                # Check status: target-specific lookup first, fallback to targetless
-                norm_tgt = _normalize_target_name(j["target"])
-                is_checked = checked_lookup.get((norm_tgt, inst, date, run_id))
+                is_checked = requested_dataset_state(j)
                 if is_checked is None:
-                    is_checked = checked_lookup.get((None, inst, date, run_id))
-                if is_checked is None:
-                    for (k_tgt, k_inst, k_date, k_run_id), val_cb in checked_lookup.items():
-                        if k_inst == inst and k_date == date and k_run_id == run_id:
-                            is_checked = val_cb
-                            break
-                if is_checked is None:
-                    is_checked = True
-                    
-                epoch = int(round((val - T0) / P))
-                
+                    # Defensive guard: completed is already restricted to
+                    # explicitly requested rows above.
+                    continue
+
+                epoch = ephemeris_math.assign_epoch(val, T0, P)
+
                 points.append({
                     "instrument": inst,
                     "date": date,
@@ -3286,7 +3649,34 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
                     "unc": unc,
                     "checked": is_checked
                 })
-                
+
+        # Merge manually entered transit centers for this planet. They share
+        # the same epoch grid and participate in the fit (when checked) exactly
+        # like database points; a UTC date is derived from the BJD for display.
+        manual_target = targets[0] if targets else ""
+        for mp in manual_by_planet.get(pl, []):
+            points.append({
+                # Instrument is free text (e.g. "tess"); blank falls back to
+                # "manual" so it still reads clearly and gets the manual marker.
+                "instrument": mp["instrument"] or "manual",
+                # Target and date are optional overrides: date defaults to the
+                # YYMMDD obsdate derived from the BJD, target to the loaded target.
+                "date": mp["date"] or _bjd_to_yymmdd(mp["tc"]),
+                "run_id": "",
+                "run_name": mp["note"],
+                "target": mp["target"] or manual_target,
+                "epoch": ephemeris_math.assign_epoch(mp["tc"], T0, P),
+                "tc": mp["tc"],
+                "unc": mp["unc"],
+                "checked": mp["checked"],
+                "manual": True,
+                "manual_id": mp["id"],
+                "note": mp["note"],
+                "source_epoch": mp["source_epoch"],
+                "source_file": mp["source_file"],
+                "time_system": mp["time_system"],
+            })
+
         # Perform straight line fit if possible. The weighted/unweighted
         # least-squares math (epoch-centering, variance propagation) lives in
         # ephemeris_math.fit_linear_ephemeris; only checked, positive-uncertainty
@@ -3317,8 +3707,8 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
             oc_days = p["tc"] - t_calc
             oc_min = oc_days * 1440.0
             oc_err_min = p["unc"] * 1440.0
-            
-            points_data.append({
+
+            point_out = {
                 "instrument": p["instrument"],
                 "date": p["date"],
                 "run_id": p["run_id"],
@@ -3330,8 +3720,26 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
                 "oc_min": round(oc_min, 4),
                 "oc_err_min": round(oc_err_min, 4),
                 "checked": p["checked"]
-            })
-            
+            }
+            if p.get("manual"):
+                # Flag a manual point that sits more than 5 sigma off the fitted
+                # linear ephemeris (a likely data-entry error). Warn-only: the
+                # point still participates in the fit and downstream TTV CSV.
+                point_out["manual"] = True
+                point_out["manual_id"] = p.get("manual_id", "")
+                point_out["note"] = p.get("note", "")
+                point_out["source_epoch"] = p.get("source_epoch")
+                point_out["epoch_offset"] = (
+                    p["epoch"] - p["source_epoch"]
+                    if p.get("source_epoch") is not None else None
+                )
+                point_out["source_file"] = p.get("source_file", "")
+                point_out["time_system"] = p.get("time_system", "")
+                point_out["flagged"] = bool(
+                    was_fit and ephemeris_math.is_sigma_outlier(oc_days, p["unc"])
+                )
+            points_data.append(point_out)
+
         results[pl] = {
             "was_fit": was_fit,
             "fit_method": fit_method if was_fit else "none",
@@ -3994,6 +4402,14 @@ def ttv_fit_runs(target: str = ""):
     return JSONResponse({"ok": True, "runs": ttv.list_ttv_runs(target.strip())})
 
 
+@ttv_fit_router.get("/model", response_class=JSONResponse)
+def ttv_fit_model(target: str = "", run_name: str = "", end_date: str = ""):
+    if not target:
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    result = ttv.get_ttv_model(target.strip(), run_name, end_date.strip())
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
 @ttv_fit_router.post("/start", response_class=JSONResponse)
 def api_start_ttv_fit(request: Request, payload: dict = Body(...)):
     target = (payload.get("target") or "").strip()
@@ -4032,6 +4448,37 @@ def ttv_fit_status(target: str = "", run_name: str = ""):
     return JSONResponse(status)
 
 
+# Text-like TTV output extensions the browser should render in a new tab
+# instead of downloading. FileResponse only adds Content-Disposition when a
+# ``filename`` is passed, so we leave that unset and just force a
+# browser-renderable media type (the guessed type for e.g. .csv/.yaml would
+# otherwise trigger a download).
+_INLINE_TEXT_EXTS = {".csv", ".ini", ".log", ".txt", ".yaml", ".yml", ".cfg", ".dat", ".tsv"}
+
+
+def _inline_output_file(path: pathlib.Path) -> FileResponse:
+    """Serve a TTV output file so browsers open it in a new tab rather than
+    prompting a download.
+
+    Text-like files are forced to ``text/plain``; gzipped text such as
+    ``samples.csv.gz`` is served with ``Content-Encoding: gzip`` so the browser
+    transparently decompresses and renders the underlying text inline (the
+    GZip middleware passes it through untouched since the header is set here).
+    """
+    suffixes = [s.lower() for s in path.suffixes]
+    headers = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+    media_type: str | None = None
+    if suffixes and suffixes[-1] == ".gz":
+        headers["Content-Encoding"] = "gzip"
+        inner = suffixes[-2] if len(suffixes) >= 2 else ""
+        media_type = "application/json" if inner == ".json" else "text/plain; charset=utf-8"
+    elif suffixes and suffixes[-1] in _INLINE_TEXT_EXTS:
+        media_type = "text/plain; charset=utf-8"
+    # Other types (.json, .png, images) already render inline under their
+    # guessed media type, so leave media_type=None for those.
+    return FileResponse(str(path), media_type=media_type, headers=headers)
+
+
 @ttv_fit_router.get("/output-file", response_class=FileResponse)
 def ttv_fit_output_file(target: str = "", run_name: str = "", file: str = ""):
     if not target:
@@ -4041,7 +4488,7 @@ def ttv_fit_output_file(target: str = "", run_name: str = "", file: str = ""):
         if not file or pathlib.PurePath(file).name != file:
             raise HTTPException(400, "invalid filename")
         raise HTTPException(404, f"file not found: {file}")
-    return FileResponse(str(filepath))
+    return _inline_output_file(filepath)
 
 
 @ttv_fit_router.get("/download-all", response_class=FileResponse)

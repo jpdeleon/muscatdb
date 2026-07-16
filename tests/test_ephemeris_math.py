@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from muscat_db.ephemeris_math import fit_linear_ephemeris
+from muscat_db.ephemeris_math import (
+    assign_epoch,
+    fit_linear_ephemeris,
+    is_sigma_outlier,
+)
 
 
 def test_fit_recovers_known_period_and_t0_unweighted():
@@ -110,3 +114,52 @@ def test_fit_unweighted_accepts_zero_uncertainty_inputs():
     assert result["was_fit"] is True
     assert result["period_fit"] == pytest.approx(1.0)
     assert result["t0_fit"] == pytest.approx(100.0)
+
+
+# ---------------------------------------------------------------------------
+# assign_epoch / is_sigma_outlier -- helpers used to place and sanity-check
+# manually entered transit centers on the O-C plot (Reading-2 feature).
+# ---------------------------------------------------------------------------
+
+
+def test_assign_epoch_rounds_to_nearest_integer():
+    """E = round((tc - t0) / P), matching the historical inline
+    ``int(round(...))`` used for database transit centers."""
+    t0 = 2458000.0
+    period = 2.5
+    assert assign_epoch(2458000.0, t0, period) == 0
+    assert assign_epoch(2458000.0 + 2.5 * 7, t0, period) == 7
+    assert assign_epoch(2458000.0 - 2.5 * 3, t0, period) == -3
+    # A small timing deviation (a would-be TTV) stays on its integer epoch.
+    assert assign_epoch(2458000.0 + 2.5 * 7 + 0.4, t0, period) == 7
+
+
+def test_assign_epoch_matches_inline_formula_for_dense_range():
+    """Exhaustively agree with the exact expression the endpoint used."""
+    t0 = 2459123.456
+    period = 3.9
+    for e in range(-50, 51):
+        tc = t0 + e * period
+        assert assign_epoch(tc, t0, period) == int(round((tc - t0) / period))
+
+
+def test_is_sigma_outlier_flags_only_beyond_threshold():
+    """|O-C| > n_sigma * unc, sign-independent."""
+    assert is_sigma_outlier(0.004, 0.001) is False   # 4 sigma -> within
+    assert is_sigma_outlier(0.006, 0.001) is True     # 6 sigma -> outlier
+    assert is_sigma_outlier(-0.006, 0.001) is True    # magnitude only
+    # Exactly 5 sigma is the boundary and is NOT flagged (strict > ).
+    assert is_sigma_outlier(0.005, 0.001) is False
+
+
+def test_is_sigma_outlier_requires_positive_sigma_scale():
+    """A non-positive or missing uncertainty has no sigma scale, so nothing
+    can be declared an outlier (weighting requires unc > 0 anyway)."""
+    assert is_sigma_outlier(1.0, 0.0) is False
+    assert is_sigma_outlier(1.0, -0.5) is False
+    assert is_sigma_outlier(1.0, None) is False
+
+
+def test_is_sigma_outlier_custom_threshold():
+    assert is_sigma_outlier(0.0025, 0.001, n_sigma=2.0) is True
+    assert is_sigma_outlier(0.0015, 0.001, n_sigma=2.0) is False

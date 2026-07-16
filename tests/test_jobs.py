@@ -92,30 +92,40 @@ def _cfg(grace_s=8, grace_terminal_s=2, markers=("DONE",), partial=None, success
     )
 
 
-def _make_job(tmp_path, rc=None, cancelled=False):
-    log = tmp_path / "run.log"
-    log.write_text("INFO: started\n")
-    job = jobs.PipelineJob(
-        key="k", inst="muscat4", date="260101", target="T",
-        cmd=["x"], proc=_FakeProc(rc=rc), logf=open(log, "a"), log_path=log,
-    )
-    job.cancelled = cancelled
-    return job, log
+@pytest.fixture
+def make_job(tmp_path):
+    created = []
+
+    def factory(rc=None, cancelled=False):
+        log = tmp_path / f"run-{len(created)}.log"
+        log.write_text("INFO: started\n")
+        job = jobs.PipelineJob(
+            key="k", inst="muscat4", date="260101", target="T",
+            cmd=["x"], proc=_FakeProc(rc=rc), logf=open(log, "a"), log_path=log,
+        )
+        job.cancelled = cancelled
+        created.append(job)
+        return job, log
+
+    yield factory
+
+    for job in created:
+        job.logf.close()
 
 
 class TestResolveJobState:
-    def test_running_while_parent_alive(self, tmp_path):
-        job, _ = _make_job(tmp_path, rc=None)
+    def test_running_while_parent_alive(self, make_job):
+        job, _ = make_job(rc=None)
         state, rc, terminal = jobs.resolve_job_state(job, _cfg())
         assert (state, rc, terminal) == ("running", None, False)
 
-    def test_cancelling_while_parent_alive(self, tmp_path):
-        job, _ = _make_job(tmp_path, rc=None, cancelled=True)
+    def test_cancelling_while_parent_alive(self, make_job):
+        job, _ = make_job(rc=None, cancelled=True)
         state, _rc, terminal = jobs.resolve_job_state(job, _cfg())
         assert state == "cancelling" and terminal is False
 
-    def test_finalizing_while_log_fresh_then_terminal(self, tmp_path):
-        job, log = _make_job(tmp_path, rc=0)
+    def test_finalizing_while_log_fresh_then_terminal(self, make_job):
+        job, log = make_job(rc=0)
         # Worker just appended -> within grace window -> finalizing (non-terminal).
         with open(log, "a") as f:
             f.write("INFO: trailing worker output\n")
@@ -126,8 +136,8 @@ class TestResolveJobState:
         state, rc, terminal = jobs.resolve_job_state(job, _cfg(grace_s=1))
         assert (state, rc, terminal) == ("done", 0, True)
 
-    def test_terminal_marker_shortens_window(self, tmp_path):
-        job, log = _make_job(tmp_path, rc=0)
+    def test_terminal_marker_shortens_window(self, make_job):
+        job, log = make_job(rc=0)
         with open(log, "a") as f:
             f.write("result: DONE\n")  # terminal marker present
         # Huge default but short terminal window: past terminal window -> done.
@@ -137,14 +147,14 @@ class TestResolveJobState:
         )
         assert state == "done" and terminal is True
 
-    def test_nonzero_exit_is_error(self, tmp_path):
-        job, _ = _make_job(tmp_path, rc=3)
+    def test_nonzero_exit_is_error(self, make_job):
+        job, _ = make_job(rc=3)
         time.sleep(0)  # log already quiescent (mtime in the past)
         state, rc, terminal = jobs.resolve_job_state(job, _cfg(grace_s=0))
         assert (state, rc, terminal) == ("error", 3, True)
 
-    def test_partial_failure_marker_is_error(self, tmp_path):
-        job, log = _make_job(tmp_path, rc=0)
+    def test_partial_failure_marker_is_error(self, make_job):
+        job, log = make_job(rc=0)
         with open(log, "a") as f:
             f.write("WARNING: PARTIAL FAILURE: 1/2 bands\n")
         state, _rc, terminal = jobs.resolve_job_state(
@@ -152,11 +162,11 @@ class TestResolveJobState:
         )
         assert state == "error" and terminal is True
 
-    def test_success_marker_overrides_lost_parent(self, tmp_path):
+    def test_success_marker_overrides_lost_parent(self, make_job):
         """A non-zero/lost parent (e.g. server --reload, SIGHUP -> rc -1) must be
         reported 'done' when the log shows the reduction succeeded, because the
         real work runs in detached workers independent of the tracked parent."""
-        job, log = _make_job(tmp_path, rc=-1)
+        job, log = make_job(rc=-1)
         with open(log, "a") as f:
             f.write("INFO: photometry SUCCEEDED: 4/4 bands (1004s elapsed)\n")
         state, rc, terminal = jobs.resolve_job_state(
@@ -164,10 +174,10 @@ class TestResolveJobState:
         )
         assert (state, rc, terminal) == ("done", -1, True)
 
-    def test_nonzero_exit_without_success_marker_still_error(self, tmp_path):
+    def test_nonzero_exit_without_success_marker_still_error(self, make_job):
         """Regression: with a success marker configured but absent from the log,
         a non-zero exit stays an error (the marker only *upgrades* real successes)."""
-        job, log = _make_job(tmp_path, rc=-1)
+        job, log = make_job(rc=-1)
         with open(log, "a") as f:
             f.write("INFO: crashed before finishing\n")
         state, _rc, terminal = jobs.resolve_job_state(
@@ -175,9 +185,9 @@ class TestResolveJobState:
         )
         assert state == "error" and terminal is True
 
-    def test_partial_failure_beats_success_marker(self, tmp_path):
+    def test_partial_failure_beats_success_marker(self, make_job):
         """If both markers appear, partial failure wins (do not report success)."""
-        job, log = _make_job(tmp_path, rc=-1)
+        job, log = make_job(rc=-1)
         with open(log, "a") as f:
             f.write("INFO: photometry SUCCEEDED: 3/4 bands\n")
             f.write("ERROR: photometry PARTIAL FAILURE: 3/4 bands\n")
@@ -187,17 +197,17 @@ class TestResolveJobState:
         )
         assert state == "error" and terminal is True
 
-    def test_success_marker_ignored_when_not_configured(self, tmp_path):
+    def test_success_marker_ignored_when_not_configured(self, make_job):
         """Pipelines without a success_marker (e.g. transit-fit) keep the parent
         return code authoritative even if the success text happens to be logged."""
-        job, log = _make_job(tmp_path, rc=-1)
+        job, log = make_job(rc=-1)
         with open(log, "a") as f:
             f.write("INFO: photometry SUCCEEDED: 4/4 bands\n")
         state, _rc, terminal = jobs.resolve_job_state(job, _cfg(grace_s=0))  # success=None
         assert state == "error" and terminal is True
 
-    def test_cancelled_finalizes_immediately(self, tmp_path):
-        job, log = _make_job(tmp_path, rc=-15, cancelled=True)
+    def test_cancelled_finalizes_immediately(self, make_job):
+        job, log = make_job(rc=-15, cancelled=True)
         # Large window + fresh log proves cancel bypasses the finalize gate.
         with open(log, "a") as f:
             f.write("INFO: still writing during cancel\n")
@@ -206,12 +216,12 @@ class TestResolveJobState:
 
 
 class TestCountRunningFull:
-    def test_counts_only_running_full_jobs(self, tmp_path):
-        running_full, _ = _make_job(tmp_path, rc=None)
+    def test_counts_only_running_full_jobs(self, make_job):
+        running_full, _ = make_job(rc=None)
         running_full.run_type = "full"
-        done_full, _ = _make_job(tmp_path, rc=0)
+        done_full, _ = make_job(rc=0)
         done_full.run_type = "full"
-        running_test, _ = _make_job(tmp_path, rc=None)
+        running_test, _ = make_job(rc=None)
         running_test.run_type = "test"
         registry = {"a": running_full, "b": done_full, "c": running_test}
         assert jobs.count_running_full(registry) == 1

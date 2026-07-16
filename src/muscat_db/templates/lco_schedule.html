@@ -26,8 +26,8 @@
   }
 </style>
 
-<div class="lco-section">
-  <h3>Target &amp; Transit Windows</h3>
+<details class="lco-section section-fold" open>
+  <summary><h3>Target &amp; Transit Windows</h3></summary>
   <div class="lco-grid">
     <div class="lco-field"><label for="sch-target">Target <span class="help-tooltip" title="Target star name. Matches normalized names from muscat-db (e.g. HIP 67522, TOI-1234).">?</span></label><input id="sch-target" type="text" placeholder="WASP-12" list="target-datalist" autocomplete="off"><datalist id="target-datalist"></datalist></div>
     <div class="lco-field"><label for="sch-planet">Planet <span class="help-tooltip" title="Planet letter identifier (e.g. b, c). Used to look up the ephemeris for this planet.">?</span></label><input id="sch-planet" type="text" placeholder="b" style="max-width: 90px;"></div>
@@ -105,10 +105,10 @@
   </div>
   <p class="lco-note">Windows are coarse scheduling bounds. t0 is usually BJD_TDB; the ≤8&nbsp;min barycentric offset is absorbed by the padding above.</p>
   <p class="lco-note">Window boundaries are always rounded to 5-minute intervals. When padding is 0 the rounded window may be slightly shorter than the transit visibility (floor for start, ceil for end). Verify for critical observations.</p>
-</div>
+</details>
 
-<div class="lco-section">
-  <h3>Imaging Request</h3>
+<details class="lco-section section-fold" open>
+  <summary><h3>Imaging Request</h3></summary>
   <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
     <div class="lco-field"><label for="sch-proposal">Proposal ID <span class="help-tooltip" title="LCO proposal ID. Required for submission. Loaded from your LCO account settings.">?</span></label>
       <select id="sch-proposal">
@@ -216,7 +216,7 @@
     <div class="lco-field" style="max-width: 150px;"><label for="sch-test-budget">Test budget (s) <span class="help-tooltip" title="Maximum cumulative exposure time for the test observation, in seconds. Candidate exposures beyond this budget are dropped from the plan. Excludes acquisition/readout.">?</span></label><input id="sch-test-budget" type="number" min="1" step="1" value="600"></div>
   </div>
   <p class="lco-note">These scheduling inputs are separate from the archive page.</p>
-</div>
+</details>
 
 <dialog id="test-observation-dialog" style="max-width: 850px; width: 92%;">
   <h3>Test observation review</h3>
@@ -230,8 +230,8 @@
   </div>
 </dialog>
 
-<div class="lco-section" id="split-section" style="display: none;">
-  <h3>Split Request (two-site relay)</h3>
+<details class="lco-section section-fold" id="split-section" style="display: none;" open>
+  <summary><h3>Split Request (two-site relay)</h3></summary>
   <p class="lco-note" id="split-note"></p>
   <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
     <div class="lco-field"><label for="sch-site-a">Leg A site (ingress) <span class="help-tooltip" title="LCO site for the ingress leg of a split relay request. Choose a site where ingress is observable.">?</span></label>
@@ -293,10 +293,10 @@
   <p class="lco-note">Each leg is an independent LCO booking. "Submit both" is not atomic — if leg B fails
     after leg A is booked, leg A stays booked (see the warning above); use "Submit Leg B only" to retry it.
     There is no automatic cancellation.</p>
-</div>
+</details>
 
-<div class="lco-section" id="single-submit-section">
-  <h3>Single site request</h3>
+<details class="lco-section section-fold" id="single-submit-section" open>
+  <summary><h3>Single site request</h3></summary>
   <div class="lco-actions">
     <button class="btn primary" type="button" id="btn-dry-run">Check settings</button>
     <button class="btn" type="button" id="btn-submit" disabled
@@ -309,7 +309,18 @@
     <div class="lco-note" id="ipp-summary"></div>
     <pre class="lco-pre" id="payload-pre"></pre>
   </div>
-</div>
+</details>
+
+<details class="lco-section section-fold" open>
+  <summary><h3>Submitted Request Monitoring</h3></summary>
+  <p class="lco-note">Accepted requests are checked after their observing window. Final BANZAI products are downloaded incrementally; scan and database ingestion start after every raw frame has a level-91 counterpart.</p>
+  <div class="lco-table-wrap">
+    <table class="lco-table" id="monitor-table">
+      <thead><tr><th>Request</th><th>Target</th><th>Instrument</th><th>LCO state</th><th>Pipeline</th><th>Frames</th><th>Last update</th><th>Detail</th></tr></thead>
+      <tbody id="monitor-body"><tr><td colspan="8" style="color: var(--text-dim); text-align: center;">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</details>
 {% endblock %}
 
 {% block scripts %}
@@ -420,6 +431,16 @@
   ];
 
   var CHECK_IDS = ['sch-include-padding'];
+
+  // Every value that contributes to /api/lco/windows. Editing any of these
+  // invalidates the rendered prediction; win-filter is deliberately absent
+  // because it only changes which already-current rows are displayed.
+  var WINDOW_PREDICTION_IDS = [
+    'sch-target','sch-planet','sch-source','sch-coords',
+    'sch-range-start','sch-range-end','sch-t0','sch-period','sch-duration',
+    'sch-pad-before','sch-pad-after','sch-include-padding',
+    'sch-sites','sch-twilight','sch-obs-airmass','sch-moon-sep'
+  ];
 
   // Site chosen for the Transit obs column; '' (All sites) => full LCO network.
   function selectedSites() {
@@ -1188,6 +1209,26 @@
     saveScheduleState();
   }
 
+  function invalidateGeneratedWindows() {
+    // Avoid replacing ordinary pre-generation messages while the user is
+    // initially filling out the form. Once a result exists, remove every
+    // stale path to it (table, selected windows, plot, and submit hashes).
+    if (!lastWindows.length && el('windows-table').style.display === 'none') return;
+    lastDryRunHash = null;
+    el('btn-submit').disabled = true;
+    resetSplitSubmitState();
+    clearWindows();
+    el('vis-figure').style.display = 'none';
+    if (window.Plotly) Plotly.purge('vis-plot');
+    msg('msg-windows', 'Inputs changed — click “Generate windows” to update the prediction.');
+  }
+
+  WINDOW_PREDICTION_IDS.forEach(function (id) {
+    var node = el(id); if (!node) return;
+    node.addEventListener('input', invalidateGeneratedWindows);
+    node.addEventListener('change', invalidateGeneratedWindows);
+  });
+
   function saveScheduleState(extra) {
     var state = {
       windows: lastWindows,
@@ -1355,6 +1396,7 @@
   el('btn-fetch-ephem').addEventListener('click', function () {
     var target = val('sch-target');
     if (!target) { msg('msg-windows', 'Enter a target first', 'err'); return; }
+    invalidateGeneratedWindows();
     // Force a genuine re-pull from the catalogs/fits. The auto-triggers (typing,
     // blur, source/planet change) reuse fetchTargetInfo's cache, so an explicit
     // click here would otherwise just re-apply stale data. Invalidating the
@@ -1743,6 +1785,44 @@
     }).join(', ');
   }
 
+  function monitoringWarning(monitoring) {
+    if (!monitoring || monitoring.ok !== false) return '';
+    return ' — WARNING: booking succeeded, but automatic monitoring was not registered: ' +
+      escapeHtml(monitoring.error || 'unknown database error');
+  }
+
+  function monitorDate(value) {
+    if (!value) return '—';
+    var date = new Date(Number(value) * 1000);
+    return isNaN(date.getTime()) ? '—' : date.toISOString().replace('T', ' ').slice(0, 19) + 'Z';
+  }
+
+  function refreshMonitoredRequests() {
+    fetch('/api/lco/monitored-requests').then(function (r) { return r.json(); }).then(function (d) {
+      var body = el('monitor-body');
+      if (!body || !d.ok) return;
+      var rows = d.requests || [];
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="8" style="color: var(--text-dim); text-align: center;">No scheduler requests are being monitored yet.</td></tr>';
+        return;
+      }
+      body.innerHTML = rows.map(function (row) {
+        var href = 'https://observe.lco.global/requests/' + encodeURIComponent(row.request_id);
+        var frames = escapeHtml(row.downloaded_count + ' downloaded · ' + row.reduced_frame_count + '/' + row.raw_frame_count + ' reduced');
+        var detail = row.last_error ? '<span style="color: var(--red);">' + escapeHtml(row.last_error) + '</span>' : '—';
+        return '<tr>' +
+          '<td><a href="' + href + '" target="_blank" rel="noopener">' + escapeHtml(row.request_id) + '</a></td>' +
+          '<td>' + escapeHtml(row.target || row.name || '—') + '</td>' +
+          '<td>' + escapeHtml(row.instrument || '—') + '</td>' +
+          '<td>' + escapeHtml(row.request_state || '—') + '</td>' +
+          '<td>' + escapeHtml(row.monitor_state || '—') + '</td>' +
+          '<td>' + frames + '</td>' +
+          '<td>' + escapeHtml(monitorDate(row.updated_at)) + '</td>' +
+          '<td>' + detail + '</td></tr>';
+      }).join('');
+    }).catch(function () {});
+  }
+
   function submitLcoRequest() {
     var body = buildParams();
     body.confirm = true;
@@ -1751,11 +1831,12 @@
     fetch('/api/lco/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       .then(function (r) { return r.json(); }).then(function (d) {
         if (!d.ok) { msg('msg-ipp', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
+        refreshMonitoredRequests();
         var ids = extractRequestIds(d.result);
         if (ids.length) {
-          msgHtml('msg-ipp', 'Submitted: ' + requestLinksHtml(ids), 'ok');
+          msgHtml('msg-ipp', 'Submitted: ' + requestLinksHtml(ids) + monitoringWarning(d.monitoring), d.monitoring && d.monitoring.ok === false ? 'err' : 'ok');
         } else {
-          msg('msg-ipp', 'Submitted: ' + JSON.stringify(d.result || {}), 'ok');
+          msgHtml('msg-ipp', 'Submitted: ' + escapeHtml(JSON.stringify(d.result || {})) + monitoringWarning(d.monitoring), d.monitoring && d.monitoring.ok === false ? 'err' : 'ok');
         }
       }).catch(function (e) { msg('msg-ipp', String(e), 'err'); });
   }
@@ -1845,6 +1926,7 @@
     fetch('/api/lco/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       .then(function (r) { return r.json(); }).then(function (d) {
         if (!d.ok) { msg('msg-split-ipp', 'Leg ' + which.toUpperCase() + ' failed: ' + (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
+        refreshMonitoredRequests();
         var ids = extractRequestIds(d.result);
         // This leg is now a real booking -- disable its own button and
         // "Submit both" (which would otherwise try to book it again).
@@ -1853,7 +1935,7 @@
         lastSplitDryRunHashes[which] = null;
         if (which === 'a') { lastSplitLegAResult = d.result; } else { lastSplitLegBResult = d.result; }
         el('split-partial-warning').style.display = 'none';
-        msgHtml('msg-split-ipp', 'Leg ' + which.toUpperCase() + ' booked: ' + requestLinksHtml(ids), 'ok');
+        msgHtml('msg-split-ipp', 'Leg ' + which.toUpperCase() + ' booked: ' + requestLinksHtml(ids) + monitoringWarning(d.monitoring), d.monitoring && d.monitoring.ok === false ? 'err' : 'ok');
       }).catch(function (e) { msg('msg-split-ipp', String(e), 'err'); });
   }
 
@@ -1888,6 +1970,7 @@
     fetch('/api/lco/split-submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       .then(function (r) { return r.json(); }).then(function (d) {
         if (d.ok) {
+          refreshMonitoredRequests();
           // Both legs are now real bookings -- disable every submit button so
           // a stray click can't book either leg a second time.
           el('btn-submit-leg-a').disabled = true;
@@ -1896,11 +1979,14 @@
           lastSplitDryRunHashes = null;
           var idsA = extractRequestIds(d.leg_a.result);
           var idsB = extractRequestIds(d.leg_b.result);
-          msgHtml('msg-split-ipp', 'Submitted — leg A: ' + requestLinksHtml(idsA) + ' · leg B: ' + requestLinksHtml(idsB), 'ok');
+          var warningA = monitoringWarning(d.leg_a && d.leg_a.monitoring);
+          var warningB = monitoringWarning(d.leg_b && d.leg_b.monitoring);
+          msgHtml('msg-split-ipp', 'Submitted — leg A: ' + requestLinksHtml(idsA) + ' · leg B: ' + requestLinksHtml(idsB) + warningA + warningB, warningA || warningB ? 'err' : 'ok');
           el('split-partial-warning').style.display = 'none';
           return;
         }
         if (d.partial) {
+          refreshMonitoredRequests();
           // Leg A is already a real booking -- disable both its own button
           // and "Submit both" so neither can re-submit (and re-book) leg A;
           // "Submit Leg B only" (if leg B's dry-run passed) is safe from here.
@@ -1911,7 +1997,8 @@
           var bookedIds = extractRequestIds(lastSplitLegAResult);
           el('split-partial-text').innerHTML = 'Leg A (' + escapeHtml((val('sch-site-a') || '').toUpperCase()) +
             ') is booked: ' + requestLinksHtml(bookedIds) + '. Leg B failed: ' +
-            escapeHtml((d.leg_b && d.leg_b.error) || 'failed') + '. Use "Submit Leg B only" to retry it.';
+            escapeHtml((d.leg_b && d.leg_b.error) || 'failed') + '. Use "Submit Leg B only" to retry it.' +
+            monitoringWarning(d.leg_a && d.leg_a.monitoring);
           el('split-partial-warning').style.display = '';
           msg('msg-split-ipp', 'Leg A booked, leg B failed — see the warning above.', 'err');
           return;
@@ -2006,7 +2093,13 @@
       if (!confirmed) return;
       var p = buildParams(); p.kind = currentTestRecord.instrument; p.confirm = true; p.dry_run_hash = currentTestHash;
       fetch('/api/lco/test-observations/' + encodeURIComponent(currentTestRecord.id) + '/submit', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(p) })
-        .then(function (r) { return r.json(); }).then(function (d) { if (!d.ok) throw new Error(d.error || 'Submission failed'); msg('msg-test-observation', 'Submitted successfully.'); el('btn-test-submit').disabled = true; })
+        .then(function (r) { return r.json(); }).then(function (d) {
+          if (!d.ok) throw new Error(d.error || 'Submission failed');
+          refreshMonitoredRequests();
+          var warning = monitoringWarning(d.monitoring);
+          msgHtml('msg-test-observation', 'Submitted successfully.' + warning, warning ? 'err' : 'ok');
+          el('btn-test-submit').disabled = true;
+        })
         .catch(function (e) { msg('msg-test-observation', String(e), 'err'); });
     });
   });
@@ -2063,6 +2156,8 @@
   var targetFromQuery = prefillTargetFromQuery(urlParams);
   if (val('sch-target')) refreshTargetFields({ silent: true, isInitialLoad: !targetFromQuery });
   prefillFromView(urlParams);
+  refreshMonitoredRequests();
+  window.setInterval(refreshMonitoredRequests, 30000);
 })();
 </script>
 {% endblock %}

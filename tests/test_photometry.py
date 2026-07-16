@@ -204,6 +204,31 @@ class TestListOutputs:
         assert set(out["bands"]["Na_D"]) == {"csv", "ref"}
         assert phot.discovered_targets("muscat2", "250424") == ["TOI07147.01"]
 
+    def test_bands_ordered_canonically_including_narrowbands(self, monkeypatch, tmp_path):
+        # Bands are discovered in filename order but must be presented
+        # canonically: broadband (gp, rp, ip, zs) then narrowband (g_narrow,
+        # Na_D, i_narrow, z_narrow), regardless of the order they are found in.
+        base = tmp_path / "prose"
+        base.mkdir()
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(base))
+        rdir = base / "muscat2" / "250424"
+        rdir.mkdir(parents=True)
+        # Write in a deliberately scrambled order.
+        for band in ("z_narrow", "ip", "Na_D", "gp", "i_narrow", "zs", "g_narrow", "rp"):
+            bstem = f"TOI-1234_muscat2_{band}_250424"
+            (rdir / (bstem + ".csv")).write_text("BJD_TDB,Flux\n1,1\n")
+        out = phot.list_outputs("muscat2", "250424", "TOI-1234")
+        assert list(out["bands"]) == [
+            "gp",
+            "rp",
+            "ip",
+            "zs",
+            "g_narrow",
+            "Na_D",
+            "i_narrow",
+            "z_narrow",
+        ]
+
     def test_classifies_sinistro_site_token(self, monkeypatch, tmp_path):
         # Sinistro reduced with --site embeds the site between inst and the
         # band/date: <target>_sinistro_<site>_<date> (summary) and
@@ -595,6 +620,7 @@ class TestRunOptions:
         cmd = phot.build_command(INST, DATE, TARGET, {}, test_run=False)
         # default numerics are NOT echoed
         for flag in ("--gif_stride", "--max_num_stars", "--cutout_size",
+                     "--display_stack_nframes",
                      "--ccd_trim", "--edge_margin", "--bin_size_minutes", "--ref_band",
                      "--ref_select", "--ref_select_top_k",
                      "--aper_radii", "--no_gif", "--use_barycorrpy"):
@@ -639,6 +665,29 @@ class TestRunOptions:
         assert "--use_barycorrpy" in cmd
         assert "--gif_stride 50" in s
         assert "--nan-imputation-method median" in s
+
+    def test_display_stack_nframes_emitted_only_when_changed(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path))
+        # changed from the default -> emitted (string from the GUI is coerced)
+        cmd = phot.build_command(
+            INST, DATE, TARGET, {"display_stack_nframes": "30"}, test_run=False
+        )
+        assert "--display_stack_nframes 30" in " ".join(cmd)
+        # single-frame request (1) is a change from the default and is emitted
+        cmd_one = phot.build_command(
+            INST, DATE, TARGET, {"display_stack_nframes": "1"}, test_run=False
+        )
+        assert "--display_stack_nframes 1" in " ".join(cmd_one)
+        # default value and blank are both omitted (pipeline keeps its default)
+        default = str(phot.RUN_DEFAULTS["display_stack_nframes"])
+        cmd_def = phot.build_command(
+            INST, DATE, TARGET, {"display_stack_nframes": default}, test_run=False
+        )
+        assert "--display_stack_nframes" not in cmd_def
+        cmd_blank = phot.build_command(
+            INST, DATE, TARGET, {"display_stack_nframes": ""}, test_run=False
+        )
+        assert "--display_stack_nframes" not in cmd_blank
 
     def test_ref_select_quality_default_top_k_not_echoed(self, monkeypatch, tmp_path):
         # ref_select_top_k left at the RUN_DEFAULTS value should not be echoed
@@ -1221,9 +1270,15 @@ class TestFinalizeGrace:
     while the log grows, then go terminal once the log is quiescent — so the
     photometry page's live log does not freeze at parent-exit."""
 
-    def _make_job(self, monkeypatch, tmp_path):
+    @staticmethod
+    def _clear_jobs():
         with phot._LOCK:
+            for job in phot._JOBS.values():
+                job.logf.close()
             phot._JOBS.clear()
+
+    def _make_job(self, monkeypatch, tmp_path):
+        self._clear_jobs()
         rdir = tmp_path / INST / DATE
         rdir.mkdir(parents=True)
         log = phot._run_log_path(rdir, INST, DATE, TARGET)
@@ -1271,8 +1326,7 @@ class TestFinalizeGrace:
             assert s["state"] == "done"
             assert "lightcurve.csv" in s["log"]
         finally:
-            with phot._LOCK:
-                phot._JOBS.clear()
+            self._clear_jobs()
 
     def test_terminal_marker_shortens_finalize_window(self, monkeypatch, tmp_path):
         """Once prose logs a terminal result line, the finalize window shrinks to
@@ -1300,8 +1354,7 @@ class TestFinalizeGrace:
             _t.sleep(1.2)
             assert phot.job_status(INST, DATE, TARGET)["state"] == "done"
         finally:
-            with phot._LOCK:
-                phot._JOBS.clear()
+            self._clear_jobs()
 
     def test_partial_failure_marker_shortens_finalize_window(
         self, monkeypatch, tmp_path
@@ -1320,8 +1373,7 @@ class TestFinalizeGrace:
             _t.sleep(1.2)
             assert phot.job_status(INST, DATE, TARGET)["state"] == "error"
         finally:
-            with phot._LOCK:
-                phot._JOBS.clear()
+            self._clear_jobs()
 
     def test_cancelled_job_finalizes_immediately(self, monkeypatch, tmp_path):
         # A large grace window proves Cancel bypasses the finalize gate even
@@ -1335,8 +1387,7 @@ class TestFinalizeGrace:
                 f.write("INFO: still writing during cancel\n")
             assert phot.job_status(INST, DATE, TARGET)["state"] == "cancelled"
         finally:
-            with phot._LOCK:
-                phot._JOBS.clear()
+            self._clear_jobs()
 
     def test_sync_jobs_persists_finalizing_as_running(self, monkeypatch, tmp_path):
         """While finalizing, sync_jobs must persist the DB row as 'running' so the
@@ -1359,8 +1410,7 @@ class TestFinalizeGrace:
             assert phot_saves[-1]["state"] == "running"
             assert phot_saves[-1]["returncode"] is None
         finally:
-            with phot._LOCK:
-                phot._JOBS.clear()
+            self._clear_jobs()
 
 
 # ── routes (FastAPI TestClient) ──────────────────────────────────────────────
@@ -1384,6 +1434,91 @@ class TestRoutes:
         assert f"{TARGET}_{INST}_{DATE}_lightcurves.png" in r.text
         assert "Per-band products" in r.text
         assert "MuscatRouteState.rememberPhotometry" in r.text
+
+    def test_photometry_page_resolves_unique_normalized_target(
+        self, client, prose_dir, tmp_path,
+    ):
+        import sqlite3
+
+        raw_target = "TOI-179b_231015 J025710-560913"
+        inst = "muscat4"
+        date = "231015"
+        stem = f"{raw_target.replace(' ', '')}_{inst}_{date}"
+        result_dir = prose_dir / inst / date
+        result_dir.mkdir(parents=True)
+        (result_dir / f"{stem}_lightcurves.png").write_bytes(b"\x89PNG\r\n")
+
+        with sqlite3.connect(tmp_path / "muscat.db") as conn:
+            conn.execute(
+                "INSERT INTO frames (instrument,obsdate,ccd,filename,object) "
+                "VALUES (?,?,?,?,?)",
+                (inst, date, 1, "frame.fits", raw_target),
+            )
+            conn.execute(
+                "INSERT INTO summaries (instrument,obsdate,ccd,object,nframes) "
+                "VALUES (?,?,?,?,?)",
+                (inst, date, 1, raw_target, 1),
+            )
+
+        response = client.get(
+            "/photometry",
+            params={"inst": inst, "date": date, "target": "TOI179"},
+        )
+
+        assert response.status_code == 200
+        assert '<option value="TOI179" selected>' in response.text
+        assert f"{stem}_lightcurves.png" in response.text
+
+    def test_photometry_target_resolution_refuses_ambiguous_alias(self):
+        from muscat_db.web import _resolve_dataset_target
+
+        candidates = [
+            "TOI-179b_231015 J025710-560913",
+            "TOI-179.01",
+        ]
+
+        assert _resolve_dataset_target("TOI179", candidates) == "TOI179"
+        assert _resolve_dataset_target(candidates[0], candidates) == candidates[0]
+
+    def test_photometry_page_canonicalizes_space_only_target_alias(
+        self, client, prose_dir, tmp_path,
+    ):
+        import sqlite3
+
+        raw_target = "HIP 67522"
+        compact_target = "HIP67522"
+        inst = "muscat4"
+        date = "260511"
+        result_dir = prose_dir / inst / date
+        result_dir.mkdir(parents=True)
+        (result_dir / f"{compact_target}_{inst}_{date}_lightcurves.png").write_bytes(
+            b"\x89PNG\r\n",
+        )
+        with sqlite3.connect(tmp_path / "muscat.db") as conn:
+            conn.execute(
+                "INSERT INTO summaries (instrument,obsdate,ccd,object,nframes) "
+                "VALUES (?,?,?,?,?)",
+                (inst, date, 1, raw_target, 1),
+            )
+
+        legacy = client.get(
+            "/photometry",
+            params={"inst": inst, "date": date, "target": raw_target},
+            follow_redirects=False,
+        )
+        assert legacy.status_code == 307
+        assert legacy.headers["location"].endswith(
+            "/photometry?inst=muscat4&date=260511&target=HIP67522"
+        )
+
+        canonical = client.get(
+            "/photometry",
+            params={"inst": inst, "date": date, "target": compact_target},
+        )
+        assert canonical.status_code == 200
+        assert canonical.text.count('<option value="HIP67522" selected>') == 1
+        assert '<option value="HIP 67522"' not in canonical.text
+        assert f"{compact_target}_{inst}_{date}_lightcurves.png" in canonical.text
 
     def test_photometry_page_versions_artifact_urls(self, client):
         r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
@@ -1778,6 +1913,42 @@ class TestRoutes:
         assert "Created:" in r.text
         assert "MuscatRouteState.rememberTransitFit" in r.text
 
+    def test_transit_fit_page_deduplicates_space_only_target_aliases(
+        self, client, tmp_path, mocker,
+    ):
+        csv_path = tmp_path / "HIP67522_muscat4_gp_260511.csv"
+        csv_path.write_text("BJD_TDB,Flux\n1,1\n")
+        mocker.patch("muscat_db.web._get_dates", return_value=[])
+        mocker.patch("muscat_db.web._get_objects", return_value=["HIP 67522"])
+        mocker.patch("muscat_db.photometry.discovered_targets", return_value=["HIP67522"])
+        get_csvs = mocker.patch(
+            "muscat_db.transit_fit.get_csv_lightcurves",
+            return_value=[csv_path],
+        )
+        mocker.patch("muscat_db.transit_fit.list_fit_runs", return_value=[])
+        mocker.patch("muscat_db.transit_fit.get_fit_outputs", return_value=None)
+        mocker.patch("muscat_db.transit_fit.get_target_parameters", return_value={})
+
+        canonical = client.get(
+            "/transit-fit",
+            params={"inst": "muscat4", "date": "260511", "target": "HIP67522"},
+        )
+
+        assert canonical.status_code == 200
+        assert canonical.text.count('<option value="HIP67522" selected>') == 1
+        assert '<option value="HIP 67522"' not in canonical.text
+        get_csvs.assert_called_once_with("muscat4", "260511", "HIP67522")
+
+        legacy = client.get(
+            "/transit-fit",
+            params={"inst": "muscat4", "date": "260511", "target": "HIP 67522"},
+            follow_redirects=False,
+        )
+        assert legacy.status_code == 307
+        assert legacy.headers["location"].endswith(
+            "/transit-fit?inst=muscat4&date=260511&target=HIP67522"
+        )
+
     def test_transit_fit_sinistro_site_mode_chips(self, client, tmp_path, mocker):
         import os
         # two sites (cpt, lsc); lsc also has a full_frame variant.
@@ -1855,6 +2026,72 @@ class TestRoutes:
         assert data["ok"] is True
         assert data["pl_name"] == "WASP-104 b"
         assert data["params"]["teff"] == 5475.0
+
+    def test_transit_fit_query_archive_toi_uses_exact_tic_crossmatch(
+        self, client, monkeypatch, tmp_path,
+    ):
+        """TOI-179 must resolve to HD 18599 b, never prefix-match TOI-1798."""
+        import httpx
+        from muscat_db import web
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        (data_dir / "TOIs.csv").write_text(
+            "toi,planet name,tic id\n"
+            "179.01,TOI-179.01,207141131\n",
+        )
+        (data_dir / "nexsci_ps.csv").write_text(
+            "pl_name,pl_letter,hostname,hd_name,hip_name,tic_id,gaia_id,gaia_dr3_id,default_flag\n"
+            "TOI-1798.01,b,TOI-1798,,,TIC 198153540,Gaia 1,Gaia 1,1\n"
+            "HD 18599 b,b,HD 18599,HD 18599,HIP 13754,TIC 207141131,Gaia 2,Gaia 2,1\n",
+        )
+        monkeypatch.setattr(web, "HERE", tmp_path / "src" / "muscat_db")
+        monkeypatch.setattr(web, "_target_tic_id", lambda target, datasets=None: "207141131")
+
+        async def false_prefix_response(url, **kwargs):
+            return httpx.Response(
+                200,
+                json=[{"pl_name": "TOI-1798.01", "hostname": "TOI-1798"}],
+                request=httpx.Request("GET", url),
+            )
+
+        monkeypatch.setattr(web, "_async_get", false_prefix_response)
+
+        response = client.get(
+            "/api/transit-fit/query-archive",
+            params={"target": "TOI-179", "source": "nasa"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+        assert response.json()["pl_name"] == "HD 18599 b"
+
+    def test_transit_fit_query_archive_rejects_numeric_prefix_match(
+        self, client, monkeypatch, tmp_path,
+    ):
+        import httpx
+        from muscat_db import web
+
+        monkeypatch.setattr(web, "HERE", tmp_path / "src" / "muscat_db")
+        monkeypatch.setattr(web, "_target_tic_id", lambda target, datasets=None: "")
+
+        async def false_prefix_response(url, **kwargs):
+            return httpx.Response(
+                200,
+                json=[{"pl_name": "TOI-1798.01", "hostname": "TOI-1798"}],
+                request=httpx.Request("GET", url),
+            )
+
+        monkeypatch.setattr(web, "_async_get", false_prefix_response)
+
+        response = client.get(
+            "/api/transit-fit/query-archive",
+            params={"target": "TOI-179", "source": "nasa"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["ok"] is False
+        assert "No parameters found" in response.json()["error"]
 
     def test_transit_fit_query_archive_escapes_adql_literals(self, client, mocker):
         import httpx
@@ -2172,6 +2409,10 @@ class TestRoutes:
         assert _normalize_target_name("TOI06109.01") == "TOI6109"
         assert _normalize_target_name("TOI06109.02") == "TOI6109"
         assert _normalize_target_name("TOI 06109 b") == "TOI6109"
+        assert _normalize_target_name("TOI-179b_231015 J025710-560913") == "TOI179"
+        # An underscore can be part of a legitimate TOI spelling; only the
+        # recognized date + coordinate decoration may be removed.
+        assert _normalize_target_name("TOI_2457") == "TOI2457"
         assert _normalize_target_name("HIP 67522") == "HIP67522"
 
     def test_target_name_normalization_does_not_reinterpret_malformed_tois(self):

@@ -67,9 +67,9 @@ RUN_DEFAULTS: dict = {
     "bands": DEFAULT_BANDS,
     "ref_band": "",            # "" -> per-band self-reference (pipeline default)
     "refid": "",               # "" -> pipeline default (0 / middle frame, or the
-                               # quality pre-check's pick when ref_select=quality)
-    "ref_select": "position",  # position (default, unchanged legacy behavior) | quality
-    "ref_select_top_k": 5,     # candidates pixel-validated in Tier 2 when ref_select=quality
+                               # quality mode's persistent-catalog anchor)
+    "ref_select": "position",  # position (legacy) | quality (local temporal persistence)
+    "ref_select_top_k": 5,     # local catalogs registered when ref_select=quality
     "aper_radii": "",          # "MIN,MAX,DR"; "" -> Gaia heuristic
     "annulus": "",             # "RIN,ROUT"; required with aper_radii
     "aper_unit": "pix",        # pix | fwhm (only applies with aper_radii)
@@ -82,6 +82,10 @@ RUN_DEFAULTS: dict = {
     "max_num_stars": 10,
     "n_stars_align": "",       # "" -> same as max_num_stars
     "cutout_size": 35,
+    "display_stack_nframes": 15,  # own frames aligned+median-stacked into the
+                                  # display reference for the ref/apertures/
+                                  # cutouts/stacks plots of non-reference bands
+                                  # under --ref_band (1 -> single frame)
     "ccd_trim": "",            # "Y,X"; "" -> no trim (pipeline default)
     "edge_margin": "",         # px from CCD edge to exclude comps; "" -> auto (half cutout), 0 -> off
     "bin_size_minutes": 10.0,
@@ -679,7 +683,7 @@ def list_outputs(
         if key != "nearby_stars"
     ]
 
-    # Strip internal keys and order bands canonically (gp, rp, ip, zs)
+    # Strip internal keys and order bands canonically (see band ordering below)
     out["summary_items"].sort(
         key=lambda item: (
             ["lightcurves", "raw_flux", "covariates", "stacks"].index(item["key"])
@@ -699,7 +703,14 @@ def list_outputs(
     out.pop("_npz_mtime", None)
     out.pop("_ref_header_mtime", None)
     out.pop("_ref_selection_mtime", None)
-    ordered = {b: out["bands"][b] for b in DEFAULT_BANDS if b in out["bands"]}
+    # Order band tabs canonically: broadband (gp, rp, ip, zs) then narrowband
+    # (g_narrow, Na_D, i_narrow, z_narrow); any unrecognized bands keep their
+    # discovered (filename) order after the known ones.
+    ordered = {
+        b: out["bands"][b]
+        for b in (*DEFAULT_BANDS, *NARROW_BANDS)
+        if b in out["bands"]
+    }
     for b, v in out["bands"].items():
         ordered.setdefault(b, v)
     out["bands"] = ordered
@@ -1067,7 +1078,7 @@ def normalize_run_options(raw: dict | None) -> dict:
             val = str(raw.get(key, "")).strip()
             o[key] = "" if val == "" else (_to_int(val) if _to_int(val) is not None else "")
 
-    for key in ("test_run_frames", "max_num_stars", "cutout_size", "gif_stride", "min_star_area", "edge_margin", "ref_select_top_k"):
+    for key in ("test_run_frames", "max_num_stars", "cutout_size", "display_stack_nframes", "gif_stride", "min_star_area", "edge_margin", "ref_select_top_k"):
         if str(raw.get(key, "")).strip() != "":
             iv = _to_int(raw[key])
             if iv is not None:
@@ -1238,6 +1249,7 @@ def build_command(
         ("--min_star_separation", "min_star_separation"),
         ("--max_num_stars", "max_num_stars"),
         ("--cutout_size", "cutout_size"),
+        ("--display_stack_nframes", "display_stack_nframes"),
         ("--bin_size_minutes", "bin_size_minutes"),
         ("--gif_stride", "gif_stride"),
         ("--sig_bkg", "sig_bkg"),

@@ -30,9 +30,15 @@ class _FakeProc:
         return self._rc
 
 
-def _make_job(tmp_path):
+def _clear_jobs():
     with fit._FIT_LOCK:
+        for job in fit._FIT_JOBS.values():
+            job.logf.close()
         fit._FIT_JOBS.clear()
+
+
+def _make_job(tmp_path):
+    _clear_jobs()
     log = tmp_path / "timer-fit.log"
     log.write_text("$ timer-fit\nINFO: started\n")
     proc = _FakeProc(rc=None)
@@ -68,8 +74,7 @@ class TestTransitFitFinalizeGrace:
             time.sleep(1.2)
             assert fit.job_status(INST, DATE, TARGET)["state"] == "done"
         finally:
-            with fit._FIT_LOCK:
-                fit._FIT_JOBS.clear()
+            _clear_jobs()
 
     def test_terminal_marker_shortens_finalize_window(self, monkeypatch, tmp_path):
         monkeypatch.setattr(fit, "_FINALIZE_GRACE_S", 600)
@@ -85,8 +90,7 @@ class TestTransitFitFinalizeGrace:
             time.sleep(1.2)
             assert fit.job_status(INST, DATE, TARGET)["state"] == "done"
         finally:
-            with fit._FIT_LOCK:
-                fit._FIT_JOBS.clear()
+            _clear_jobs()
 
     def test_cancelled_job_finalizes_immediately(self, monkeypatch, tmp_path):
         monkeypatch.setattr(fit, "_FINALIZE_GRACE_S", 600)
@@ -98,8 +102,7 @@ class TestTransitFitFinalizeGrace:
                 f.write("INFO: still writing during cancel\n")
             assert fit.job_status(INST, DATE, TARGET)["state"] == "cancelled"
         finally:
-            with fit._FIT_LOCK:
-                fit._FIT_JOBS.clear()
+            _clear_jobs()
 
     def test_sync_jobs_persists_finalizing_as_running(self, monkeypatch, tmp_path):
         """While finalizing, sync_jobs must persist the DB row as 'running' so the
@@ -120,5 +123,4 @@ class TestTransitFitFinalizeGrace:
             assert fit_saves[-1]["state"] == "running"
             assert fit_saves[-1]["returncode"] is None
         finally:
-            with fit._FIT_LOCK:
-                fit._FIT_JOBS.clear()
+            _clear_jobs()

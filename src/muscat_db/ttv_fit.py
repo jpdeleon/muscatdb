@@ -722,10 +722,12 @@ def delete_ttv_fit(target: str, run_name: str = "") -> dict:
     with _TTV_LOCK:
         _TTV_JOBS.pop(job_key, None)
     _ttv_outputs_cache.clear()
+    _ttv_model_cache.clear()
     return {"ok": True, "count": removed}
 
 
 _ttv_outputs_cache = register_cache(ttl=300.0)
+_ttv_model_cache = register_cache(ttl=300.0)
 
 
 def has_ttv_outputs(target: str, run_name: str = "") -> bool:
@@ -788,6 +790,7 @@ def _get_ttv_outputs_mtime(
         "has_data_csv": False,
         "has_config_ini": False,
         "has_samples": False,
+        "has_model": False,
         "extra_files": [],
     }
     try:
@@ -806,6 +809,10 @@ def _get_ttv_outputs_mtime(
         outputs["has_config_ini"] = True
     if (rdir / "samples.csv.gz").is_file():
         outputs["has_samples"] = True
+    outputs["has_model"] = all(
+        (rdir / name).is_file()
+        for name in ("samples.csv.gz", "data.csv", "config.ini", "fit_config.json")
+    )
 
     for p in sorted(rdir.glob("*.png")):
         if p.is_file():
@@ -835,6 +842,95 @@ def _get_ttv_outputs_mtime(
             outputs["has_any"] = True
 
     return outputs
+
+
+def get_ttv_model(
+    target: str, run_name: str = "", end_date: str = ""
+) -> dict:
+    """Return the minimum-chi-square posterior model for a saved harmonic run.
+
+    ``end_date`` is an optional ISO UTC calendar date.  It extends prediction
+    through the end of that day; the helper always retains the full fitted
+    data range, so an earlier date never truncates existing observations.
+    """
+    try:
+        rdir = ttv_output_dir(target, run_name)
+    except ValueError:
+        return {"ok": False, "error": "invalid target"}
+
+    end_bjd: float | None = None
+    normalized_date = ""
+    if end_date:
+        try:
+            parsed_date = datetime.date.fromisoformat(end_date)
+        except ValueError:
+            return {"ok": False, "error": "end_date must be YYYY-MM-DD"}
+        normalized_date = parsed_date.isoformat()
+        end_utc = datetime.datetime.combine(
+            parsed_date, datetime.time.max, tzinfo=datetime.timezone.utc
+        )
+        end_bjd = end_utc.timestamp() / 86400.0 + 2440587.5
+
+    required = ("samples.csv.gz", "data.csv", "config.ini", "fit_config.json")
+    if not rdir.is_dir() or not all((rdir / name).is_file() for name in required):
+        return {"ok": False, "error": "saved run has no complete TTV model output"}
+    try:
+        version = max((rdir / name).stat().st_mtime_ns for name in required)
+    except OSError:
+        return {"ok": False, "error": "could not inspect saved TTV model output"}
+    return _get_ttv_model_cached(target, run_name, normalized_date, end_bjd, version)
+
+
+@_ttv_model_cache
+def _get_ttv_model_cached(
+    target: str,
+    run_name: str,
+    end_date: str,
+    end_bjd: float | None,
+    _version: int,
+) -> dict:
+    rdir = ttv_output_dir(target, run_name)
+    harmonic_python = _conda_env_python("harmonic")
+    if not harmonic_python:
+        return {"ok": False, "error": "harmonic conda environment is unavailable"}
+    helper = pathlib.Path(__file__).with_name("_ttv_model_helper.py")
+    command = [harmonic_python, str(helper), str(rdir)]
+    if end_bjd is not None:
+        command.extend(["--end-bjd", repr(end_bjd)])
+    env = os.environ.copy()
+    matplotlib_config = pathlib.Path.home() / "temp" / "matplotlib"
+    try:
+        matplotlib_config.mkdir(parents=True, exist_ok=True)
+        env.setdefault("MPLCONFIGDIR", str(matplotlib_config))
+    except OSError:
+        pass
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("TTV model evaluation failed for %s/%s: %s", target, run_name, exc)
+        return {"ok": False, "error": "TTV model evaluation failed"}
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()
+        logger.warning(
+            "TTV model evaluation failed for %s/%s: %s",
+            target,
+            run_name,
+            detail[-1] if detail else f"exit {completed.returncode}",
+        )
+        return {"ok": False, "error": "TTV model evaluation failed"}
+    try:
+        result = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return {"ok": False, "error": "TTV model returned invalid output"}
+    result.update({"ok": True, "run_name": slugify_run_name(run_name), "end_date": end_date})
+    return result
 
 
 def sync_jobs() -> None:

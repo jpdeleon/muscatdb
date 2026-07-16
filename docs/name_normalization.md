@@ -9,7 +9,8 @@ rename targets in `muscat.db`, rewrite FITS headers, rename data directories,
 or replace the spelling shown as the source name.
 
 The comparison key is currently produced by `_normalize_target_name` in
-`src/muscat_db/web.py`. It is used to group raw target spellings in target and
+`src/muscat_db/catalog.py` (re-exported through `web.py`). It is used to group raw
+target spellings in target and
 dataset views and by several catalog, ephemeris, job, and archive lookups.
 
 ## Current rule

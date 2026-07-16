@@ -35,6 +35,7 @@ dev = [
     "httpx>=0.28",
     "ruff>=0.8",
     "pandas>=2.2", # Used in notebooks for data manipulation
+    "pre-commit>=4.6.0",
 ]
 
 [tool.pytest.ini_options]
