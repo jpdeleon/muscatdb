@@ -537,10 +537,42 @@ def test_ephemeris_utc_axis_preserves_plot_area_height():
 
     assert "const OC_PLOT_BASE_HEIGHT = 450" in html
     assert "const OC_PLOT_UTC_AXIS_EXTRA_HEIGHT = 105" in html
-    assert "const plotHeight = OC_PLOT_BASE_HEIGHT +" in html
+    assert "const secondaryAxisExtraHeight = showTwin" in html
+    assert "const plotHeight = OC_PLOT_BASE_HEIGHT + secondaryAxisExtraHeight" in html
     assert "plotDiv.style.height = plotHeight + 'px'" in html
     assert "height: plotHeight" in html
-    assert "height: 600 + (showTwin ? OC_PLOT_UTC_AXIS_EXTRA_HEIGHT : 0)" in html
+    assert "height: 600 + (showTwin" in html
+
+
+def test_ephemeris_epoch_twin_axes_attach_to_each_planet_and_exclude_utc_axis():
+    html = _read_template("ephemeris.html")
+
+    assert 'id="show-epoch-checkbox"' in html
+    assert "Show epoch numbers" in html
+    assert "const OC_PLOT_EPOCH_AXIS_EXTRA_HEIGHT = 90" in html
+
+    epoch_ticks = _function_body(html, "epochTwinTicks")
+    assert ".map(p => Number(p.epoch))" in epoch_ticks
+    assert "t0 + epoch * period - bjdOffset" in epoch_ticks
+    assert "ticktext: shownEpochs.map(String)" in epoch_ticks
+
+    draw_plot = _function_body(html, "drawPlot")
+    assert "&& !showTwin" in draw_plot
+    assert "const axisNumber = i + 2" in draw_plot
+    assert "const yaxisRef = i === 0 ? 'y' : `y${i + 1}`" in draw_plot
+    assert "title: `Epoch (planet ${pl.toLowerCase()})`" in draw_plot
+    assert "anchor: yaxisRef" in draw_plot
+    assert "overlaying: 'x'" in draw_plot
+
+    view_state = _function_body(html, "collectEphemerisViewState")
+    assert "show_epoch:" in view_state
+    apply_state = _function_body(html, "applyViewStateToStorage")
+    assert "typeof state.show_epoch === 'boolean'" in apply_state
+    assert "if (state.show_epoch)" in apply_state
+
+    assert "showTwinCheckbox.checked = false" in html
+    assert "epochTwin.checked = false" in html
+    assert "STORAGE_OPTS_PREFIX + 'show-epoch'" in html
 
 
 def test_ephemeris_csv_import_saves_datasetless_view_before_success():
@@ -580,6 +612,149 @@ def test_ephemeris_dataset_run_name_uses_transit_coverage_suffix():
     assert "['full', 'ing', 'egr'].includes(d.transit_coverage)" in render_table
     assert "${d.run_name}${coverageSuffix}" in render_table
     assert "runTypeBadge" not in render_table
+
+
+def test_ephemeris_dataset_target_column_only_shows_for_multiple_unique_targets():
+    html = _read_template("ephemeris.html")
+
+    target_visibility = _function_body(html, "showDatasetTargetColumn")
+    assert "new Set(" in target_visibility
+    assert "loadedTargets.map" in target_visibility
+    assert "uniqueTargetNames.size > 1" in target_visibility
+
+    render_table = _function_body(html, "renderDatasetsTable")
+    assert "const showTargetColumn = showDatasetTargetColumn()" in render_table
+    assert "targetHeader.style.display = showTargetColumn ? '' : 'none'" in render_table
+    assert "const columnCount = showTargetColumn ? 8 : 7" in render_table
+    assert "renderManualRow(tbody, mp, showTargetColumn)" in render_table
+
+    manual_row = _function_body(html, "renderManualRow")
+    assert "showTargetColumn ? `<td>" in manual_row
+
+
+def test_ephemeris_dataset_table_epochs_follow_selected_reference_ephemeris():
+    html = _read_template("ephemeris.html")
+
+    assert 'E=0 is the chosen planetary reference epoch">Epoch</th>' in html
+
+    render_table = _function_body(html, "renderDatasetsTable")
+    assert "const epoch = planetEpochForTC(pl, Number(item.tc))" in render_table
+    assert 'class="badge dataset-epoch"' in render_table
+    assert "${epochsSummary}" in render_table
+    assert "pl.toLowerCase())}: ${epochText}" not in render_table
+
+    raw_ephem = _function_body(html, "rawPlanetEphemeris")
+    assert "card.querySelector('.planet-t0')" in raw_ephem
+    assert "card.querySelector('.planet-period')" in raw_ephem
+
+    epoch_for_tc = _function_body(html, "planetEpochForTC")
+    assert "effectivePlanetEphemeris(planet)" in epoch_for_tc
+    assert "Math.round((tc - ephem.t0) / ephem.period)" in epoch_for_tc
+
+    refresh_epochs = _function_body(html, "refreshDisplayedEpochs")
+    assert "document.querySelectorAll('.dataset-epoch')" in refresh_epochs
+    assert "document.querySelectorAll('.manual-epoch')" in refresh_epochs
+    assert "planet.toLowerCase()" not in refresh_epochs
+
+    schedule_fit = _function_body(html, "scheduleComputeFit")
+    assert "refreshDisplayedEpochs()" in schedule_fit
+
+
+def test_ephemeris_reference_epoch_can_center_on_included_dataset_midpoint():
+    html = _read_template("ephemeris.html")
+
+    assert 'id="center-epoch-checkbox"' in html
+    assert "Shift reference epoch near dataset midpoint" in html
+    assert "T0′ = chosen T0 + N × period" in html
+
+    epoch_shift = _function_body(html, "planetEpochShift")
+    assert "document.querySelectorAll('.dataset-checkbox:checked')" in epoch_shift
+    assert "if (!mp.checked || mp.planet !== planet" in epoch_shift
+    assert "const eMin = Math.min(...epochs)" in epoch_shift
+    assert "const eMax = Math.max(...epochs)" in epoch_shift
+    assert "eMin + Math.floor((eMax - eMin) / 2)" in epoch_shift
+
+    effective_ephem = _function_body(html, "effectivePlanetEphemeris")
+    assert "ephem.t0 + epochShift * ephem.period" in effective_ephem
+
+    compute_fit = _function_body(html, "computeFit")
+    assert "const epochShift = planetEpochShift(pl)" in compute_fit
+    assert "t0: t0 + epochShift * period" in compute_fit
+
+    view_state = _function_body(html, "collectEphemerisViewState")
+    assert "center_epoch:" in view_state
+    apply_state = _function_body(html, "applyViewStateToStorage")
+    assert "typeof state.center_epoch === 'boolean'" in apply_state
+    assert "cb.checked = state.center_epoch" in apply_state
+
+    assert "STORAGE_OPTS_PREFIX + 'center-epoch'" in html
+    assert "centerEpochCheckbox.addEventListener('change'" in html
+
+
+def test_ephemeris_imported_csv_epoch_is_shown_only_in_epoch_column():
+    html = _read_template("ephemeris.html")
+
+    manual_row = _function_body(html, "renderManualRow")
+    assert "CSV E=" not in manual_row
+    assert 'class="manual-epoch"' in manual_row
+
+    # Preserve the source epoch for validation/provenance even though the
+    # transit-center cell no longer displays a second, competing epoch badge.
+    collect_manual = _function_body(html, "collectManualPointsForRequest")
+    assert "source_epoch: mp.source_epoch" in collect_manual
+
+
+def test_ephemeris_bjd_axis_offset_uses_effective_reference_epoch():
+    html = _read_template("ephemeris.html")
+
+    plot_offset = _function_body(html, "plotBjdOffset")
+    assert "fitResults?.[pl]?.t0_ref" in plot_offset
+    assert "Math.round(referenceT0)" in plot_offset
+    assert "Math.floor(firstPoint.bjd)" in plot_offset
+
+    draw_plot = _function_body(html, "drawPlot")
+    assert "const referenceBjdOffset = plotBjdOffset(planets, showExcluded)" in draw_plot
+    assert "const bjdOffset = foundBjdOffset ? referenceBjdOffset : 2450000" in draw_plot
+    assert "`Time (BJD - ${bjdOffset})`" in draw_plot
+
+
+def test_ephemeris_plot_primary_x_axis_is_only_integer_offset_bjd_time():
+    html = _read_template("ephemeris.html")
+
+    assert 'name="x-axis-type"' not in html
+    assert 'value="epoch"' not in html
+    assert "const x = p.bjd - bjdOffset" in html
+
+    draw_plot = _function_body(html, "drawPlot")
+    assert "title: bjdAxisTitle" in draw_plot
+    assert "xType" not in draw_plot
+
+    plot_offset = _function_body(html, "plotBjdOffset")
+    assert "Math.round(referenceT0)" in plot_offset
+
+
+def test_ephemeris_imported_plot_point_scrolls_to_editable_table_row():
+    html = _read_template("ephemeris.html")
+
+    traces = _function_body(html, "getPlotlyTracesForPlanet")
+    assert "manual_id: p.manual_id" in traces
+    assert "imported: !!p.source_file" in traces
+    assert "Click point to edit imported row" in traces
+
+    draw_plot = _function_body(html, "drawPlot")
+    assert "if (cd.manual)" in draw_plot
+    assert "focusManualPointRow(cd.manual_id)" in draw_plot
+    assert "window.open(url, '_blank')" in draw_plot
+
+    focus_row = _function_body(html, "focusManualPointRow")
+    assert "section.open = true" in focus_row
+    assert "candidate.dataset.mid === String(manualId)" in focus_row
+    assert "row.classList.add('manual-row-focus')" in focus_row
+    assert "row.scrollIntoView({behavior: 'smooth', block: 'center'})" in focus_row
+    assert "tcInput.focus({preventScroll: true})" in focus_row
+    assert "row.classList.remove('manual-row-focus')" in focus_row
+
+    assert "tr.manual-row-focus" in html
 
 
 # --------------------------------------------------------------------------- #

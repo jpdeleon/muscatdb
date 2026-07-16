@@ -48,10 +48,11 @@
           <tr style="background: var(--surface2);">
             <th style="width: 90px; text-align: center;">Use in Fit</th>
             <th style="width: 90px;">Instrument</th>
-            <th style="width: 150px;">Target</th>
+            <th id="datasets-target-header" style="width: 150px;">Target</th>
             <th style="width: 90px;">Date</th>
             <th style="width: 220px;">Run Name</th>
             <th style="width: 120px; text-align: center;">Planet</th>
+            <th style="width: 1%; text-align: center; white-space: nowrap;" title="E = round((Tc − T0) / period); E=0 is the chosen planetary reference epoch">Epoch</th>
             <th>Transit Centers (BJD)</th>
           </tr>
         </thead>
@@ -113,6 +114,10 @@
         <span style="font-size: 0.85rem;">Weighted</span>
       </label>
     </div>
+    <label class="opt-check-item" title="For each planet, set T0′ = chosen T0 + N × period for an integer N, placing E=0 near the mid-range of the included transit centers without changing predicted transit times.">
+      <input type="checkbox" id="center-epoch-checkbox">
+      <span>Shift reference epoch near dataset midpoint</span>
+    </label>
     <div id="loader" style="display: none; align-items: center;">
       <div class="spinner" title="Calculating fit"></div>
     </div>
@@ -126,16 +131,6 @@
   <div id="oc-plot"></div>
   <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.75rem; gap: 1.5rem; flex-wrap: wrap;">
     <div style="display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; flex-grow: 1;">
-      <div class="opt-check-row" style="padding: 0; margin: 0; display: flex; align-items: center; gap: 1rem;">
-        <label class="opt-check-item">
-          <input type="radio" name="x-axis-type" value="bjd" checked>
-          <span>Time (BJD)</span>
-        </label>
-        <label class="opt-check-item">
-          <input type="radio" name="x-axis-type" value="epoch">
-          <span>Epoch</span>
-        </label>
-      </div>
       <label class="opt-check-item">
         <input type="checkbox" id="show-excluded-checkbox" checked>
         <span>Show Excluded Points</span>
@@ -143,6 +138,10 @@
       <label class="opt-check-item">
         <input type="checkbox" id="show-twin-checkbox">
         <span>Show date (UTC)</span>
+      </label>
+      <label class="opt-check-item" title="Show a separate epoch-number axis on each planet's O-C subplot. Mutually exclusive with Show date (UTC).">
+        <input type="checkbox" id="show-epoch-checkbox">
+        <span>Show epoch numbers</span>
       </label>
       <span style="border-left: 1px solid var(--border); height: 16px; margin: 0 0.5rem;"></span>
       <div style="display: flex; align-items: center; gap: 0.35rem;">
@@ -447,6 +446,14 @@
   tr.manual-flagged td {
     background: color-mix(in srgb, var(--red) 8%, transparent);
   }
+  /* Plot clicks temporarily identify the exact imported/manual table row. */
+  tr.manual-row-focus {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  tr.manual-row-focus td {
+    background: color-mix(in srgb, var(--accent) 16%, var(--surface)) !important;
+  }
   /* Match the planet-card convention: no number-input spin buttons. */
   .manual-row input[type="number"]::-webkit-outer-spin-button,
   .manual-row input[type="number"]::-webkit-inner-spin-button {
@@ -585,11 +592,6 @@
       const radio = document.querySelector(`input[name="fit-method-type"][value="${state.fit_method}"]`);
       if (radio) radio.checked = true;
     }
-    if (state.x_axis) {
-      localStorage.setItem(STORAGE_OPTS_PREFIX + 'x-axis-type', state.x_axis);
-      const radio = document.querySelector(`input[name="x-axis-type"][value="${state.x_axis}"]`);
-      if (radio) radio.checked = true;
-    }
     if (typeof state.show_excluded === 'boolean') {
       localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-excluded', String(state.show_excluded));
       const cb = document.getElementById('show-excluded-checkbox');
@@ -599,6 +601,21 @@
       localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-twin', String(state.show_utc));
       const cb = document.getElementById('show-twin-checkbox');
       if (cb) cb.checked = state.show_utc;
+    }
+    if (typeof state.show_epoch === 'boolean') {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-epoch', String(state.show_epoch));
+      const cb = document.getElementById('show-epoch-checkbox');
+      if (cb) cb.checked = state.show_epoch;
+      if (state.show_epoch) {
+        const utc = document.getElementById('show-twin-checkbox');
+        if (utc) utc.checked = false;
+        localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-twin', 'false');
+      }
+    }
+    if (typeof state.center_epoch === 'boolean') {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'center-epoch', String(state.center_epoch));
+      const cb = document.getElementById('center-epoch-checkbox');
+      if (cb) cb.checked = state.center_epoch;
     }
     if (typeof state.plot_title === 'string') {
       const input = document.getElementById('plot-suptitle-input');
@@ -665,7 +682,6 @@
     });
 
     const fitMethod = document.querySelector('input[name="fit-method-type"]:checked')?.value || 'unweighted';
-    const xAxis = document.querySelector('input[name="x-axis-type"]:checked')?.value || 'bjd';
     const plotTitle = document.getElementById('plot-suptitle-input')?.value || '';
     const currentPlanetPlotSettings = {};
     combinedPlanets.forEach(pl => {
@@ -705,9 +721,10 @@
       fit_method: fitMethod,
       planet_options: planetOptions,
       planet_plot_settings: currentPlanetPlotSettings,
-      x_axis: xAxis,
       show_excluded: Boolean(document.getElementById('show-excluded-checkbox')?.checked),
       show_utc: Boolean(document.getElementById('show-twin-checkbox')?.checked),
+      show_epoch: Boolean(document.getElementById('show-epoch-checkbox')?.checked),
+      center_epoch: Boolean(document.getElementById('center-epoch-checkbox')?.checked),
       plot_title: plotTitle,
       ttv_opts: ttvFields
     };
@@ -838,24 +855,6 @@
       scheduleSaveView();
     });
     
-    // Restore X axis type preference
-    const savedXAxis = localStorage.getItem(STORAGE_OPTS_PREFIX + 'x-axis-type');
-    if (savedXAxis) {
-      const radio = document.querySelector(`input[name="x-axis-type"][value="${savedXAxis}"]`);
-      if (radio) radio.checked = true;
-    }
-
-    // Axis toggle redraws the plot and saves selection
-    document.querySelectorAll('input[name="x-axis-type"]').forEach(radio => {
-      radio.addEventListener('change', function() {
-        localStorage.setItem(STORAGE_OPTS_PREFIX + 'x-axis-type', this.value);
-        if (fitResults) {
-          drawPlot();
-        }
-        scheduleSaveView();
-      });
-    });
-
     // Restore show-excluded checkbox preference
     const savedShowExcluded = localStorage.getItem(STORAGE_OPTS_PREFIX + 'show-excluded');
     const showExcludedCheckbox = document.getElementById('show-excluded-checkbox');
@@ -882,9 +881,50 @@
     // Checkbox toggle redraws the plot and saves selection
     showTwinCheckbox.addEventListener('change', function() {
       localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-twin', this.checked);
+      if (this.checked) {
+        const epochTwin = document.getElementById('show-epoch-checkbox');
+        if (epochTwin) epochTwin.checked = false;
+        localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-epoch', 'false');
+      }
       if (fitResults) {
         drawPlot();
       }
+      scheduleSaveView();
+    });
+
+    // Restore the per-planet epoch twin-axis preference. Epoch twin axes need
+    // Time (BJD) as their primary coordinate and share the secondary-axis slot
+    // with the UTC date axis, so the controls are mutually exclusive.
+    const savedShowEpoch = localStorage.getItem(STORAGE_OPTS_PREFIX + 'show-epoch');
+    const showEpochCheckbox = document.getElementById('show-epoch-checkbox');
+    if (savedShowEpoch !== null) {
+      showEpochCheckbox.checked = savedShowEpoch === 'true';
+    }
+    if (showEpochCheckbox.checked) {
+      showTwinCheckbox.checked = false;
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-twin', 'false');
+    }
+    showEpochCheckbox.addEventListener('change', function() {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-epoch', String(this.checked));
+      if (this.checked) {
+        showTwinCheckbox.checked = false;
+        localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-twin', 'false');
+      }
+      if (fitResults) drawPlot();
+      scheduleSaveView();
+    });
+
+    // Restore the reference-epoch centering preference. This changes only the
+    // integer epoch zero-point; T0 is shifted by whole periods.
+    const savedCenterEpoch = localStorage.getItem(STORAGE_OPTS_PREFIX + 'center-epoch');
+    const centerEpochCheckbox = document.getElementById('center-epoch-checkbox');
+    if (savedCenterEpoch !== null) {
+      centerEpochCheckbox.checked = savedCenterEpoch === 'true';
+    }
+    centerEpochCheckbox.addEventListener('change', function() {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'center-epoch', String(this.checked));
+      refreshDisplayedEpochs();
+      scheduleComputeFit(0);
       scheduleSaveView();
     });
 
@@ -1466,15 +1506,27 @@
   };
 
   // Render datasets rows
+  function showDatasetTargetColumn() {
+    const uniqueTargetNames = new Set(
+      loadedTargets.map(t => String(t || '').trim()).filter(Boolean)
+    );
+    return uniqueTargetNames.size > 1;
+  }
+
   function renderDatasetsTable(datasets) {
     const tbody = document.getElementById('datasets-body');
     tbody.innerHTML = '';
+
+    const showTargetColumn = showDatasetTargetColumn();
+    const targetHeader = document.getElementById('datasets-target-header');
+    if (targetHeader) targetHeader.style.display = showTargetColumn ? '' : 'none';
+    const columnCount = showTargetColumn ? 8 : 7;
 
     const combinedKey = getCombinedStorageKey();
     loadManualPoints();
 
     if (datasets.length === 0 && manualPoints.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-dim);">No completed fits found. Use “+ Add transit center” to enter a transit time by hand.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="${columnCount}" style="text-align: center; color: var(--text-dim);">No completed fits found. Use “+ Add transit center” to enter a transit time by hand.</td></tr>`;
       reinitResizableTable();
       return;
     }
@@ -1493,6 +1545,7 @@
 
       // Create label summary of transits in this dataset
       const transitsList = [];
+      const epochsList = [];
       if (d.fitted_tcs) {
         for (const pl in d.fitted_tcs) {
           const item = d.fitted_tcs[pl];
@@ -1500,10 +1553,14 @@
             const val = Number(item.tc).toFixed(5);
             const unc = Number(item.unc).toFixed(5);
             transitsList.push(`<span class="badge badge-blue" style="margin-right: 0.35rem;">${val} ± ${unc}</span>`);
+            const epoch = planetEpochForTC(pl, Number(item.tc));
+            const epochText = Number.isInteger(epoch) ? epoch : '—';
+            epochsList.push(`<span class="badge dataset-epoch" data-epoch-planet="${escapeAttr(pl)}" data-epoch-tc="${escapeAttr(item.tc)}" style="margin-right: 0.35rem; white-space: nowrap;">${epochText}</span>`);
           }
         }
       }
       const transitsSummary = transitsList.length > 0 ? transitsList.join(' ') : '<span style="color: var(--text-dim); font-style: italic;">None</span>';
+      const epochsSummary = epochsList.length > 0 ? epochsList.join(' ') : '<span style="color: var(--text-dim);">—</span>';
       
       const detailsUrl = `/transit-fit?inst=${d.instrument}&date=${d.date}&target=${encodeURIComponent(d.target)}&run=${d.run_id}`;
 
@@ -1515,7 +1572,7 @@
           <input type="checkbox" class="dataset-checkbox" data-index="${idx}" ${isChecked ? 'checked' : ''} onchange="onDatasetCheckboxChange(this, ${idx})">
         </td>
         <td class="mono">${d.instrument.toUpperCase()}</td>
-        <td><span class="badge" style="background: var(--surface); color: var(--text-dim); font-size: 0.8rem; border: 1px solid var(--border);">${d.target}</span></td>
+        ${showTargetColumn ? `<td><span class="badge" style="background: var(--surface); color: var(--text-dim); font-size: 0.8rem; border: 1px solid var(--border);">${d.target}</span></td>` : ''}
         <td class="mono">${d.date}</td>
         <td>
           <a href="${detailsUrl}" target="_blank" style="font-weight: 600; color: var(--text);" title="Click to view transit fit">
@@ -1523,13 +1580,15 @@
           </a>
         </td>
         <td class="mono" style="text-align: center;">${d.planets_fitted}</td>
+        <td class="mono" style="text-align: center;">${epochsSummary}</td>
         <td>${transitsSummary}</td>
       `;
       tbody.appendChild(tr);
     });
 
-    manualPoints.forEach(mp => renderManualRow(tbody, mp));
+    manualPoints.forEach(mp => renderManualRow(tbody, mp, showTargetColumn));
 
+    refreshDisplayedEpochs();
     reinitResizableTable();
   }
 
@@ -1588,13 +1647,66 @@
     input.click();
   };
 
-  function planetEpochForTC(planet, tc) {
+  function rawPlanetEphemeris(planet) {
     const card = document.querySelector(`.planet-card[data-planet="${CSS.escape(planet)}"]`);
     if (!card) return null;
     const t0 = parseFloat(card.querySelector('.planet-t0')?.value);
     const period = parseFloat(card.querySelector('.planet-period')?.value);
-    if (!Number.isFinite(t0) || !Number.isFinite(period) || period === 0) return null;
-    return Math.round((tc - t0) / period);
+    if (!Number.isFinite(t0) || !Number.isFinite(period) || period <= 0) return null;
+    return {t0, period};
+  }
+
+  function planetEpochShift(planet) {
+    const centerCheckbox = document.getElementById('center-epoch-checkbox');
+    if (!centerCheckbox?.checked) return 0;
+    const ephem = rawPlanetEphemeris(planet);
+    if (!ephem) return 0;
+
+    const epochs = [];
+    document.querySelectorAll('.dataset-checkbox:checked').forEach(box => {
+      const dataset = combinedDatasets[parseInt(box.dataset.index)];
+      const fitted = dataset?.fitted_tcs?.[planet];
+      if (fitted?.tc !== undefined && fitted?.tc !== null
+          && fitted?.unc !== undefined && fitted?.unc !== null) {
+        const tc = Number(fitted.tc);
+        if (Number.isFinite(tc)) epochs.push(Math.round((tc - ephem.t0) / ephem.period));
+      }
+    });
+    manualPoints.forEach(mp => {
+      if (!mp.checked || mp.planet !== planet || !(parseFloat(mp.tc_unc) > 0)) return;
+      const tc = parseFloat(mp.tc);
+      if (Number.isFinite(tc)) epochs.push(Math.round((tc - ephem.t0) / ephem.period));
+    });
+    if (epochs.length === 0) return 0;
+    const eMin = Math.min(...epochs);
+    const eMax = Math.max(...epochs);
+    return eMin + Math.floor((eMax - eMin) / 2);
+  }
+
+  function effectivePlanetEphemeris(planet) {
+    const ephem = rawPlanetEphemeris(planet);
+    if (!ephem) return null;
+    const epochShift = planetEpochShift(planet);
+    return {t0: ephem.t0 + epochShift * ephem.period, period: ephem.period, epochShift};
+  }
+
+  function planetEpochForTC(planet, tc) {
+    const ephem = effectivePlanetEphemeris(planet);
+    if (!ephem || !Number.isFinite(tc)) return null;
+    return Math.round((tc - ephem.t0) / ephem.period);
+  }
+
+  function refreshDisplayedEpochs() {
+    document.querySelectorAll('.dataset-epoch').forEach(el => {
+      const planet = el.dataset.epochPlanet || '';
+      const epoch = planetEpochForTC(planet, parseFloat(el.dataset.epochTc));
+      el.textContent = Number.isInteger(epoch) ? epoch : '—';
+    });
+    document.querySelectorAll('.manual-epoch').forEach(el => {
+      const mp = manualPoints.find(point => point.id === el.dataset.mid);
+      const epoch = mp ? planetEpochForTC(mp.planet, parseFloat(mp.tc)) : null;
+      el.textContent = Number.isInteger(epoch) ? epoch : '—';
+    });
   }
 
   function analyzeTransitCSVRows(preview) {
@@ -1768,7 +1880,7 @@
       .replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  function renderManualRow(tbody, mp) {
+  function renderManualRow(tbody, mp, showTargetColumn) {
     const tr = document.createElement('tr');
     tr.className = 'manual-row';
     tr.setAttribute('data-mid', mp.id);
@@ -1781,9 +1893,8 @@
     // first loaded target, and the UTC date derived from the BJD.
     const datePlaceholder = jdToYYMMDD(parseFloat(mp.tc)) || 'auto';
     const targetHint = (loadedTargets.slice().sort()[0]) || 'target';
-    const sourceEpoch = Number.isInteger(mp.source_epoch)
-      ? `<span class="badge" style="font-size:0.7rem;white-space:nowrap;" title="Epoch supplied by ${escapeAttr(mp.source_file || 'the imported CSV')}; the fit uses the page epoch grid">CSV E=${mp.source_epoch}</span>`
-      : '';
+    const manualEpoch = planetEpochForTC(mp.planet, parseFloat(mp.tc));
+    const manualEpochText = Number.isInteger(manualEpoch) ? manualEpoch : '—';
 
     const inputStyle = 'box-sizing:border-box;background:var(--input-bg);color:var(--text);' +
       'border:1px solid var(--border);border-radius:4px;padding:0.25rem 0.4rem;' +
@@ -1800,12 +1911,12 @@
                title="Free-text source of this transit center, e.g. tess"
                style="width: 100%; ${inputStyle}">
       </td>
-      <td>
+      ${showTargetColumn ? `<td>
         <input type="text" class="manual-target" value="${escapeAttr(mp.target)}" placeholder="${escapeAttr(targetHint)}"
                oninput="updateManualField('${mp.id}', 'target', this.value)"
                title="Optional target label; defaults to the loaded target"
                style="width: 100%; ${inputStyle}">
-      </td>
+      </td>` : ''}
       <td>
         <input type="text" class="manual-date" value="${escapeAttr(mp.date)}" placeholder="${escapeAttr(datePlaceholder)}"
                oninput="updateManualField('${mp.id}', 'date', this.value)"
@@ -1823,6 +1934,9 @@
                 onchange="updateManualField('${mp.id}', 'planet', this.value)"
                 style="width: 100%; cursor: pointer; text-align: center; ${inputStyle}">${planetOpts}</select>
       </td>
+      <td class="mono" style="text-align: center;">
+        <span class="manual-epoch" data-mid="${escapeAttr(mp.id)}">${manualEpochText}</span>
+      </td>
       <td>
         <div style="display: flex; align-items: center; gap: 0.35rem; flex-wrap: nowrap;">
           <input type="number" step="any" class="manual-tc" value="${escapeAttr(mp.tc)}" placeholder="BJD_TDB"
@@ -1832,7 +1946,6 @@
           <input type="number" step="any" min="0" class="manual-unc" value="${escapeAttr(mp.tc_unc)}" placeholder="unc (d)"
                  oninput="updateManualField('${mp.id}', 'tc_unc', this.value)"
                  style="width: 90px; ${inputStyle}">
-          ${sourceEpoch}
           <span class="manual-flag" style="display: none; color: var(--red); font-weight: bold; cursor: help;"
                 title="More than 5σ from the linear ephemeris — check for a wrong epoch, a JD/BJD offset, or a UTC/TDB time-system mismatch">⚠</span>
           <button class="btn sm" type="button" onclick="removeManualPoint('${mp.id}')" title="Remove this transit center"
@@ -2016,6 +2129,7 @@
 
   function scheduleComputeFit(delay = 350) {
     if (loadedTargets.length === 0) return;
+    refreshDisplayedEpochs();
     if (computeFitTimer) {
       clearTimeout(computeFitTimer);
     }
@@ -2040,7 +2154,8 @@
         valid = false;
         return;
       }
-      planetsEphem[pl] = { t0, period };
+      const epochShift = planetEpochShift(pl);
+      planetsEphem[pl] = { t0: t0 + epochShift * period, period };
     });
     
     if (!valid) {
@@ -2165,11 +2280,51 @@
     document.getElementById('results-card').style.display = 'block';
   }
 
-  // Plotly's default figure height is 450 px. The UTC twin axis needs 60 px
-  // more top margin and 45 px more bottom margin; grow the outer figure by
-  // that same 105 px so the data area keeps its original height/aspect ratio.
+  // Grow the outer figure with either secondary-axis mode so the O-C plotting
+  // area retains its normal height. The modes are mutually exclusive.
   const OC_PLOT_BASE_HEIGHT = 450;
   const OC_PLOT_UTC_AXIS_EXTRA_HEIGHT = 105;
+  const OC_PLOT_EPOCH_AXIS_EXTRA_HEIGHT = 90;
+
+  function plotBjdOffset(planets, showExcluded) {
+    // The plot has one shared time axis. Use the first displayed planet's
+    // effective reference T0, which already includes the optional integer
+    // midpoint shift sent to /api/ephemeris/calculate. Round the offset and
+    // the label together so the plotted coordinates match the displayed BJD.
+    for (const pl of planets) {
+      const referenceT0 = Number(fitResults?.[pl]?.t0_ref);
+      if (Number.isFinite(referenceT0)) return Math.round(referenceT0);
+    }
+    // Defensive fallback for older cached results without t0_ref.
+    for (const pl of planets) {
+      const firstPoint = fitResults?.[pl]?.points?.find(p => p.checked || showExcluded);
+      if (firstPoint && Number.isFinite(firstPoint.bjd)) return Math.floor(firstPoint.bjd);
+    }
+    return null;
+  }
+
+  function epochTwinTicks(res, showExcluded, bjdOffset) {
+    const epochs = (res?.points || [])
+      .filter(p => p.checked || showExcluded)
+      .map(p => Number(p.epoch))
+      .filter(Number.isFinite);
+    const t0 = Number(res?.t0_ref);
+    const period = Number(res?.period_ref);
+    if (epochs.length === 0 || !Number.isFinite(t0)
+        || !Number.isFinite(period) || period <= 0) {
+      return {tickvals: [], ticktext: []};
+    }
+    const eMin = Math.min(...epochs);
+    const eMax = Math.max(...epochs);
+    const step = Math.max(1, Math.ceil((eMax - eMin) / 6));
+    const shownEpochs = [];
+    for (let epoch = eMin; epoch <= eMax; epoch += step) shownEpochs.push(epoch);
+    if (shownEpochs[shownEpochs.length - 1] !== eMax) shownEpochs.push(eMax);
+    return {
+      tickvals: shownEpochs.map(epoch => t0 + epoch * period - bjdOffset),
+      ticktext: shownEpochs.map(String)
+    };
+  }
 
   // Draw plot using Plotly
   function drawPlot() {
@@ -2181,11 +2336,15 @@
     plotCard.style.display = 'block';
 
     const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-    const xType = document.querySelector('input[name="x-axis-type"]:checked').value;
     const showExcluded = document.getElementById('show-excluded-checkbox').checked;
     const showTwin = document.getElementById('show-twin-checkbox').checked;
+    const showEpochTwin = document.getElementById('show-epoch-checkbox').checked
+      && !showTwin;
     const suptitle = document.getElementById('plot-suptitle-input').value.trim();
-    const plotHeight = OC_PLOT_BASE_HEIGHT + (showTwin ? OC_PLOT_UTC_AXIS_EXTRA_HEIGHT : 0);
+    const secondaryAxisExtraHeight = showTwin
+      ? OC_PLOT_UTC_AXIS_EXTRA_HEIGHT
+      : (showEpochTwin ? OC_PLOT_EPOCH_AXIS_EXTRA_HEIGHT : 0);
+    const plotHeight = OC_PLOT_BASE_HEIGHT + secondaryAxisExtraHeight;
 
     plotDiv.style.height = plotHeight + 'px';
     plotCard.style.minHeight = (plotHeight + 70) + 'px';
@@ -2197,22 +2356,15 @@
     }
     const colors = ['#6c8cff', '#0f9d8b', '#f87171', '#fcd34d'];
     const traces = [];
-    let bjdOffset = 2450000;
-    let foundBjdOffset = false;
-    for (const pl of planets) {
-      const firstPoint = fitResults[pl].points.find(p => p.checked || showExcluded);
-      if (firstPoint && Number.isFinite(firstPoint.bjd)) {
-        bjdOffset = Math.floor(firstPoint.bjd);
-        foundBjdOffset = true;
-        break;
-      }
-    }
+    const referenceBjdOffset = plotBjdOffset(planets, showExcluded);
+    const foundBjdOffset = Number.isFinite(referenceBjdOffset);
+    const bjdOffset = foundBjdOffset ? referenceBjdOffset : 2450000;
     const bjdAxisTitle = foundBjdOffset ? `Time (BJD - ${bjdOffset})` : 'Time (BJD)';
     const plottedX = [];
     planets.forEach(pl => {
       fitResults[pl].points.forEach(p => {
         if (p.checked || showExcluded) {
-          plottedX.push(xType === 'bjd' ? (p.bjd - bjdOffset) : p.epoch);
+          plottedX.push(p.bjd - bjdOffset);
         }
       });
     });
@@ -2224,8 +2376,6 @@
     let tickvals = [];
     let ticktext = [];
     if (showTwin) {
-      const firstPlanet = planets[0];
-      const firstRes = fitResults[firstPlanet];
       if (sharedXSpan) {
         let minX = sharedXSpan.min;
         let maxX = sharedXSpan.max;
@@ -2233,14 +2383,7 @@
         
         for (let k = 0; k <= 5; k++) {
           let val = minX + span * (k / 5);
-          let bjd;
-          if (xType === 'bjd') {
-            bjd = val + bjdOffset;
-          } else {
-            const t0 = firstRes.was_fit ? firstRes.t0_fit : firstRes.t0_ref;
-            const period = firstRes.was_fit ? firstRes.period_fit : firstRes.period_ref;
-            bjd = t0 + val * period;
-          }
+          const bjd = val + bjdOffset;
           const label = jdToUtcDateLabel(bjd);
           if (label) {
             tickvals.push(val);
@@ -2265,15 +2408,18 @@
         color: isDark ? '#e1e4ed' : '#1a1d27',
         family: '-apple-system, BlinkMacSystemFont, sans-serif'
       },
-      margin: { t: showTwin ? (suptitle ? 105 : 80) : (suptitle ? 45 : 20), b: showTwin ? 95 : 50, l: 65, r: 20 },
+      margin: {
+        t: showTwin ? (suptitle ? 105 : 80) : (showEpochTwin ? (suptitle ? 90 : 65) : (suptitle ? 45 : 20)),
+        b: showTwin ? 95 : (showEpochTwin ? 80 : 50), l: 65, r: 20
+      },
       height: plotHeight,
       showlegend: true,
       legend: {
         orientation: 'h',
-        yanchor: showTwin ? 'top' : 'bottom',
-        y: showTwin ? -0.22 : 1.05,
-        xanchor: showTwin ? 'center' : 'right',
-        x: showTwin ? 0.5 : 1,
+        yanchor: (showTwin || showEpochTwin) ? 'top' : 'bottom',
+        y: (showTwin || showEpochTwin) ? -0.22 : 1.05,
+        xanchor: (showTwin || showEpochTwin) ? 'center' : 'right',
+        x: (showTwin || showEpochTwin) ? 0.5 : 1,
         font: { size: 10 }
       },
       hovermode: 'closest',
@@ -2282,7 +2428,7 @@
 
     if (planets.length === 2) {
       layout.xaxis = {
-        title: xType === 'bjd' ? bjdAxisTitle : 'Epoch',
+        title: bjdAxisTitle,
         gridcolor: isDark ? '#2e3348' : '#d8dce6',
         zeroline: false,
         zerolinewidth: 0,
@@ -2338,7 +2484,7 @@
         const color = colors[i % colors.length];
         
         // Build traces
-        const plTraces = getPlotlyTracesForPlanet(res, pl, color, xType, yaxisKey, isDark, showExcluded, bjdOffset);
+        const plTraces = getPlotlyTracesForPlanet(res, pl, color, yaxisKey, isDark, showExcluded, bjdOffset);
         plTraces.forEach(t => traces.push(t));
         addZeroLineShape(layout, yaxisKey, color);
       });
@@ -2346,7 +2492,7 @@
     } else {
       const rows = planets.length;
       layout.xaxis = {
-        title: xType === 'bjd' ? bjdAxisTitle : 'Epoch',
+        title: bjdAxisTitle,
         gridcolor: isDark ? '#2e3348' : '#d8dce6',
         zeroline: false,
         zerolinewidth: 0,
@@ -2397,7 +2543,7 @@
 
         const res = fitResults[pl];
         const color = colors[i % colors.length];
-        const plTraces = getPlotlyTracesForPlanet(res, pl, color, xType, yaxisKey, isDark, showExcluded, bjdOffset);
+        const plTraces = getPlotlyTracesForPlanet(res, pl, color, yaxisKey, isDark, showExcluded, bjdOffset);
         plTraces.forEach(t => traces.push(t));
         addZeroLineShape(layout, yaxisKey, color);
       });
@@ -2416,6 +2562,50 @@
         hoverinfo: 'skip',
         showlegend: false,
         cliponaxis: false
+      });
+    }
+
+    if (showEpochTwin) {
+      planets.forEach((pl, i) => {
+        const res = fitResults[pl];
+        const ticks = epochTwinTicks(res, showExcluded, bjdOffset);
+        if (ticks.tickvals.length === 0) return;
+        const axisNumber = i + 2;
+        const axisKey = `xaxis${axisNumber}`;
+        const axisRef = `x${axisNumber}`;
+        const yaxisRef = i === 0 ? 'y' : `y${i + 1}`;
+        layout[axisKey] = {
+          title: `Epoch (planet ${pl.toLowerCase()})`,
+          visible: true,
+          tickmode: 'array',
+          overlaying: 'x',
+          matches: 'x',
+          side: 'top',
+          anchor: yaxisRef,
+          tickvals: ticks.tickvals,
+          ticktext: ticks.ticktext,
+          showgrid: false,
+          zeroline: false,
+          showline: true,
+          ticks: 'outside',
+          automargin: true,
+          linecolor: isDark ? '#2e3348' : '#d8dce6',
+          tickfont: { size: 10, color: isDark ? '#e1e4ed' : '#1a1d27' },
+          titlefont: { size: 11, color: isDark ? '#e1e4ed' : '#1a1d27' }
+        };
+        const anchorPoint = (res.points || []).find(p => p.checked || showExcluded);
+        traces.push({
+          x: ticks.tickvals,
+          y: ticks.tickvals.map(() => anchorPoint?.oc_min ?? 0),
+          xaxis: axisRef,
+          yaxis: yaxisRef,
+          mode: 'markers',
+          type: 'scatter',
+          marker: { opacity: 0, size: 1 },
+          hoverinfo: 'skip',
+          showlegend: false,
+          cliponaxis: false
+        });
       });
     }
 
@@ -2462,13 +2652,43 @@
     // Click event callback
     plotDiv.on('plotly_click', function(data) {
       const pt = data.points[0];
-      // Manual points carry {manual:true} and have no transit-fit page.
-      if (pt.customdata && !pt.customdata.manual) {
-        const cd = pt.customdata;
-        const url = `/transit-fit?inst=${cd.inst}&date=${cd.date}&target=${encodeURIComponent(cd.target || loadedTargets[0] || '')}&run=${cd.run_id}`;
-        window.open(url, '_blank');
+      const cd = pt.customdata;
+      if (!cd) return;
+      if (cd.manual) {
+        focusManualPointRow(cd.manual_id);
+        return;
       }
+      const url = `/transit-fit?inst=${cd.inst}&date=${cd.date}&target=${encodeURIComponent(cd.target || loadedTargets[0] || '')}&run=${cd.run_id}`;
+      window.open(url, '_blank');
     });
+  }
+
+  let manualRowHighlightTimer = null;
+  function focusManualPointRow(manualId) {
+    if (!manualId) return;
+    const section = document.getElementById('datasets-section');
+    if (section) {
+      section.style.display = 'block';
+      section.open = true;
+    }
+    const row = Array.from(document.querySelectorAll('#datasets-body tr.manual-row'))
+      .find(candidate => candidate.dataset.mid === String(manualId));
+    if (!row) return;
+
+    document.querySelectorAll('#datasets-body tr.manual-row-focus')
+      .forEach(candidate => candidate.classList.remove('manual-row-focus'));
+    row.classList.add('manual-row-focus');
+    row.scrollIntoView({behavior: 'smooth', block: 'center'});
+    setTimeout(() => {
+      const tcInput = row.querySelector('.manual-tc');
+      if (tcInput) tcInput.focus({preventScroll: true});
+    }, 450);
+
+    if (manualRowHighlightTimer) clearTimeout(manualRowHighlightTimer);
+    manualRowHighlightTimer = setTimeout(() => {
+      row.classList.remove('manual-row-focus');
+      manualRowHighlightTimer = null;
+    }, 5000);
   }
 
   function downloadPlotPNG() {
@@ -2478,6 +2698,7 @@
     
     const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
     const showTwin = document.getElementById('show-twin-checkbox').checked;
+    const showEpochTwin = document.getElementById('show-epoch-checkbox').checked && !showTwin;
     const suptitle = document.getElementById('plot-suptitle-input').value.trim();
     
     // Always apply solid white background layout overrides for image export
@@ -2493,6 +2714,10 @@
     
     if (showTwin) {
       tempLayout['xaxis2.linecolor'] = '#d8dce6';
+    } else if (showEpochTwin) {
+      Object.keys(fitResults).sort().forEach((pl, i) => {
+        tempLayout[`xaxis${i + 2}.linecolor`] = '#d8dce6';
+      });
     }
     
     const planets = Object.keys(fitResults).sort();
@@ -2507,7 +2732,9 @@
       Plotly.downloadImage(plotDiv, {
         format: 'png',
         width: 1200,
-        height: 600 + (showTwin ? OC_PLOT_UTC_AXIS_EXTRA_HEIGHT : 0),
+        height: 600 + (showTwin
+          ? OC_PLOT_UTC_AXIS_EXTRA_HEIGHT
+          : (showEpochTwin ? OC_PLOT_EPOCH_AXIS_EXTRA_HEIGHT : 0)),
         filename: filename,
         background: '#ffffff'
       }).then(() => {
@@ -2523,6 +2750,10 @@
         };
         if (showTwin) {
           restoreLayout['xaxis2.linecolor'] = isDark ? '#2e3348' : '#d8dce6';
+        } else if (showEpochTwin) {
+          Object.keys(fitResults).sort().forEach((pl, i) => {
+            restoreLayout[`xaxis${i + 2}.linecolor`] = isDark ? '#2e3348' : '#d8dce6';
+          });
         }
         planets.forEach((pl, i) => {
           const key = 'yaxis' + (i === 0 ? '' : i + 1);
@@ -2612,7 +2843,7 @@
     });
   }
 
-  function getPlotlyTracesForPlanet(res, planet, color, xType, yaxisKey, isDark, showExcluded, bjdOffset) {
+  function getPlotlyTracesForPlanet(res, planet, color, yaxisKey, isDark, showExcluded, bjdOffset) {
     const settings = planetPlotSettings[planet] || { color: color, symbol: 'instrument' };
     const pColor = settings.color;
 
@@ -2620,13 +2851,14 @@
     const unX = [], unY = [], unErr = [], unCustom = [], unText = [], unSymbols = [];
 
     res.points.forEach(p => {
-      const x = xType === 'bjd' ? (p.bjd - bjdOffset) : p.epoch;
+      const x = p.bjd - bjdOffset;
       const y = p.oc_min;
       const err = p.oc_err_min;
       const isManual = !!p.manual;
-      // Manual points have no transit-fit page; flag them so plotly_click skips.
+      // Imported/manual points have no transit-fit page. Their stable row id
+      // lets plotly_click return the user to the exact editable table row.
       const cd = isManual
-        ? { manual: true }
+        ? { manual: true, manual_id: p.manual_id, imported: !!p.source_file }
         : { inst: p.instrument, date: p.date, run_id: p.run_id, target: p.target };
       const symbol = settings.symbol === 'instrument' ? getSymbolForInstrument(p.instrument) : settings.symbol;
 
@@ -2648,6 +2880,9 @@
       if (isManual) {
         if (p.note) lines.push(`Note: ${escapeAttr(p.note)}`);
         if (p.flagged) lines.push(`<span style="color:#f87171;">⚠ &gt;5σ from linear ephemeris</span>`);
+        lines.push(p.source_file
+          ? `<i>Click point to edit imported row ↓</i>`
+          : `<i>Click point to edit manual row ↓</i>`);
       } else {
         lines.push(`<i>Click point to view transit fit ↗</i>`);
       }
