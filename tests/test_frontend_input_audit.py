@@ -587,6 +587,48 @@ def test_ephemeris_csv_import_saves_datasetless_view_before_success():
     assert "added and saved in this view" in html
 
 
+def test_ephemeris_unselect_clears_plot_without_deleting_imported_points():
+    html = _read_template("ephemeris.html")
+
+    remove_body = html.split("window.removeTarget = function(targetName) {", 1)[1].split("\n  };", 1)[0]
+    clear_body = _function_body(html, "clearFitPresentation")
+
+    assert "clearFitPresentation();" in remove_body
+    assert "computeFitRequestSeq += 1" in clear_body
+    assert "clearTimeout(computeFitTimer)" in clear_body
+    assert "Plotly.purge(plot)" in clear_body
+    assert "resultsGrid.innerHTML = ''" in clear_body
+    assert "removeItem(manualStorageKey())" not in remove_body
+    assert "removeItem(manualStorageKey())" not in clear_body
+
+
+def test_ephemeris_manual_planet_card_is_added_inline_and_persisted():
+    html = _read_template("ephemeris.html")
+
+    assert 'id="add-planet-btn"' in html
+    assert 'onclick="addManualPlanet()"' in html
+    assert 'id="manual-planet-dialog"' not in html
+
+    collect_state = _function_body(html, "collectEphemerisViewState")
+    apply_state = _function_body(html, "applyViewStateToStorage")
+    update_ui = _function_body(html, "updateCombinedUI")
+    render_cards = _function_body(html, "renderPlanetCards")
+    add_planet = html.split("window.addManualPlanet = function() {", 1)[1].split("\n  };", 1)[0]
+    remove_planet = html.split("window.removeManualPlanet = function(planet) {", 1)[1].split("\n  };", 1)[0]
+
+    assert "manual_planets:" in collect_state
+    assert "Array.isArray(state.manual_planets)" in apply_state
+    assert update_ui.index("loadManualPlanets()") < update_ui.index("renderPlanetCards(")
+    assert 'value="manual"' in render_cards
+    assert "!combinedPlanets.includes(planet)" in add_planet
+    assert "opts[planet + '_t0'] = ''" in add_planet
+    assert "opts[planet + '_period'] = ''" in add_planet
+    assert "saveManualPlanets()" in add_planet
+    assert "updateCombinedUI({skipFit: true})" in add_planet
+    assert "manualPoints.some" in remove_planet
+    assert "saveManualPlanets()" in remove_planet
+
+
 def test_ephemeris_ttv_run_selection_is_preserved_in_shareable_url():
     html = _read_template("ephemeris.html")
 
