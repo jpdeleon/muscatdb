@@ -573,6 +573,15 @@ def test_ephemeris_ttv_run_selection_is_preserved_in_shareable_url():
     assert "loadTTVRunOutputs(target, run, runs, 'push')" in html
 
 
+def test_ephemeris_dataset_run_name_uses_transit_coverage_suffix():
+    html = _read_template("ephemeris.html")
+
+    render_table = _function_body(html, "renderDatasetsTable")
+    assert "['full', 'ing', 'egr'].includes(d.transit_coverage)" in render_table
+    assert "${d.run_name}${coverageSuffix}" in render_table
+    assert "runTypeBadge" not in render_table
+
+
 # --------------------------------------------------------------------------- #
 # Endpoint coverage: frontend fetch targets have backend handlers
 # --------------------------------------------------------------------------- #
