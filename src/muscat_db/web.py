@@ -5,6 +5,7 @@ import datetime
 import contextvars
 import json
 import logging
+import math
 import os
 import pathlib
 import re
@@ -3155,6 +3156,115 @@ def _get_run_fitted_params(inst: str, date: str, target: str, run_id: str | None
     return fitted
 
 
+def _transit_fit_observation_span(rdir: pathlib.Path) -> tuple[float, float] | None:
+    """Return the BJD span covered by a transit fit's input light curves."""
+    start: float | None = None
+    end: float | None = None
+    for csv_path in rdir.glob("*.csv"):
+        try:
+            with open(csv_path, newline="") as f:
+                reader = csv.DictReader(f)
+                if not reader.fieldnames:
+                    continue
+                time_key = next(
+                    (key for key in ("BJD_TDB", "BJD", "time", "#time") if key in reader.fieldnames),
+                    None,
+                )
+                if time_key is None:
+                    continue
+                for row in reader:
+                    try:
+                        value = float(row[time_key])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if not math.isfinite(value):
+                        continue
+                    start = value if start is None else min(start, value)
+                    end = value if end is None else max(end, value)
+        except OSError:
+            logger.debug("failed to read transit-fit input span from %s", csv_path, exc_info=True)
+    if start is None or end is None:
+        return None
+    return start, end
+
+
+def _classify_transit_coverage(
+    rdir: pathlib.Path,
+    planets_fitted: str,
+    planets_ephem: dict,
+    fitted: dict,
+) -> str:
+    """Classify the observed event as full, ingress-only, or egress-only.
+
+    The run type describes test versus production sampling and is unrelated to
+    event coverage. Coverage instead comes from the actual light-curve time
+    span relative to the fitted transit contacts. Input ephemerides are used
+    only when a fixed parameter is absent from the fitted summary.
+    """
+    span = _transit_fit_observation_span(rdir)
+    if span is None:
+        return ""
+    start, end = span
+    midpoint = (start + end) / 2.0
+
+    for planet in planets_fitted:
+        ephem = planets_ephem.get(planet) or {}
+        fit_params = fitted.get(planet) or {}
+        tc = fit_params.get("tc", ephem.get("t0"))
+        duration_hours = fit_params.get("dur", ephem.get("duration"))
+        try:
+            tc = float(tc)
+            duration_hours = float(duration_hours)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(tc) or not math.isfinite(duration_hours) or duration_hours <= 0:
+            continue
+
+        # An input catalog T0 can be many epochs away from the observation.
+        # Move it onto the observed epoch when a fitted local Tc is unavailable.
+        if fit_params.get("tc") is None:
+            try:
+                period = float(ephem.get("period"))
+                if period > 0:
+                    tc += round((midpoint - tc) / period) * period
+            except (TypeError, ValueError):
+                pass
+
+        half_duration_days = duration_hours / 48.0
+        ingress = tc - half_duration_days
+        egress = tc + half_duration_days
+        includes_ingress = start <= ingress <= end
+        includes_egress = start <= egress <= end
+        if includes_ingress and includes_egress:
+            return "full"
+        if includes_ingress:
+            return "ing"
+        if includes_egress:
+            return "egr"
+    return ""
+
+
+def _is_full_transit_fit_job(job: dict) -> bool:
+    """Return whether an ephemeris dataset came from a production fit run."""
+    run_type = str(job.get("run_type") or "").strip().lower()
+    if run_type:
+        return run_type == "full"
+    # Older persisted jobs predate the run_type column. Recover their mode from
+    # the immutable run metadata/log rather than silently treating them as test
+    # or dropping valid historical production fits.
+    try:
+        rdir = fit.fit_output_dir(
+            job["instrument"],
+            job["obsdate"],
+            job["target"],
+            (job.get("run_id") or "") or None,
+        )
+        return fit._detect_run_type(rdir) == "full"
+    except (KeyError, OSError):
+        logger.debug("failed to detect legacy ephemeris run type", exc_info=True)
+        return False
+
+
 @ads_router.get("/config", response_class=JSONResponse)
 def api_ads_config(request: Request):
     """Report whether the ADS API token is configured. No secrets."""
@@ -3248,6 +3358,7 @@ def api_ephemeris_target_info(target: str):
             j for j in all_jobs
             if j["type"] == "transit_fit"
             and j["state"] == "done"
+            and _is_full_transit_fit_job(j)
             and _normalize_target_name(j["target"]) == norm_t
             and fit.get_fit_outputs(
                 j["instrument"], j["obsdate"], j["target"], (j.get("run_id") or "") or None
@@ -3272,8 +3383,8 @@ def api_ephemeris_target_info(target: str):
         # Discover planets fitted and their periods/t0 in dataset
         planets_fitted = "b"
         planets_ephem = {}
+        rdir = fit.fit_output_dir(inst, date, j["target"], run_id or None)
         try:
-            rdir = fit.fit_output_dir(inst, date, j["target"], run_id or None)
             sys_yaml = rdir / "sys.yaml"
             if sys_yaml.is_file():
                 with open(sys_yaml) as f:
@@ -3296,6 +3407,14 @@ def api_ephemeris_target_info(target: str):
                             period_mean = period_list
                             period_unc = None
 
+                        duration_list = pl_params.get("dur", [None, None])
+                        if isinstance(duration_list, (list, tuple)):
+                            duration_days = duration_list[0] if len(duration_list) > 0 else None
+                            duration_unc_days = duration_list[1] if len(duration_list) > 1 else None
+                        else:
+                            duration_days = duration_list
+                            duration_unc_days = None
+
                         # t0 and duration are overridden below from the Fitted
                         # Parameters Summary; period stays from sys.yaml (it is
                         # held fixed in the fit and absent from the summary).
@@ -3304,8 +3423,8 @@ def api_ephemeris_target_info(target: str):
                             "t0_unc": float(t0_unc) if t0_unc is not None else None,
                             "period": float(period_mean),
                             "period_unc": float(period_unc) if period_unc is not None else None,
-                            "duration": None,
-                            "duration_unc": None,
+                            "duration": float(duration_days) * 24.0 if duration_days is not None else None,
+                            "duration_unc": float(duration_unc_days) * 24.0 if duration_unc_days is not None else None,
                         }
             fit_yaml = rdir / "fit.yaml"
             if fit_yaml.is_file():
@@ -3344,7 +3463,9 @@ def api_ephemeris_target_info(target: str):
             "planets_fitted": planets_fitted,
             "fitted_tcs": fitted,
             "planets_ephem": planets_ephem,
-            "run_type": j.get("run_type") or ""
+            "transit_coverage": _classify_transit_coverage(
+                rdir, planets_fitted, planets_ephem, fitted
+            ),
         })
         
     # Ensure all seen planets are initialized in all ephemerides

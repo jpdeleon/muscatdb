@@ -620,6 +620,66 @@ def test_ephemeris_targets_are_normalized_unique_names(mock_db):
     assert response.json()["targets"] == ["HIP67522", "V1298TAU"]
 
 
+def test_ephemeris_target_info_lists_only_full_transit_fit_runs(
+    mock_db, monkeypatch, tmp_path
+):
+    target = "ZZZ ephemeris run filter"
+    for run_id, run_type in (("production", "full"), ("preview", "test")):
+        save_job(
+            type_="transit_fit",
+            inst="muscat4",
+            date="260101",
+            target=target,
+            state="done",
+            returncode=0,
+            elapsed=10,
+            started_at=1000.0,
+            run_type=run_type,
+            run_id=run_id,
+            run_name=run_id,
+        )
+
+    monkeypatch.setattr("muscat_db.web.fit.sync_jobs", lambda: None)
+    monkeypatch.setattr("muscat_db.web.fit._discover_orphan_fits", lambda keys: [])
+    monkeypatch.setattr("muscat_db.web.fit.get_fit_outputs", lambda *args: {"has_any": True})
+    monkeypatch.setattr("muscat_db.web.fit.fit_output_dir", lambda *args: tmp_path)
+    monkeypatch.setattr("muscat_db.web._get_run_fitted_params", lambda *args: {})
+
+    response = TestClient(app).get(
+        "/api/ephemeris/target-info", params={"target": target}
+    )
+
+    assert response.status_code == 200
+    datasets = response.json()["datasets"]
+    assert [dataset["run_id"] for dataset in datasets] == ["production"]
+    assert "run_type" not in datasets[0]
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "expected"),
+    [
+        (99.90, 100.10, "full"),
+        (99.90, 100.00, "ing"),
+        (100.00, 100.10, "egr"),
+    ],
+)
+def test_ephemeris_transit_coverage_uses_lightcurve_contacts(
+    tmp_path, start, end, expected
+):
+    from muscat_db.web import _classify_transit_coverage
+
+    (tmp_path / "lightcurve.csv").write_text(
+        f"BJD_TDB,Flux,Err\n{start},1,0.001\n{end},1,0.001\n"
+    )
+    ephemerides = {
+        "b": {"t0": 100.0, "period": 3.0, "duration": 2.0}
+    }
+
+    assert _classify_transit_coverage(
+        tmp_path, "b", ephemerides, {}
+    ) == expected
+
+
 def _post_manual_calculate(planets_ephem, manual_points, fit_method="unweighted"):
     """POST /api/ephemeris/calculate for a target with no database fits, so the
     only points come from the manually entered transit centers under test."""

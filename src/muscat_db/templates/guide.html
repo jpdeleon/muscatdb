@@ -440,7 +440,7 @@ graph TD
 
     %% Dataset assembly
     C --> D["Load Target Info\n/api/ephemeris/target-info"]:::pipeline
-    D --> E["Completed Run Datasets\ninstrument, date, run_id, run_type"]:::default
+    D --> E["Completed Production-Fit Datasets\ninstrument, date, run_id, transit coverage"]:::default
     D --> F["Fitted Transit Centers\nTc ± σ per planet per dataset"]:::default
     D --> G["Reference Ephemerides\nNASA Exoplanet Archive, TOI, fallback"]:::default
     D --> H["Planet Cards\nT0, period, source override"]:::default

@@ -1507,12 +1507,8 @@
       
       const detailsUrl = `/transit-fit?inst=${d.instrument}&date=${d.date}&target=${encodeURIComponent(d.target)}&run=${d.run_id}`;
 
-      let runTypeBadge = '';
-      if (d.run_type === 'test') {
-        runTypeBadge = `<span class="badge badge-amber" style="font-size: 0.7rem; margin-left: 0.5rem; text-transform: lowercase;">test</span>`;
-      } else if (d.run_type === 'full') {
-        runTypeBadge = `<span class="badge badge-blue" style="font-size: 0.7rem; margin-left: 0.5rem; text-transform: lowercase;">full</span>`;
-      }
+      const coverageSuffix = ['full', 'ing', 'egr'].includes(d.transit_coverage)
+        ? ` (${d.transit_coverage})` : '';
 
       tr.innerHTML = `
         <td style="text-align: center;">
@@ -1523,9 +1519,8 @@
         <td class="mono">${d.date}</td>
         <td>
           <a href="${detailsUrl}" target="_blank" style="font-weight: 600; color: var(--text);" title="Click to view transit fit">
-            ${d.run_name}
+            ${d.run_name}${coverageSuffix}
           </a>
-          ${runTypeBadge}
         </td>
         <td class="mono" style="text-align: center;">${d.planets_fitted}</td>
         <td>${transitsSummary}</td>
