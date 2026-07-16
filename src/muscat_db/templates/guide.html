@@ -243,7 +243,7 @@
             MuSCAT-db Pipeline Workflow
           </h1>
           <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
-            An overview of the MuSCAT observation log data ingestion and the photometry and transit fitting analysis pipelines.
+            An overview of observation-log ingestion, analysis pipelines, scheduling, and the closed-loop results workflow.
           </p>
         </div>
         <span class="toggle-icon">▼</span>
@@ -273,13 +273,13 @@ graph TD
     %% Photometry Stage
     D -->|Configure & Launch| E["Photometry Job Queue"]:::pipeline
     E -->|Runs calibrated prose| F["Photometry Reduction"]:::default
-    F -->|CSVs & diagnostics| G["Photometry Results\n($MUSCAT_PROSE_DIR/inst/date/)"]:::default
+    F -->|CSVs & diagnostics| G["Photometry Results\n($MUSCAT_PROSE_DIR/inst/date/_runs/target/run/)"]:::default
 
     %% Transit Fit Stage
     G -->|Inputs lightcurves| H["Transit Fit Job Queue"]:::pipeline
     D -->|Configure & Launch| H
     H -->|Runs timer MCMC sampler| I["Transit Fitting"]:::default
-    I -->|Posteriors & diagnostics| J["Transit Results\n($MUSCAT_TIMER_DIR/inst/date/target/)"]:::default
+    I -->|Posteriors & diagnostics| J["Transit Results\n($MUSCAT_TIMER_DIR/inst/date/target/run/)"]:::default
 
     %% Ephemeris Analysis
     J -->|Transit centers Tc| L["Ephemeris O-C Analysis"]:::pipeline
@@ -344,7 +344,7 @@ graph TD
           <pre class="mermaid" style="width: 100%; text-align: center;">
 graph TD
     %% Input
-    A["Raw Science FITS Files\n(Calibrated e91.fits)"]:::default --> B["Band Grouping\n(Grouped by gp, rp, ip, zs filters)"]:::default
+    A["Science FITS Files\n(raw MuSCAT/MuSCAT2; BANZAI e91 for MuSCAT3/4/Sinistro)"]:::default --> B["Calibration when required\nthen band grouping from FILTER headers"]:::default
     
     %% Setup & Reference Frame
     B --> C["Reference Construction\n(position: first/middle frame; quality: clean local anchor\n+ registered top-K temporal persistence)"]:::default
@@ -610,7 +610,7 @@ graph TD
           <pre class="mermaid" style="width: 100%; text-align: center;">
 graph TD
     %% Configuration & Input
-    A["User Logged In\n(LCO_API_TOKEN configured)"]:::default --> B["Load Proposals\n/api/lco/proposals"]:::pipeline
+    A["Authenticated User\n(per-user token or LCO_API_TOKEN fallback)"]:::default --> B["Load Proposals\n/api/lco/proposals"]:::pipeline
     B --> C["Select Project/Proposal"]:::default
     C --> D["Choose Saved Ephemeris View\n(from /lco?view=slug or direct link)"]:::default
     D --> E["Extract Target & Ephemeris\nT0, period, target name"]:::default
@@ -873,7 +873,7 @@ graph TD
             Database Schema
           </h2>
           <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
-            Entity-relationship diagram and column definitions for <code>muscat.db</code>.
+            Entity-relationship diagram and core column definitions for <code>muscat.db</code>.
           </p>
         </div>
         <span class="toggle-icon">▼</span>
@@ -909,6 +909,7 @@ erDiagram
         text object
         real exptime
         text read_mode
+        text telescope
         text frame_start
         text frame_end
         text ut_start
@@ -934,6 +935,8 @@ erDiagram
         real airmass_min
         real airmass_max
         int is_identified
+        text phot_status
+        text fit_status
     }
     target_notes {
         text object PK
@@ -960,6 +963,16 @@ erDiagram
         text params
         text run_id
         text run_name
+        text user_name
+    }
+    users {
+        text username PK
+        text password_hash
+        text display_name
+        int is_admin
+        text created_at
+        text last_login
+        text settings
     }
     db_meta {
         text key PK
@@ -990,12 +1003,63 @@ erDiagram
         text created_at
         text updated_at
     }
+    test_observations {
+        text id PK
+        text target
+        text instrument
+        text site
+        text state
+        text plan_json
+        text result_json
+        text request_ids_json
+    }
+    lco_observation_requests {
+        int request_id PK
+        int requestgroup_id
+        text target
+        text instrument
+        text user_name
+        text request_state
+        text monitor_state
+        text result_json
+    }
+    lco_observation_frames {
+        int request_id PK
+        text frame_id PK
+        text observation_id
+        text filename
+        text instrument
+        text obsdate
+        text state
+        text error
+        text metadata_json
+        real updated_at
+    }
+    lco_monitor_leases {
+        text name PK
+        text owner
+        real expires_at
+    }
+    exofop_cache {
+        text tic_id PK
+        int has_confirmed_planets
+        text confirmed_planets
+        text updated_at
+    }
+    job_concurrency_slots {
+        text pipeline PK
+        text holder_key PK
+        real claimed_at
+    }
 
     frames ||--o{ summaries : "grouped into"
     targets ||--o{ frames : "contains"
     targets ||--o{ summaries : "contains"
     targets ||--|| target_notes : "annotates"
     targets ||--|| target_overrides : "overrides"
+    users ||--o{ jobs : "launches"
+    users ||--o{ lco_observation_requests : "submits"
+    lco_observation_requests ||--o{ lco_observation_frames : "produces"
           </pre>
         </div>
 
@@ -1038,8 +1102,13 @@ erDiagram
                 </tr>
                 <tr style="border-bottom: 1px solid var(--border);">
                   <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">jobs</td>
-                  <td style="padding: 0.5rem 0.75rem;">Pipeline job tracking: type (photometry / transit_fit), state, return code, elapsed time, serialized params</td>
+                  <td style="padding: 0.5rem 0.75rem;">Pipeline job tracking: photometry, transit-fit, and TTV-fit state, run identity, user attribution, elapsed time, and serialized parameters</td>
                   <td style="padding: 0.5rem 0.75rem;">One per pipeline launch</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">users</td>
+                  <td style="padding: 0.5rem 0.75rem;">Authenticated-user metadata and encrypted per-user settings such as LCO and ADS tokens</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per configured user</td>
                 </tr>
                 <tr style="border-bottom: 1px solid var(--border);">
                   <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">db_meta</td>
@@ -1061,6 +1130,36 @@ erDiagram
                   <td style="padding: 0.5rem 0.75rem;">Saved interactive O-C plot views: persisted filter state, target list, and plot configuration</td>
                   <td style="padding: 0.5rem 0.75rem;">One per saved view</td>
                 </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">test_observations</td>
+                  <td style="padding: 0.5rem 0.75rem;">Guarded closed-loop test plans, validation provenance, submissions, and results</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per test plan</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">lco_observation_requests</td>
+                  <td style="padding: 0.5rem 0.75rem;">Submitted LCO child requests and restart-safe monitoring/ingestion state</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per LCO child Request ID</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">lco_observation_frames</td>
+                  <td style="padding: 0.5rem 0.75rem;">Raw and BANZAI frame inventory, archive metadata, and download status for monitored requests</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per request/frame pair</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">lco_monitor_leases</td>
+                  <td style="padding: 0.5rem 0.75rem;">Short-lived cross-worker leases that prevent duplicate LCO monitoring work</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per active monitor lease</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">exofop_cache</td>
+                  <td style="padding: 0.5rem 0.75rem;">Cached ExoFOP confirmed-planet lookups used by the TOI catalog</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per cached TIC</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">job_concurrency_slots</td>
+                  <td style="padding: 0.5rem 0.75rem;">Cross-process claims enforcing safe full-pipeline concurrency limits</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per claimed pipeline slot</td>
+                </tr>
               </tbody>
             </table>
           </div>
@@ -1074,7 +1173,7 @@ erDiagram
               <span class="faq-icon">+</span>
             </div>
             <div class="faq-answer">
-              <p>The <code>build-db</code> command writes a new database to a temporary file first, then atomically replaces <code>muscat.db</code>. Before replacement, app-owned tables (<code>jobs</code>, <code>ephemeris_views</code>, <code>target_notes</code>, <code>target_overrides</code>, <code>db_meta</code>, <code>exposure_coeffs</code>, <code>exposure_jobs</code>) are copied from the existing database so no job history or user data is lost. The observation-derived tables (<code>frames</code>, <code>summaries</code>, <code>targets</code>) are rebuilt from scratch from the CSV obslogs.</p>
+              <p>The <code>build-db</code> command writes a new database to a temporary file first, then atomically replaces <code>muscat.db</code>. Before replacement it preserves app-owned tables: <code>jobs</code>, <code>users</code>, <code>ephemeris_views</code>, <code>target_notes</code>, <code>target_overrides</code>, <code>exposure_coeffs</code>, <code>test_observations</code>, <code>lco_observation_requests</code>, and <code>lco_observation_frames</code>. The observation-derived <code>frames</code>, <code>summaries</code>, and <code>targets</code> tables are rebuilt from the CSV obslogs. Transient exposure-job rows, monitor leases, and concurrency-slot claims are intentionally recreated instead of copied into the new database.</p>
             </div>
           </div>
         </div>
@@ -1161,7 +1260,7 @@ erDiagram
           <span class="workflow-title">Job Monitoring</span>
         </div>
         <div class="workflow-desc">
-          Tracks active, pending, or completed photometry and transit fitting background processes. Shows logs and error tracebacks.
+          Tracks queued, active, finalizing, or completed photometry, transit-fit, and TTV-fit background processes. Shows logs and error tracebacks.
         </div>
       </div>
 
@@ -1450,8 +1549,7 @@ erDiagram
             <span class="faq-icon">+</span>
           </div>
           <div class="faq-answer">
-            <p>The <code>--overwrite</code> flag (enabled by default in the GUI) allows re-running the pipeline over existing results. This is useful when you want to change parameters (aperture radii, bands, reference frame) without manually cleaning the output directory. Simply launch again from the photometry page with the new settings — existing product files are replaced.</p>
-            <p>Note: previous outputs are lost. If you want to preserve an older reduction, rename the results directory or run on a different date/target combination.</p>
+            <p>Give the reduction a distinct <strong>Run name</strong> to isolate it under <code>$MUSCAT_PROSE_DIR/&lt;instrument&gt;/&lt;date&gt;/_runs/&lt;target&gt;/&lt;run_id&gt;/</code>. Run chips on the results page switch between saved reductions. The <code>--overwrite</code> option (enabled by default in the GUI) only replaces products in the selected run, which is useful when retrying the same configuration with changed apertures, bands, or reference settings. Use a new run name whenever the previous products must remain intact.</p>
           </div>
         </div>
 
