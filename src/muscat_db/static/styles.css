@@ -447,6 +447,35 @@ tr.filter-row th input::placeholder { color: var(--text-dim); font-style: italic
 }
 .selector-group select:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* ---------- Page lede & empty states ---------- */
+/* One-line description under a page <h1>. Shared by the photometry, transit-fit
+   and ephemeris pages so page intros read consistently. */
+.page-lede {
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  max-width: 70ch;
+  margin-bottom: 1.5rem;
+}
+/* Centered placeholder for a page with nothing to show yet — no selection made,
+   or no data found. Replaces the per-page ad-hoc empty panels so every "nothing
+   here yet" surface looks the same. Add .error for a red rule + red icon when
+   the placeholder reports missing data rather than prompting a choice. */
+.empty-state {
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 2.5rem 2rem;
+  text-align: center;
+  margin-top: 1.5rem;
+}
+.empty-state.error { border-color: var(--red); }
+.empty-state .empty-icon { font-size: 2.5rem; line-height: 1; margin-bottom: 0.85rem; }
+.empty-state.error .empty-icon { color: var(--red); }
+.empty-state h2 { color: var(--text); margin-bottom: 0.5rem; }
+.empty-state p { color: var(--text-dim); max-width: 520px; margin: 0 auto; line-height: 1.6; font-size: 0.9rem; }
+.empty-state .btn { margin-top: 1.25rem; }
+
 /* Foldable section: a <details> whose <summary> carries the section <h2>. */
 .phot-fold > summary {
   list-style: none; cursor: pointer; user-select: none;
@@ -603,7 +632,7 @@ details.adv[open] > summary { color: var(--text); margin-bottom: 0.5rem; }
   padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem;
 }
 .fig img { width: 100%; height: auto; border-radius: 6px; display: block; background: var(--input-bg); }
-.fig .cap { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-dim); }
+.fig .cap { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: var(--text-dim); }
 
 /* ---------- Misc shared ---------- */
 .dl-row { margin-top: 0.75rem; display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.85rem; }

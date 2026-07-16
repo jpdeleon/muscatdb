@@ -127,6 +127,9 @@
 </style>
 
 <h1>Transit Fit</h1>
+<p class="page-lede">
+  Fit transit light curves for a target with the conda-based timer pipeline, then review the model fit, systematics, and posterior parameters.
+</p>
 
 <div class="selector-group">
   <label for="sel-inst">
@@ -169,18 +172,18 @@
 </div>
 
 {% if not (sel_inst and sel_date and sel_target) %}
-  <div style="background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 3rem; text-align: center; margin-top: 2rem;">
-    <div style="font-size: 3.5rem; margin-bottom: 1rem;">📈</div>
-    <h2 style="color: var(--text);">Transit Fitting Pipeline</h2>
-    <p style="color: var(--text-dim); max-width: 500px; margin: 0 auto; line-height: 1.6; font-size: 0.9rem;">
+  <div class="empty-state">
+    <div class="empty-icon">📈</div>
+    <h2>Transit Fitting Pipeline</h2>
+    <p>
       Select an instrument, date, and target above to configure parameters and run the transit fitting analysis using the conda-based <strong>timer</strong> tool.
     </p>
   </div>
 {% elif not csvs %}
-  <div style="background: var(--surface); border: 1px dashed var(--border); border-radius: 10px; padding: 3rem; text-align: center; margin-top: 2rem;">
-    <div style="font-size: 3rem; color: var(--red); margin-bottom: 1rem;">⚠</div>
-    <h2 style="color: var(--text);">No Photometry CSVs Found</h2>
-    <p style="color: var(--text-dim); max-width: 500px; margin: 0 auto 1.5rem; line-height: 1.6; font-size: 0.9rem;">
+  <div class="empty-state error">
+    <div class="empty-icon">⚠</div>
+    <h2>No Photometry CSVs Found</h2>
+    <p>
       No lightcurve CSV files were found for <strong>{{ sel_target }}</strong> on date <strong>{{ sel_date }}</strong>.
       You must run the photometry pipeline first before attempting a transit fit.
     </p>
