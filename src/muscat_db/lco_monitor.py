@@ -512,7 +512,7 @@ def process_request(request: dict, *, path: str | None = None, now: float | None
 
         if pending:
             snapshot = lco.start_archive_download(
-                [row["metadata"] for row in pending], overwrite=False
+                [row["metadata"] for row in pending], overwrite=False, auto_ingest=False
             )
             with get_conn(path) as conn:
                 conn.execute(

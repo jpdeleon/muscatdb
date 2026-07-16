@@ -3032,7 +3032,11 @@ def api_lco_archive_download(payload: dict = Body(...)):
         if not isinstance(frames, list) or not frames:
             return JSONResponse({"ok": False, "error": "no frames selected"}, status_code=400)
         if payload.get("background"):
-            job = lco.start_archive_download(frames, overwrite=bool(payload.get("overwrite")))
+            job = lco.start_archive_download(
+                frames,
+                overwrite=bool(payload.get("overwrite")),
+                auto_ingest=True,
+            )
             return JSONResponse({"ok": True, **job})
         results = lco.download_frames(frames, overwrite=bool(payload.get("overwrite")))
         return JSONResponse({"ok": True, "results": results})
@@ -3770,6 +3774,18 @@ def _live_elapsed(job: dict) -> int:
     return round(job.get("elapsed") or 0)
 
 
+def _lco_obslog_url(instrument: str, obsdate: str) -> str:
+    """Dataset obslog URL once an archive date has been ingested."""
+    if instrument not in INSTRUMENTS or not re.fullmatch(r"\d{6}", obsdate or ""):
+        return ""
+    try:
+        if _get_summaries(_db_path(), instrument, obsdate):
+            return f"/{instrument}/{obsdate}"
+    except Exception:
+        logger.debug("failed to check obslog for %s/%s", instrument, obsdate, exc_info=True)
+    return ""
+
+
 def _lco_archive_download_row(job: dict) -> dict:
     objects = job.get("objects") or []
     instruments = job.get("instruments") or []
@@ -3791,7 +3807,15 @@ def _lco_archive_download_row(job: dict) -> dict:
     details = "; ".join(dest_dirs) if dest_dirs else "Destination pending"
     if phase and phase not in {"done", state}:
         details = f"{phase}: {details}"
-    can_run_dataset_action = state == "done" and len(instruments) == 1 and len(obsdates) == 1
+    single_dataset = state == "done" and len(instruments) == 1 and len(obsdates) == 1
+    obslog_url = _lco_obslog_url(instruments[0], obsdates[0]) if single_dataset else ""
+    photometry_url = str(job.get("photometry_url") or "")
+    if not photometry_url and obslog_url:
+        params = {"inst": instruments[0], "date": obsdates[0]}
+        if len(objects) == 1:
+            params["target"] = objects[0]
+        photometry_url = "/photometry?" + urlencode(params)
+    can_run_dataset_action = bool(photometry_url)
     job_id = job.get("job_id") or ""
     return {
         "key": f"lco_archive_download:{job_id}",
@@ -3812,6 +3836,8 @@ def _lco_archive_download_row(job: dict) -> dict:
         "action_inst": instruments[0] if len(instruments) == 1 else "",
         "action_date": obsdates[0] if len(obsdates) == 1 else "",
         "can_run_dataset_action": can_run_dataset_action,
+        "obslog_url": obslog_url,
+        "photometry_url": photometry_url,
     }
 
 
@@ -3824,6 +3850,8 @@ def _persist_lco_archive_download_row(row: dict) -> None:
         "action_inst": row.get("action_inst") or "",
         "action_date": row.get("action_date") or "",
         "can_run_dataset_action": bool(row.get("can_run_dataset_action")),
+        "obslog_url": row.get("obslog_url") or "",
+        "photometry_url": row.get("photometry_url") or "",
     }
     try:
         get_job_store().save(
@@ -3858,10 +3886,15 @@ def _adapt_persisted_lco_archive_row(job: dict) -> dict:
     row["details"] = str(params.get("details") or row.get("details") or "")
     row["action_inst"] = str(params.get("action_inst") or row.get("inst") or "")
     row["action_date"] = str(params.get("action_date") or row.get("date") or "")
-    row["can_run_dataset_action"] = bool(
-        params.get("can_run_dataset_action")
-        or (row.get("state") == "done" and row["action_inst"] in INSTRUMENTS and re.fullmatch(r"\d{6}", row["action_date"]))
-    )
+    row["obslog_url"] = _lco_obslog_url(row["action_inst"], row["action_date"])
+    row["photometry_url"] = str(params.get("photometry_url") or "")
+    if not row["photometry_url"] and row["obslog_url"]:
+        query = {"inst": row["action_inst"], "date": row["action_date"]}
+        target = str(row.get("target") or "").strip()
+        if target and "," not in target:
+            query["target"] = target
+        row["photometry_url"] = "/photometry?" + urlencode(query)
+    row["can_run_dataset_action"] = bool(row["photometry_url"])
     return row
 
 
@@ -3921,6 +3954,7 @@ def jobs_lco_archive_ingest_date(payload: dict = Body(...)):
             "ok": True,
             "command": f"muscat-db ingest-date {inst} {obsdate}",
             "count": count,
+            "obslog_url": f"/{inst}/{obsdate}",
         })
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
@@ -4010,6 +4044,8 @@ def jobs_status(active_only: bool = False):
                 "action_inst": j.get("action_inst", ""),
                 "action_date": j.get("action_date", ""),
                 "can_run_dataset_action": bool(j.get("can_run_dataset_action")),
+                "obslog_url": j.get("obslog_url", ""),
+                "photometry_url": j.get("photometry_url", ""),
             }
     _last_running = current_running
     running = [
@@ -4029,6 +4065,8 @@ def jobs_status(active_only: bool = False):
             "action_inst": j.get("action_inst", ""),
             "action_date": j.get("action_date", ""),
             "can_run_dataset_action": bool(j.get("can_run_dataset_action")),
+            "obslog_url": j.get("obslog_url", ""),
+            "photometry_url": j.get("photometry_url", ""),
         }
         for j in all_jobs if j["state"] in ("running", "cancelling", "pending")
     ]

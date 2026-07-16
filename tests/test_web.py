@@ -233,7 +233,12 @@ def test_jobs_page_includes_lco_archive_download(mock_db, monkeypatch):
     assert "WASP-12" in r.text
 
 
-def test_jobs_page_lco_archive_done_row_has_scan_ingest_buttons(mock_db, monkeypatch):
+def test_jobs_page_lco_archive_done_row_links_to_photometry(mock_db, monkeypatch):
+    with sqlite3.connect(mock_db) as conn:
+        conn.execute(
+            "INSERT INTO summaries (instrument, obsdate, ccd, object, nframes) VALUES (?, ?, ?, ?, ?)",
+            ("muscat3", "260102", 0, "WASP-12", 2),
+        )
     monkeypatch.setattr(
         "muscat_db.lco.archive_download_jobs",
         lambda: [{
@@ -253,17 +258,21 @@ def test_jobs_page_lco_archive_done_row_has_scan_ingest_buttons(mock_db, monkeyp
             "started_at": 1700000000.0,
             "finished_at": 1700000010.0,
             "error": None,
+            "photometry_url": "/photometry?inst=muscat3&date=260102&target=WASP-12",
         }],
     )
     r = TestClient(app).get("/jobs")
     assert r.status_code == 200
-    assert "muscat-db scan muscat3 260102" in r.text
-    assert "muscat-db ingest-date muscat3 260102" in r.text
     assert "lco-actions-head" in r.text
     assert "lco-actions-cell" in r.text
     assert 'data-lco-followup-ready="1"' in r.text
-    assert "runLcoArchiveCommand(this, 'scan')" in r.text
-    assert "runLcoArchiveCommand(this, 'ingest-date')" in r.text
+    assert "runLcoArchiveCommand" not in r.text
+    assert "Scan</button>" not in r.text
+    assert "Ingest</button>" not in r.text
+    assert "🔭" in r.text
+    assert 'href="/photometry?inst=muscat3&amp;date=260102&amp;target=WASP-12"' in r.text
+    assert 'class="mono obsdate-cell"' in r.text
+    assert 'href="/muscat3/260102"' in r.text
 
 
 def test_jobs_page_persists_lco_archive_done_row_across_refresh(mock_db, monkeypatch):
@@ -284,18 +293,19 @@ def test_jobs_page_persists_lco_archive_done_row_across_refresh(mock_db, monkeyp
         "started_at": 1700000000.0,
         "finished_at": 1700000010.0,
         "error": None,
+        "photometry_url": "/photometry?inst=muscat3&date=260102&target=WASP-12",
     }
     monkeypatch.setattr("muscat_db.lco.archive_download_jobs", lambda: [completed_job])
     first = TestClient(app).get("/jobs")
     assert first.status_code == 200
-    assert "muscat-db scan muscat3 260102" in first.text
+    assert "🔭" in first.text
 
     monkeypatch.setattr("muscat_db.lco.archive_download_jobs", lambda: [])
     refreshed = TestClient(app).get("/jobs")
 
     assert refreshed.status_code == 200
-    assert "muscat-db scan muscat3 260102" in refreshed.text
-    assert "muscat-db ingest-date muscat3 260102" in refreshed.text
+    assert "🔭" in refreshed.text
+    assert "/photometry?inst=muscat3" in refreshed.text
     assert 'data-key="lco_archive_download:abc123"' in refreshed.text
 
 
@@ -351,6 +361,7 @@ def test_jobs_status_returns_terminal_lco_archive_even_if_baseline_missed(mock_d
             "started_at": 1700000000.0,
             "finished_at": 1700000010.0,
             "error": None,
+            "photometry_url": "/photometry?inst=muscat3&date=260102&target=WASP-12",
         }],
     )
 
@@ -368,6 +379,7 @@ def test_jobs_status_returns_terminal_lco_archive_even_if_baseline_missed(mock_d
     assert finished["action_inst"] == "muscat3"
     assert finished["action_date"] == "260102"
     assert finished["can_run_dataset_action"] is True
+    assert finished["photometry_url"].startswith("/photometry?inst=muscat3")
 
 
 def test_jobs_lco_archive_scan_endpoint(mock_db, monkeypatch):
@@ -396,6 +408,7 @@ def test_jobs_lco_archive_ingest_date_endpoint(mock_db, monkeypatch):
     assert r.status_code == 200
     assert r.json()["command"] == "muscat-db ingest-date muscat3 260102"
     assert r.json()["count"] == 2
+    assert r.json()["obslog_url"] == "/muscat3/260102"
     assert called["args"][1:] == ("muscat3", "260102")
 
 
@@ -1629,8 +1642,9 @@ def test_lco_archive_download_per_file_results(monkeypatch):
 
 
 def test_lco_archive_download_can_start_background_job(monkeypatch):
-    def fake_start(frames, overwrite=False):
+    def fake_start(frames, overwrite=False, auto_ingest=False):
         assert overwrite is True
+        assert auto_ingest is True
         assert frames[0]["filename"] == "ogg2m001-ep05-20260102-0001-e91.fits.fz"
         return {
             "job_id": "job123",
@@ -1697,6 +1711,7 @@ def test_lco_archive_download_status_endpoint_persists_done_job(mock_db, monkeyp
             "started_at": 1700000000.0,
             "finished_at": 1700000010.0,
             "error": None,
+            "photometry_url": "/photometry?inst=muscat3&date=260102&target=WASP-12",
         },
     )
 
@@ -1705,7 +1720,8 @@ def test_lco_archive_download_status_endpoint_persists_done_job(mock_db, monkeyp
     assert r.status_code == 200
     monkeypatch.setattr("muscat_db.lco.archive_download_jobs", lambda: [])
     refreshed = TestClient(app).get("/jobs")
-    assert "muscat-db scan muscat3 260102" in refreshed.text
+    assert "🔭" in refreshed.text
+    assert "/photometry?inst=muscat3" in refreshed.text
     assert 'data-key="lco_archive_download:abc123"' in refreshed.text
 
 

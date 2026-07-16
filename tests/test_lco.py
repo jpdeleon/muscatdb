@@ -562,6 +562,91 @@ class DownloadToFileTest(unittest.TestCase):
 
 
 class ArchiveDownloadJobTest(unittest.TestCase):
+    def test_interactive_download_scans_ingests_and_links_photometry(self):
+        temp_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, temp_dir, ignore_errors=True)
+        frame = {
+            "filename": "ogg2m001-ep05-20260102-0001-e91.fits",
+            "SITEID": "ogg",
+            "TELID": "2m0a",
+            "INSTRUME": "ep05",
+            "DATE_OBS": "2026-01-02T05:00:00",
+            "OBJECT": "WASP-12",
+        }
+        downloaded = {
+            "filename": frame["filename"],
+            "status": "downloaded",
+            "dest": str(Path(temp_dir) / "MuSCAT3" / "260102" / frame["filename"]),
+        }
+        scanned = []
+        ingested = []
+
+        def fake_scan(inst, obsdate, max_workers=None, data_root=None):
+            scanned.append((inst, obsdate, max_workers, data_root))
+            return {"total": 1, "per_ccd": {0: 1}}
+
+        def fake_ingest(path, inst, obsdate):
+            ingested.append((path, inst, obsdate))
+            return 1
+
+        with patch("muscat_db.lco._download_frame", return_value=downloaded), \
+                patch("muscat_db.lco.download_root", return_value=Path(temp_dir)), \
+                patch("muscat_db.lco._db_path", return_value="/data/muscat.db"), \
+                patch("muscat_db.scanner.scan_date", side_effect=fake_scan), \
+                patch("muscat_db.database.ingest_date", side_effect=fake_ingest):
+            job = lco.start_archive_download([frame], auto_ingest=True)
+            deadline = time.time() + 2
+            done = job
+            while time.time() < deadline:
+                done = lco.archive_download_status(job["job_id"])
+                if done["state"] in {"done", "error"}:
+                    break
+                time.sleep(0.01)
+
+        self.assertEqual(done["state"], "done")
+        self.assertEqual(done["phase"], "done")
+        self.assertEqual(scanned, [("muscat3", "260102", 1, temp_dir)])
+        self.assertEqual(ingested, [("/data/muscat.db", "muscat3", "260102")])
+        self.assertEqual(done["processing_results"][0]["ingested_count"], 1)
+        self.assertEqual(
+            done["photometry_url"],
+            "/photometry?inst=muscat3&date=260102&target=WASP-12",
+        )
+
+    def test_interactive_download_does_not_link_when_scan_fails(self):
+        temp_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, temp_dir, ignore_errors=True)
+        frame = {
+            "filename": "ogg2m001-ep05-20260102-0001-e91.fits",
+            "SITEID": "ogg",
+            "TELID": "2m0a",
+            "DATE_OBS": "2026-01-02T05:00:00",
+            "OBJECT": "WASP-12",
+        }
+        downloaded = {
+            "filename": frame["filename"],
+            "status": "downloaded",
+            "dest": str(Path(temp_dir) / "MuSCAT3" / "260102" / frame["filename"]),
+        }
+
+        with patch("muscat_db.lco._download_frame", return_value=downloaded), \
+                patch("muscat_db.lco.download_root", return_value=Path(temp_dir)), \
+                patch("muscat_db.scanner.scan_date", return_value={}), \
+                patch("muscat_db.database.ingest_date") as ingest:
+            job = lco.start_archive_download([frame], auto_ingest=True)
+            deadline = time.time() + 2
+            failed = job
+            while time.time() < deadline:
+                failed = lco.archive_download_status(job["job_id"])
+                if failed["state"] in {"done", "error"}:
+                    break
+                time.sleep(0.01)
+
+        self.assertEqual(failed["state"], "error")
+        self.assertIn("scan found no reduced FITS", failed["error"])
+        self.assertEqual(failed["photometry_url"], "")
+        ingest.assert_not_called()
+
     def test_background_download_status_updates_without_blocking_submitter(self):
         started = threading.Event()
         release = threading.Event()

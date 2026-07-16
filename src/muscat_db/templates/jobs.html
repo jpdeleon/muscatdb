@@ -31,21 +31,13 @@
         data-user-name="{{ j.user_name or '' }}"
         data-action-inst="{{ j.action_inst or '' }}"
         data-action-date="{{ j.action_date or '' }}"
+        data-photometry-url="{{ j.photometry_url or '' }}"
         data-lco-followup-ready="{% if j.type == 'lco_archive_download' and j.can_run_dataset_action %}1{% else %}0{% endif %}"
         data-search="{{ (j.target + ' ' + (j.run_name or '') + ' ' + j.inst + ' ' + j.date + ' ' + j.type + ' ' + (j.user_name or '') + ' ' + (j.details or '')) | lower }}">
       {% if j.type == 'lco_archive_download' %}
       <td class="job-actions lco-actions-cell">
-        {% if j.can_run_dataset_action %}
-          <button class="btn sm"
-                  data-inst="{{ j.action_inst }}"
-                  data-date="{{ j.action_date }}"
-                  onclick="runLcoArchiveCommand(this, 'scan')"
-                  title="muscat-db scan {{ j.action_inst }} {{ j.action_date }}">Scan</button>
-          <button class="btn sm"
-                  data-inst="{{ j.action_inst }}"
-                  data-date="{{ j.action_date }}"
-                  onclick="runLcoArchiveCommand(this, 'ingest-date')"
-                  title="muscat-db ingest-date {{ j.action_inst }} {{ j.action_date }}">Ingest</button>
+        {% if j.photometry_url %}
+          <a class="btn sm" href="{{ j.photometry_url }}" title="Open this dataset in Photometry" aria-label="Open this dataset in Photometry">🔭</a>
         {% endif %}
         <button class="btn sm hide-btn" onclick="hideRow(this, '{{ j.key }}')" title="Hide this row">Hide</button>
       </td>
@@ -58,7 +50,13 @@
       <td class="inst-cell"><span class="badge badge-blue">{{ j.inst }}</span></td>
       {% endif %}
       {% if j.type != 'ttv_fit' %}
-      <td class="mono">{{ j.date }}</td>
+      <td class="mono{% if j.type == 'lco_archive_download' %} obsdate-cell{% endif %}">
+        {% if j.type == 'lco_archive_download' and j.obslog_url %}
+          <a href="{{ j.obslog_url }}" title="Open obslog for {{ j.inst }} {{ j.date }}">{{ j.date }}</a>
+        {% else %}
+          {{ j.date }}
+        {% endif %}
+      </td>
       {% endif %}
       <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">{{ j.user_name or '—' }}</td>
       <td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">
@@ -383,6 +381,18 @@
     return null;
   }
 
+  function setLcoObslogLink(row, url, date) {
+    if (!row || !url) return;
+    var cell = row.querySelector('.obsdate-cell');
+    if (!cell) return;
+    var link = document.createElement('a');
+    link.href = url;
+    link.textContent = date || cell.textContent.trim();
+    link.title = 'Open obslog for this dataset';
+    cell.innerHTML = '';
+    cell.appendChild(link);
+  }
+
   function ensureLcoArchiveRow(job) {
     if (!job || job.type !== 'lco_archive_download') return null;
     var existing = rowByKey(job.key);
@@ -399,6 +409,7 @@
     row.setAttribute('data-user-name', job.user_name || '');
     row.setAttribute('data-action-inst', job.action_inst || '');
     row.setAttribute('data-action-date', job.action_date || '');
+    row.setAttribute('data-photometry-url', job.photometry_url || '');
     row.setAttribute('data-lco-followup-ready', job.can_run_dataset_action ? '1' : '0');
     row.setAttribute('data-search', [
       job.target || '',
@@ -414,7 +425,7 @@
       '<td><strong><a href="/lco/archive">' + escapeHtml(job.target || 'LCO archive') + '</a></strong></td>' +
       '<td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></td>' +
       '<td class="inst-cell"><span class="badge badge-blue">' + escapeHtml(job.inst || 'lco') + '</span></td>' +
-      '<td class="mono">' + escapeHtml(job.date || 'mixed') + '</td>' +
+      '<td class="mono obsdate-cell">' + escapeHtml(job.date || 'mixed') + '</td>' +
       '<td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">' + escapeHtml(job.user_name || '—') + '</td>' +
       '<td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">' + escapeHtml(job.started_at_str || '—') + '</td>' +
       '<td class="mono elapsed-cell" data-elapsed="' + escapeHtml(job.elapsed || 0) + '">' + escapeHtml(job.state === 'pending' ? '—' : formatElapsed(job.elapsed || 0)) + '</td>' +
@@ -434,6 +445,7 @@
     updateRunName(row, job.run_name || '');
     updateDetails(row, job.details || '');
     replaceActions(row, job.state || '', job.key || '', 'lco_archive_download', job.inst || '', job.date || '', job.target || '', '');
+    setLcoObslogLink(row, job.obslog_url || '', job.action_date || job.date || '');
     return row;
   }
 
@@ -473,13 +485,11 @@
     if (!td) return;
     runId = runId || '';
     if (type === 'lco_archive_download') {
-      var actionInst = row.getAttribute('data-action-inst') || '';
-      var actionDate = row.getAttribute('data-action-date') || '';
+      var photometryUrl = row.getAttribute('data-photometry-url') || '';
       var htmlLco = '';
-      if (state === 'done' && actionInst && actionDate) {
+      if (state === 'done' && photometryUrl) {
         row.setAttribute('data-lco-followup-ready', '1');
-        htmlLco += '<button class="btn sm" data-inst="' + actionInst + '" data-date="' + actionDate + '" onclick="runLcoArchiveCommand(this, \'scan\')" title="muscat-db scan ' + actionInst + ' ' + actionDate + '">Scan</button>';
-        htmlLco += '<button class="btn sm" data-inst="' + actionInst + '" data-date="' + actionDate + '" onclick="runLcoArchiveCommand(this, \'ingest-date\')" title="muscat-db ingest-date ' + actionInst + ' ' + actionDate + '">Ingest</button>';
+        htmlLco += '<a class="btn sm" href="' + escapeHtml(photometryUrl) + '" title="Open this dataset in Photometry" aria-label="Open this dataset in Photometry">🔭</a>';
       } else {
         row.setAttribute('data-lco-followup-ready', '0');
       }
@@ -773,35 +783,6 @@
       .catch(function(err) { pre.textContent = 'Error: ' + err.message; });
   };
 
-  window.runLcoArchiveCommand = function(btn, action) {
-    var inst = btn.getAttribute('data-inst') || '';
-    var date = btn.getAttribute('data-date') || '';
-    var endpoint = action === 'ingest-date' ? '/api/jobs/lco-archive/ingest-date' : '/api/jobs/lco-archive/scan';
-    var label = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'Running…';
-    fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ inst: inst, date: date })
-    })
-    .then(function(r) {
-      return r.json().then(function(d) {
-        if (!r.ok || !d.ok) throw new Error(d.error || d.detail || 'Command failed');
-        return d;
-      });
-    })
-    .then(function(d) {
-      btn.textContent = 'Done';
-      showMessageModal('Completed', (d.command || action) + ' completed');
-    })
-    .catch(function(err) {
-      showMessageModal('Error', err.message);
-      btn.disabled = false;
-      btn.textContent = label;
-    });
-  };
-
   // ── Live polling (in-place updates, no page reload) ────────────────────
   function refreshLiveElapsed() {
     var now = Math.floor(Date.now() / 1000);
@@ -836,6 +817,8 @@
           row.setAttribute('data-status', f.state);
           if (f.action_inst != null) row.setAttribute('data-action-inst', f.action_inst || '');
           if (f.action_date != null) row.setAttribute('data-action-date', f.action_date || '');
+          if (f.photometry_url != null) row.setAttribute('data-photometry-url', f.photometry_url || '');
+          if (f.obslog_url) setLcoObslogLink(row, f.obslog_url, f.action_date || f.date || '');
           replaceStatusBadge(row, f.state);
           var td = row.querySelector('.elapsed-cell');
           if (td && f.elapsed != null) {
@@ -885,6 +868,8 @@
               }
               if (rj.action_inst != null) row.setAttribute('data-action-inst', rj.action_inst || '');
               if (rj.action_date != null) row.setAttribute('data-action-date', rj.action_date || '');
+              if (rj.photometry_url != null) row.setAttribute('data-photometry-url', rj.photometry_url || '');
+              if (rj.obslog_url) setLcoObslogLink(row, rj.obslog_url, rj.action_date || rj.date || '');
               updateRunName(row, rj.run_name);
               updateDetails(row, rj.details);
               var userTd = row.querySelector('.user-cell');
