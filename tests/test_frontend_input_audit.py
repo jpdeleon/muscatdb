@@ -605,6 +605,52 @@ def test_ephemeris_ttv_run_selection_is_preserved_in_shareable_url():
     assert "loadTTVRunOutputs(target, run, runs, 'push')" in html
 
 
+def test_ephemeris_selected_ttv_run_model_controls_extend_plot_to_utc_date():
+    html = _read_template("ephemeris.html")
+
+    assert 'id="ttv-model-controls"' in html
+    assert 'id="show-ttv-model-checkbox"' in html
+    assert 'id="ttv-model-end-date"' in html
+    assert 'type="date"' in html
+    assert "outputs.has_model" in html
+
+    load_model = _function_body(html, "loadSelectedTTVModel")
+    assert "run_name: runName" in load_model
+    assert "qs.set('end_date', endDate)" in load_model
+    assert "selectedTTVRun !== runName" in load_model
+    assert "ttvModelRun = runName" in load_model
+
+    model_trace = _function_body(html, "getTTVModelTrace")
+    assert "ttvModelData?.points?.[planet]" in model_trace
+    assert "(tc - (t0 + plotEpoch * period)) * 1440" in model_trace
+    assert "TTV best fit" in model_trace
+
+    draw_plot = _function_body(html, "drawPlot")
+    assert "ttvModelRun === selectedTTVRun" in draw_plot
+    assert "Math.max(sharedXSpan.max, requestedEndX)" in draw_plot
+    assert "layout.xaxis.range" in draw_plot
+
+    view_state = _function_body(html, "collectEphemerisViewState")
+    assert "show_ttv_model:" in view_state
+    assert "ttv_model_end_date:" in view_state
+    apply_state = _function_body(html, "applyViewStateToStorage")
+    assert "state.show_ttv_model" in apply_state
+    assert "state.ttv_model_end_date" in apply_state
+
+
+def test_ephemeris_plot_download_actions_are_bare_links():
+    html = _read_template("ephemeris.html")
+
+    assert '<a id="oc-summary-link" href="#" target="_blank" rel="noopener">tcs.txt</a>' in html
+    assert '<a id="download-plot-btn" href="#">📥 Download PNG</a>' in html
+    assert 'class="btn sm" id="oc-summary-link"' not in html
+    assert '<button class="btn sm primary" type="button" id="download-plot-btn"' not in html
+    assert 'class="dl-row" style="align-items: center; margin-top: 0;"' in html
+
+    download_plot = _function_body(html, "downloadPlotPNG")
+    assert "event.preventDefault()" in download_plot
+
+
 def test_ephemeris_dataset_run_name_uses_transit_coverage_suffix():
     html = _read_template("ephemeris.html")
 

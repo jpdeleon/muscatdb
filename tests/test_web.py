@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 import tempfile
 import getpass
@@ -2631,6 +2632,42 @@ def test_ttv_fit_runs_endpoint(tmp_path, monkeypatch):
 
     # Guardrails: target is required.
     assert client.get("/api/ttv-fit/runs", params={"target": ""}).status_code == 400
+
+
+def test_ttv_fit_model_endpoint_uses_selected_run_and_end_date(monkeypatch):
+    captured = {}
+
+    def fake_model(target, run_name, end_date):
+        captured.update(target=target, run_name=run_name, end_date=end_date)
+        return {
+            "ok": True,
+            "run_name": run_name,
+            "points": {"b": [{"epoch": 2, "tc": 2460001.25}]},
+            "chi2": 3.5,
+            "sample_count": 100,
+        }
+
+    monkeypatch.setattr("muscat_db.web.ttv.get_ttv_model", fake_model)
+    from muscat_db.web import ttv_fit_model
+
+    response = ttv_fit_model("HIP67522", "joint_tess", "2030-01-02")
+
+    assert response.status_code == 200
+    assert captured == {
+        "target": "HIP67522",
+        "run_name": "joint_tess",
+        "end_date": "2030-01-02",
+    }
+    assert json.loads(response.body)["points"]["b"][0]["epoch"] == 2
+
+
+def test_ttv_model_rejects_invalid_date_before_starting_harmonic(tmp_path, monkeypatch):
+    from muscat_db import ttv_fit as ttv
+
+    monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path))
+    result = ttv.get_ttv_model("HIP67522", "default", "2030-99-01")
+
+    assert result == {"ok": False, "error": "end_date must be YYYY-MM-DD"}
 
 
 def test_ttv_download_all_uses_disk_backed_archive(tmp_path, monkeypatch):
