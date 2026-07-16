@@ -189,6 +189,10 @@
         if (d.state === 'pending' || d.state === 'running') {
           if (d.phase === 'funpacking') {
             msg('msg-download', 'Funpacking ' + (d.funpack_done || 0) + '/' + (d.funpack_total || 0) + ' frames…' + (locText || ''));
+          } else if (d.phase === 'scanning') {
+            msg('msg-download', 'Scanning downloaded FITS into obslogs…' + (locText || ''));
+          } else if (d.phase === 'ingesting') {
+            msg('msg-download', 'Ingesting obslogs into muscat-db…' + (locText || ''));
           } else {
             msg('msg-download', 'Downloading ' + (d.frames_done || 0) + '/' + (d.frames_total || 0) + ' frames…' + (locText || ''));
           }

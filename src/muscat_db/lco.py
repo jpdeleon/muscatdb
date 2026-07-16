@@ -841,6 +841,7 @@ def _archive_download_snapshot(job: dict) -> dict:
     frames = list(job["frames"])
     results = [dict(r) for r in job["results"]]
     funpack_results = [dict(r) for r in job.get("funpack_results", [])]
+    processing_results = [dict(r) for r in job.get("processing_results", [])]
     instruments: list[str] = []
     obsdates: list[str] = []
     objects: list[str] = []
@@ -878,6 +879,8 @@ def _archive_download_snapshot(job: dict) -> dict:
         "funpack_total": job.get("funpack_total", 0),
         "funpack_done": len(funpack_results),
         "funpack_results": funpack_results,
+        "processing_results": processing_results,
+        "photometry_url": job.get("photometry_url") or "",
         "instruments": instruments,
         "obsdates": obsdates,
         "objects": objects,
@@ -886,6 +889,80 @@ def _archive_download_snapshot(job: dict) -> dict:
         "finished_at": job.get("finished_at"),
         "error": job.get("error"),
     }
+
+
+def _archive_dataset_pairs(frames: list[dict]) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for frame in frames:
+        inst, obsdate, _dest = frame_destination(frame)
+        pair = (inst, obsdate)
+        if pair not in pairs:
+            pairs.append(pair)
+    return pairs
+
+
+def _archive_photometry_url(
+    datasets: list[tuple[str, str]], frames: list[dict]
+) -> str:
+    if len(datasets) != 1:
+        return ""
+    inst, obsdate = datasets[0]
+    objects: list[str] = []
+    for frame in frames:
+        target = str(
+            frame.get("OBJECT") or frame.get("object") or frame.get("target_name") or ""
+        ).strip()
+        if target and target not in objects:
+            objects.append(target)
+    params = {"inst": inst, "date": obsdate}
+    if len(objects) == 1:
+        params["target"] = objects[0]
+    return "/photometry?" + urllib.parse.urlencode(params)
+
+
+def _process_archive_datasets(job_id: str, frames: list[dict]) -> None:
+    """Serially scan and ingest every dataset in an interactive download."""
+    from muscat_db.database import ingest_date
+    from muscat_db.scanner import scan_date
+
+    root = download_root()
+    if root is None:
+        raise RuntimeError("MUSCAT_LCO_DIR or MUSCAT_DATA_DIR must be configured")
+    datasets = _archive_dataset_pairs(frames)
+    if not datasets:
+        raise RuntimeError("Could not determine an instrument/date to ingest")
+
+    for inst, obsdate in datasets:
+        with _ARCHIVE_DOWNLOAD_LOCK:
+            current = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
+            if current is None:
+                return
+            current["phase"] = "scanning"
+        scan_result = scan_date(inst, obsdate, max_workers=1, data_root=str(root))
+        if not scan_result or not scan_result.get("total"):
+            raise RuntimeError(f"scan found no reduced FITS files for {inst} {obsdate}")
+
+        with _ARCHIVE_DOWNLOAD_LOCK:
+            current = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
+            if current is None:
+                return
+            current["phase"] = "ingesting"
+        count = ingest_date(_db_path(), inst, obsdate)
+        with _ARCHIVE_DOWNLOAD_LOCK:
+            current = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
+            if current is None:
+                return
+            current["processing_results"].append({
+                "instrument": inst,
+                "obsdate": obsdate,
+                "scanned_count": int(scan_result.get("total") or 0),
+                "ingested_count": int(count or 0),
+            })
+
+    with _ARCHIVE_DOWNLOAD_LOCK:
+        current = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
+        if current is not None:
+            current["photometry_url"] = _archive_photometry_url(datasets, frames)
 
 
 def _prune_archive_download_jobs(now: float | None = None, reserve_slots: int = 0) -> None:
@@ -943,6 +1020,8 @@ def _run_archive_download_job(job_id: str) -> None:
             results = [dict(r) for r in current["results"]]
             funpack_paths = _funpack_paths(results)
             current["funpack_total"] = len(funpack_paths)
+            auto_ingest = bool(current.get("auto_ingest"))
+        download_failed = any(result.get("status") == "error" for result in results)
         funpack_failed = False
         if funpack_paths:
             max_workers = min(_ARCHIVE_FUNPACK_WORKERS, len(funpack_paths))
@@ -970,12 +1049,17 @@ def _run_archive_download_job(job_id: str) -> None:
                         if current is None:
                             return
                         current["funpack_results"].append(result)
+        processing_failed = download_failed or funpack_failed
+        if not processing_failed and auto_ingest:
+            _process_archive_datasets(job_id, frames)
         with _ARCHIVE_DOWNLOAD_LOCK:
             current = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
             if current is not None:
                 current["phase"] = "done"
-                current["state"] = "error" if funpack_failed else "done"
-                if funpack_failed:
+                current["state"] = "error" if processing_failed else "done"
+                if download_failed:
+                    current["error"] = "One or more FITS downloads failed"
+                elif funpack_failed:
                     current["error"] = "One or more funpack commands failed"
                 current["finished_at"] = time.time()
                 _prune_archive_download_jobs(current["finished_at"])
@@ -989,7 +1073,9 @@ def _run_archive_download_job(job_id: str) -> None:
                 _prune_archive_download_jobs(current["finished_at"])
 
 
-def start_archive_download(frames: list[dict], overwrite: bool = False) -> dict:
+def start_archive_download(
+    frames: list[dict], overwrite: bool = False, auto_ingest: bool = False
+) -> dict:
     """Queue an LCO archive download in a dedicated worker and return its state."""
     if not isinstance(frames, list) or not frames:
         raise LcoError("no frames selected", status=400)
@@ -1004,6 +1090,9 @@ def start_archive_download(frames: list[dict], overwrite: bool = False) -> dict:
         "results": [],
         "funpack_results": [],
         "funpack_total": 0,
+        "processing_results": [],
+        "photometry_url": "",
+        "auto_ingest": bool(auto_ingest),
         "phase": "pending",
         "started_at": now,
         "finished_at": None,

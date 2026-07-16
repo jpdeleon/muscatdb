@@ -125,7 +125,8 @@ def test_monitor_downloads_final_frames_then_scans_and_ingests(monitor_db, tmp_p
     )
     queued = []
 
-    def fake_start(frames, overwrite=False):
+    def fake_start(frames, overwrite=False, auto_ingest=False):
+        assert auto_ingest is False
         queued.extend(frames)
         return {"job_id": "download-1", "state": "pending"}
 
@@ -202,7 +203,7 @@ def test_monitor_downloads_incrementally_and_waits_for_every_raw_frame(
     monkeypatch.setattr("muscat_db.lco.archive_search_all", lambda *args, **kwargs: next(pages))
     monkeypatch.setattr(
         "muscat_db.lco.start_archive_download",
-        lambda frames, overwrite=False: {"job_id": "one", "state": "pending"},
+        lambda frames, overwrite=False, auto_ingest=False: {"job_id": "one", "state": "pending"},
     )
 
     lco_monitor.process_request(_row(monitor_db), path=monitor_db, now=200)
