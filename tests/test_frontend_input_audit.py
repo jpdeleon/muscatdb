@@ -555,6 +555,24 @@ def test_ephemeris_csv_import_saves_datasetless_view_before_success():
     assert "added and saved in this view" in html
 
 
+def test_ephemeris_ttv_run_selection_is_preserved_in_shareable_url():
+    html = _read_template("ephemeris.html")
+
+    update_view_url = _function_body(html, "updateViewUrl")
+    assert "const run = parseUrlRun()" in update_view_url
+    assert "&run=${encodeURIComponent(run)}" in update_view_url
+
+    update_run_url = _function_body(html, "updateTTVRunUrl")
+    assert "url.searchParams.set('run', run)" in update_run_url
+    assert "historyMode === 'push' ? 'pushState' : 'replaceState'" in update_run_url
+    assert "window.addEventListener('popstate'" in html
+    assert "selectedTTVRun = normalizedRun" in html
+
+    load_outputs = _function_body(html, "loadTTVRunOutputs")
+    assert "updateTTVRunUrl(runName, historyMode)" in load_outputs
+    assert "loadTTVRunOutputs(target, run, runs, 'push')" in html
+
+
 # --------------------------------------------------------------------------- #
 # Endpoint coverage: frontend fetch targets have backend handlers
 # --------------------------------------------------------------------------- #
