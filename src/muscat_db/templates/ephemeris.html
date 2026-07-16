@@ -716,7 +716,12 @@
   function updateViewUrl(slug) {
     if (!slug || loadedTargets.length === 0) return;
     const targetsParam = loadedTargets.slice().sort().map(encodeURIComponent).join('+');
-    const url = `${window.location.pathname}?targets=${targetsParam}&view=${encodeURIComponent(slug)}`;
+    // The saved view identifies the input state; ?run= independently identifies
+    // which stored TTV output is on screen.  Keep that output selection when a
+    // changed input state produces a new content-addressed view slug.
+    const run = parseUrlRun();
+    const runParam = run ? `&run=${encodeURIComponent(run)}` : '';
+    const url = `${window.location.pathname}?targets=${targetsParam}&view=${encodeURIComponent(slug)}${runParam}`;
     window.history.replaceState(null, '', url);
     const lcoLink = document.getElementById('lco-schedule-link');
     if (lcoLink) {
@@ -3196,6 +3201,25 @@
     return s.slice(0, 40).replace(/^_+|_+$/g, '') || 'default';
   }
 
+  function updateTTVRunUrl(runName, historyMode = 'replace') {
+    const run = slugifyRunName(runName);
+    const url = new URL(window.location.href);
+    url.searchParams.set('run', run);
+    if (url.href === window.location.href) return;
+    const method = historyMode === 'push' ? 'pushState' : 'replaceState';
+    window.history[method](null, '', url.pathname + url.search + url.hash);
+  }
+
+  window.addEventListener('popstate', function() {
+    const target = loadedTargets[0] || '';
+    const run = parseUrlRun();
+    if (!target || !run) return;
+    const normalizedRun = slugifyRunName(run);
+    if (normalizedRun === selectedTTVRun) return;
+    selectedTTVRun = normalizedRun;
+    checkTTVOutputs(target);
+  });
+
   // Run whose results are currently displayed. Also the run that Delete acts on.
   var selectedTTVRun = null;
   // The URL's ?run= is honored exactly once, on first load, so switching run
@@ -3230,7 +3254,9 @@
           const typed = slugifyRunName(document.getElementById('opt-run_name')?.value || '');
           sel = runs.indexOf(typed) !== -1 ? typed : runs[0];
         }
-        loadTTVRunOutputs(target, sel, runs);
+        // Make an automatically selected (usually newest) output reproducible
+        // without adding an extra browser-history entry during initial load.
+        loadTTVRunOutputs(target, sel, runs, 'replace');
       })
       .catch(e => {
         const deleteBtn = document.getElementById('delete-btn');
@@ -3238,7 +3264,7 @@
       });
   }
 
-  function loadTTVRunOutputs(target, runName, runs) {
+  function loadTTVRunOutputs(target, runName, runs, historyMode = 'replace') {
     const qs = `target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}`;
     const deleteBtn = document.getElementById('delete-btn');
 
@@ -3247,6 +3273,7 @@
       .then(res => {
         if (res.ok && res.outputs && res.outputs.has_any) {
           selectedTTVRun = runName;
+          updateTTVRunUrl(runName, historyMode);
           if (deleteBtn) deleteBtn.style.display = 'inline-block';
           renderTTVOutputs(target, runName, res.outputs, runs);
         } else {
@@ -3330,7 +3357,7 @@
     container.querySelectorAll('.site-chip').forEach(chip => {
       chip.addEventListener('click', () => {
         const run = chip.getAttribute('data-run');
-        if (run && run !== selectedTTVRun) loadTTVRunOutputs(target, run, runs);
+        if (run && run !== selectedTTVRun) loadTTVRunOutputs(target, run, runs, 'push');
       });
     });
   }
