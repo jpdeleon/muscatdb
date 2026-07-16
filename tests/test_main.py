@@ -507,9 +507,8 @@ class TestDatabase:
             _remove_sqlite_tmp(base)
 
     def test_build_db_preserves_app_owned_tables(self, tmp_obslog):
-        # A rebuild must not wipe user notes / overrides / exposure calibration /
-        # saved ephemeris views (regression: build_db previously only preserved
-        # jobs + ephemeris_views, so the nightly cron erased notes on every run).
+        # A rebuild must not wipe app-owned state.  This includes LCO monitoring
+        # rows: otherwise the nightly cron silently abandons accepted requests.
         from muscat_db.database import (
             build_db, get_conn, set_note, set_identified,
         )
@@ -531,6 +530,21 @@ class TestDatabase:
                     "INSERT INTO ephemeris_views (slug, state_hash, state_json, targets_json)"
                     " VALUES ('slug123','hash123','{}','[\"TIC 12345\"]')"
                 )
+                conn.execute(
+                    "INSERT INTO test_observations "
+                    "(id,target,instrument,site,plan_json,analysis_version,created_at,updated_at) "
+                    "VALUES ('test-1','TOI-179','muscat3','OAO','{}','v1','now','now')"
+                )
+                conn.execute(
+                    "INSERT INTO lco_observation_requests "
+                    "(request_id,requestgroup_id,target,created_at,updated_at) "
+                    "VALUES (179,17,'TOI-179',1.0,1.0)"
+                )
+                conn.execute(
+                    "INSERT INTO lco_observation_frames "
+                    "(request_id,frame_id,filename,instrument,obsdate,metadata_json,updated_at) "
+                    "VALUES (179,'frame-1','frame-1.fits','sinistro','2026-07-14','{}',1.0)"
+                )
                 conn.commit()
 
             # Rebuild from the same obslog CSVs.
@@ -547,10 +561,23 @@ class TestDatabase:
                     "SELECT coef FROM exposure_coeffs WHERE instrument='muscat3' AND band='g'"
                 ).fetchone()
                 views = conn.execute("SELECT COUNT(*) FROM ephemeris_views").fetchone()[0]
+                test_observations = conn.execute(
+                    "SELECT COUNT(*) FROM test_observations WHERE id='test-1'"
+                ).fetchone()[0]
+                lco_requests = conn.execute(
+                    "SELECT COUNT(*) FROM lco_observation_requests WHERE request_id=179"
+                ).fetchone()[0]
+                lco_frames = conn.execute(
+                    "SELECT COUNT(*) FROM lco_observation_frames "
+                    "WHERE request_id=179 AND frame_id='frame-1'"
+                ).fetchone()[0]
             assert note is not None and note[0] == "keep me across rebuilds"
             assert override is not None and override[0] == 0
             assert coeff is not None and coeff[0] == 1.5
             assert views == 1
+            assert test_observations == 1
+            assert lco_requests == 1
+            assert lco_frames == 1
         finally:
             os.unlink(db_path)
 

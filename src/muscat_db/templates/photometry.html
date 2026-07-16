@@ -6,40 +6,11 @@
      .opt-section-title, .opt-collapse, details.adv, .run-panel, .run-cmd,
      .phot-section, .phot-fold, .selector-group, .help-tooltip, #run-log,
      .dl-row) live in /static/styles.css. */
-  .phot-selectors {
-    display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap;
-    margin-bottom: 1.5rem;
-  }
-  .phot-selectors .field { display: flex; flex-direction: column; gap: 0.3rem; }
-  .phot-selectors label {
-    font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-  .phot-selectors select {
-    background: var(--input-bg); color: var(--text);
-    border: 1px solid var(--border); border-radius: 6px;
-    padding: 0.45rem 0.6rem; font-size: 0.9rem; min-width: 11rem;
-  }
-  .phot-selectors select:focus { outline: none; border-color: var(--accent); }
-  .phot-selectors select:disabled { opacity: 0.5; }
-  .phot-empty {
-    margin-top: 1rem; padding: 2rem; text-align: center;
-    background: var(--surface); border: 1px dashed var(--border);
-    border-radius: 10px;
-  }
-  .fig-grid {
-    display: grid; gap: 1rem;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  }
-  .fig {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 10px; padding: 0.75rem; overflow: hidden;
-  }
-  .fig .cap {
-    font-size: 0.8rem; color: var(--text-dim); margin-bottom: 0.5rem;
-    display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;
-  }
-  .fig img { width: 100%; height: auto; display: block; border-radius: 6px; background: var(--surface); }
+  /* The instrument/date/target picker (.selector-group), empty-state panel
+     (.empty-state) and figure cards (.fig-grid / .fig / .cap / .fig img) now
+     come from the shared stylesheet so they match the transit-fit and
+     ephemeris pages. Only the photometry-specific figure behaviours below
+     (single-column summary layout, drag-to-reorder) stay page-local. */
   /* Default summary layout: one vertical column (light curve, stack, covariates). */
   .fig-grid.col { grid-template-columns: 1fr; max-width: 780px; }
   /* drag-to-reorder */
@@ -58,15 +29,7 @@
     padding: 0.3rem 0.9rem; font-size: 0.85rem; cursor: pointer;
   }
   .band-tab.active { border-color: var(--accent); color: var(--accent); }
-  .site-chips { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin: 0.75rem 0 0; }
-  .site-chips .site-label { font-size: 0.8rem; color: var(--text-dim); }
-  .site-chip {
-    background: var(--surface2); color: var(--text);
-    border: 1px solid var(--border); border-radius: 999px;
-    padding: 0.3rem 0.9rem; font-size: 0.85rem; cursor: pointer;
-    text-decoration: none;
-  }
-  .site-chip.active { border-color: var(--accent); color: var(--accent); }
+  /* .site-chips / .site-chip come from the shared stylesheet. */
   .band-panel { display: none; }
   .band-panel.active { display: block; }
   .warn { color: var(--red); font-size: 0.85rem; margin-top: 0.5rem; }
@@ -77,83 +40,80 @@
 </style>
 
 <h1>Photometry</h1>
+<p class="page-lede">
+  Browse reduced photometry products for a target, and configure and launch new reductions with the prose pipeline.
+</p>
 
 <div id="job-banner" style="display:none; margin-bottom:1rem; padding:0.6rem 1rem; border-radius:8px; background:var(--surface2); border:1px solid var(--accent); font-size:0.9rem;">
   <span id="job-banner-msg"></span>
   <a id="job-banner-link" style="margin-left:0.5rem; font-weight:600;" href="#">view</a>
 </div>
 
-<form class="phot-selectors" method="get" action="/photometry" id="phot-form">
-  <div class="field">
-    <label for="sel-inst">Instrument</label>
+<form class="selector-group" method="get" action="/photometry" id="phot-form">
+  <label for="sel-inst">Instrument
     <select id="sel-inst" name="inst">
       <option value="">— select —</option>
       {% for name in instruments %}
       <option value="{{ name }}" {% if name == sel_inst %}selected{% endif %}>{{ name }}</option>
       {% endfor %}
     </select>
-  </div>
-  <div class="field">
-    <label for="sel-date">Obs date</label>
+  </label>
+  <label for="sel-date">Obs date
     <select id="sel-date" name="date" {% if not sel_inst %}disabled{% endif %}>
       <option value="">— select —</option>
       {% for d in dates %}
       <option value="{{ d }}" {% if d == sel_date %}selected{% endif %}>{{ d }}</option>
       {% endfor %}
     </select>
-  </div>
-  <div class="field">
-    <label for="sel-target">Target</label>
+  </label>
+  <label for="sel-target">Target
     <select id="sel-target" name="target" {% if not sel_date %}disabled{% endif %}>
       <option value="">— select —</option>
       {% for t in targets %}
       <option value="{{ t }}" {% if t == sel_target %}selected{% endif %}>{{ t }}</option>
       {% endfor %}
     </select>
-  </div>
+  </label>
   {% if sel_inst == 'sinistro' %}
   {# Only expose a filter when the obslog offers a real choice (>1 value). #}
   {% if available_sites | length > 1 %}
-  <div class="field">
-    <label for="opt-site">Site <span class="help-tooltip" title="Only reduce frames from this LCO site (corresponds to --site; sinistro only). Empty = all sites.">?</span></label>
+  <label for="opt-site"><span>Site <span class="help-tooltip" title="Only reduce frames from this LCO site (corresponds to --site; sinistro only). Empty = all sites.">?</span></span>
     <select id="opt-site" title="--site; empty → all sites">
       <option value="">— all —</option>
       {% for s in available_sites %}
       <option value="{{ s }}" {% if run_defaults.site == s %}selected{% endif %}>{{ s }}</option>
       {% endfor %}
     </select>
-  </div>
+  </label>
   {% endif %}
   {% if available_telescopes | length > 1 %}
-  <div class="field">
-    <label for="opt-telescope">Telescope <span class="help-tooltip" title="Only reduce frames from this physical LCO 1m telescope (corresponds to --telescope; sinistro only, matched against the TELESCOP header). Empty = all telescopes.">?</span></label>
+  <label for="opt-telescope"><span>Telescope <span class="help-tooltip" title="Only reduce frames from this physical LCO 1m telescope (corresponds to --telescope; sinistro only, matched against the TELESCOP header). Empty = all telescopes.">?</span></span>
     <select id="opt-telescope" title="--telescope; empty → all telescopes">
       <option value="">— all —</option>
       {% for tel in available_telescopes %}
       <option value="{{ tel }}" {% if run_defaults.telescope == tel %}selected{% endif %}>{{ tel }}</option>
       {% endfor %}
     </select>
-  </div>
+  </label>
   {% endif %}
   {% if available_modes | length > 1 %}
-  <div class="field">
-    <label for="opt-mode">Mode <span class="help-tooltip" title="Only reduce frames in this readout mode (corresponds to --mode; sinistro only). Empty = all modes.">?</span></label>
+  <label for="opt-mode"><span>Mode <span class="help-tooltip" title="Only reduce frames in this readout mode (corresponds to --mode; sinistro only). Empty = all modes.">?</span></span>
     <select id="opt-mode" title="--mode; empty → all modes">
       <option value="">— all —</option>
       {% for m in available_modes %}
       <option value="{{ m }}" {% if run_defaults.mode == m %}selected{% endif %}>{{ m }}</option>
       {% endfor %}
     </select>
-  </div>
+  </label>
   {% endif %}
   {% endif %}
   <noscript><button class="btn" type="submit">View</button></noscript>
 </form>
 
 {% if not (sel_inst and sel_date and sel_target) %}
-  <div class="phot-empty">
-    <div style="font-size: 2rem; margin-bottom: 0.75rem;">🔭</div>
-    <p style="color: var(--text-dim);">
+  <div class="empty-state">
+    <div class="empty-icon">🔭</div>
+    <p>
       Pick an instrument, observation date, and target to view its reduction.
     </p>
   </div>
@@ -214,7 +174,7 @@
 
   <div id="output-area">
   {% if outputs and outputs.has_any %}
-    {% set file_base = '/api/photometry/file/' ~ sel_inst ~ '/' ~ sel_date ~ (('/' ~ sel_target ~ '/run/' ~ sel_run) if sel_run else '') %}
+    {% set file_base = '/api/photometry/file/' ~ sel_inst ~ '/' ~ sel_date ~ (('/' ~ dataset_target ~ '/run/' ~ sel_run) if sel_run else '') %}
     {% if outputs.summary %}
     <details class="phot-section phot-fold" open>
       <summary>
@@ -338,7 +298,7 @@
 
     <div class="phot-section">
       <div class="dl-row">
-        {% set dl_all_url = '/api/photometry/download-all/' ~ sel_inst ~ '/' ~ sel_date ~ '/' ~ sel_target ~ (('/run/' ~ sel_run) if sel_run else '') %}
+        {% set dl_all_url = '/api/photometry/download-all/' ~ sel_inst ~ '/' ~ sel_date ~ '/' ~ dataset_target ~ (('/run/' ~ sel_run) if sel_run else '') %}
         <a href="{{ dl_all_url }}" download style="font-weight: 600; color: var(--accent2);">📦 Download all output (.zip)</a>
         {% if outputs.npz %}<a href="{{ file_base }}/{{ outputs.npz }}" download>data archive (.npz)</a>{% endif %}
         {% if outputs.log %}<a href="{{ file_base }}/{{ outputs.log }}" target="_blank">📄 pipeline log</a>{% endif %}
@@ -347,10 +307,10 @@
       </div>
     </div>
   {% else %}
-    <div class="phot-empty">
-      <div style="font-size: 3rem; color: var(--red); margin-bottom: 1rem;">⚠</div>
-      <h2 style="color: var(--text);">No reduction found</h2>
-      <p style="color: var(--text-dim);">No prose outputs yet for this target — configure options below and run.</p>
+    <div class="empty-state error">
+      <div class="empty-icon">⚠</div>
+      <h2>No reduction found</h2>
+      <p>No prose outputs yet for this target — configure options below and run.</p>
     </div>
   {% endif %}
   </div>
@@ -450,18 +410,18 @@
               {% if sel_inst == 'sinistro' %}<span class="hint">Sinistro: enabled for one selected band, disabled for multi-band</span>{% endif %}
             </div>
             <div class="opt">
-              <label for="opt-refid">Reference frame ID <span class="help-tooltip" title="FITS file frame number (4-digit suffix, e.g. 1480 for MCT20_1911191480). Empty means auto (first frame for self-reference, middle frame if a reference band is set, or the quality pre-check's pick if Reference selection = quality below). An explicit value here always overrides.">?</span></label>
+              <label for="opt-refid">Reference frame ID <span class="help-tooltip" title="FITS file frame number (4-digit suffix, e.g. 1480 for MCT20_1911191480). Empty means auto (first frame for self-reference, middle frame if a reference band is set, or the quality-selected anchor with a persistent source catalog when Reference selection = quality below). An explicit value here always overrides.">?</span></label>
               <input type="number" id="opt-refid" placeholder="auto" min="0" style="width: 100%;">
             </div>
             <div class="opt">
-              <label for="opt-ref_select">Reference selection <span class="help-tooltip" title="How the per-band reference frame is chosen (corresponds to --ref_select). 'position' (default) reproduces today's behavior (first/middle frame). 'quality' runs a fast header + pixel quality pre-check and picks the sharpest, cleanest available frame. Ignored when Reference frame ID above is set.">?</span></label>
+              <label for="opt-ref_select">Reference selection <span class="help-tooltip" title="How the per-band reference is built (corresponds to --ref_select). 'position' (default) uses the legacy first/middle frame and its detections. 'quality' selects a clean anchor, registers source catalogs from a local top-K window, and rejects transient detections such as cosmic rays by requiring 60% recurrence. Ignored when Reference frame ID above is set.">?</span></label>
               <select id="opt-ref_select" style="width: 100%;">
                 <option value="position">position (default)</option>
-                <option value="quality">quality (auto-pick best frame)</option>
+                <option value="quality">quality (local persistence)</option>
               </select>
             </div>
             <div class="opt">
-              <label for="opt-ref_select_top_k">Quality candidates (top-K) <span class="help-tooltip" title="Number of top candidate frames pixel-validated in Tier 2 when Reference selection = quality (corresponds to --ref_select_top_k). Ignored in position mode.">?</span></label>
+              <label for="opt-ref_select_top_k">Quality candidates (top-K) <span class="help-tooltip" title="Number of nearby candidate frames pixel-validated and cross-registered when Reference selection = quality (corresponds to --ref_select_top_k). A source must recur in at least 60% of registered catalogs (3 of 5 by default). Ignored in position mode.">?</span></label>
               <input type="number" id="opt-ref_select_top_k" value="{{ run_defaults.ref_select_top_k }}" min="1" step="1" style="width: 100%;">
             </div>
             <div class="opt">
@@ -553,6 +513,10 @@
             <div class="opt">
               <label for="opt-test_run_frames"># of test-run frames <span class="help-tooltip" title="Number of frames to process during a test-run reduction (corresponds to --test_run_frames).">?</span></label>
               <input type="number" id="opt-test_run_frames" value="{{ run_defaults.test_run_frames }}" min="1" style="width: 100%;">
+            </div>
+            <div class="opt">
+              <label for="opt-display_stack_nframes">Display stack frames <span class="help-tooltip" title="For non-reference bands under a chosen reference band, number of the band's own frames aligned onto the shared reference grid and median-combined into the display image for the reference/apertures/cutouts/stacks plots. 1 = single representative frame; larger = higher-SNR aligned median stack (corresponds to --display_stack_nframes).">?</span></label>
+              <input type="number" id="opt-display_stack_nframes" value="{{ run_defaults.display_stack_nframes }}" min="1" style="width: 100%;">
             </div>
           </div>
         </details>
@@ -650,7 +614,8 @@
 (function () {
   var inst   = {{ sel_inst|tojson }};
   var date   = {{ sel_date|tojson }};
-  var target = {{ sel_target|tojson }};
+  var routeTarget = {{ sel_target|tojson }};
+  var target = {{ dataset_target|tojson }};
   var runId  = {{ sel_run|tojson }};
   var rawMissing = {{ raw_missing|tojson }};
   var siteSel = document.getElementById('opt-site');
@@ -664,7 +629,7 @@
 
   // ----- restore the last selection on a bare /photometry visit -----
   (function () {
-    if (inst || date || target || window.location.search) return;
+    if (inst || date || routeTarget || window.location.search) return;
     var saved = MuscatStorage.getJSON(SEL_KEY, null);
     if (saved && saved.inst) {
       var qs = ['inst', 'date', 'target'].filter(function (k) { return saved[k]; })
@@ -674,10 +639,10 @@
   })();
   // ...and remember the current selection for next time.
   if (inst) {
-    MuscatStorage.setJSON(SEL_KEY, { inst: inst, date: date, target: target });
+    MuscatStorage.setJSON(SEL_KEY, { inst: inst, date: date, target: routeTarget });
   }
   if (inst && date && target && window.MuscatRouteState) {
-    window.MuscatRouteState.rememberPhotometry({ inst: inst, date: date, target: target, run: runId || '' });
+    window.MuscatRouteState.rememberPhotometry({ inst: inst, date: date, target: routeTarget, run: runId || '' });
     window.MuscatRouteState.applyNavbar();
   }
 
@@ -873,6 +838,7 @@
       max_num_stars: val('opt-max_num_stars'),
       n_stars_align: val('opt-n_stars_align'),
       cutout_size: val('opt-cutout_size'),
+      display_stack_nframes: val('opt-display_stack_nframes'),
       ccd_trim: val('opt-ccd_trim'),
       edge_margin: val('opt-edge_margin'),
       bin_size_minutes: val('opt-bin_size_minutes'),
@@ -909,7 +875,7 @@
     });
     ['run_name','ref_band','refid','ref_select','ref_select_top_k','aper_unit','aper_radii','annulus',
      'target_id','comparison_ids','avoid_comparison_ids','avoid_nearby_star_mode','avoid_nearby_star','target_coord','test_run_frames','min_star_separation','max_num_stars',
-       'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','centroid_method','cmap','site','telescope','mode'].forEach(function (id) {
+       'n_stars_align','cutout_size','display_stack_nframes','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','centroid_method','cmap','site','telescope','mode'].forEach(function (id) {
       var el = document.getElementById('opt-'+id);
       if (el && saved[id] !== undefined) el.value = saved[id];
     });
@@ -986,7 +952,7 @@
       });
       ['run_name','ref_band','refid','ref_select','ref_select_top_k','aper_unit','aper_radii','annulus',
        'target_id','comparison_ids','avoid_comparison_ids','avoid_nearby_star_mode','avoid_nearby_star','target_coord','test_run_frames','min_star_separation','max_num_stars',
-     'n_stars_align','cutout_size','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','centroid_method','cmap','site','telescope','mode'].forEach(function (id) {
+     'n_stars_align','cutout_size','display_stack_nframes','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','centroid_method','cmap','site','telescope','mode'].forEach(function (id) {
         var el = document.getElementById('opt-'+id);
         if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';
       });
@@ -1166,21 +1132,6 @@
   ['opt-site', 'opt-telescope', 'opt-mode'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) el.addEventListener('change', navigateSinistroFilters);
-  });
-
-  // Top-level selectors already navigate to the appropriate inst/date/target
-  // route above. Every other dropdown changes the active reduction options:
-  // persist it, then reload so the page is immediately reconciled with the
-  // newly selected configuration (including dependent controls and previews).
-  document.querySelectorAll('select[id^="opt-"]').forEach(function (el) {
-    if (el.id === 'opt-site' || el.id === 'opt-telescope' || el.id === 'opt-mode') return;
-    el.addEventListener('change', function () {
-      saveOptions();
-      if (typeof window.showLoading === 'function') {
-        window.showLoading('Updating…');
-      }
-      window.location.reload();
-    });
   });
 
   // ----- copy command -----

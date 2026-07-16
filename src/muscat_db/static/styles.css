@@ -447,6 +447,35 @@ tr.filter-row th input::placeholder { color: var(--text-dim); font-style: italic
 }
 .selector-group select:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* ---------- Page lede & empty states ---------- */
+/* One-line description under a page <h1>. Shared by the photometry, transit-fit
+   and ephemeris pages so page intros read consistently. */
+.page-lede {
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  max-width: 70ch;
+  margin-bottom: 1.5rem;
+}
+/* Centered placeholder for a page with nothing to show yet — no selection made,
+   or no data found. Replaces the per-page ad-hoc empty panels so every "nothing
+   here yet" surface looks the same. Add .error for a red rule + red icon when
+   the placeholder reports missing data rather than prompting a choice. */
+.empty-state {
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 2.5rem 2rem;
+  text-align: center;
+  margin-top: 1.5rem;
+}
+.empty-state.error { border-color: var(--red); }
+.empty-state .empty-icon { font-size: 2.5rem; line-height: 1; margin-bottom: 0.85rem; }
+.empty-state.error .empty-icon { color: var(--red); }
+.empty-state h2 { color: var(--text); margin-bottom: 0.5rem; }
+.empty-state p { color: var(--text-dim); max-width: 520px; margin: 0 auto; line-height: 1.6; font-size: 0.9rem; }
+.empty-state .btn { margin-top: 1.25rem; }
+
 /* Foldable section: a <details> whose <summary> carries the section <h2>. */
 .phot-fold > summary {
   list-style: none; cursor: pointer; user-select: none;
@@ -461,6 +490,20 @@ tr.filter-row th input::placeholder { color: var(--text-dim); font-style: italic
 .phot-fold > summary h2 { margin: 0; }
 /* Interactive controls in the summary (csv download links) must not toggle. */
 .phot-fold > summary a { cursor: pointer; }
+
+/* Foldable card section: a <details> whose <summary> carries an <h3>. */
+.section-fold > summary {
+  list-style: none; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 0.5rem;
+}
+.section-fold > summary::-webkit-details-marker { display: none; }
+.section-fold > summary::before {
+  content: '\25B8'; color: var(--text-dim); font-size: 0.9rem;
+  transition: transform 0.15s ease; flex-shrink: 0;
+}
+.section-fold[open] > summary::before { transform: rotate(90deg); }
+.section-fold > summary h3 { margin: 0; }
+.section-fold[open] > summary { margin-bottom: 0.85rem; }
 
 /* ---------- Options form ---------- */
 .opt-grid {
@@ -524,6 +567,19 @@ details.adv > summary {
 }
 details.adv[open] > summary { color: var(--text); margin-bottom: 0.5rem; }
 
+/* Keep every Ephemeris disclosure indicator the same readable size. */
+.ephemeris-fold > summary {
+  list-style: none; display: flex; align-items: center; gap: 0.5rem;
+}
+.ephemeris-fold > summary::-webkit-details-marker { display: none; }
+.ephemeris-fold > summary::before {
+  content: '\25B8'; color: var(--text-dim); font-size: 1rem; line-height: 1;
+  transition: transform 0.15s ease; flex-shrink: 0;
+}
+.ephemeris-fold[open] > summary::before { transform: rotate(90deg); }
+/* Top-level folds sit beside an h2 and need a larger optical glyph. */
+.ephemeris-fold.phot-fold > summary::before { font-size: 1.35rem; }
+
 /* ---------- Run panel ---------- */
 .run-panel { border-top: 1px solid var(--border); padding-top: 1.25rem; margin-top: 2rem; }
 .run-actions { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 0.5rem; }
@@ -576,7 +632,7 @@ details.adv[open] > summary { color: var(--text); margin-bottom: 0.5rem; }
   padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem;
 }
 .fig img { width: 100%; height: auto; border-radius: 6px; display: block; background: var(--input-bg); }
-.fig .cap { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-dim); }
+.fig .cap { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: var(--text-dim); }
 
 /* ---------- Misc shared ---------- */
 .dl-row { margin-top: 0.75rem; display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.85rem; }

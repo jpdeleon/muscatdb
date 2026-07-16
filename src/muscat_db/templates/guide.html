@@ -243,7 +243,7 @@
             MuSCAT-db Pipeline Workflow
           </h1>
           <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
-            An overview of the MuSCAT observation log data ingestion and the photometry and transit fitting analysis pipelines.
+            An overview of observation-log ingestion, analysis pipelines, scheduling, and the closed-loop results workflow.
           </p>
         </div>
         <span class="toggle-icon">▼</span>
@@ -273,13 +273,13 @@ graph TD
     %% Photometry Stage
     D -->|Configure & Launch| E["Photometry Job Queue"]:::pipeline
     E -->|Runs calibrated prose| F["Photometry Reduction"]:::default
-    F -->|CSVs & diagnostics| G["Photometry Results\n($MUSCAT_PROSE_DIR/inst/date/)"]:::default
+    F -->|CSVs & diagnostics| G["Photometry Results\n($MUSCAT_PROSE_DIR/inst/date/_runs/target/run/)"]:::default
 
     %% Transit Fit Stage
     G -->|Inputs lightcurves| H["Transit Fit Job Queue"]:::pipeline
     D -->|Configure & Launch| H
     H -->|Runs timer MCMC sampler| I["Transit Fitting"]:::default
-    I -->|Posteriors & diagnostics| J["Transit Results\n($MUSCAT_TIMER_DIR/inst/date/target/)"]:::default
+    I -->|Posteriors & diagnostics| J["Transit Results\n($MUSCAT_TIMER_DIR/inst/date/target/run/)"]:::default
 
     %% Ephemeris Analysis
     J -->|Transit centers Tc| L["Ephemeris O-C Analysis"]:::pipeline
@@ -344,11 +344,11 @@ graph TD
           <pre class="mermaid" style="width: 100%; text-align: center;">
 graph TD
     %% Input
-    A["Raw Science FITS Files\n(Calibrated e91.fits)"]:::default --> B["Band Grouping\n(Grouped by gp, rp, ip, zs filters)"]:::default
+    A["Science FITS Files\n(raw MuSCAT/MuSCAT2; BANZAI e91 for MuSCAT3/4/Sinistro)"]:::default --> B["Calibration when required\nthen band grouping from FILTER headers"]:::default
     
     %% Setup & Reference Frame
-    B --> C["Reference Frame Selection\n(single frame: first for self-reference, middle for --ref_band,\nor quality pre-check pick if --ref_select quality)"]:::default
-    C --> D["Point Source Detection\n(Brightest stars on reference frame)"]:::default
+    B --> C["Reference Construction\n(position: first/middle frame; quality: clean local anchor\n+ registered top-K temporal persistence)"]:::default
+    C --> D["Point Source Detection\n(Persistent stars on the quality anchor; single-frame detections in position mode)"]:::default
     D --> E["Celestial Target Identification\n(WCS matching / MAST coordinate resolution)"]:::default
     E --> F["Gaia Contamination Sizing\n(Sizes sky annulus RIN & ROUT to exclude contaminants)"]:::default
     F --> G["Aperture Sizing Grid\n(Multiple radii defined from FWHM up to RIN)"]:::default
@@ -440,7 +440,7 @@ graph TD
 
     %% Dataset assembly
     C --> D["Load Target Info\n/api/ephemeris/target-info"]:::pipeline
-    D --> E["Completed Run Datasets\ninstrument, date, run_id, run_type"]:::default
+    D --> E["Completed Production-Fit Datasets\ninstrument, date, run_id, transit coverage"]:::default
     D --> F["Fitted Transit Centers\nTc ± σ per planet per dataset"]:::default
     D --> G["Reference Ephemerides\nNASA Exoplanet Archive, TOI, fallback"]:::default
     D --> H["Planet Cards\nT0, period, source override"]:::default
@@ -451,6 +451,8 @@ graph TD
     G --> J
     H --> J
     I --> J
+    X["External Transit CSV\nplanet, epoch, tc, tc_unc"] --> Y["Import Preview\nheader mapping, validation, time-scale confirmation"]:::default
+    Y --> J
     K["Fitting Method\nUnweighted or Weighted"]:::default --> J
 
     %% Fit math
@@ -474,6 +476,21 @@ graph TD
     V --> W["harmonic TTV Fit\n(see next section)"]:::pipeline
           </pre>
         </div>
+
+        <p style="color: var(--text-dim); font-size: 0.9rem; line-height: 1.6;">
+          Use <strong>Import transit CSV</strong> beside the dataset table to add external timing measurements.
+          Enter the instrument name once in the import dialog; it is applied to every accepted CSV row.
+          Imported rows are stored in the shareable saved-view URL, including CSV-only analyses with no completed
+          transit-fit dataset, so reopening the URL in a fresh browser restores the timing table.
+          Headers such as <code>tc(BJD)</code> and <code>tc_unc(BJD)</code> are mapped to transit center and
+          uncertainty automatically; numeric planet indices use <code>0=b</code>, <code>1=c</code>, and so on.
+          The preview retains invalid rows with a specific note, rejects uncertainties below one minute, lists extra
+          columns that will be dropped, and compares a supplied CSV epoch with the new page epoch. A constant
+          per-planet offset is a safe change of epoch zero-point; inconsistent offsets are blocked. Files that say
+          only BJD require confirmation that their time scale is BJD_TDB.
+          Enabling <strong>Show date (UTC)</strong> expands the figure to accommodate the second x-axis while
+          preserving the original O-C plotting-area aspect ratio.
+        </p>
 
       </div>
     </div>
@@ -593,7 +610,7 @@ graph TD
           <pre class="mermaid" style="width: 100%; text-align: center;">
 graph TD
     %% Configuration & Input
-    A["User Logged In\n(LCO_API_TOKEN configured)"]:::default --> B["Load Proposals\n/api/lco/proposals"]:::pipeline
+    A["Authenticated User\n(per-user token or LCO_API_TOKEN fallback)"]:::default --> B["Load Proposals\n/api/lco/proposals"]:::pipeline
     B --> C["Select Project/Proposal"]:::default
     C --> D["Choose Saved Ephemeris View\n(from /lco?view=slug or direct link)"]:::default
     D --> E["Extract Target & Ephemeris\nT0, period, target name"]:::default
@@ -628,12 +645,22 @@ graph TD
     R -->|Submit| S["Post to Observation Portal\n/api/lco/submit"]:::pipeline
 
     %% Tracking
-    S -->|Success| T["Display Requestgroup ID\nObservation scheduled"]:::default
+    S -->|Success| T["Persist request group + child Request IDs\nObservation scheduled"]:::default
     S -->|Error| U["Show Error Details\nAsk user to retry"]:::default
     U --> M
-    T --> V["Track on Jobs Page"]:::default
+    T --> V["Wait until observing window\nPersistent DB monitor + worker lease"]:::pipeline
+    V --> W["Poll request-scoped raw + level-91 metadata\n5 min initially, bounded backoff"]:::pipeline
+    W -->|New level-91 frames| X["Download + funpack immediately\nAtomic files, bounded parallelism"]:::pipeline
+    X --> W
+    W -->|Terminal and every raw has level 91| Y["Scan affected instrument/date\nIngest obslogs into SQLite"]:::pipeline
+    Y --> Z["Complete\nVisible on scheduler monitoring table"]:::default
           </pre>
         </div>
+        <p style="color: var(--text-dim); font-size: 0.9rem; line-height: 1.6;">
+          Generated transit windows are invalidated whenever a target, ephemeris, date range, padding, site, or
+          observability constraint changes. The old table and visibility plot are hidden until
+          <strong>Generate windows</strong> is clicked again, so stale predictions cannot be submitted.
+        </p>
       </div>
     </div>
 
@@ -846,7 +873,7 @@ graph TD
             Database Schema
           </h2>
           <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
-            Entity-relationship diagram and column definitions for <code>muscat.db</code>.
+            Entity-relationship diagram and core column definitions for <code>muscat.db</code>.
           </p>
         </div>
         <span class="toggle-icon">▼</span>
@@ -882,6 +909,7 @@ erDiagram
         text object
         real exptime
         text read_mode
+        text telescope
         text frame_start
         text frame_end
         text ut_start
@@ -907,6 +935,8 @@ erDiagram
         real airmass_min
         real airmass_max
         int is_identified
+        text phot_status
+        text fit_status
     }
     target_notes {
         text object PK
@@ -933,6 +963,16 @@ erDiagram
         text params
         text run_id
         text run_name
+        text user_name
+    }
+    users {
+        text username PK
+        text password_hash
+        text display_name
+        int is_admin
+        text created_at
+        text last_login
+        text settings
     }
     db_meta {
         text key PK
@@ -963,12 +1003,63 @@ erDiagram
         text created_at
         text updated_at
     }
+    test_observations {
+        text id PK
+        text target
+        text instrument
+        text site
+        text state
+        text plan_json
+        text result_json
+        text request_ids_json
+    }
+    lco_observation_requests {
+        int request_id PK
+        int requestgroup_id
+        text target
+        text instrument
+        text user_name
+        text request_state
+        text monitor_state
+        text result_json
+    }
+    lco_observation_frames {
+        int request_id PK
+        text frame_id PK
+        text observation_id
+        text filename
+        text instrument
+        text obsdate
+        text state
+        text error
+        text metadata_json
+        real updated_at
+    }
+    lco_monitor_leases {
+        text name PK
+        text owner
+        real expires_at
+    }
+    exofop_cache {
+        text tic_id PK
+        int has_confirmed_planets
+        text confirmed_planets
+        text updated_at
+    }
+    job_concurrency_slots {
+        text pipeline PK
+        text holder_key PK
+        real claimed_at
+    }
 
     frames ||--o{ summaries : "grouped into"
     targets ||--o{ frames : "contains"
     targets ||--o{ summaries : "contains"
     targets ||--|| target_notes : "annotates"
     targets ||--|| target_overrides : "overrides"
+    users ||--o{ jobs : "launches"
+    users ||--o{ lco_observation_requests : "submits"
+    lco_observation_requests ||--o{ lco_observation_frames : "produces"
           </pre>
         </div>
 
@@ -1011,8 +1102,13 @@ erDiagram
                 </tr>
                 <tr style="border-bottom: 1px solid var(--border);">
                   <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">jobs</td>
-                  <td style="padding: 0.5rem 0.75rem;">Pipeline job tracking: type (photometry / transit_fit), state, return code, elapsed time, serialized params</td>
+                  <td style="padding: 0.5rem 0.75rem;">Pipeline job tracking: photometry, transit-fit, and TTV-fit state, run identity, user attribution, elapsed time, and serialized parameters</td>
                   <td style="padding: 0.5rem 0.75rem;">One per pipeline launch</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">users</td>
+                  <td style="padding: 0.5rem 0.75rem;">Authenticated-user metadata and encrypted per-user settings such as LCO and ADS tokens</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per configured user</td>
                 </tr>
                 <tr style="border-bottom: 1px solid var(--border);">
                   <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">db_meta</td>
@@ -1034,6 +1130,36 @@ erDiagram
                   <td style="padding: 0.5rem 0.75rem;">Saved interactive O-C plot views: persisted filter state, target list, and plot configuration</td>
                   <td style="padding: 0.5rem 0.75rem;">One per saved view</td>
                 </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">test_observations</td>
+                  <td style="padding: 0.5rem 0.75rem;">Guarded closed-loop test plans, validation provenance, submissions, and results</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per test plan</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">lco_observation_requests</td>
+                  <td style="padding: 0.5rem 0.75rem;">Submitted LCO child requests and restart-safe monitoring/ingestion state</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per LCO child Request ID</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">lco_observation_frames</td>
+                  <td style="padding: 0.5rem 0.75rem;">Raw and BANZAI frame inventory, archive metadata, and download status for monitored requests</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per request/frame pair</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">lco_monitor_leases</td>
+                  <td style="padding: 0.5rem 0.75rem;">Short-lived cross-worker leases that prevent duplicate LCO monitoring work</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per active monitor lease</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">exofop_cache</td>
+                  <td style="padding: 0.5rem 0.75rem;">Cached ExoFOP confirmed-planet lookups used by the TOI catalog</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per cached TIC</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">job_concurrency_slots</td>
+                  <td style="padding: 0.5rem 0.75rem;">Cross-process claims enforcing safe full-pipeline concurrency limits</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per claimed pipeline slot</td>
+                </tr>
               </tbody>
             </table>
           </div>
@@ -1047,7 +1173,7 @@ erDiagram
               <span class="faq-icon">+</span>
             </div>
             <div class="faq-answer">
-              <p>The <code>build-db</code> command writes a new database to a temporary file first, then atomically replaces <code>muscat.db</code>. Before replacement, app-owned tables (<code>jobs</code>, <code>ephemeris_views</code>, <code>target_notes</code>, <code>target_overrides</code>, <code>db_meta</code>, <code>exposure_coeffs</code>, <code>exposure_jobs</code>) are copied from the existing database so no job history or user data is lost. The observation-derived tables (<code>frames</code>, <code>summaries</code>, <code>targets</code>) are rebuilt from scratch from the CSV obslogs.</p>
+              <p>The <code>build-db</code> command writes a new database to a temporary file first, then atomically replaces <code>muscat.db</code>. Before replacement it preserves app-owned tables: <code>jobs</code>, <code>users</code>, <code>ephemeris_views</code>, <code>target_notes</code>, <code>target_overrides</code>, <code>exposure_coeffs</code>, <code>test_observations</code>, <code>lco_observation_requests</code>, and <code>lco_observation_frames</code>. The observation-derived <code>frames</code>, <code>summaries</code>, and <code>targets</code> tables are rebuilt from the CSV obslogs. Transient exposure-job rows, monitor leases, and concurrency-slot claims are intentionally recreated instead of copied into the new database.</p>
             </div>
           </div>
         </div>
@@ -1134,7 +1260,7 @@ erDiagram
           <span class="workflow-title">Job Monitoring</span>
         </div>
         <div class="workflow-desc">
-          Tracks active, pending, or completed photometry and transit fitting background processes. Shows logs and error tracebacks.
+          Tracks queued, active, finalizing, or completed photometry, transit-fit, and TTV-fit background processes. Shows logs and error tracebacks.
         </div>
       </div>
 
@@ -1181,7 +1307,7 @@ erDiagram
               <li><strong>Scan</strong> — <code>muscat-db scan &lt;inst&gt; &lt;yymmdd&gt;</code> reads every FITS file in the raw data directory, extracts HEADER keywords (OBJECT, FILTER, RA, DEC, EXPTIME, etc.), and writes a CSV log per CCD under <code>$MUSCAT_OBSLOG_DIR</code> (default <code>$HOME/muscat/obslog</code>). Calibration frames (bias, dark, flat) are excluded; only science frames are recorded.</li>
               <li><strong>Build</strong> — <code>muscat-db build-db</code> ingests all scanned CSV logs into SQLite with indexes on instrument, date, object, and filter. The resulting DB powers the web GUI's browse, search, and target discovery features.</li>
             </ol>
-            <p>The DB also persists background job state (photometry and transit fit runs) so running jobs survive a server restart.</p>
+            <p>The DB also persists background job state (photometry and transit fit runs), submitted LCO request IDs and monitoring progress, and guarded test-observation plans. The LCO monitor resumes after a server restart and uses a database lease so multiple web workers do not duplicate API polling, downloads, or ingestion.</p>
           </div>
         </div>
 
@@ -1210,8 +1336,8 @@ erDiagram
             <p>The prose pipeline processes calibrated FITS frames through a sequence of steps:</p>
             <ol>
               <li><strong>Band grouping</strong> — science frames are sorted into photometric bands using the FILTER header keyword</li>
-              <li><strong>Reference frame selection</strong> — one frame serves as the reference for alignment: by default the first frame (self-reference) or the middle frame of the reference band (<code>--ref_band</code>); when <code>--ref_select quality</code> is enabled, a fast header + pixel quality check instead picks the sharpest available frame (see FAQ below)</li>
-              <li><strong>Source detection</strong> — point sources are identified on the reference frame</li>
+              <li><strong>Reference construction</strong> — one real frame remains the alignment anchor: by default the first frame (self-reference) or the middle frame of the reference band (<code>--ref_band</code>); with <code>--ref_select quality</code>, the pipeline selects a clean anchor and uses registered catalogs from nearby candidates to reject transient detections (see FAQ below)</li>
+              <li><strong>Source detection</strong> — point sources are identified on the anchor; quality mode retains only sources that recur across the candidate catalogs</li>
               <li><strong>Target identification</strong> — the target is located via WCS matching against the resolved sky coordinates (from MAST/SIMBAD name resolution)</li>
               <li><strong>Gaia-based aperture sizing</strong> — annulus and aperture radii are set to avoid contaminating sources</li>
               <li><strong>Parallel reduction</strong> — each frame is aligned, centroided, and photometered in parallel</li>
@@ -1230,10 +1356,10 @@ erDiagram
           <div class="faq-answer">
             <p>By default (<code>position</code>) the reference frame is chosen positionally — the first frame for self-reference, or the middle frame of the reference band when <code>--ref_band</code> is set — with no check on whether that frame is actually any good (clouds, poor focus, and high airmass can all silently become the reference). <code>--ref_select quality</code> replaces this with a two-tier pre-check that runs before the full reduction:</p>
             <ol>
-              <li><strong>Header triage (Tier 1, MuSCAT3/MuSCAT4/Sinistro only)</strong> — every frame's header is scanned (no pixel data read, sub-second even for hundreds of frames) for BANZAI's own per-frame FWHM estimate (<code>L1FWHM</code>), airmass, focus position, humidity, and background level. Frames with physically broken values (e.g. airmass &gt; 3.5, humidity &gt; 95%) are excluded; the rest are ranked by a composite score dominated by FWHM, and the top-K candidates (<code>--ref_select_top_k</code>, default 5) move on to Tier 2.</li>
-              <li><strong>Pixel validation (Tier 2, all instruments)</strong> — the shortlisted candidates (or, for MuSCAT/MuSCAT2, which have no header FWHM proxy, K frames sampled evenly across the whole night) are run through the same source-detection pipeline used to build the reference today, in parallel. The candidate with the best combination of confirmed target match, non-outlier star count, low measured FWHM, and an unsaturated target wins.</li>
+              <li><strong>Header triage (Tier 1, MuSCAT3/MuSCAT4/Sinistro only)</strong> — every frame's header is scanned without reading pixel data for BANZAI's per-frame FWHM estimate (<code>L1FWHM</code>), airmass, focus position, humidity, and background level. Frames with physically broken values (e.g. airmass &gt; 3.5, humidity &gt; 95%) are excluded, and a composite score dominated by FWHM identifies the best-quality anchor. The candidate window is then formed from viable frames nearest that anchor in time, limiting telescope drift.</li>
+              <li><strong>Pixel validation and persistence (Tier 2, all instruments)</strong> — the local candidates (<code>--ref_select_top_k</code>, default 5) are run through the normal source-detection pipeline in parallel and ranked using target match, non-outlier star count, measured FWHM, and target saturation. Their catalogs are registered to the selected anchor, and a detection is retained only when it occurs in at least 60% of the registered catalogs (3 of 5 by default). This removes one-frame cosmic-ray and hot-pixel detections while preserving the WCS-selected or explicit target. MuSCAT/MuSCAT2 use a local window around the positional midpoint because they lack the BANZAI header proxy.</li>
             </ol>
-            <p>An explicit <strong>Reference frame ID</strong> always overrides quality selection. The chosen frame and the full Tier 1/Tier 2 comparison are written to a <code>*_ref_selection.txt</code> sidecar (linked from the results page as "view ref selection") so the automatic choice can be audited without re-running anything. Quality mode adds cost (roughly proportional to top_k candidates, not the full reduction) on top of the otherwise-instant positional lookup, so it is opt-in rather than the default.</p>
+            <p>An explicit <strong>Reference frame ID</strong> always overrides quality selection. If fewer than two candidate catalogs can be registered, the pipeline safely keeps the anchor catalog instead of applying an unreliable persistence filter. The chosen frame, candidate comparison, registration status, and persistence counts are written to a <code>*_ref_selection.txt</code> sidecar (linked from the results page as "view ref selection") so the decision can be audited without re-running anything. Quality mode adds work roughly proportional to top-K, so it remains opt-in.</p>
           </div>
         </div>
 
@@ -1423,8 +1549,7 @@ erDiagram
             <span class="faq-icon">+</span>
           </div>
           <div class="faq-answer">
-            <p>The <code>--overwrite</code> flag (enabled by default in the GUI) allows re-running the pipeline over existing results. This is useful when you want to change parameters (aperture radii, bands, reference frame) without manually cleaning the output directory. Simply launch again from the photometry page with the new settings — existing product files are replaced.</p>
-            <p>Note: previous outputs are lost. If you want to preserve an older reduction, rename the results directory or run on a different date/target combination.</p>
+            <p>Give the reduction a distinct <strong>Run name</strong> to isolate it under <code>$MUSCAT_PROSE_DIR/&lt;instrument&gt;/&lt;date&gt;/_runs/&lt;target&gt;/&lt;run_id&gt;/</code>. Run chips on the results page switch between saved reductions. The <code>--overwrite</code> option (enabled by default in the GUI) only replaces products in the selected run, which is useful when retrying the same configuration with changed apertures, bands, or reference settings. Use a new run name whenever the previous products must remain intact.</p>
           </div>
         </div>
 
@@ -1661,7 +1786,7 @@ erDiagram
               <li><strong>Input assembly</strong> — transit centers behind the O-C plot (<code>Tc</code>, <code>tc_unc</code>, epoch per planet) are written to <code>data.csv</code>, with planet letters remapped to the integer indices harmonic expects. The dataset checkboxes and point exclusions that shape the linear fit shape the TTV fit too.</li>
               <li><strong>Configuration</strong> — <code>config.ini</code> carries an <code>[INIT]</code> section with the TTV amplitude, super-period, and phase reference (<code>a_bc</code>, <code>a_cb</code>, <code>per_bc</code>, <code>t_bc</code>) for each adjacent pair, plus optional <code>[T14]</code> (transit durations) and <code>[OUTER]</code> (non-transiting outer planet) sections.</li>
               <li><strong>Launch</strong> — options and INI are validated, the run directory is written, and the harmonic CLI runs as a background job in the conda <code>harmonic</code> environment. The exact command is shown in the run panel so it can be reproduced in a terminal.</li>
-              <li><strong>Sampling</strong> — <code>emcee</code> runs with the configured walkers, steps, burn-in, thinning, processes, and seed, streaming <code>harmonic.log</code> live to the page.</li>
+              <li><strong>Sampling</strong> — <code>emcee</code> runs with the configured walkers, steps, burn-in, thinning, processes, and seed, streaming <code>harmonic.log</code> live to the page. Completed results include a <strong>fit run log</strong> link that opens the full log in a new tab.</li>
               <li><strong>Outputs</strong> — posterior samples (<code>samples.csv.gz</code>), diagnostic plots (<code>corner.png</code>, <code>trace.png</code>, <code>fit.png</code>, <code>init.png</code>), and <code>meta.yaml</code> recording the muscat-db and harmonic versions plus the full option set.</li>
             </ol>
           </div>

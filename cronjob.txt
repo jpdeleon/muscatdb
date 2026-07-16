@@ -1,0 +1,2 @@
+MUSCAT_OBSLOG_DIR=/ut2/muscat/obslog
+30 17 * * * cd /ut2/jerome/github/research/project/muscat-db && bash scripts/download_catalogs.sh >> /ut2/jerome/github/research/project/muscat-db/logs/download_catalogs.log 2>&1 && /ut2/jerome/.local/bin/uv run muscat-db scan-yesterday >> /ut2/jerome/github/research/project/muscat-db/logs/scan.log 2>&1 && /ut2/jerome/.local/bin/uv run muscat-db build-db >> /ut2/jerome/github/research/project/muscat-db/logs/build-db.log 2>&1

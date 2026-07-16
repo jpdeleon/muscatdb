@@ -1282,6 +1282,17 @@ def _nexsci_db_membership(cat_data: dict, db: str) -> tuple[list[int], list[str]
     return indb, tname
 
 
+# MuSCAT OBJECT values can carry an observing-date and coordinate decoration
+# after an otherwise valid TOI name, e.g.
+# ``TOI-179b_231015 J025710-560913``.  Match the complete known decoration so
+# legitimate underscores such as the one in ``TOI_2457`` are never truncated.
+_DECORATED_TOI_OBJECT_RE = re.compile(
+    r"^(?P<target>TOI(?:[ _-]*)0*\d+(?:\.\d+|[B-H])?)_"
+    r"\d{6}\s+J\d{6}[+-]\d{6}$",
+    re.IGNORECASE,
+)
+
+
 # Helper to normalize target names for comparison
 def _normalize_target_name(t: str) -> str:
     # Parse recognized TOI spellings before removing punctuation.  Otherwise a
@@ -1289,6 +1300,9 @@ def _normalize_target_name(t: str) -> str:
     # 620901 after the hyphen is discarded.  TOI comparison keys represent the
     # host, so candidate-number and confirmed-planet suffixes are omitted.
     raw = t.strip().upper()
+    decorated_toi = _DECORATED_TOI_OBJECT_RE.fullmatch(raw)
+    if decorated_toi:
+        raw = decorated_toi.group("target")
     toi_match = re.fullmatch(
         r"TOI(?:[ _-]*)0*(\d+)(?:\.\d+)?(?:\s*[B-H])?",
         raw,

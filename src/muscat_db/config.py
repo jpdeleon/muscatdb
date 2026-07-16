@@ -112,6 +112,17 @@ ENV_VARS: tuple[EnvVar, ...] = (
         "(default), /api/lco/submit refuses even with a valid dry-run + confirm; "
         "set to '1' only when intentionally going live.",
     ),
+    EnvVar("MUSCAT_LCO_MONITOR_ENABLED", "1", "Run the restart-safe submitted-request monitor"),
+    EnvVar("MUSCAT_LCO_MONITOR_POLL_S", "300", "Initial LCO request/archive polling interval (seconds)"),
+    EnvVar("MUSCAT_LCO_MONITOR_FAST_AFTER_WINDOW_S", "7200", "Keep the initial cadence this long after a request window (seconds)"),
+    EnvVar("MUSCAT_LCO_MONITOR_MAX_POLL_S", "3600", "Maximum unchanged-result polling interval (seconds)"),
+    EnvVar("MUSCAT_LCO_MONITOR_ERROR_MAX_POLL_S", "3600", "Maximum API-error retry interval (seconds)"),
+    EnvVar("MUSCAT_LCO_MONITOR_LOOP_S", "15", "Local due-request monitor loop interval (seconds)"),
+    EnvVar("MUSCAT_LCO_MONITOR_BATCH_SIZE", "2", "Maximum due requests advanced per local monitor loop"),
+    EnvVar("MUSCAT_LCO_MONITOR_DOWNLOAD_CHECK_S", "10", "Active archive-download status interval (seconds)"),
+    EnvVar("MUSCAT_LCO_MONITOR_NO_DATA_GRACE_S", "86400", "Terminal-request archive-lag grace period (seconds)"),
+    EnvVar("MUSCAT_LCO_MONITOR_LEASE_S", "90", "Cross-worker observation-monitor lease duration (seconds)"),
+    EnvVar("MUSCAT_LCO_MONITOR_SCAN_WORKERS", "1", "FITS header workers used by automatic LCO scans"),
     EnvVar(
         "ADS_API_TOKEN",
         None,

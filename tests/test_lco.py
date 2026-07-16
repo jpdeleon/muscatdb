@@ -359,6 +359,20 @@ class LcoTest(unittest.TestCase):
         request = mock_urlopen.call_args[0][0]
         self.assertEqual(request.get_header("Authorization"), "Token test-token")
 
+    @patch.dict(os.environ, {"LCO_API_TOKEN": "test-token"})
+    @patch("urllib.request.urlopen")
+    def test_archive_search_preserves_raw_reduction_level_zero(self, mock_urlopen):
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.read.return_value = b'{"count": 0, "results": []}'
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        lco.archive_search({"request_id": 123, "reduction_level": 0})
+
+        url = mock_urlopen.call_args.args[0].full_url
+        self.assertIn("request_id=123", url)
+        self.assertIn("reduction_level=0", url)
+
     def test_generate_windows(self):
         windows = lco.generate_windows(
             t0=2459000.5,

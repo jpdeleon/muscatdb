@@ -4,8 +4,8 @@
 {% set active_lco_page = "archive" %}
 {% include "_lco_shared.html" %}
 
-<div class="lco-section">
-  <h3>Search by Request ID</h3>
+<details class="lco-section section-fold" open>
+  <summary><h3>Search by Request ID</h3></summary>
   <div class="lco-grid">
     <div class="lco-field">
       <label for="dl-request-id">Request ID</label>
@@ -19,10 +19,10 @@
     <span class="lco-msg" id="msg-request" style="margin: 0;"></span>
   </div>
   <p class="lco-note">Enter the numeric request ID from an observation portal URL (e.g. <code>4236675</code> from <code>observe.lco.global/requests/4236675</code>) to pull every frame for that request. It ignores the search fields above; results appear below for selection and download.</p>
-</div>
+</details>
 
-<div class="lco-section">
-  <h3>Search LCO Archive</h3>
+<details class="lco-section section-fold" open>
+  <summary><h3>Search LCO Archive</h3></summary>
   <div class="lco-grid">
     <div class="lco-field"><label for="dl-proposal">Proposal ID</label><input id="dl-proposal" type="text" placeholder="KEY2023-04"></div>
     <div class="lco-field">
@@ -55,10 +55,10 @@
   </div>
   <p class="lco-note">By default the <strong>Object</strong> name is resolved to sky coordinates (NASA/TOI catalog, then SIMBAD) and every frame whose footprint <em>covers</em> that position is returned — robust to naming variants (WASP-12 / Wasp-12 / WASP12). Enable <strong>Fuzzy name match</strong> to fall back to matching the raw OBJECT header text instead.</p>
   <p class="lco-note">Files save to <code>&lt;MUSCAT_LCO_DIR&gt;/&lt;inferred instrument&gt;/&lt;date&gt;/</code> (or that instrument's data dir). The destination instrument is inferred from the archive metadata: OGG 2m0 MuSCAT → muscat3, COJ 2m0 MuSCAT → muscat4, and LCO 1m0 → sinistro.</p>
-</div>
+</details>
 
-<div class="lco-section">
-  <h3>Results</h3>
+<details class="lco-section section-fold" open>
+  <summary><h3>Results</h3></summary>
   <div class="lco-actions" style="margin-bottom: 0.6rem;">
     <button class="btn primary" type="button" id="btn-download" disabled>Download selected</button>
     <label class="lco-field" style="flex-direction: row; align-items: center; gap: 0.4rem; margin: 0;">
@@ -67,7 +67,7 @@
     <span class="lco-msg" id="msg-download" style="margin: 0;"></span>
   </div>
   <div id="frames-groups" style="display: none;"></div>
-</div>
+</details>
 {% endblock %}
 
 {% block scripts %}

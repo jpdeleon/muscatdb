@@ -201,6 +201,27 @@ def get_requestgroups(
     return _lco_api_request(url, user_name=user_name, token=token)
 
 
+def get_requestgroup(
+    requestgroup_id: int,
+    user_name: str | None = None,
+    token: str | None = None,
+) -> dict:
+    """Fetch one submitted request group, including current child states."""
+    try:
+        identifier = int(requestgroup_id)
+    except (TypeError, ValueError) as exc:
+        raise LcoError("Request-group ID must be numeric", status=400) from exc
+    url = f"https://observe.lco.global/api/requestgroups/{identifier}/"
+    return _lco_api_request(url, user_name=user_name, token=token)
+
+
+def _query_params(filters: dict) -> str:
+    """Encode API filters without dropping meaningful zero/false values."""
+    return urllib.parse.urlencode(
+        {key: value for key, value in filters.items() if value is not None and value != ""}
+    )
+
+
 def archive_search(
     filters: dict,
     user_name: str | None = None,
@@ -208,7 +229,7 @@ def archive_search(
 ) -> dict:
     """Search the LCO archive."""
     base_url = "https://archive-api.lco.global/frames/"
-    params = urllib.parse.urlencode({k: v for k, v in filters.items() if v})
+    params = _query_params(filters)
     url = f"{base_url}?{params}"
     return _lco_api_request(url, user_name=user_name, token=token)
 
@@ -233,7 +254,7 @@ def archive_search_all(
     reports ``truncated`` so the caller can warn the user.
     """
     base_url = "https://archive-api.lco.global/frames/"
-    params = urllib.parse.urlencode({k: v for k, v in filters.items() if v})
+    params = _query_params(filters)
     url: str | None = f"{base_url}?{params}"
     results: list[dict] = []
     total: int | None = None
@@ -249,9 +270,9 @@ def archive_search_all(
 
 def infer_archive_instrument(frame: dict) -> str:
     """Infer the muscat-db instrument name from LCO archive frame metadata."""
-    site = str(frame.get("SITEID") or "").lower()
-    tel = str(frame.get("TELID") or "").lower()
-    instrume = str(frame.get("INSTRUME") or "").lower()
+    site = str(frame.get("SITEID") or frame.get("site_id") or "").lower()
+    tel = str(frame.get("TELID") or frame.get("telescope_id") or "").lower()
+    instrume = str(frame.get("INSTRUME") or frame.get("instrument_id") or "").lower()
     filename = str(frame.get("filename") or frame.get("basename") or "").lower()
 
     if not site and filename:
@@ -618,6 +639,24 @@ def frame_dest(instrument: str, obsdate: str, filename: str) -> Path:
     return dest
 
 
+def frame_destination(frame: dict) -> tuple[str, str, Path]:
+    """Return the inferred instrument, YYMMDD directory, and path for a frame."""
+    filename = frame.get("filename") or frame.get("basename")
+    if not filename:
+        raise LcoError("Frame metadata has no filename")
+    instrument = infer_archive_instrument(frame)
+    date_obs = str(
+        frame.get("DATE_OBS")
+        or frame.get("observation_date")
+        or frame.get("DAY_OBS")
+        or ""
+    ).split("T")[0].replace("-", "")
+    if len(date_obs) < 6:
+        raise LcoError("Could not determine obsdate")
+    obsdate = date_obs[2:]
+    return instrument, obsdate, frame_dest(instrument, obsdate, str(filename))
+
+
 def _validate_download_url(url: str) -> str:
     """Only allow fetching over https from the LCO archive or its S3 backing.
 
@@ -678,14 +717,7 @@ def _download_frame(frame: dict, overwrite: bool = False) -> dict:
 
     status = {"filename": filename, "status": "pending"}
     try:
-        instrument = infer_archive_instrument(frame)
-        date_obs = (frame.get("DATE_OBS") or frame.get("DAY_OBS") or "").split("T")[0].replace("-", "")
-        if len(date_obs) >= 6:
-            obsdate = date_obs[2:]
-        else:
-            raise LcoError("Could not determine obsdate")
-
-        dest = frame_dest(instrument, obsdate, filename)
+        _instrument, _obsdate, dest = frame_destination(frame)
         status["dest"] = str(dest)
 
         if dest.exists() and not overwrite:
@@ -819,17 +851,15 @@ def _archive_download_snapshot(job: dict) -> dict:
             values.append(value)
 
     for frame in frames:
-        add_unique(objects, str(frame.get("OBJECT") or frame.get("object") or "").strip())
+        add_unique(
+            objects,
+            str(frame.get("OBJECT") or frame.get("object") or frame.get("target_name") or "").strip(),
+        )
         try:
-            inst = infer_archive_instrument(frame)
+            inst, obsdate, dest = frame_destination(frame)
             add_unique(instruments, inst)
-            date_obs = (frame.get("DATE_OBS") or frame.get("DAY_OBS") or "").split("T")[0].replace("-", "")
-            if len(date_obs) >= 6:
-                obsdate = date_obs[2:]
-                add_unique(obsdates, obsdate)
-                filename = frame.get("filename") or frame.get("basename")
-                if filename:
-                    add_unique(dest_dirs, str(frame_dest(inst, obsdate, filename).parent))
+            add_unique(obsdates, obsdate)
+            add_unique(dest_dirs, str(dest.parent))
         except Exception:
             pass
 

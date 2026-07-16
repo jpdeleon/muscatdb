@@ -5,6 +5,7 @@
 
 ## Data
 * do not delete muscat.db and data/
+* always make a daily backup of muscat.db in $HOME/temp. Delete if the backup is stale.
 * there are currently five unique instruments: muscat, muscat2, muscat3, muscat4, sinistro
 * each instrument has telescope and camera specifications defined in prose2/data/*.telescope files read by prose package
 * header keyword should precede over hardcoded parameters keeping in mind that the header keyword may change over time

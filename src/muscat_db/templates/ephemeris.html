@@ -5,7 +5,7 @@
 
 <h1>Ephemeris</h1>
 
-<p style="color: var(--text-dim); margin-bottom: 1.5rem; font-size: 0.95rem;">
+<p class="page-lede">
   Analyze Transit Timing Variations (TTVs) across multiple instruments and dates. Click on any data point in the plot to navigate directly to the transit fit page it is based on.
 </p>
 
@@ -28,7 +28,7 @@
   </div>
 
   <!-- Dynamic Planet Parameter Cards Container -->
-  <details class="adv" id="planet-cards-section" style="display: none; margin-bottom: 1.5rem;" open>
+  <details class="adv ephemeris-fold" id="planet-cards-section" style="display: none; margin-bottom: 1.5rem;" open>
     <summary>Planetary Reference Ephemerides</summary>
     <div id="planet-cards-container" class="card-grid" style="grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); margin-top: 1.5rem;">
       <!-- Dynamically filled with planet inputs -->
@@ -36,13 +36,11 @@
   </details>
 
   <!-- Dataset Checkbox List Table -->
-  <details class="adv" id="datasets-section" style="display: none; margin-bottom: 1.5rem;" open>
+  <details class="adv ephemeris-fold" id="datasets-section" style="display: none; margin-bottom: 1.5rem;" open>
     <summary>Select Datasets to Include in Fit</summary>
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; margin-top: 1rem;">
-      <div style="display: flex; gap: 0.5rem;">
-        <button class="btn sm" type="button" onclick="toggleAllDatasets(true)">Select All</button>
-        <button class="btn sm" type="button" onclick="toggleAllDatasets(false)">Deselect All</button>
-      </div>
+    <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem; margin-top: 1rem;">
+      <button class="btn sm" type="button" onclick="toggleAllDatasets(true)">Select All</button>
+      <button class="btn sm" type="button" onclick="toggleAllDatasets(false)">Deselect All</button>
     </div>
     <div class="csv-wrap" style="border: 1px solid var(--border); border-radius: 8px;">
       <table id="datasets-table" style="margin: 0;">
@@ -50,10 +48,11 @@
           <tr style="background: var(--surface2);">
             <th style="width: 90px; text-align: center;">Use in Fit</th>
             <th style="width: 90px;">Instrument</th>
-            <th style="width: 150px;">Target</th>
+            <th id="datasets-target-header" style="width: 150px;">Target</th>
             <th style="width: 90px;">Date</th>
             <th style="width: 220px;">Run Name</th>
-            <th style="width: 120px;">Planet</th>
+            <th style="width: 120px; text-align: center;">Planet</th>
+            <th style="width: 1%; text-align: center; white-space: nowrap;" title="E = round((Tc − T0) / period); E=0 is the chosen planetary reference epoch">Epoch</th>
             <th>Transit Centers (BJD)</th>
           </tr>
         </thead>
@@ -62,12 +61,50 @@
         </tbody>
       </table>
     </div>
+    <div style="display: flex; justify-content: flex-end; margin-top: 0.75rem;">
+      <input id="transit-csv-input" type="file" accept=".csv,.txt,text/csv,text/plain" hidden>
+      <button class="btn sm" type="button" onclick="chooseTransitCSV()"
+              title="Import planet, epoch, transit center, and uncertainty columns from a CSV file"
+              style="margin-right: 0.5rem;">Import CSV</button>
+      <button class="btn sm primary" type="button" onclick="addManualPoint()"
+              title="Add a transit center by hand (e.g. a literature value) to combine with the fitted datasets">
+        + Add transit center
+      </button>
+    </div>
   </details>
+
+  <dialog id="transit-csv-dialog" aria-labelledby="transit-csv-title">
+    <div class="csv-import-dialog">
+      <h3 id="transit-csv-title">Import transit centers</h3>
+      <div id="transit-csv-summary" class="csv-import-summary"></div>
+      <div class="csv-import-instrument">
+        <label for="transit-csv-instrument">Instrument name</label>
+        <input id="transit-csv-instrument" type="text" value="csv" maxlength="64"
+               placeholder="e.g. tess" required>
+        <span>Applied to every imported transit center.</span>
+      </div>
+      <div class="csv-wrap csv-import-preview-wrap">
+        <table class="csv-import-preview">
+          <thead><tr><th>Line</th><th>Planet</th><th>CSV epoch</th><th>New epoch</th><th>Tc (BJD)</th><th>Unc. (d)</th><th>Note</th></tr></thead>
+          <tbody id="transit-csv-preview-body"></tbody>
+        </table>
+      </div>
+      <div id="transit-csv-errors" class="csv-import-errors"></div>
+      <label id="transit-csv-time-confirm-row" class="opt-check-item csv-time-confirm" style="display:none;">
+        <input id="transit-csv-time-confirm" type="checkbox">
+        <span>I confirm these transit-center times are BJD_TDB.</span>
+      </label>
+      <div class="modal-actions">
+        <button class="btn" type="button" onclick="closeTransitCSVDialog()">Cancel</button>
+        <button class="btn primary" id="transit-csv-import-btn" type="button" onclick="importTransitCSVRows()">Import</button>
+      </div>
+    </div>
+  </dialog>
 
   <!-- Automatic Fit Controls -->
   <div id="action-section" style="display: none; gap: 1rem; align-items: center; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 1.5rem;">
     <div class="opt-check-row" title="Unweighted fit treats all transits equally. Weighted fit uses individual fit uncertainties." style="padding: 0; display: flex; align-items: center; gap: 0.85rem; min-height: 34px;">
-      <span style="font-size: 0.85rem; color: var(--text-dim); font-weight: 500; white-space: nowrap;">Fitting Method</span>
+      <span style="font-size: 0.85rem; color: var(--text-dim); font-weight: 500; white-space: nowrap;">Linear Fitting Method</span>
       <label class="opt-check-item" style="display: inline-flex; align-items: center; gap: 0.35rem; cursor: pointer;">
         <input type="radio" name="fit-method-type" value="unweighted" checked style="margin: 0;">
         <span style="font-size: 0.85rem;">Unweighted</span>
@@ -77,6 +114,10 @@
         <span style="font-size: 0.85rem;">Weighted</span>
       </label>
     </div>
+    <label class="opt-check-item" title="For each planet, set T0′ = chosen T0 + N × period for an integer N, placing E=0 near the mid-range of the included transit centers without changing predicted transit times.">
+      <input type="checkbox" id="center-epoch-checkbox">
+      <span>Shift reference epoch near dataset midpoint</span>
+    </label>
     <div id="loader" style="display: none; align-items: center;">
       <div class="spinner" title="Calculating fit"></div>
     </div>
@@ -84,22 +125,12 @@
 </div>
 
 <!-- Interactive Plot Area -->
-<details class="phot-section phot-fold" id="plot-card" style="display: none;" open>
+<details class="phot-section phot-fold ephemeris-fold" id="plot-card" style="display: none;" open>
   <summary><h2>O-C Plot</h2></summary>
   <div class="card" style="min-height: 520px; margin-top: 1rem;">
   <div id="oc-plot"></div>
   <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.75rem; gap: 1.5rem; flex-wrap: wrap;">
     <div style="display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; flex-grow: 1;">
-      <div class="opt-check-row" style="padding: 0; margin: 0; display: flex; align-items: center; gap: 1rem;">
-        <label class="opt-check-item">
-          <input type="radio" name="x-axis-type" value="bjd" checked>
-          <span>Time (BJD)</span>
-        </label>
-        <label class="opt-check-item">
-          <input type="radio" name="x-axis-type" value="epoch">
-          <span>Epoch</span>
-        </label>
-      </div>
       <label class="opt-check-item">
         <input type="checkbox" id="show-excluded-checkbox" checked>
         <span>Show Excluded Points</span>
@@ -108,19 +139,30 @@
         <input type="checkbox" id="show-twin-checkbox">
         <span>Show date (UTC)</span>
       </label>
+      <label class="opt-check-item" title="Show a separate epoch-number axis on each planet's O-C subplot. Mutually exclusive with Show date (UTC).">
+        <input type="checkbox" id="show-epoch-checkbox">
+        <span>Show epoch numbers</span>
+      </label>
+      <div id="ttv-model-controls" style="display: none; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+        <label class="opt-check-item" title="Show the minimum-χ² posterior model from the selected TTV run.">
+          <input type="checkbox" id="show-ttv-model-checkbox">
+          <span>Show TTV best-fit model</span>
+        </label>
+        <label style="display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--text-dim);">
+          Extend through (UTC)
+          <input type="date" id="ttv-model-end-date" style="font: inherit; padding: 0.25rem 0.4rem; height: 30px;">
+        </label>
+        <span id="ttv-model-status" style="font-size: 0.8rem; color: var(--text-dim);"></span>
+      </div>
       <span style="border-left: 1px solid var(--border); height: 16px; margin: 0 0.5rem;"></span>
       <div style="display: flex; align-items: center; gap: 0.35rem;">
         <span style="font-size: 0.85rem; color: var(--text-dim); font-weight: 500; white-space: nowrap;">Plot Title:</span>
         <input type="text" id="plot-suptitle-input" style="font-family: inherit; font-size: 0.85rem; padding: 0.25rem 0.5rem; height: 30px; border: 1px solid var(--border); border-radius: 4px; background: var(--input-bg); color: var(--text); width: 180px; outline: none; transition: border-color 0.15s;" placeholder="e.g. WASP-12 b">
       </div>
     </div>
-    <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
-      <a class="btn sm" id="oc-summary-link" href="#" target="_blank" rel="noopener" style="display: flex; align-items: center; gap: 0.35rem; font-weight: 500;">
-        tcs.txt
-      </a>
-      <button class="btn sm primary" type="button" id="download-plot-btn" style="display: flex; align-items: center; gap: 0.35rem; font-weight: 500;">
-        📥 Download PNG
-      </button>
+    <div class="dl-row" style="align-items: center; margin-top: 0;">
+      <a id="oc-summary-link" href="#" target="_blank" rel="noopener">tcs.txt</a>
+      <a id="download-plot-btn" href="#">📥 Download PNG</a>
     </div>
   </div>
     <div id="plot-planet-settings" style="margin-top: 0.75rem; border-top: 1px solid var(--border); padding-top: 0.75rem; display: none; flex-direction: column; gap: 0.5rem;">
@@ -129,7 +171,7 @@
 </details>
 
 <!-- Fit Summary Panel -->
-<details class="phot-section phot-fold" id="results-card" style="display: none;">
+<details class="phot-section phot-fold ephemeris-fold" id="results-card" style="display: none;">
   <summary><h2>Linear Ephemeris Fit Results</h2></summary>
   <div id="results-grid" style="display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); margin-top: 1rem;">
     <!-- Filled on fit calculate response -->
@@ -142,7 +184,7 @@
 <div class="phot-section" id="ttv-outputs-container" style="display: none;"></div>
 
 <!-- Configure TTV Model Section -->
-<details class="phot-section phot-fold" id="ttv-section" style="display: none;">
+<details class="phot-section phot-fold ephemeris-fold" id="ttv-section" style="display: none;">
   <summary><h2>Configure & Run TTV Fitting</h2></summary>
   <div class="card" style="padding: 1.5rem; margin-top: 1rem;">
     <p style="font-size: 0.85rem; color: var(--text-dim); margin-bottom: 1.5rem;">
@@ -158,11 +200,11 @@
         <input type="number" id="opt-mstar" value="1.0" min="0.1" step="0.01">
       </div>
       <div class="opt">
-        <label for="opt-mu_min_me">Mass prior min (M<sub>⊕</sub>) <span class="help-tooltip" title="Lower bound of the log-uniform mass-ratio prior in Earth masses (per Msun of host). Default 1 M⊕.">?</span></label>
+        <label for="opt-mu_min_me">Planet mass prior min (M<sub>⊕</sub>) <span class="help-tooltip" title="Lower bound of the log-uniform mass-ratio prior in Earth masses (per Msun of host). Default 1 M⊕.">?</span></label>
         <input type="number" id="opt-mu_min_me" value="1.0" min="0.01" step="0.5">
       </div>
       <div class="opt">
-        <label for="opt-mu_max_me">Mass prior max (M<sub>⊕</sub>) <span class="help-tooltip" title="Upper bound of the log-uniform mass-ratio prior in Earth masses (per Msun of host). Default 30 M⊕.">?</span></label>
+        <label for="opt-mu_max_me">Planet mass prior max (M<sub>⊕</sub>) <span class="help-tooltip" title="Upper bound of the log-uniform mass-ratio prior in Earth masses (per Msun of host). Default 30 M⊕.">?</span></label>
         <input type="number" id="opt-mu_max_me" value="30.0" min="0.1" step="5">
       </div>
       <div class="opt">
@@ -191,7 +233,7 @@
     </div>
 
     <!-- INI Config Editor (Advanced) -->
-    <details class="opt-collapse">
+    <details class="opt-collapse ephemeris-fold">
       <summary>INI Configuration <span class="help-tooltip" title="Raw INI configuration passed to harmonic. Auto-generated from the planet letters and the Planetary Reference Ephemerides above; edit here to override.">?</span></summary>
       <textarea id="opt-ini_content" rows="12" style="width: 100%;"></textarea>
       <div class="ini-help">
@@ -239,7 +281,7 @@
     </details>
 
     <!-- MCMC Options -->
-    <details class="opt-collapse">
+    <details class="opt-collapse ephemeris-fold">
       <summary>MCMC Sampler Options</summary>
       <div class="opt-grid" style="margin-top: 0.75rem;">
         <div class="opt">
@@ -350,6 +392,35 @@
     border-left: 2px solid var(--red);
     padding-left: 0.6rem;
   }
+  .csv-import-dialog { width: 100%; box-sizing: border-box; }
+  #transit-csv-dialog {
+    position: fixed;
+    inset: 0;
+    width: min(1000px, 90vw);
+    max-width: none;
+    max-height: 90vh;
+    margin: auto;
+    overflow: auto;
+    box-sizing: border-box;
+  }
+  .csv-import-summary { color: var(--text-dim); font-size: 0.85rem; line-height: 1.5; margin-bottom: 0.75rem; }
+  .csv-import-instrument { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.9rem; }
+  .csv-import-instrument label { color: var(--text); font-size: 0.85rem; font-weight: 600; white-space: nowrap; }
+  .csv-import-instrument input {
+    width: 150px;
+    box-sizing: border-box;
+    background: var(--input-bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.4rem 0.55rem;
+  }
+  .csv-import-instrument span { color: var(--text-dim); font-size: 0.8rem; }
+  .csv-import-preview-wrap { max-height: 45vh; border: 1px solid var(--border); border-radius: 8px; }
+  .csv-import-preview { margin: 0; font-size: 0.82rem; }
+  .csv-import-preview th, .csv-import-preview td { white-space: nowrap; }
+  .csv-import-errors { color: var(--red); font-size: 0.82rem; margin-top: 0.75rem; white-space: pre-line; }
+  .csv-time-confirm { margin: 0.9rem 0; color: var(--text); }
 
   .planet-card {
     background: var(--surface2);
@@ -377,6 +448,27 @@
   }
   tr.selected-row td {
     background: color-mix(in srgb, var(--accent) 3%, transparent);
+  }
+  /* A manual transit center flagged as >5σ from the fitted ephemeris. */
+  tr.manual-flagged td {
+    background: color-mix(in srgb, var(--red) 8%, transparent);
+  }
+  /* Plot clicks temporarily identify the exact imported/manual table row. */
+  tr.manual-row-focus {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  tr.manual-row-focus td {
+    background: color-mix(in srgb, var(--accent) 16%, var(--surface)) !important;
+  }
+  /* Match the planet-card convention: no number-input spin buttons. */
+  .manual-row input[type="number"]::-webkit-outer-spin-button,
+  .manual-row input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .manual-row input[type="number"] {
+    -moz-appearance: textfield;
   }
   .text-highlight {
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
@@ -432,9 +524,19 @@
     return date.toISOString().slice(0, 10);
   }
 
+  // YYMMDD (UTC) — the project's obsdate convention, matching the Date column
+  // of the fitted-dataset rows. Used for the manual-row auto date.
+  function jdToYYMMDD(jd) {
+    const unixMs = (jd - 2440587.5) * 86400000;
+    const date = new Date(unixMs);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toISOString().slice(2, 10).replace(/-/g, '');
+  }
+
   // Instrument to Plotly Marker Symbol mapper
   function getSymbolForInstrument(inst) {
     const name = (inst || '').toLowerCase();
+    if (name.includes('manual')) return 'star';
     if (name.includes('muscat4')) return 'diamond';
     if (name.includes('muscat3')) return 'triangle-up';
     if (name.includes('muscat2')) return 'square';
@@ -445,6 +547,7 @@
 
   const STORAGE_TARGET_KEY = 'muscat-ephem-selected-target';
   const STORAGE_OPTS_PREFIX = 'muscat-ephem-opts-';
+  const FIT_RESULTS_CACHE_VERSION = 2;
   
   // Combined data states
   let loadedTargets = [];
@@ -454,6 +557,11 @@
   let combinedNasaEphem = {};
   let combinedToiEphem = {};
   let combinedDatasets = [];
+  // Manually entered transit centers, scoped to the current combined-target
+  // set (persisted under STORAGE_OPTS_PREFIX + combinedKey + '-manual' and in
+  // the saved view). Each: {id, planet, tc, tc_unc, label, checked}.
+  let manualPoints = [];
+  let manualIdSeq = 0;
   let fitResults = null;
   let pendingViewState = null;
   let viewSaveTimer = null;
@@ -484,17 +592,23 @@
     return `${d.target}-${d.instrument}-${d.date}-${d.run_id}`;
   }
 
+  function fitResultsCacheKey(combinedKey) {
+    return STORAGE_OPTS_PREFIX + combinedKey + '-results';
+  }
+
+  function fitRequestSignature(request) {
+    // JSON is sufficient here because this request is assembled in a stable
+    // DOM/dataset order. Keeping the full input signature also makes cache
+    // invalidation inspectable in browser developer tools.
+    return JSON.stringify(request);
+  }
+
   function applyViewStateToStorage(state, combinedKey) {
     if (!state || !combinedKey) return;
 
     if (state.fit_method) {
       localStorage.setItem(STORAGE_OPTS_PREFIX + 'fit-method-type', state.fit_method);
       const radio = document.querySelector(`input[name="fit-method-type"][value="${state.fit_method}"]`);
-      if (radio) radio.checked = true;
-    }
-    if (state.x_axis) {
-      localStorage.setItem(STORAGE_OPTS_PREFIX + 'x-axis-type', state.x_axis);
-      const radio = document.querySelector(`input[name="x-axis-type"][value="${state.x_axis}"]`);
       if (radio) radio.checked = true;
     }
     if (typeof state.show_excluded === 'boolean') {
@@ -506,6 +620,31 @@
       localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-twin', String(state.show_utc));
       const cb = document.getElementById('show-twin-checkbox');
       if (cb) cb.checked = state.show_utc;
+    }
+    if (typeof state.show_epoch === 'boolean') {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-epoch', String(state.show_epoch));
+      const cb = document.getElementById('show-epoch-checkbox');
+      if (cb) cb.checked = state.show_epoch;
+      if (state.show_epoch) {
+        const utc = document.getElementById('show-twin-checkbox');
+        if (utc) utc.checked = false;
+        localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-twin', 'false');
+      }
+    }
+    if (typeof state.show_ttv_model === 'boolean') {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-ttv-model', String(state.show_ttv_model));
+      const cb = document.getElementById('show-ttv-model-checkbox');
+      if (cb) cb.checked = state.show_ttv_model;
+    }
+    if (typeof state.ttv_model_end_date === 'string') {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'ttv-model-end-date', state.ttv_model_end_date);
+      const input = document.getElementById('ttv-model-end-date');
+      if (input) input.value = state.ttv_model_end_date;
+    }
+    if (typeof state.center_epoch === 'boolean') {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'center-epoch', String(state.center_epoch));
+      const cb = document.getElementById('center-epoch-checkbox');
+      if (cb) cb.checked = state.center_epoch;
     }
     if (typeof state.plot_title === 'string') {
       const input = document.getElementById('plot-suptitle-input');
@@ -519,6 +658,12 @@
       localStorage.setItem(
         STORAGE_OPTS_PREFIX + combinedKey + '-checked',
         JSON.stringify(state.checked_datasets)
+      );
+    }
+    if (Array.isArray(state.manual_points)) {
+      localStorage.setItem(
+        STORAGE_OPTS_PREFIX + combinedKey + '-manual',
+        JSON.stringify(state.manual_points)
       );
     }
     if (state.planet_options && typeof state.planet_options === 'object') {
@@ -566,7 +711,6 @@
     });
 
     const fitMethod = document.querySelector('input[name="fit-method-type"]:checked')?.value || 'unweighted';
-    const xAxis = document.querySelector('input[name="x-axis-type"]:checked')?.value || 'bjd';
     const plotTitle = document.getElementById('plot-suptitle-input')?.value || '';
     const currentPlanetPlotSettings = {};
     combinedPlanets.forEach(pl => {
@@ -584,15 +728,34 @@
     });
     ttvFields.ini_content = document.getElementById('opt-ini_content')?.value || '';
 
+    const manualPointsState = manualPoints.map(mp => ({
+      id: mp.id,
+      instrument: mp.instrument || '',
+      target: mp.target || '',
+      date: mp.date || '',
+      planet: mp.planet,
+      tc: mp.tc,
+      tc_unc: mp.tc_unc,
+      note: mp.note || '',
+      source_epoch: mp.source_epoch,
+      source_file: mp.source_file || '',
+      time_system: mp.time_system || '',
+      checked: !!mp.checked
+    }));
+
     return {
       targets: loadedTargets.slice().sort(),
       checked_datasets: checkedDatasets,
+      manual_points: manualPointsState,
       fit_method: fitMethod,
       planet_options: planetOptions,
       planet_plot_settings: currentPlanetPlotSettings,
-      x_axis: xAxis,
       show_excluded: Boolean(document.getElementById('show-excluded-checkbox')?.checked),
       show_utc: Boolean(document.getElementById('show-twin-checkbox')?.checked),
+      show_epoch: Boolean(document.getElementById('show-epoch-checkbox')?.checked),
+      show_ttv_model: Boolean(document.getElementById('show-ttv-model-checkbox')?.checked),
+      ttv_model_end_date: document.getElementById('ttv-model-end-date')?.value || '',
+      center_epoch: Boolean(document.getElementById('center-epoch-checkbox')?.checked),
       plot_title: plotTitle,
       ttv_opts: ttvFields
     };
@@ -601,7 +764,12 @@
   function updateViewUrl(slug) {
     if (!slug || loadedTargets.length === 0) return;
     const targetsParam = loadedTargets.slice().sort().map(encodeURIComponent).join('+');
-    const url = `${window.location.pathname}?targets=${targetsParam}&view=${encodeURIComponent(slug)}`;
+    // The saved view identifies the input state; ?run= independently identifies
+    // which stored TTV output is on screen.  Keep that output selection when a
+    // changed input state produces a new content-addressed view slug.
+    const run = parseUrlRun();
+    const runParam = run ? `&run=${encodeURIComponent(run)}` : '';
+    const url = `${window.location.pathname}?targets=${targetsParam}&view=${encodeURIComponent(slug)}${runParam}`;
     window.history.replaceState(null, '', url);
     const lcoLink = document.getElementById('lco-schedule-link');
     if (lcoLink) {
@@ -611,29 +779,37 @@
     }
   }
 
+  async function saveEphemerisViewNow() {
+    // CSV/manual-only analyses are valid saved views even when this target has
+    // no completed muscat-db transit-fit dataset.
+    if (loadedTargets.length === 0) return null;
+    if (viewSaveTimer) {
+      clearTimeout(viewSaveTimer);
+      viewSaveTimer = null;
+    }
+    const state = collectEphemerisViewState();
+    const stateJson = JSON.stringify(state);
+    if (stateJson === lastSavedViewJson) return null;
+    const response = await fetch('/api/ephemeris/view', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state })
+    });
+    const res = await response.json();
+    if (!response.ok || !res.ok) {
+      throw new Error(res.error || `HTTP ${response.status}`);
+    }
+    lastSavedViewJson = stateJson;
+    updateViewUrl(res.slug);
+    return res;
+  }
+
   function scheduleSaveView(delay = 600) {
-    if (loadedTargets.length === 0 || combinedDatasets.length === 0) return;
+    if (loadedTargets.length === 0) return;
     if (viewSaveTimer) clearTimeout(viewSaveTimer);
     viewSaveTimer = setTimeout(() => {
       viewSaveTimer = null;
-      const state = collectEphemerisViewState();
-      const stateJson = JSON.stringify(state);
-      if (stateJson === lastSavedViewJson) return;
-      fetch('/api/ephemeris/view', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state })
-      })
-      .then(r => r.json())
-      .then(res => {
-        if (!res.ok) {
-          console.warn('Failed to save ephemeris view:', res.error || res);
-          return;
-        }
-        lastSavedViewJson = stateJson;
-        updateViewUrl(res.slug);
-      })
-      .catch(e => console.warn('Failed to save ephemeris view:', e));
+      saveEphemerisViewNow().catch(e => console.warn('Failed to save ephemeris view:', e));
     }, delay);
   }
 
@@ -710,24 +886,6 @@
       scheduleSaveView();
     });
     
-    // Restore X axis type preference
-    const savedXAxis = localStorage.getItem(STORAGE_OPTS_PREFIX + 'x-axis-type');
-    if (savedXAxis) {
-      const radio = document.querySelector(`input[name="x-axis-type"][value="${savedXAxis}"]`);
-      if (radio) radio.checked = true;
-    }
-
-    // Axis toggle redraws the plot and saves selection
-    document.querySelectorAll('input[name="x-axis-type"]').forEach(radio => {
-      radio.addEventListener('change', function() {
-        localStorage.setItem(STORAGE_OPTS_PREFIX + 'x-axis-type', this.value);
-        if (fitResults) {
-          drawPlot();
-        }
-        scheduleSaveView();
-      });
-    });
-
     // Restore show-excluded checkbox preference
     const savedShowExcluded = localStorage.getItem(STORAGE_OPTS_PREFIX + 'show-excluded');
     const showExcludedCheckbox = document.getElementById('show-excluded-checkbox');
@@ -754,9 +912,74 @@
     // Checkbox toggle redraws the plot and saves selection
     showTwinCheckbox.addEventListener('change', function() {
       localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-twin', this.checked);
+      if (this.checked) {
+        const epochTwin = document.getElementById('show-epoch-checkbox');
+        if (epochTwin) epochTwin.checked = false;
+        localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-epoch', 'false');
+      }
       if (fitResults) {
         drawPlot();
       }
+      scheduleSaveView();
+    });
+
+    // Restore the per-planet epoch twin-axis preference. Epoch twin axes need
+    // Time (BJD) as their primary coordinate and share the secondary-axis slot
+    // with the UTC date axis, so the controls are mutually exclusive.
+    const savedShowEpoch = localStorage.getItem(STORAGE_OPTS_PREFIX + 'show-epoch');
+    const showEpochCheckbox = document.getElementById('show-epoch-checkbox');
+    if (savedShowEpoch !== null) {
+      showEpochCheckbox.checked = savedShowEpoch === 'true';
+    }
+    if (showEpochCheckbox.checked) {
+      showTwinCheckbox.checked = false;
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-twin', 'false');
+    }
+    showEpochCheckbox.addEventListener('change', function() {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-epoch', String(this.checked));
+      if (this.checked) {
+        showTwinCheckbox.checked = false;
+        localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-twin', 'false');
+      }
+      if (fitResults) drawPlot();
+      scheduleSaveView();
+    });
+
+    // Restore the selected-run TTV model controls. They are revealed only
+    // when that run has a complete harmonic posterior and configuration.
+    const showTTVModelCheckbox = document.getElementById('show-ttv-model-checkbox');
+    const savedShowTTVModel = localStorage.getItem(STORAGE_OPTS_PREFIX + 'show-ttv-model');
+    if (savedShowTTVModel !== null) {
+      showTTVModelCheckbox.checked = savedShowTTVModel === 'true';
+    }
+    const ttvModelEndDate = document.getElementById('ttv-model-end-date');
+    ttvModelEndDate.value = localStorage.getItem(STORAGE_OPTS_PREFIX + 'ttv-model-end-date') || '';
+    showTTVModelCheckbox.addEventListener('change', function() {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-ttv-model', String(this.checked));
+      if (this.checked) loadSelectedTTVModel();
+      else {
+        ttvModelData = null;
+        if (fitResults) drawPlot();
+      }
+      scheduleSaveView();
+    });
+    ttvModelEndDate.addEventListener('change', function() {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'ttv-model-end-date', this.value || '');
+      if (showTTVModelCheckbox.checked && selectedTTVRun) loadSelectedTTVModel();
+      scheduleSaveView();
+    });
+
+    // Restore the reference-epoch centering preference. This changes only the
+    // integer epoch zero-point; T0 is shifted by whole periods.
+    const savedCenterEpoch = localStorage.getItem(STORAGE_OPTS_PREFIX + 'center-epoch');
+    const centerEpochCheckbox = document.getElementById('center-epoch-checkbox');
+    if (savedCenterEpoch !== null) {
+      centerEpochCheckbox.checked = savedCenterEpoch === 'true';
+    }
+    centerEpochCheckbox.addEventListener('change', function() {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'center-epoch', String(this.checked));
+      refreshDisplayedEpochs();
+      scheduleComputeFit(0);
       scheduleSaveView();
     });
 
@@ -1030,6 +1253,7 @@
     
     document.getElementById('results-card').style.display = 'none';
     document.getElementById('plot-card').style.display = 'none';
+    fitResults = null;
     
     // Show sections first so elements are visible and resizable tables can measure column widths properly
     document.getElementById('planet-cards-section').style.display = 'block';
@@ -1045,16 +1269,27 @@
     // 3. Render Planet Plot Style Customizer
     renderPlanetPlotSettings();
     
-    // 3. Restore previously calculated results if available
-    let savedResults = null;
+    // Restore only results generated from the exact current inputs. Older
+    // target-only cache entries can contain datasets that target-info now
+    // filters out (for example, historical test runs).
+    let fitCache = null;
     try {
-      savedResults = JSON.parse(localStorage.getItem(STORAGE_OPTS_PREFIX + combinedKey + '-results'));
+      fitCache = JSON.parse(localStorage.getItem(fitResultsCacheKey(combinedKey)));
     } catch (e) {}
-    
-    if (savedResults) {
-      fitResults = savedResults;
+
+    const cachedRequest = collectFitRequest(false);
+    const cacheMatches = cachedRequest
+      && fitCache
+      && fitCache.version === FIT_RESULTS_CACHE_VERSION
+      && fitCache.signature === fitRequestSignature(cachedRequest)
+      && fitCache.results;
+    if (cacheMatches) {
+      fitResults = fitCache.results;
       renderFitResults(fitResults);
       drawPlot();
+      markFlaggedManualRows(fitResults);
+    } else if (fitCache) {
+      localStorage.removeItem(fitResultsCacheKey(combinedKey));
     }
     scheduleComputeFit(0);
     scheduleSaveView(1200);
@@ -1337,17 +1572,31 @@
   };
 
   // Render datasets rows
+  function showDatasetTargetColumn() {
+    const uniqueTargetNames = new Set(
+      loadedTargets.map(t => String(t || '').trim()).filter(Boolean)
+    );
+    return uniqueTargetNames.size > 1;
+  }
+
   function renderDatasetsTable(datasets) {
     const tbody = document.getElementById('datasets-body');
     tbody.innerHTML = '';
-    
-    if (datasets.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-dim);">No completed fits found.</td></tr>`;
+
+    const showTargetColumn = showDatasetTargetColumn();
+    const targetHeader = document.getElementById('datasets-target-header');
+    if (targetHeader) targetHeader.style.display = showTargetColumn ? '' : 'none';
+    const columnCount = showTargetColumn ? 8 : 7;
+
+    const combinedKey = getCombinedStorageKey();
+    loadManualPoints();
+
+    if (datasets.length === 0 && manualPoints.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="${columnCount}" style="text-align: center; color: var(--text-dim);">No completed fits found. Use “+ Add transit center” to enter a transit time by hand.</td></tr>`;
       reinitResizableTable();
       return;
     }
 
-    const combinedKey = getCombinedStorageKey();
     let checkedMap = {};
     try {
       checkedMap = JSON.parse(localStorage.getItem(STORAGE_OPTS_PREFIX + combinedKey + '-checked') || '{}') || {};
@@ -1362,6 +1611,7 @@
 
       // Create label summary of transits in this dataset
       const transitsList = [];
+      const epochsList = [];
       if (d.fitted_tcs) {
         for (const pl in d.fitted_tcs) {
           const item = d.fitted_tcs[pl];
@@ -1369,40 +1619,502 @@
             const val = Number(item.tc).toFixed(5);
             const unc = Number(item.unc).toFixed(5);
             transitsList.push(`<span class="badge badge-blue" style="margin-right: 0.35rem;">${val} ± ${unc}</span>`);
+            const epoch = planetEpochForTC(pl, Number(item.tc));
+            const epochText = Number.isInteger(epoch) ? epoch : '—';
+            epochsList.push(`<span class="badge dataset-epoch" data-epoch-planet="${escapeAttr(pl)}" data-epoch-tc="${escapeAttr(item.tc)}" style="margin-right: 0.35rem; white-space: nowrap;">${epochText}</span>`);
           }
         }
       }
       const transitsSummary = transitsList.length > 0 ? transitsList.join(' ') : '<span style="color: var(--text-dim); font-style: italic;">None</span>';
+      const epochsSummary = epochsList.length > 0 ? epochsList.join(' ') : '<span style="color: var(--text-dim);">—</span>';
       
       const detailsUrl = `/transit-fit?inst=${d.instrument}&date=${d.date}&target=${encodeURIComponent(d.target)}&run=${d.run_id}`;
 
-      let runTypeBadge = '';
-      if (d.run_type === 'test') {
-        runTypeBadge = `<span class="badge badge-amber" style="font-size: 0.7rem; margin-left: 0.5rem; text-transform: lowercase;">test</span>`;
-      } else if (d.run_type === 'full') {
-        runTypeBadge = `<span class="badge badge-blue" style="font-size: 0.7rem; margin-left: 0.5rem; text-transform: lowercase;">full</span>`;
-      }
+      const coverageSuffix = ['full', 'ing', 'egr'].includes(d.transit_coverage)
+        ? ` (${d.transit_coverage})` : '';
 
       tr.innerHTML = `
         <td style="text-align: center;">
           <input type="checkbox" class="dataset-checkbox" data-index="${idx}" ${isChecked ? 'checked' : ''} onchange="onDatasetCheckboxChange(this, ${idx})">
         </td>
         <td class="mono">${d.instrument.toUpperCase()}</td>
-        <td><span class="badge" style="background: var(--surface); color: var(--text-dim); font-size: 0.8rem; border: 1px solid var(--border);">${d.target}</span></td>
+        ${showTargetColumn ? `<td><span class="badge" style="background: var(--surface); color: var(--text-dim); font-size: 0.8rem; border: 1px solid var(--border);">${d.target}</span></td>` : ''}
         <td class="mono">${d.date}</td>
         <td>
           <a href="${detailsUrl}" target="_blank" style="font-weight: 600; color: var(--text);" title="Click to view transit fit">
-            ${d.run_name}
+            ${d.run_name}${coverageSuffix}
           </a>
-          ${runTypeBadge}
         </td>
-        <td class="mono">${d.planets_fitted}</td>
+        <td class="mono" style="text-align: center;">${d.planets_fitted}</td>
+        <td class="mono" style="text-align: center;">${epochsSummary}</td>
         <td>${transitsSummary}</td>
       `;
       tbody.appendChild(tr);
     });
-    
+
+    manualPoints.forEach(mp => renderManualRow(tbody, mp, showTargetColumn));
+
+    refreshDisplayedEpochs();
     reinitResizableTable();
+  }
+
+  // ── Manual transit centers ──────────────────────────────────────────────
+  // User-entered transit centers (e.g. literature values) merged into the
+  // per-planet O-C series alongside the fitted datasets. They flow through the
+  // same /api/ephemeris/calculate path, so they reach the O-C plot, tcs.txt,
+  // and the TTV CSV automatically.
+
+  function manualStorageKey() {
+    return STORAGE_OPTS_PREFIX + getCombinedStorageKey() + '-manual';
+  }
+
+  function loadManualPoints() {
+    let parsed = [];
+    try {
+      parsed = JSON.parse(localStorage.getItem(manualStorageKey()) || '[]');
+    } catch (e) {}
+    if (!Array.isArray(parsed)) parsed = [];
+    manualPoints = parsed.map(mp => ({
+      id: mp.id || ('m' + (++manualIdSeq) + '-' + Date.now()),
+      instrument: mp.instrument || '',
+      target: mp.target || '',
+      date: mp.date || '',
+      planet: mp.planet || (combinedPlanets[0] || 'b'),
+      tc: mp.tc != null ? String(mp.tc) : '',
+      tc_unc: mp.tc_unc != null ? String(mp.tc_unc) : '',
+      // "note" is a free-text annotation shown in the Run Name column; older
+      // saved views stored it as "label", so fall back to that.
+      note: mp.note != null ? mp.note : (mp.label || ''),
+      source_epoch: Number.isInteger(mp.source_epoch) ? mp.source_epoch : null,
+      source_file: mp.source_file || '',
+      time_system: mp.time_system || '',
+      checked: mp.checked !== false
+    }));
+  }
+
+  function saveManualPoints() {
+    try {
+      localStorage.setItem(manualStorageKey(), JSON.stringify(manualPoints));
+    } catch (e) {}
+  }
+
+  // ── CSV transit-center import ──────────────────────────────────────────
+  // Parsing is performed by the Python stdlib CSV reader through the preview
+  // endpoint. The browser sends file content, never a server filesystem path.
+  let transitCSVPreview = null;
+
+  window.chooseTransitCSV = function() {
+    if (loadedTargets.length === 0) {
+      showMessageModal('Select a target', 'Load a target before importing transit centers.');
+      return;
+    }
+    const input = document.getElementById('transit-csv-input');
+    input.value = '';
+    input.click();
+  };
+
+  function rawPlanetEphemeris(planet) {
+    const card = document.querySelector(`.planet-card[data-planet="${CSS.escape(planet)}"]`);
+    if (!card) return null;
+    const t0 = parseFloat(card.querySelector('.planet-t0')?.value);
+    const period = parseFloat(card.querySelector('.planet-period')?.value);
+    if (!Number.isFinite(t0) || !Number.isFinite(period) || period <= 0) return null;
+    return {t0, period};
+  }
+
+  function planetEpochShift(planet) {
+    const centerCheckbox = document.getElementById('center-epoch-checkbox');
+    if (!centerCheckbox?.checked) return 0;
+    const ephem = rawPlanetEphemeris(planet);
+    if (!ephem) return 0;
+
+    const epochs = [];
+    document.querySelectorAll('.dataset-checkbox:checked').forEach(box => {
+      const dataset = combinedDatasets[parseInt(box.dataset.index)];
+      const fitted = dataset?.fitted_tcs?.[planet];
+      if (fitted?.tc !== undefined && fitted?.tc !== null
+          && fitted?.unc !== undefined && fitted?.unc !== null) {
+        const tc = Number(fitted.tc);
+        if (Number.isFinite(tc)) epochs.push(Math.round((tc - ephem.t0) / ephem.period));
+      }
+    });
+    manualPoints.forEach(mp => {
+      if (!mp.checked || mp.planet !== planet || !(parseFloat(mp.tc_unc) > 0)) return;
+      const tc = parseFloat(mp.tc);
+      if (Number.isFinite(tc)) epochs.push(Math.round((tc - ephem.t0) / ephem.period));
+    });
+    if (epochs.length === 0) return 0;
+    const eMin = Math.min(...epochs);
+    const eMax = Math.max(...epochs);
+    return eMin + Math.floor((eMax - eMin) / 2);
+  }
+
+  function effectivePlanetEphemeris(planet) {
+    const ephem = rawPlanetEphemeris(planet);
+    if (!ephem) return null;
+    const epochShift = planetEpochShift(planet);
+    return {t0: ephem.t0 + epochShift * ephem.period, period: ephem.period, epochShift};
+  }
+
+  function planetEpochForTC(planet, tc) {
+    const ephem = effectivePlanetEphemeris(planet);
+    if (!ephem || !Number.isFinite(tc)) return null;
+    return Math.round((tc - ephem.t0) / ephem.period);
+  }
+
+  function refreshDisplayedEpochs() {
+    document.querySelectorAll('.dataset-epoch').forEach(el => {
+      const planet = el.dataset.epochPlanet || '';
+      const epoch = planetEpochForTC(planet, parseFloat(el.dataset.epochTc));
+      el.textContent = Number.isInteger(epoch) ? epoch : '—';
+    });
+    document.querySelectorAll('.manual-epoch').forEach(el => {
+      const mp = manualPoints.find(point => point.id === el.dataset.mid);
+      const epoch = mp ? planetEpochForTC(mp.planet, parseFloat(mp.tc)) : null;
+      el.textContent = Number.isInteger(epoch) ? epoch : '—';
+    });
+  }
+
+  function analyzeTransitCSVRows(preview) {
+    const offsets = {};
+    const seenInFile = new Set();
+    preview.rows.forEach(row => {
+      row.blocked = '';
+      row.page_epoch = planetEpochForTC(row.planet, row.tc);
+      if (!combinedPlanets.includes(row.planet)) {
+        row.blocked = `planet ${row.planet} is not available for the loaded target`;
+      } else if (row.page_epoch === null) {
+        row.blocked = `planet ${row.planet} needs a valid T0 and period`;
+      }
+      if (Number.isInteger(row.source_epoch) && row.page_epoch !== null) {
+        const offset = row.page_epoch - row.source_epoch;
+        (offsets[row.planet] ||= new Set()).add(offset);
+      }
+      const duplicate = manualPoints.some(mp =>
+        mp.planet === row.planet && Number.isFinite(parseFloat(mp.tc))
+        && Math.abs(parseFloat(mp.tc) - row.tc) < 1e-10);
+      if (duplicate) row.blocked = 'already present in this view';
+      const fileKey = `${row.planet}|${row.tc}`;
+      if (seenInFile.has(fileKey)) row.blocked = 'duplicate row in this CSV';
+      seenInFile.add(fileKey);
+      if (preview.time_system.supported === false) {
+        row.blocked = `${preview.time_system.value} requires conversion to BJD_TDB before import`;
+      }
+    });
+    Object.keys(offsets).forEach(planet => {
+      if (offsets[planet].size > 1) {
+        preview.rows.forEach(row => {
+          if (row.planet === planet) row.blocked = 'CSV epochs are inconsistent with the page epoch grid';
+        });
+      }
+    });
+    preview.epoch_offsets = Object.fromEntries(
+      Object.entries(offsets).filter(([, values]) => values.size === 1)
+        .map(([planet, values]) => [planet, Array.from(values)[0]])
+    );
+  }
+
+  function updateTransitCSVImportButton() {
+    if (!transitCSVPreview) return;
+    const needsConfirmation = !transitCSVPreview.time_system.confirmed;
+    const confirmed = document.getElementById('transit-csv-time-confirm').checked;
+    const instrument = document.getElementById('transit-csv-instrument').value.trim();
+    const importable = transitCSVPreview.rows.filter(row => !row.blocked).length;
+    const button = document.getElementById('transit-csv-import-btn');
+    button.disabled = importable === 0 || !instrument || (needsConfirmation && !confirmed);
+    button.textContent = `Import ${importable} transit center${importable === 1 ? '' : 's'}`;
+  }
+
+  function renderTransitCSVPreview(preview) {
+    analyzeTransitCSVRows(preview);
+    const mapped = Object.entries(preview.columns)
+      .map(([field, header]) => `${field} ← ${header}`).join(' · ');
+    const offsets = Object.entries(preview.epoch_offsets)
+      .map(([planet, offset]) => `${planet}: ${offset >= 0 ? '+' : ''}${offset}`).join(', ');
+    const importable = preview.rows.filter(row => !row.blocked).length;
+    const dropped = (preview.dropped_columns || []).join(', ');
+    document.getElementById('transit-csv-summary').innerHTML =
+      `<strong>${escapeAttr(preview.filename)}</strong> — ${preview.rows.length} valid parser row(s), ${preview.errors.length} invalid row(s).<br>`
+      + `Columns: ${escapeAttr(mapped)}.<br>Time system: <strong>${escapeAttr(preview.time_system.value)}</strong>.`
+      + (dropped ? `<br>Extra columns dropped: ${escapeAttr(dropped)}.` : '')
+      + (offsets ? `<br>New epoch − CSV epoch: ${escapeAttr(offsets)} (a constant offset is safely re-zeroed).` : '')
+      + `<br>${importable} row(s) ready to import.`;
+
+    const tbody = document.getElementById('transit-csv-preview-body');
+    const previewRows = preview.rows.map(row => ({...row, valid: true}))
+      .concat((preview.errors || []).map(row => ({...row, valid: false})))
+      .sort((a, b) => a.line - b.line);
+    tbody.innerHTML = previewRows.slice(0, 100).map(row => {
+      let note;
+      if (!row.valid) {
+        note = `<span style="color:var(--red);">${escapeAttr(row.errors.join('; '))}</span>`;
+      } else if (row.blocked) {
+        note = `<span style="color:var(--red);">${escapeAttr(row.blocked)}</span>`;
+      } else if (Number.isInteger(row.source_epoch) && row.page_epoch !== row.source_epoch) {
+        const offset = row.page_epoch - row.source_epoch;
+        note = `<span style="color:var(--blue);">Epoch re-zeroed by ${offset >= 0 ? '+' : ''}${offset}</span>`;
+      } else {
+        note = '<span style="color:var(--green);">Ready</span>';
+      }
+      const tc = Number.isFinite(Number(row.tc)) ? Number(row.tc).toFixed(6) : escapeAttr(row.tc || '—');
+      const unc = Number.isFinite(Number(row.tc_unc)) ? Number(row.tc_unc).toFixed(6) : escapeAttr(row.tc_unc || '—');
+      const newEpoch = row.valid && row.page_epoch !== null ? row.page_epoch : '—';
+      const csvEpoch = row.source_epoch === null || row.source_epoch === '' ? '—' : escapeAttr(row.source_epoch);
+      return `<tr><td>${row.line}</td><td>${escapeAttr(row.planet || '—')}</td>`
+        + `<td>${csvEpoch}</td><td>${newEpoch}</td>`
+        + `<td class="mono">${tc}</td><td class="mono">${unc}</td><td>${note}</td></tr>`;
+    }).join('');
+
+    const messages = [];
+    (preview.warnings || []).filter(message => !message.startsWith('Extra column(s)'))
+      .forEach(message => messages.push(`Warning: ${message}`));
+    document.getElementById('transit-csv-errors').textContent = messages.join('\n');
+
+    const confirmRow = document.getElementById('transit-csv-time-confirm-row');
+    const confirmBox = document.getElementById('transit-csv-time-confirm');
+    confirmRow.style.display = preview.time_system.confirmed ? 'none' : 'flex';
+    confirmBox.checked = preview.time_system.confirmed;
+    updateTransitCSVImportButton();
+  }
+
+  document.getElementById('transit-csv-time-confirm').addEventListener('change', updateTransitCSVImportButton);
+  document.getElementById('transit-csv-instrument').addEventListener('input', updateTransitCSVImportButton);
+  document.getElementById('transit-csv-input').addEventListener('change', async function() {
+    const file = this.files && this.files[0];
+    if (!file) return;
+    try {
+      const response = await fetch('/api/ephemeris/import-csv', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({filename: file.name, content: await file.text()})
+      });
+      const preview = await response.json();
+      if (!response.ok || !preview.ok) throw new Error(preview.error || `HTTP ${response.status}`);
+      transitCSVPreview = preview;
+      renderTransitCSVPreview(preview);
+      document.getElementById('transit-csv-dialog').showModal();
+    } catch (error) {
+      showMessageModal('CSV import failed', error.message, {kind: 'error'});
+    }
+  });
+
+  window.closeTransitCSVDialog = function() {
+    document.getElementById('transit-csv-dialog').close();
+    transitCSVPreview = null;
+  };
+
+  window.importTransitCSVRows = async function() {
+    if (!transitCSVPreview) return;
+    const rows = transitCSVPreview.rows.filter(row => !row.blocked);
+    const instrument = document.getElementById('transit-csv-instrument').value.trim();
+    if (!instrument) return;
+    const timeSystem = 'BJD_TDB';
+    rows.forEach(row => manualPoints.push({
+      id: 'csv-' + (++manualIdSeq) + '-' + Date.now(),
+      instrument: instrument,
+      target: '',
+      date: '',
+      planet: row.planet,
+      tc: String(row.tc),
+      tc_unc: String(row.tc_unc),
+      note: transitCSVPreview.filename,
+      source_epoch: row.source_epoch,
+      source_file: transitCSVPreview.filename,
+      time_system: timeSystem,
+      checked: true
+    }));
+    const count = rows.length;
+    saveManualPoints();
+    renderDatasetsTable(combinedDatasets);
+    scheduleComputeFit();
+    closeTransitCSVDialog();
+    try {
+      await saveEphemerisViewNow();
+      showMessageModal('Transit centers imported', `${count} row${count === 1 ? '' : 's'} added and saved in this view.`, {kind: 'success'});
+    } catch (error) {
+      showMessageModal(
+        'Transit centers imported locally',
+        `${count} row${count === 1 ? '' : 's'} added, but the shareable view could not be saved: ${error.message}`,
+        {kind: 'error'}
+      );
+    }
+  };
+
+  function escapeAttr(v) {
+    return String(v == null ? '' : v)
+      .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function renderManualRow(tbody, mp, showTargetColumn) {
+    const tr = document.createElement('tr');
+    tr.className = 'manual-row';
+    tr.setAttribute('data-mid', mp.id);
+    if (mp.checked) tr.classList.add('selected-row');
+
+    const planetOpts = combinedPlanets.map(pl =>
+      `<option value="${escapeAttr(pl)}"${pl === mp.planet ? ' selected' : ''}>${pl.toLowerCase()}</option>`
+    ).join('');
+    // Placeholders surface the defaults used when the field is left blank: the
+    // first loaded target, and the UTC date derived from the BJD.
+    const datePlaceholder = jdToYYMMDD(parseFloat(mp.tc)) || 'auto';
+    const targetHint = (loadedTargets.slice().sort()[0]) || 'target';
+    const manualEpoch = planetEpochForTC(mp.planet, parseFloat(mp.tc));
+    const manualEpochText = Number.isInteger(manualEpoch) ? manualEpoch : '—';
+
+    const inputStyle = 'box-sizing:border-box;background:var(--input-bg);color:var(--text);' +
+      'border:1px solid var(--border);border-radius:4px;padding:0.25rem 0.4rem;' +
+      'font-size:0.85rem;font-family:\'JetBrains Mono\',monospace;';
+
+    tr.innerHTML = `
+      <td style="text-align: center;">
+        <input type="checkbox" class="manual-checkbox" ${mp.checked ? 'checked' : ''}
+               onchange="onManualCheckboxChange('${mp.id}', this)">
+      </td>
+      <td>
+        <input type="text" class="manual-instrument" value="${escapeAttr(mp.instrument)}" placeholder="e.g. tess"
+               oninput="updateManualField('${mp.id}', 'instrument', this.value)"
+               title="Free-text source of this transit center, e.g. tess"
+               style="width: 100%; ${inputStyle}">
+      </td>
+      ${showTargetColumn ? `<td>
+        <input type="text" class="manual-target" value="${escapeAttr(mp.target)}" placeholder="${escapeAttr(targetHint)}"
+               oninput="updateManualField('${mp.id}', 'target', this.value)"
+               title="Optional target label; defaults to the loaded target"
+               style="width: 100%; ${inputStyle}">
+      </td>` : ''}
+      <td>
+        <input type="text" class="manual-date" value="${escapeAttr(mp.date)}" placeholder="${escapeAttr(datePlaceholder)}"
+               oninput="updateManualField('${mp.id}', 'date', this.value)"
+               title="Optional date; defaults to the UTC date derived from the BJD"
+               style="width: 100%; ${inputStyle}">
+      </td>
+      <td>
+        <input type="text" class="manual-note" value="${escapeAttr(mp.note)}" placeholder="manual"
+               oninput="updateManualField('${mp.id}', 'note', this.value)"
+               title="Optional note for your own reference"
+               style="width: 100%; ${inputStyle}">
+      </td>
+      <td>
+        <select class="manual-planet"
+                onchange="updateManualField('${mp.id}', 'planet', this.value)"
+                style="width: 100%; cursor: pointer; text-align: center; ${inputStyle}">${planetOpts}</select>
+      </td>
+      <td class="mono" style="text-align: center;">
+        <span class="manual-epoch" data-mid="${escapeAttr(mp.id)}">${manualEpochText}</span>
+      </td>
+      <td>
+        <div style="display: flex; align-items: center; gap: 0.35rem; flex-wrap: nowrap;">
+          <input type="number" step="any" class="manual-tc" value="${escapeAttr(mp.tc)}" placeholder="BJD_TDB"
+                 oninput="updateManualField('${mp.id}', 'tc', this.value)"
+                 style="width: 130px; ${inputStyle}">
+          <span style="color: var(--text-dim);">±</span>
+          <input type="number" step="any" min="0" class="manual-unc" value="${escapeAttr(mp.tc_unc)}" placeholder="unc (d)"
+                 oninput="updateManualField('${mp.id}', 'tc_unc', this.value)"
+                 style="width: 90px; ${inputStyle}">
+          <span class="manual-flag" style="display: none; color: var(--red); font-weight: bold; cursor: help;"
+                title="More than 5σ from the linear ephemeris — check for a wrong epoch, a JD/BJD offset, or a UTC/TDB time-system mismatch">⚠</span>
+          <button class="btn sm" type="button" onclick="removeManualPoint('${mp.id}')" title="Remove this transit center"
+                  style="border-color: var(--red); color: var(--red); padding: 0.1rem 0.45rem; line-height: 1;">×</button>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  window.addManualPoint = function() {
+    if (loadedTargets.length === 0) return;
+    manualPoints.push({
+      id: 'm' + (++manualIdSeq) + '-' + Date.now(),
+      instrument: '',
+      target: '',
+      date: '',
+      planet: combinedPlanets[0] || 'b',
+      tc: '',
+      tc_unc: '',
+      note: '',
+      source_epoch: null,
+      source_file: '',
+      time_system: '',
+      checked: true
+    });
+    saveManualPoints();
+    renderDatasetsTable(combinedDatasets);
+    scheduleSaveView();
+  };
+
+  window.removeManualPoint = function(id) {
+    manualPoints = manualPoints.filter(mp => mp.id !== id);
+    saveManualPoints();
+    renderDatasetsTable(combinedDatasets);
+    scheduleComputeFit();
+    scheduleSaveView();
+  };
+
+  window.updateManualField = function(id, field, value) {
+    const mp = manualPoints.find(m => m.id === id);
+    if (!mp) return;
+    mp[field] = value;
+    saveManualPoints();
+    if (field === 'tc') {
+      // The Date field defaults to the UTC date derived from the BJD; keep that
+      // hint (the placeholder) current without clobbering a user-typed date.
+      const row = document.querySelector(`tr.manual-row[data-mid="${id}"]`);
+      const dateInput = row && row.querySelector('.manual-date');
+      if (dateInput) dateInput.placeholder = jdToYYMMDD(parseFloat(value)) || 'auto';
+    }
+    scheduleComputeFit();
+    scheduleSaveView();
+  };
+
+  window.onManualCheckboxChange = function(id, cb) {
+    const mp = manualPoints.find(m => m.id === id);
+    if (!mp) return;
+    mp.checked = cb.checked;
+    const row = cb.closest('tr');
+    if (row) row.classList.toggle('selected-row', cb.checked);
+    saveManualPoints();
+    scheduleComputeFit();
+    scheduleSaveView();
+  };
+
+  // Valid manual points (known planet, numeric tc, positive unc) as the
+  // /api/ephemeris/calculate payload expects them.
+  function collectManualPointsForRequest() {
+    return manualPoints
+      .filter(mp => combinedPlanets.includes(mp.planet)
+        && Number.isFinite(parseFloat(mp.tc))
+        && parseFloat(mp.tc_unc) > 0)
+      .map(mp => ({
+        id: mp.id,
+        instrument: mp.instrument || '',
+        target: mp.target || '',
+        date: mp.date || '',
+        planet: mp.planet,
+        tc: parseFloat(mp.tc),
+        tc_unc: parseFloat(mp.tc_unc),
+        note: mp.note || '',
+        source_epoch: mp.source_epoch,
+        source_file: mp.source_file || '',
+        time_system: mp.time_system || '',
+        checked: !!mp.checked
+      }));
+  }
+
+  // Mark manual rows the backend flagged as >5σ from the fitted ephemeris.
+  function markFlaggedManualRows(results) {
+    const flagged = new Set();
+    for (const pl in (results || {})) {
+      (results[pl].points || []).forEach(p => {
+        if (p.manual && p.flagged && p.manual_id) flagged.add(p.manual_id);
+      });
+    }
+    document.querySelectorAll('#datasets-body tr.manual-row').forEach(row => {
+      const on = flagged.has(row.getAttribute('data-mid'));
+      const flag = row.querySelector('.manual-flag');
+      if (flag) flag.style.display = on ? 'inline' : 'none';
+      row.classList.toggle('manual-flagged', on);
+    });
   }
 
   function reinitResizableTable() {
@@ -1452,7 +2164,16 @@
       if (checked) tr.classList.add('selected-row');
       else tr.classList.remove('selected-row');
     });
-    
+
+    // Manual rows share the Select All / Deselect All controls.
+    manualPoints.forEach(mp => { mp.checked = checked; });
+    document.querySelectorAll('#datasets-body tr.manual-row').forEach(row => {
+      const cb = row.querySelector('.manual-checkbox');
+      if (cb) cb.checked = checked;
+      row.classList.toggle('selected-row', checked);
+    });
+    saveManualPoints();
+
     if (loadedTargets.length > 0) {
       const combinedKey = getCombinedStorageKey();
       const checkedMap = {};
@@ -1474,6 +2195,7 @@
 
   function scheduleComputeFit(delay = 350) {
     if (loadedTargets.length === 0) return;
+    refreshDisplayedEpochs();
     if (computeFitTimer) {
       clearTimeout(computeFitTimer);
     }
@@ -1483,10 +2205,7 @@
     }, delay);
   }
 
-  function computeFit() {
-    if (loadedTargets.length === 0) return;
-    const requestSeq = ++computeFitRequestSeq;
-    
+  function collectFitRequest(showErrors = true) {
     const planetsEphem = {};
     let valid = true;
     document.querySelectorAll('#planet-cards-container .planet-card').forEach(card => {
@@ -1494,25 +2213,22 @@
       const t0 = parseFloat(card.querySelector('.planet-t0').value);
       const period = parseFloat(card.querySelector('.planet-period').value);
       if (isNaN(t0) || isNaN(period) || period <= 0) {
-        showMessageModal('Invalid orbital parameters', `Please enter valid orbital parameters for planet ${pl.toLowerCase()}`);
+        if (showErrors) {
+          showMessageModal('Invalid orbital parameters', `Please enter valid orbital parameters for planet ${pl.toLowerCase()}`);
+        }
         valid = false;
         return;
       }
-      planetsEphem[pl] = { t0, period };
+      const epochShift = planetEpochShift(pl);
+      planetsEphem[pl] = { t0: t0 + epochShift * period, period };
     });
-    
-    if (!valid) {
-      const loader = document.getElementById('loader');
-      if (loader) loader.style.display = 'none';
-      return;
-    }
+    if (!valid) return null;
 
-    // Collect datasets list with check values
-    const datasetsReq = [];
+    const datasets = [];
     document.querySelectorAll('.dataset-checkbox').forEach(box => {
       const idx = parseInt(box.getAttribute('data-index'));
       const ds = combinedDatasets[idx];
-      datasetsReq.push({
+      datasets.push({
         instrument: ds.instrument,
         date: ds.date,
         run_id: ds.run_id,
@@ -1521,22 +2237,35 @@
       });
     });
 
+    const fitMethodRadio = document.querySelector('input[name="fit-method-type"]:checked');
+    return {
+      target: loadedTargets.slice(),
+      planets_ephem: planetsEphem,
+      datasets: datasets,
+      manual_points: collectManualPointsForRequest(),
+      fit_method: fitMethodRadio ? fitMethodRadio.value : 'unweighted'
+    };
+  }
+
+  function computeFit() {
+    if (loadedTargets.length === 0) return;
+    const requestSeq = ++computeFitRequestSeq;
+    const request = collectFitRequest(true);
+    if (!request) {
+      const loader = document.getElementById('loader');
+      if (loader) loader.style.display = 'none';
+      return;
+    }
+
     const loader = document.getElementById('loader');
     loader.style.display = 'flex';
 
     const combinedKey = getCombinedStorageKey();
-    const fitMethodRadio = document.querySelector('input[name="fit-method-type"]:checked');
-    const fitMethod = fitMethodRadio ? fitMethodRadio.value : 'unweighted';
 
     fetch('/api/ephemeris/calculate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        target: loadedTargets,
-        planets_ephem: planetsEphem,
-        datasets: datasetsReq,
-        fit_method: fitMethod
-      })
+      body: JSON.stringify(request)
     })
     .then(r => r.json())
     .then(res => {
@@ -1547,10 +2276,15 @@
       }
       fitResults = res.results;
       try {
-        localStorage.setItem(STORAGE_OPTS_PREFIX + combinedKey + '-results', JSON.stringify(fitResults));
+        localStorage.setItem(fitResultsCacheKey(combinedKey), JSON.stringify({
+          version: FIT_RESULTS_CACHE_VERSION,
+          signature: fitRequestSignature(request),
+          results: fitResults
+        }));
       } catch (e) {}
       renderFitResults(res.results);
       drawPlot();
+      markFlaggedManualRows(res.results);
     })
     .catch(e => {
       if (requestSeq !== computeFitRequestSeq) return;
@@ -1619,6 +2353,52 @@
     document.getElementById('results-card').style.display = 'block';
   }
 
+  // Grow the outer figure with either secondary-axis mode so the O-C plotting
+  // area retains its normal height. The modes are mutually exclusive.
+  const OC_PLOT_BASE_HEIGHT = 450;
+  const OC_PLOT_UTC_AXIS_EXTRA_HEIGHT = 105;
+  const OC_PLOT_EPOCH_AXIS_EXTRA_HEIGHT = 90;
+
+  function plotBjdOffset(planets, showExcluded) {
+    // The plot has one shared time axis. Use the first displayed planet's
+    // effective reference T0, which already includes the optional integer
+    // midpoint shift sent to /api/ephemeris/calculate. Round the offset and
+    // the label together so the plotted coordinates match the displayed BJD.
+    for (const pl of planets) {
+      const referenceT0 = Number(fitResults?.[pl]?.t0_ref);
+      if (Number.isFinite(referenceT0)) return Math.round(referenceT0);
+    }
+    // Defensive fallback for older cached results without t0_ref.
+    for (const pl of planets) {
+      const firstPoint = fitResults?.[pl]?.points?.find(p => p.checked || showExcluded);
+      if (firstPoint && Number.isFinite(firstPoint.bjd)) return Math.floor(firstPoint.bjd);
+    }
+    return null;
+  }
+
+  function epochTwinTicks(res, showExcluded, bjdOffset) {
+    const epochs = (res?.points || [])
+      .filter(p => p.checked || showExcluded)
+      .map(p => Number(p.epoch))
+      .filter(Number.isFinite);
+    const t0 = Number(res?.t0_ref);
+    const period = Number(res?.period_ref);
+    if (epochs.length === 0 || !Number.isFinite(t0)
+        || !Number.isFinite(period) || period <= 0) {
+      return {tickvals: [], ticktext: []};
+    }
+    const eMin = Math.min(...epochs);
+    const eMax = Math.max(...epochs);
+    const step = Math.max(1, Math.ceil((eMax - eMin) / 6));
+    const shownEpochs = [];
+    for (let epoch = eMin; epoch <= eMax; epoch += step) shownEpochs.push(epoch);
+    if (shownEpochs[shownEpochs.length - 1] !== eMax) shownEpochs.push(eMax);
+    return {
+      tickvals: shownEpochs.map(epoch => t0 + epoch * period - bjdOffset),
+      ticktext: shownEpochs.map(String)
+    };
+  }
+
   // Draw plot using Plotly
   function drawPlot() {
     if (!fitResults) return;
@@ -1629,12 +2409,20 @@
     plotCard.style.display = 'block';
 
     const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-    const xType = document.querySelector('input[name="x-axis-type"]:checked').value;
     const showExcluded = document.getElementById('show-excluded-checkbox').checked;
     const showTwin = document.getElementById('show-twin-checkbox').checked;
+    const showEpochTwin = document.getElementById('show-epoch-checkbox').checked
+      && !showTwin;
+    const showTTVModel = document.getElementById('show-ttv-model-checkbox').checked
+      && ttvModelData && ttvModelRun === selectedTTVRun;
     const suptitle = document.getElementById('plot-suptitle-input').value.trim();
+    const secondaryAxisExtraHeight = showTwin
+      ? OC_PLOT_UTC_AXIS_EXTRA_HEIGHT
+      : (showEpochTwin ? OC_PLOT_EPOCH_AXIS_EXTRA_HEIGHT : 0);
+    const plotHeight = OC_PLOT_BASE_HEIGHT + secondaryAxisExtraHeight;
 
-    plotCard.style.minHeight = showTwin ? '620px' : '520px';
+    plotDiv.style.height = plotHeight + 'px';
+    plotCard.style.minHeight = (plotHeight + 70) + 'px';
     
     const planets = Object.keys(fitResults).sort();
     if (planets.length === 0) {
@@ -1643,35 +2431,39 @@
     }
     const colors = ['#6c8cff', '#0f9d8b', '#f87171', '#fcd34d'];
     const traces = [];
-    let bjdOffset = 2450000;
-    let foundBjdOffset = false;
-    for (const pl of planets) {
-      const firstPoint = fitResults[pl].points.find(p => p.checked || showExcluded);
-      if (firstPoint && Number.isFinite(firstPoint.bjd)) {
-        bjdOffset = Math.floor(firstPoint.bjd);
-        foundBjdOffset = true;
-        break;
-      }
-    }
+    const referenceBjdOffset = plotBjdOffset(planets, showExcluded);
+    const foundBjdOffset = Number.isFinite(referenceBjdOffset);
+    const bjdOffset = foundBjdOffset ? referenceBjdOffset : 2450000;
     const bjdAxisTitle = foundBjdOffset ? `Time (BJD - ${bjdOffset})` : 'Time (BJD)';
     const plottedX = [];
     planets.forEach(pl => {
       fitResults[pl].points.forEach(p => {
         if (p.checked || showExcluded) {
-          plottedX.push(xType === 'bjd' ? (p.bjd - bjdOffset) : p.epoch);
+          plottedX.push(p.bjd - bjdOffset);
         }
       });
     });
+    const requestedModelEndBjd = ttvModelAvailable ? ttvModelEndBjd() : null;
+    if (showTTVModel) {
+      planets.forEach(pl => {
+        (ttvModelData.points?.[pl] || []).forEach(p => {
+          if (!Number.isFinite(requestedModelEndBjd) || Number(p.tc) <= requestedModelEndBjd) {
+            plottedX.push(Number(p.tc) - bjdOffset);
+          }
+        });
+      });
+    }
     const sharedXSpan = plottedX.length > 0 ? {
       min: Math.min(...plottedX),
       max: Math.max(...plottedX)
     } : null;
+    if (sharedXSpan && Number.isFinite(requestedModelEndBjd)) {
+      sharedXSpan.max = Math.max(sharedXSpan.max, requestedModelEndBjd - bjdOffset);
+    }
 
     let tickvals = [];
     let ticktext = [];
     if (showTwin) {
-      const firstPlanet = planets[0];
-      const firstRes = fitResults[firstPlanet];
       if (sharedXSpan) {
         let minX = sharedXSpan.min;
         let maxX = sharedXSpan.max;
@@ -1679,14 +2471,7 @@
         
         for (let k = 0; k <= 5; k++) {
           let val = minX + span * (k / 5);
-          let bjd;
-          if (xType === 'bjd') {
-            bjd = val + bjdOffset;
-          } else {
-            const t0 = firstRes.was_fit ? firstRes.t0_fit : firstRes.t0_ref;
-            const period = firstRes.was_fit ? firstRes.period_fit : firstRes.period_ref;
-            bjd = t0 + val * period;
-          }
+          const bjd = val + bjdOffset;
           const label = jdToUtcDateLabel(bjd);
           if (label) {
             tickvals.push(val);
@@ -1711,14 +2496,18 @@
         color: isDark ? '#e1e4ed' : '#1a1d27',
         family: '-apple-system, BlinkMacSystemFont, sans-serif'
       },
-      margin: { t: showTwin ? (suptitle ? 105 : 80) : (suptitle ? 45 : 20), b: showTwin ? 95 : 50, l: 65, r: 20 },
+      margin: {
+        t: showTwin ? (suptitle ? 105 : 80) : (showEpochTwin ? (suptitle ? 90 : 65) : (suptitle ? 45 : 20)),
+        b: showTwin ? 95 : (showEpochTwin ? 80 : 50), l: 65, r: 20
+      },
+      height: plotHeight,
       showlegend: true,
       legend: {
         orientation: 'h',
-        yanchor: showTwin ? 'top' : 'bottom',
-        y: showTwin ? -0.22 : 1.05,
-        xanchor: showTwin ? 'center' : 'right',
-        x: showTwin ? 0.5 : 1,
+        yanchor: (showTwin || showEpochTwin) ? 'top' : 'bottom',
+        y: (showTwin || showEpochTwin) ? -0.22 : 1.05,
+        xanchor: (showTwin || showEpochTwin) ? 'center' : 'right',
+        x: (showTwin || showEpochTwin) ? 0.5 : 1,
         font: { size: 10 }
       },
       hovermode: 'closest',
@@ -1727,7 +2516,7 @@
 
     if (planets.length === 2) {
       layout.xaxis = {
-        title: xType === 'bjd' ? bjdAxisTitle : 'Epoch',
+        title: bjdAxisTitle,
         gridcolor: isDark ? '#2e3348' : '#d8dce6',
         zeroline: false,
         zerolinewidth: 0,
@@ -1783,15 +2572,19 @@
         const color = colors[i % colors.length];
         
         // Build traces
-        const plTraces = getPlotlyTracesForPlanet(res, pl, color, xType, yaxisKey, isDark, showExcluded, bjdOffset);
+        const plTraces = getPlotlyTracesForPlanet(res, pl, color, yaxisKey, isDark, showExcluded, bjdOffset);
         plTraces.forEach(t => traces.push(t));
+        if (showTTVModel) {
+          const modelTrace = getTTVModelTrace(res, pl, color, yaxisKey, bjdOffset, requestedModelEndBjd);
+          if (modelTrace) traces.push(modelTrace);
+        }
         addZeroLineShape(layout, yaxisKey, color);
       });
       
     } else {
       const rows = planets.length;
       layout.xaxis = {
-        title: xType === 'bjd' ? bjdAxisTitle : 'Epoch',
+        title: bjdAxisTitle,
         gridcolor: isDark ? '#2e3348' : '#d8dce6',
         zeroline: false,
         zerolinewidth: 0,
@@ -1842,10 +2635,23 @@
 
         const res = fitResults[pl];
         const color = colors[i % colors.length];
-        const plTraces = getPlotlyTracesForPlanet(res, pl, color, xType, yaxisKey, isDark, showExcluded, bjdOffset);
+        const plTraces = getPlotlyTracesForPlanet(res, pl, color, yaxisKey, isDark, showExcluded, bjdOffset);
         plTraces.forEach(t => traces.push(t));
+        if (showTTVModel) {
+          const modelTrace = getTTVModelTrace(res, pl, color, yaxisKey, bjdOffset, requestedModelEndBjd);
+          if (modelTrace) traces.push(modelTrace);
+        }
         addZeroLineShape(layout, yaxisKey, color);
       });
+    }
+
+    // A chosen date is an extension endpoint, never a request to hide data.
+    // Fix the right edge to that date only when it lies beyond observations.
+    if (Number.isFinite(requestedModelEndBjd) && sharedXSpan) {
+      const requestedEndX = requestedModelEndBjd - bjdOffset;
+      const right = Math.max(sharedXSpan.max, requestedEndX);
+      const span = Math.max(1, right - sharedXSpan.min);
+      layout.xaxis.range = [sharedXSpan.min - span * 0.02, right];
     }
 
     if (showTwin && tickvals.length > 0) {
@@ -1861,6 +2667,50 @@
         hoverinfo: 'skip',
         showlegend: false,
         cliponaxis: false
+      });
+    }
+
+    if (showEpochTwin) {
+      planets.forEach((pl, i) => {
+        const res = fitResults[pl];
+        const ticks = epochTwinTicks(res, showExcluded, bjdOffset);
+        if (ticks.tickvals.length === 0) return;
+        const axisNumber = i + 2;
+        const axisKey = `xaxis${axisNumber}`;
+        const axisRef = `x${axisNumber}`;
+        const yaxisRef = i === 0 ? 'y' : `y${i + 1}`;
+        layout[axisKey] = {
+          title: `Epoch (planet ${pl.toLowerCase()})`,
+          visible: true,
+          tickmode: 'array',
+          overlaying: 'x',
+          matches: 'x',
+          side: 'top',
+          anchor: yaxisRef,
+          tickvals: ticks.tickvals,
+          ticktext: ticks.ticktext,
+          showgrid: false,
+          zeroline: false,
+          showline: true,
+          ticks: 'outside',
+          automargin: true,
+          linecolor: isDark ? '#2e3348' : '#d8dce6',
+          tickfont: { size: 10, color: isDark ? '#e1e4ed' : '#1a1d27' },
+          titlefont: { size: 11, color: isDark ? '#e1e4ed' : '#1a1d27' }
+        };
+        const anchorPoint = (res.points || []).find(p => p.checked || showExcluded);
+        traces.push({
+          x: ticks.tickvals,
+          y: ticks.tickvals.map(() => anchorPoint?.oc_min ?? 0),
+          xaxis: axisRef,
+          yaxis: yaxisRef,
+          mode: 'markers',
+          type: 'scatter',
+          marker: { opacity: 0, size: 1 },
+          hoverinfo: 'skip',
+          showlegend: false,
+          cliponaxis: false
+        });
       });
     }
 
@@ -1907,21 +2757,54 @@
     // Click event callback
     plotDiv.on('plotly_click', function(data) {
       const pt = data.points[0];
-      if (pt.customdata) {
-        const cd = pt.customdata;
-        const url = `/transit-fit?inst=${cd.inst}&date=${cd.date}&target=${encodeURIComponent(cd.target || loadedTargets[0] || '')}&run=${cd.run_id}`;
-        window.open(url, '_blank');
+      const cd = pt.customdata;
+      if (!cd) return;
+      if (cd.manual) {
+        focusManualPointRow(cd.manual_id);
+        return;
       }
+      const url = `/transit-fit?inst=${cd.inst}&date=${cd.date}&target=${encodeURIComponent(cd.target || loadedTargets[0] || '')}&run=${cd.run_id}`;
+      window.open(url, '_blank');
     });
   }
 
-  function downloadPlotPNG() {
+  let manualRowHighlightTimer = null;
+  function focusManualPointRow(manualId) {
+    if (!manualId) return;
+    const section = document.getElementById('datasets-section');
+    if (section) {
+      section.style.display = 'block';
+      section.open = true;
+    }
+    const row = Array.from(document.querySelectorAll('#datasets-body tr.manual-row'))
+      .find(candidate => candidate.dataset.mid === String(manualId));
+    if (!row) return;
+
+    document.querySelectorAll('#datasets-body tr.manual-row-focus')
+      .forEach(candidate => candidate.classList.remove('manual-row-focus'));
+    row.classList.add('manual-row-focus');
+    row.scrollIntoView({behavior: 'smooth', block: 'center'});
+    setTimeout(() => {
+      const tcInput = row.querySelector('.manual-tc');
+      if (tcInput) tcInput.focus({preventScroll: true});
+    }, 450);
+
+    if (manualRowHighlightTimer) clearTimeout(manualRowHighlightTimer);
+    manualRowHighlightTimer = setTimeout(() => {
+      row.classList.remove('manual-row-focus');
+      manualRowHighlightTimer = null;
+    }, 5000);
+  }
+
+  function downloadPlotPNG(event) {
+    if (event) event.preventDefault();
     const plotDiv = document.getElementById('oc-plot');
     if (!plotDiv || !fitResults) return;
     const filename = 'oc_plot_' + (getCombinedStorageKey() || 'export');
     
     const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
     const showTwin = document.getElementById('show-twin-checkbox').checked;
+    const showEpochTwin = document.getElementById('show-epoch-checkbox').checked && !showTwin;
     const suptitle = document.getElementById('plot-suptitle-input').value.trim();
     
     // Always apply solid white background layout overrides for image export
@@ -1937,6 +2820,10 @@
     
     if (showTwin) {
       tempLayout['xaxis2.linecolor'] = '#d8dce6';
+    } else if (showEpochTwin) {
+      Object.keys(fitResults).sort().forEach((pl, i) => {
+        tempLayout[`xaxis${i + 2}.linecolor`] = '#d8dce6';
+      });
     }
     
     const planets = Object.keys(fitResults).sort();
@@ -1951,7 +2838,9 @@
       Plotly.downloadImage(plotDiv, {
         format: 'png',
         width: 1200,
-        height: 600,
+        height: 600 + (showTwin
+          ? OC_PLOT_UTC_AXIS_EXTRA_HEIGHT
+          : (showEpochTwin ? OC_PLOT_EPOCH_AXIS_EXTRA_HEIGHT : 0)),
         filename: filename,
         background: '#ffffff'
       }).then(() => {
@@ -1967,6 +2856,10 @@
         };
         if (showTwin) {
           restoreLayout['xaxis2.linecolor'] = isDark ? '#2e3348' : '#d8dce6';
+        } else if (showEpochTwin) {
+          Object.keys(fitResults).sort().forEach((pl, i) => {
+            restoreLayout[`xaxis${i + 2}.linecolor`] = isDark ? '#2e3348' : '#d8dce6';
+          });
         }
         planets.forEach((pl, i) => {
           const key = 'yaxis' + (i === 0 ? '' : i + 1);
@@ -2004,6 +2897,24 @@
         });
     });
 
+    // Provenance for manually entered transit centers included above.
+    const manualNotes = [];
+    Object.keys(fitResults).sort().forEach(planet => {
+      (fitResults[planet].points || [])
+        .filter(p => p.checked && p.manual)
+        .slice()
+        .sort((a, b) => a.epoch - b.epoch)
+        .forEach(p => {
+          const note = p.note ? ` note=${p.note}` : '';
+          manualNotes.push(`#   planet ${planet} epoch ${p.epoch}: instrument=${p.instrument || 'manual'}${note}${p.flagged ? ' [>5sigma]' : ''}`);
+        });
+    });
+    if (manualNotes.length > 0) {
+      rows.push('#');
+      rows.push('# Manually entered transit centers included above:');
+      manualNotes.forEach(n => rows.push(n));
+    }
+
     return rows.join('\n') + '\n';
   }
 
@@ -2038,7 +2949,7 @@
     });
   }
 
-  function getPlotlyTracesForPlanet(res, planet, color, xType, yaxisKey, isDark, showExcluded, bjdOffset) {
+  function getPlotlyTracesForPlanet(res, planet, color, yaxisKey, isDark, showExcluded, bjdOffset) {
     const settings = planetPlotSettings[planet] || { color: color, symbol: 'instrument' };
     const pColor = settings.color;
 
@@ -2046,18 +2957,42 @@
     const unX = [], unY = [], unErr = [], unCustom = [], unText = [], unSymbols = [];
 
     res.points.forEach(p => {
-      const x = xType === 'bjd' ? (p.bjd - bjdOffset) : p.epoch;
+      const x = p.bjd - bjdOffset;
       const y = p.oc_min;
       const err = p.oc_err_min;
-      const cd = { inst: p.instrument, date: p.date, run_id: p.run_id, target: p.target };
+      const isManual = !!p.manual;
+      // Imported/manual points have no transit-fit page. Their stable row id
+      // lets plotly_click return the user to the exact editable table row.
+      const cd = isManual
+        ? { manual: true, manual_id: p.manual_id, imported: !!p.source_file }
+        : { inst: p.instrument, date: p.date, run_id: p.run_id, target: p.target };
       const symbol = settings.symbol === 'instrument' ? getSymbolForInstrument(p.instrument) : settings.symbol;
-      
-      const label = `<b>${p.instrument.toUpperCase()} (${p.date}) — ${p.run_name}</b><br>` +
-                    `Target: ${p.target}<br>` +
-                    `Epoch: ${p.epoch}<br>` +
-                    `BJD: ${p.bjd.toFixed(5)}<br>` +
-                    `O-C: ${p.oc_min.toFixed(2)} ± ${p.oc_err_min.toFixed(2)} min<br>` +
-                    `<i>Click point to view transit fit ↗</i>`;
+
+      const lines = [];
+      if (isManual) {
+        const instUp = (p.instrument || 'manual').toUpperCase();
+        lines.push(instUp === 'MANUAL'
+          ? `<b>Manual point</b>`
+          : `<b>${escapeAttr(instUp)} — manual point</b>`);
+        if (p.target) lines.push(`Target: ${escapeAttr(p.target)}`);
+        if (p.date) lines.push(`Date: ${escapeAttr(p.date)}`);
+      } else {
+        lines.push(`<b>${p.instrument.toUpperCase()} (${p.date}) — ${p.run_name}</b>`);
+        lines.push(`Target: ${p.target}`);
+      }
+      lines.push(`Epoch: ${p.epoch}`);
+      lines.push(`BJD: ${p.bjd.toFixed(5)}`);
+      lines.push(`O-C: ${p.oc_min.toFixed(2)} ± ${p.oc_err_min.toFixed(2)} min`);
+      if (isManual) {
+        if (p.note) lines.push(`Note: ${escapeAttr(p.note)}`);
+        if (p.flagged) lines.push(`<span style="color:#f87171;">⚠ &gt;5σ from linear ephemeris</span>`);
+        lines.push(p.source_file
+          ? `<i>Click point to edit imported row ↓</i>`
+          : `<i>Click point to edit manual row ↓</i>`);
+      } else {
+        lines.push(`<i>Click point to view transit fit ↗</i>`);
+      }
+      const label = lines.join('<br>');
 
       if (p.checked) {
         fitX.push(x);
@@ -2139,6 +3074,40 @@
     }
 
     return traces;
+  }
+
+  function ttvModelEndBjd() {
+    const value = document.getElementById('ttv-model-end-date')?.value || '';
+    if (!value) return null;
+    const milliseconds = Date.parse(value + 'T23:59:59.999Z');
+    return Number.isFinite(milliseconds) ? milliseconds / 86400000 + 2440587.5 : null;
+  }
+
+  function getTTVModelTrace(res, planet, color, yaxisKey, bjdOffset, endBjd) {
+    const t0 = Number(res?.t0_fit);
+    const period = Number(res?.period_fit);
+    if (!Number.isFinite(t0) || !Number.isFinite(period) || period <= 0) return null;
+    const modelPoints = (ttvModelData?.points?.[planet] || []).filter(p =>
+      Number.isFinite(Number(p.tc))
+      && (!Number.isFinite(endBjd) || Number(p.tc) <= endBjd)
+    );
+    if (modelPoints.length === 0) return null;
+    return {
+      x: modelPoints.map(p => Number(p.tc) - bjdOffset),
+      y: modelPoints.map(p => {
+        const tc = Number(p.tc);
+        const plotEpoch = Math.round((tc - t0) / period);
+        return (tc - (t0 + plotEpoch * period)) * 1440;
+      }),
+      mode: 'lines',
+      type: 'scatter',
+      name: `planet ${planet.toLowerCase()} TTV best fit (${ttvModelRun})`,
+      line: {color: color, width: 2, dash: 'dash'},
+      hovertemplate: 'BJD %{customdata:.6f}<br>O-C %{y:.3f} min<extra></extra>',
+      customdata: modelPoints.map(p => Number(p.tc)),
+      xaxis: 'x',
+      yaxis: yaxisKey
+    };
   }
 
   // ── TTV Fit Integration ─────────────────────────────────────────────────────
@@ -2602,8 +3571,31 @@
     return s.slice(0, 40).replace(/^_+|_+$/g, '') || 'default';
   }
 
+  function updateTTVRunUrl(runName, historyMode = 'replace') {
+    const run = slugifyRunName(runName);
+    const url = new URL(window.location.href);
+    url.searchParams.set('run', run);
+    if (url.href === window.location.href) return;
+    const method = historyMode === 'push' ? 'pushState' : 'replaceState';
+    window.history[method](null, '', url.pathname + url.search + url.hash);
+  }
+
+  window.addEventListener('popstate', function() {
+    const target = loadedTargets[0] || '';
+    const run = parseUrlRun();
+    if (!target || !run) return;
+    const normalizedRun = slugifyRunName(run);
+    if (normalizedRun === selectedTTVRun) return;
+    selectedTTVRun = normalizedRun;
+    checkTTVOutputs(target);
+  });
+
   // Run whose results are currently displayed. Also the run that Delete acts on.
   var selectedTTVRun = null;
+  var ttvModelData = null;
+  var ttvModelRun = null;
+  var ttvModelAvailable = false;
+  var ttvModelRequestSeq = 0;
   // The URL's ?run= is honored exactly once, on first load, so switching run
   // chips afterwards is not overridden on subsequent re-renders.
   var urlTTVRunApplied = false;
@@ -2636,7 +3628,9 @@
           const typed = slugifyRunName(document.getElementById('opt-run_name')?.value || '');
           sel = runs.indexOf(typed) !== -1 ? typed : runs[0];
         }
-        loadTTVRunOutputs(target, sel, runs);
+        // Make an automatically selected (usually newest) output reproducible
+        // without adding an extra browser-history entry during initial load.
+        loadTTVRunOutputs(target, sel, runs, 'replace');
       })
       .catch(e => {
         const deleteBtn = document.getElementById('delete-btn');
@@ -2644,7 +3638,7 @@
       });
   }
 
-  function loadTTVRunOutputs(target, runName, runs) {
+  function loadTTVRunOutputs(target, runName, runs, historyMode = 'replace') {
     const qs = `target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}`;
     const deleteBtn = document.getElementById('delete-btn');
 
@@ -2653,6 +3647,7 @@
       .then(res => {
         if (res.ok && res.outputs && res.outputs.has_any) {
           selectedTTVRun = runName;
+          updateTTVRunUrl(runName, historyMode);
           if (deleteBtn) deleteBtn.style.display = 'inline-block';
           renderTTVOutputs(target, runName, res.outputs, runs);
         } else {
@@ -2703,44 +3698,113 @@
     const files = [];
     if (outputs.has_data_csv) files.push('data.csv');
     if (outputs.has_config_ini) files.push('config.ini');
-    if (outputs.has_log) files.push('harmonic.log');
     if (outputs.has_samples) files.push('samples.csv.gz');
     if (outputs.extra_files) {
       outputs.extra_files.forEach(f => {
-        if (!files.includes(f)) files.push(f);
+        if (f !== 'harmonic.log' && !files.includes(f)) files.push(f);
       });
     }
     
-    if (files.length > 0) {
+    if (files.length > 0 || outputs.has_log) {
       html += '<div class="dl-row">';
+
+      // Match the transit-fit / photometry pages: "Download all" comes first,
+      // then plain filename links (no per-file icon).
+      const zipUrl = `/api/ttv-fit/download-all?target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}`;
+      html += `<a href="${zipUrl}" download style="font-weight: 600; color: var(--accent2);">📦 Download all output (.zip)</a>`;
+
+      if (outputs.has_log) {
+        const logUrl = `/api/ttv-fit/output-file?target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}&file=harmonic.log`;
+        html += `<a href="${logUrl}" target="_blank" rel="noopener">📄 fit run log</a>`;
+      }
+
       files.forEach(f => {
         const fileUrl = `/api/ttv-fit/output-file?target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}&file=${encodeURIComponent(f)}`;
-        html += `<a href="${fileUrl}" target="_blank">📁 ${f}</a>`;
+        html += `<a href="${fileUrl}" target="_blank">${f}</a>`;
       });
-
-      const zipUrl = `/api/ttv-fit/download-all?target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}`;
-      html += `<a href="${zipUrl}" download style="font-weight: 600; color: var(--accent2);">📦 Download all (.zip)</a>`;
       html += '</div>';
     }
     
     container.innerHTML = html;
     container.style.display = 'block';
+    updateTTVModelControls(Boolean(outputs.has_model), runName);
 
     container.querySelectorAll('.site-chip').forEach(chip => {
       chip.addEventListener('click', () => {
         const run = chip.getAttribute('data-run');
-        if (run && run !== selectedTTVRun) loadTTVRunOutputs(target, run, runs);
+        if (run && run !== selectedTTVRun) loadTTVRunOutputs(target, run, runs, 'push');
       });
     });
   }
 
   function hideTTVOutputs() {
     selectedTTVRun = null;
+    ttvModelData = null;
+    ttvModelRun = null;
+    ttvModelAvailable = false;
+    ttvModelRequestSeq += 1;
+    const modelControls = document.getElementById('ttv-model-controls');
+    if (modelControls) modelControls.style.display = 'none';
     const container = document.getElementById('ttv-outputs-container');
     if (container) {
       container.innerHTML = '';
       container.style.display = 'none';
     }
+    if (fitResults) drawPlot();
+  }
+
+  function updateTTVModelControls(hasModel, runName) {
+    const controls = document.getElementById('ttv-model-controls');
+    const checkbox = document.getElementById('show-ttv-model-checkbox');
+    const status = document.getElementById('ttv-model-status');
+    if (!controls || !checkbox || !status) return;
+    controls.style.display = hasModel ? 'flex' : 'none';
+    ttvModelAvailable = hasModel;
+    ttvModelData = null;
+    ttvModelRun = null;
+    ttvModelRequestSeq += 1;
+    status.textContent = hasModel ? `Run: ${runName}` : '';
+    if (hasModel && checkbox.checked) loadSelectedTTVModel();
+    else if (fitResults) drawPlot();
+  }
+
+  function loadSelectedTTVModel() {
+    const target = loadedTargets[0] || '';
+    const runName = selectedTTVRun || '';
+    const checkbox = document.getElementById('show-ttv-model-checkbox');
+    const status = document.getElementById('ttv-model-status');
+    if (!target || !runName || !checkbox?.checked || !status) return;
+    const endDate = document.getElementById('ttv-model-end-date')?.value || '';
+    const requestSeq = ++ttvModelRequestSeq;
+    ttvModelData = null;
+    ttvModelRun = null;
+    status.textContent = `Loading ${runName}…`;
+    if (fitResults) drawPlot();
+    const qs = new URLSearchParams({target: target, run_name: runName});
+    if (endDate) qs.set('end_date', endDate);
+    fetch('/api/ttv-fit/model?' + qs.toString())
+      .then(async response => {
+        const result = await response.json();
+        if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        return result;
+      })
+      .then(result => {
+        if (requestSeq !== ttvModelRequestSeq || selectedTTVRun !== runName) return;
+        ttvModelData = result;
+        ttvModelRun = runName;
+        const chi2 = Number(result.chi2);
+        status.textContent = Number.isFinite(chi2)
+          ? `Run: ${runName}; χ² ${chi2.toFixed(2)}`
+          : `Run: ${runName}`;
+        if (fitResults) drawPlot();
+      })
+      .catch(error => {
+        if (requestSeq !== ttvModelRequestSeq) return;
+        ttvModelData = null;
+        ttvModelRun = null;
+        status.textContent = error.message || 'Could not load TTV model';
+        if (fitResults) drawPlot();
+      });
   }
 
   function buildCSVContent() {

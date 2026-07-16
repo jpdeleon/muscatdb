@@ -186,6 +186,24 @@ def test_every_input_has_a_default(page, btn):
     )
 
 
+def test_photometry_run_options_update_without_reloading_page():
+    """Pipeline options are live form state, not server-rendered view filters."""
+    html = _read_template("photometry.html")
+    options = html[
+        html.index("// ----- options form -----"):
+        html.index("// ----- copy command -----")
+    ]
+
+    assert "window.location.reload()" not in options
+    assert "panel.addEventListener('change', debounce(refreshCmd, 150))" in options
+    assert "saveOptions();" in _function_body(html, "refreshCmd")
+
+    # Sinistro site/telescope/mode controls are the deliberate exception: they
+    # filter server-rendered runs and outputs, so they navigate with URL state.
+    sinistro_navigation = _function_body(html, "navigateSinistroFilters")
+    assert "window.location.href = '/photometry?'" in sinistro_navigation
+
+
 # --------------------------------------------------------------------------- #
 # LCO schedule: inputs must be registered for persistence, and buildParams must
 # supply every field build_requestgroup requires.
@@ -223,6 +241,28 @@ def test_lco_required_fields_are_supplied_by_build_params():
     for key in ("name", "proposal", "target_name"):
         assert f"{key}:" in build_params, f"buildParams never sets '{key}'"
     assert "parseCoords()" in build_params, "buildParams must derive ra/dec from parseCoords()"
+
+
+def test_lco_prediction_inputs_invalidate_generated_windows():
+    html = _read_template("lco_schedule.html")
+    registered = _js_string_array(html, "WINDOW_PREDICTION_IDS")
+    expected = {
+        "sch-target", "sch-planet", "sch-source", "sch-coords",
+        "sch-range-start", "sch-range-end", "sch-t0", "sch-period",
+        "sch-duration", "sch-pad-before", "sch-pad-after",
+        "sch-include-padding", "sch-sites", "sch-twilight",
+        "sch-obs-airmass", "sch-moon-sep",
+    }
+    assert registered == expected
+    assert "win-filter" not in registered
+
+    invalidate = _function_body(html, "invalidateGeneratedWindows")
+    assert "clearWindows()" in invalidate
+    assert "lastDryRunHash = null" in invalidate
+    assert "el('vis-figure').style.display = 'none'" in invalidate
+    assert "Generate windows" in invalidate
+    assert "node.addEventListener('input', invalidateGeneratedWindows)" in html
+    assert "node.addEventListener('change', invalidateGeneratedWindows)" in html
 
 
 def test_lco_submit_confirmation_uses_message_modal():
@@ -439,6 +479,342 @@ def test_transit_fit_archive_query_modal_uses_shared_style_variants():
     assert "showMessageModal('Notice', 'Please enter a target name.', 'notice')" in html
     assert "showMessageModal('Error', err.message, 'error')" in html
     assert "', 'success')" in html
+
+
+def test_ephemeris_disclosure_triangles_use_standard_size():
+    html = _read_template("ephemeris.html")
+    css = STYLES_CSS.read_text()
+
+    # Every fold on this page uses one deterministic indicator instead of a
+    # mix of undersized custom glyphs and browser-dependent native markers.
+    assert html.count("ephemeris-fold") == 7
+    rule = re.search(
+        r"\.ephemeris-fold\s*>\s*summary::before\s*\{(?P<body>[^}]*)\}",
+        css,
+    )
+    assert rule is not None
+    assert "font-size: 1rem" in rule.group("body")
+
+    assert html.count("phot-section phot-fold ephemeris-fold") == 3
+    top_level_rule = re.search(
+        r"\.ephemeris-fold\.phot-fold\s*>\s*summary::before\s*"
+        r"\{(?P<body>[^}]*)\}",
+        css,
+    )
+    assert top_level_rule is not None
+    assert "font-size: 1.35rem" in top_level_rule.group("body")
+
+
+def test_ephemeris_csv_preview_labels_notes_and_centers_dialog():
+    html = _read_template("ephemeris.html")
+
+    assert "<th>New epoch</th>" in html
+    assert "<th>Note</th>" in html
+    assert "<th>Page epoch</th>" not in html
+    assert 'id="transit-csv-instrument"' in html
+    assert "instrument: instrument" in html
+    assert "const instrument = document.getElementById('transit-csv-instrument').value.trim()" in html
+    dialog_rule = re.search(
+        r"#transit-csv-dialog\s*\{(?P<body>[^}]*)\}", html
+    )
+    assert dialog_rule is not None
+    body = dialog_rule.group("body")
+    assert "position: fixed" in body
+    assert "inset: 0" in body
+    assert "margin: auto" in body
+
+
+def test_ephemeris_ttv_fit_log_has_dedicated_new_tab_link():
+    html = _read_template("ephemeris.html")
+
+    assert 'file=harmonic.log`' in html
+    assert 'target="_blank" rel="noopener">📄 fit run log</a>' in html
+    assert "f !== 'harmonic.log'" in html
+
+
+def test_ephemeris_utc_axis_preserves_plot_area_height():
+    html = _read_template("ephemeris.html")
+
+    assert "const OC_PLOT_BASE_HEIGHT = 450" in html
+    assert "const OC_PLOT_UTC_AXIS_EXTRA_HEIGHT = 105" in html
+    assert "const secondaryAxisExtraHeight = showTwin" in html
+    assert "const plotHeight = OC_PLOT_BASE_HEIGHT + secondaryAxisExtraHeight" in html
+    assert "plotDiv.style.height = plotHeight + 'px'" in html
+    assert "height: plotHeight" in html
+    assert "height: 600 + (showTwin" in html
+
+
+def test_ephemeris_epoch_twin_axes_attach_to_each_planet_and_exclude_utc_axis():
+    html = _read_template("ephemeris.html")
+
+    assert 'id="show-epoch-checkbox"' in html
+    assert "Show epoch numbers" in html
+    assert "const OC_PLOT_EPOCH_AXIS_EXTRA_HEIGHT = 90" in html
+
+    epoch_ticks = _function_body(html, "epochTwinTicks")
+    assert ".map(p => Number(p.epoch))" in epoch_ticks
+    assert "t0 + epoch * period - bjdOffset" in epoch_ticks
+    assert "ticktext: shownEpochs.map(String)" in epoch_ticks
+
+    draw_plot = _function_body(html, "drawPlot")
+    assert "&& !showTwin" in draw_plot
+    assert "const axisNumber = i + 2" in draw_plot
+    assert "const yaxisRef = i === 0 ? 'y' : `y${i + 1}`" in draw_plot
+    assert "title: `Epoch (planet ${pl.toLowerCase()})`" in draw_plot
+    assert "anchor: yaxisRef" in draw_plot
+    assert "overlaying: 'x'" in draw_plot
+
+    view_state = _function_body(html, "collectEphemerisViewState")
+    assert "show_epoch:" in view_state
+    apply_state = _function_body(html, "applyViewStateToStorage")
+    assert "typeof state.show_epoch === 'boolean'" in apply_state
+    assert "if (state.show_epoch)" in apply_state
+
+    assert "showTwinCheckbox.checked = false" in html
+    assert "epochTwin.checked = false" in html
+    assert "STORAGE_OPTS_PREFIX + 'show-epoch'" in html
+
+
+def test_ephemeris_csv_import_saves_datasetless_view_before_success():
+    html = _read_template("ephemeris.html")
+
+    save_now = _function_body(html, "saveEphemerisViewNow")
+    assert "loadedTargets.length === 0" in save_now
+    assert "combinedDatasets.length" not in save_now
+    assert "updateViewUrl(res.slug)" in save_now
+    assert "window.importTransitCSVRows = async function()" in html
+    assert "await saveEphemerisViewNow()" in html
+    assert "added and saved in this view" in html
+
+
+def test_ephemeris_ttv_run_selection_is_preserved_in_shareable_url():
+    html = _read_template("ephemeris.html")
+
+    update_view_url = _function_body(html, "updateViewUrl")
+    assert "const run = parseUrlRun()" in update_view_url
+    assert "&run=${encodeURIComponent(run)}" in update_view_url
+
+    update_run_url = _function_body(html, "updateTTVRunUrl")
+    assert "url.searchParams.set('run', run)" in update_run_url
+    assert "historyMode === 'push' ? 'pushState' : 'replaceState'" in update_run_url
+    assert "window.addEventListener('popstate'" in html
+    assert "selectedTTVRun = normalizedRun" in html
+
+    load_outputs = _function_body(html, "loadTTVRunOutputs")
+    assert "updateTTVRunUrl(runName, historyMode)" in load_outputs
+    assert "loadTTVRunOutputs(target, run, runs, 'push')" in html
+
+
+def test_ephemeris_selected_ttv_run_model_controls_extend_plot_to_utc_date():
+    html = _read_template("ephemeris.html")
+
+    assert 'id="ttv-model-controls"' in html
+    assert 'id="show-ttv-model-checkbox"' in html
+    assert 'id="ttv-model-end-date"' in html
+    assert 'type="date"' in html
+    assert "outputs.has_model" in html
+
+    load_model = _function_body(html, "loadSelectedTTVModel")
+    assert "run_name: runName" in load_model
+    assert "qs.set('end_date', endDate)" in load_model
+    assert "selectedTTVRun !== runName" in load_model
+    assert "ttvModelRun = runName" in load_model
+
+    model_trace = _function_body(html, "getTTVModelTrace")
+    assert "ttvModelData?.points?.[planet]" in model_trace
+    assert "(tc - (t0 + plotEpoch * period)) * 1440" in model_trace
+    assert "TTV best fit" in model_trace
+
+    draw_plot = _function_body(html, "drawPlot")
+    assert "ttvModelRun === selectedTTVRun" in draw_plot
+    assert "Math.max(sharedXSpan.max, requestedEndX)" in draw_plot
+    assert "layout.xaxis.range" in draw_plot
+
+    view_state = _function_body(html, "collectEphemerisViewState")
+    assert "show_ttv_model:" in view_state
+    assert "ttv_model_end_date:" in view_state
+    apply_state = _function_body(html, "applyViewStateToStorage")
+    assert "state.show_ttv_model" in apply_state
+    assert "state.ttv_model_end_date" in apply_state
+
+
+def test_ephemeris_plot_download_actions_are_bare_links():
+    html = _read_template("ephemeris.html")
+
+    assert '<a id="oc-summary-link" href="#" target="_blank" rel="noopener">tcs.txt</a>' in html
+    assert '<a id="download-plot-btn" href="#">📥 Download PNG</a>' in html
+    assert 'class="btn sm" id="oc-summary-link"' not in html
+    assert '<button class="btn sm primary" type="button" id="download-plot-btn"' not in html
+    assert 'class="dl-row" style="align-items: center; margin-top: 0;"' in html
+
+    download_plot = _function_body(html, "downloadPlotPNG")
+    assert "event.preventDefault()" in download_plot
+
+
+def test_ephemeris_dataset_run_name_uses_transit_coverage_suffix():
+    html = _read_template("ephemeris.html")
+
+    render_table = _function_body(html, "renderDatasetsTable")
+    assert "['full', 'ing', 'egr'].includes(d.transit_coverage)" in render_table
+    assert "${d.run_name}${coverageSuffix}" in render_table
+    assert "runTypeBadge" not in render_table
+
+
+def test_ephemeris_dataset_target_column_only_shows_for_multiple_unique_targets():
+    html = _read_template("ephemeris.html")
+
+    target_visibility = _function_body(html, "showDatasetTargetColumn")
+    assert "new Set(" in target_visibility
+    assert "loadedTargets.map" in target_visibility
+    assert "uniqueTargetNames.size > 1" in target_visibility
+
+    render_table = _function_body(html, "renderDatasetsTable")
+    assert "const showTargetColumn = showDatasetTargetColumn()" in render_table
+    assert "targetHeader.style.display = showTargetColumn ? '' : 'none'" in render_table
+    assert "const columnCount = showTargetColumn ? 8 : 7" in render_table
+    assert "renderManualRow(tbody, mp, showTargetColumn)" in render_table
+
+    manual_row = _function_body(html, "renderManualRow")
+    assert "showTargetColumn ? `<td>" in manual_row
+
+
+def test_ephemeris_dataset_table_epochs_follow_selected_reference_ephemeris():
+    html = _read_template("ephemeris.html")
+
+    assert 'E=0 is the chosen planetary reference epoch">Epoch</th>' in html
+
+    render_table = _function_body(html, "renderDatasetsTable")
+    assert "const epoch = planetEpochForTC(pl, Number(item.tc))" in render_table
+    assert 'class="badge dataset-epoch"' in render_table
+    assert "${epochsSummary}" in render_table
+    assert "pl.toLowerCase())}: ${epochText}" not in render_table
+
+    raw_ephem = _function_body(html, "rawPlanetEphemeris")
+    assert "card.querySelector('.planet-t0')" in raw_ephem
+    assert "card.querySelector('.planet-period')" in raw_ephem
+
+    epoch_for_tc = _function_body(html, "planetEpochForTC")
+    assert "effectivePlanetEphemeris(planet)" in epoch_for_tc
+    assert "Math.round((tc - ephem.t0) / ephem.period)" in epoch_for_tc
+
+    refresh_epochs = _function_body(html, "refreshDisplayedEpochs")
+    assert "document.querySelectorAll('.dataset-epoch')" in refresh_epochs
+    assert "document.querySelectorAll('.manual-epoch')" in refresh_epochs
+    assert "planet.toLowerCase()" not in refresh_epochs
+
+    schedule_fit = _function_body(html, "scheduleComputeFit")
+    assert "refreshDisplayedEpochs()" in schedule_fit
+
+
+def test_ephemeris_reference_epoch_can_center_on_included_dataset_midpoint():
+    html = _read_template("ephemeris.html")
+
+    assert 'id="center-epoch-checkbox"' in html
+    assert "Shift reference epoch near dataset midpoint" in html
+    assert "T0′ = chosen T0 + N × period" in html
+
+    epoch_shift = _function_body(html, "planetEpochShift")
+    assert "document.querySelectorAll('.dataset-checkbox:checked')" in epoch_shift
+    assert "if (!mp.checked || mp.planet !== planet" in epoch_shift
+    assert "const eMin = Math.min(...epochs)" in epoch_shift
+    assert "const eMax = Math.max(...epochs)" in epoch_shift
+    assert "eMin + Math.floor((eMax - eMin) / 2)" in epoch_shift
+
+    effective_ephem = _function_body(html, "effectivePlanetEphemeris")
+    assert "ephem.t0 + epochShift * ephem.period" in effective_ephem
+
+    fit_request = _function_body(html, "collectFitRequest")
+    assert "const epochShift = planetEpochShift(pl)" in fit_request
+    assert "t0: t0 + epochShift * period" in fit_request
+
+    view_state = _function_body(html, "collectEphemerisViewState")
+    assert "center_epoch:" in view_state
+    apply_state = _function_body(html, "applyViewStateToStorage")
+    assert "typeof state.center_epoch === 'boolean'" in apply_state
+    assert "cb.checked = state.center_epoch" in apply_state
+
+    assert "STORAGE_OPTS_PREFIX + 'center-epoch'" in html
+    assert "centerEpochCheckbox.addEventListener('change'" in html
+
+
+def test_ephemeris_imported_csv_epoch_is_shown_only_in_epoch_column():
+    html = _read_template("ephemeris.html")
+
+    manual_row = _function_body(html, "renderManualRow")
+    assert "CSV E=" not in manual_row
+    assert 'class="manual-epoch"' in manual_row
+
+    # Preserve the source epoch for validation/provenance even though the
+    # transit-center cell no longer displays a second, competing epoch badge.
+    collect_manual = _function_body(html, "collectManualPointsForRequest")
+    assert "source_epoch: mp.source_epoch" in collect_manual
+
+
+def test_ephemeris_bjd_axis_offset_uses_effective_reference_epoch():
+    html = _read_template("ephemeris.html")
+
+    plot_offset = _function_body(html, "plotBjdOffset")
+    assert "fitResults?.[pl]?.t0_ref" in plot_offset
+    assert "Math.round(referenceT0)" in plot_offset
+    assert "Math.floor(firstPoint.bjd)" in plot_offset
+
+    draw_plot = _function_body(html, "drawPlot")
+    assert "const referenceBjdOffset = plotBjdOffset(planets, showExcluded)" in draw_plot
+    assert "const bjdOffset = foundBjdOffset ? referenceBjdOffset : 2450000" in draw_plot
+    assert "`Time (BJD - ${bjdOffset})`" in draw_plot
+
+
+def test_ephemeris_cached_fit_results_match_current_inputs():
+    html = _read_template("ephemeris.html")
+
+    # A target-only cache key can retain points from datasets that the backend
+    # no longer returns. Cache entries must therefore be versioned and tied to
+    # the exact request that generated their Plotly results.
+    assert "const FIT_RESULTS_CACHE_VERSION = 2" in html
+    assert "function fitRequestSignature(request)" in html
+    assert "fitCache.version === FIT_RESULTS_CACHE_VERSION" in html
+    assert "fitCache.signature === fitRequestSignature(cachedRequest)" in html
+    assert "signature: fitRequestSignature(request)" in html
+    assert "localStorage.removeItem(fitResultsCacheKey(combinedKey))" in html
+
+
+def test_ephemeris_plot_primary_x_axis_is_only_integer_offset_bjd_time():
+    html = _read_template("ephemeris.html")
+
+    assert 'name="x-axis-type"' not in html
+    assert 'value="epoch"' not in html
+    assert "const x = p.bjd - bjdOffset" in html
+
+    draw_plot = _function_body(html, "drawPlot")
+    assert "title: bjdAxisTitle" in draw_plot
+    assert "xType" not in draw_plot
+
+    plot_offset = _function_body(html, "plotBjdOffset")
+    assert "Math.round(referenceT0)" in plot_offset
+
+
+def test_ephemeris_imported_plot_point_scrolls_to_editable_table_row():
+    html = _read_template("ephemeris.html")
+
+    traces = _function_body(html, "getPlotlyTracesForPlanet")
+    assert "manual_id: p.manual_id" in traces
+    assert "imported: !!p.source_file" in traces
+    assert "Click point to edit imported row" in traces
+
+    draw_plot = _function_body(html, "drawPlot")
+    assert "if (cd.manual)" in draw_plot
+    assert "focusManualPointRow(cd.manual_id)" in draw_plot
+    assert "window.open(url, '_blank')" in draw_plot
+
+    focus_row = _function_body(html, "focusManualPointRow")
+    assert "section.open = true" in focus_row
+    assert "candidate.dataset.mid === String(manualId)" in focus_row
+    assert "row.classList.add('manual-row-focus')" in focus_row
+    assert "row.scrollIntoView({behavior: 'smooth', block: 'center'})" in focus_row
+    assert "tcInput.focus({preventScroll: true})" in focus_row
+    assert "row.classList.remove('manual-row-focus')" in focus_row
+
+    assert "tr.manual-row-focus" in html
 
 
 # --------------------------------------------------------------------------- #

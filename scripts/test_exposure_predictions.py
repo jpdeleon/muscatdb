@@ -20,6 +20,10 @@ Peak Count Measurement:
 
 from __future__ import annotations
 
+# This is a command-line validation script, not a pytest module.  Its filename is
+# retained for the documented CLI, so opt out of pytest's name-based collection.
+__test__ = False
+
 import sys
 import logging
 import csv

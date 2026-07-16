@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 import tempfile
 import getpass
@@ -122,6 +123,45 @@ def test_ttv_output_file_rejects_paths_outside_run(tmp_path, monkeypatch):
 
     assert response.status_code == 400
     assert response.json()["detail"] == "invalid filename"
+
+
+def test_ttv_output_file_opens_inline_not_download(tmp_path, monkeypatch):
+    """TTV output files should render in a new tab, never prompt a download."""
+    import gzip
+
+    monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path / "ttv"))
+    run_dir = tmp_path / "ttv" / "TOI123" / "_runs" / "default"
+    run_dir.mkdir(parents=True)
+    (run_dir / "data.csv").write_text("bjd,flux\n1.0,0.99\n")
+    (run_dir / "config.ini").write_text("[params]\nfoo=bar\n")
+    (run_dir / "harmonic.log").write_text("INFO starting\n")
+    (run_dir / "args.txt").write_text("--walkers 100\n")
+    (run_dir / "fit_config.json").write_text('{"a": 1}\n')
+    (run_dir / "meta.yaml").write_text("key: value\n")
+    with gzip.open(run_dir / "samples.csv.gz", "wt") as fh:
+        fh.write("p0,p1\n0.1,0.2\n")
+
+    client = TestClient(app)
+    renderable = {"text/plain", "application/json"}
+    for name in [
+        "data.csv", "config.ini", "harmonic.log",
+        "args.txt", "fit_config.json", "meta.yaml", "samples.csv.gz",
+    ]:
+        resp = client.get(
+            "/api/ttv-fit/output-file", params={"target": "TOI123", "file": name}
+        )
+        assert resp.status_code == 200, name
+        assert "attachment" not in (resp.headers.get("content-disposition") or ""), name
+        base_type = resp.headers["content-type"].split(";")[0].strip()
+        assert base_type in renderable, f"{name}: {base_type}"
+
+    # samples.csv.gz is served gzip-encoded so the browser transparently
+    # decompresses and renders the underlying CSV inline.
+    resp = client.get(
+        "/api/ttv-fit/output-file", params={"target": "TOI123", "file": "samples.csv.gz"}
+    )
+    assert resp.headers.get("content-encoding") == "gzip"
+    assert resp.text == "p0,p1\n0.1,0.2\n"
 
 
 def test_jobs_status_elapsed_uses_latest_rerun_started_at(mock_db, monkeypatch):
@@ -581,6 +621,322 @@ def test_ephemeris_targets_are_normalized_unique_names(mock_db):
     assert response.json()["targets"] == ["HIP67522", "V1298TAU"]
 
 
+def test_ephemeris_target_info_lists_only_full_transit_fit_runs(
+    mock_db, monkeypatch, tmp_path
+):
+    target = "ZZZ ephemeris run filter"
+    for run_id, run_type in (("production", "full"), ("preview", "test")):
+        save_job(
+            type_="transit_fit",
+            inst="muscat4",
+            date="260101",
+            target=target,
+            state="done",
+            returncode=0,
+            elapsed=10,
+            started_at=1000.0,
+            run_type=run_type,
+            run_id=run_id,
+            run_name=run_id,
+        )
+
+    monkeypatch.setattr("muscat_db.web.fit.sync_jobs", lambda: None)
+    monkeypatch.setattr("muscat_db.web.fit._discover_orphan_fits", lambda keys: [])
+    monkeypatch.setattr("muscat_db.web.fit.get_fit_outputs", lambda *args: {"has_any": True})
+    monkeypatch.setattr("muscat_db.web.fit.fit_output_dir", lambda *args: tmp_path)
+    monkeypatch.setattr("muscat_db.web._get_run_fitted_params", lambda *args: {})
+
+    response = TestClient(app).get(
+        "/api/ephemeris/target-info", params={"target": target}
+    )
+
+    assert response.status_code == 200
+    datasets = response.json()["datasets"]
+    assert [dataset["run_id"] for dataset in datasets] == ["production"]
+    assert "run_type" not in datasets[0]
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "expected"),
+    [
+        (99.90, 100.10, "full"),
+        (99.90, 100.00, "ing"),
+        (100.00, 100.10, "egr"),
+    ],
+)
+def test_ephemeris_transit_coverage_uses_lightcurve_contacts(
+    tmp_path, start, end, expected
+):
+    from muscat_db.web import _classify_transit_coverage
+
+    (tmp_path / "lightcurve.csv").write_text(
+        f"BJD_TDB,Flux,Err\n{start},1,0.001\n{end},1,0.001\n"
+    )
+    ephemerides = {
+        "b": {"t0": 100.0, "period": 3.0, "duration": 2.0}
+    }
+
+    assert _classify_transit_coverage(
+        tmp_path, "b", ephemerides, {}
+    ) == expected
+
+
+@pytest.mark.parametrize("checked", [False, True])
+def test_ephemeris_calculate_only_returns_requested_production_datasets(
+    mock_db, monkeypatch, checked
+):
+    target = "ZZZ ephemeris calculate filter"
+    for date, run_id, run_type in (
+        ("260101", "production", "full"),
+        ("260102", "with_spline", "test"),
+        ("260103", "hidden_production", "full"),
+    ):
+        save_job(
+            type_="transit_fit",
+            inst="muscat4",
+            date=date,
+            target=target,
+            state="done",
+            returncode=0,
+            elapsed=10,
+            started_at=1000.0,
+            run_type=run_type,
+            run_id=run_id,
+            run_name=run_id,
+        )
+
+    monkeypatch.setattr("muscat_db.web.fit.sync_jobs", lambda: None)
+    monkeypatch.setattr("muscat_db.web.fit._discover_orphan_fits", lambda keys: [])
+    monkeypatch.setattr(
+        "muscat_db.web._get_run_fitted_params",
+        lambda inst, date, job_target, run_id: {
+            "b": {
+                "tc": 2458000.0 if run_id == "production" else 2458002.5,
+                "unc": 0.001,
+            }
+        },
+    )
+
+    response = TestClient(app).post(
+        "/api/ephemeris/calculate",
+        json={
+            "target": [target],
+            "planets_ephem": {"b": {"t0": 2458000.0, "period": 2.5}},
+            # Include the old hidden test row as a stale/forged request too:
+            # the calculation endpoint must enforce the table's production
+            # policy rather than trusting browser state alone.
+            "datasets": [
+                {
+                    "instrument": "muscat4",
+                    "date": "260101",
+                    "run_id": "production",
+                    "target": target,
+                    "checked": checked,
+                },
+                {
+                    "instrument": "muscat4",
+                    "date": "260102",
+                    "run_id": "with_spline",
+                    "target": target,
+                    "checked": True,
+                },
+            ],
+            "manual_points": [],
+            "fit_method": "unweighted",
+        },
+    )
+
+    assert response.status_code == 200
+    points = response.json()["results"]["b"]["points"]
+    assert [(point["date"], point["run_id"], point["checked"]) for point in points] == [
+        ("260101", "production", checked)
+    ]
+
+
+def _post_manual_calculate(planets_ephem, manual_points, fit_method="unweighted"):
+    """POST /api/ephemeris/calculate for a target with no database fits, so the
+    only points come from the manually entered transit centers under test."""
+    return TestClient(app).post(
+        "/api/ephemeris/calculate",
+        json={
+            "target": ["ZZZ_manual_only_target"],
+            "planets_ephem": planets_ephem,
+            "datasets": [],
+            "manual_points": manual_points,
+            "fit_method": fit_method,
+        },
+    )
+
+
+@pytest.fixture
+def _isolate_ephemeris_jobs(monkeypatch):
+    """Keep /api/ephemeris/calculate off the real filesystem so a manual-only
+    request is driven purely by the posted manual_points."""
+    monkeypatch.setattr("muscat_db.web.fit.sync_jobs", lambda: None)
+    monkeypatch.setattr("muscat_db.web.fit._discover_orphan_fits", lambda keys: [])
+
+
+def test_manual_transit_centers_are_fitted_and_placed_on_epoch_grid(
+    mock_db, _isolate_ephemeris_jobs
+):
+    """A clean set of manual transit centers is merged as points, assigned the
+    right epochs, fitted, and never flagged as 5-sigma outliers."""
+    planets_ephem = {"b": {"t0": 2458000.0, "period": 2.5}}
+    manual_points = [
+        {"id": "m0", "planet": "b", "tc": 2458000.0, "tc_unc": 0.001, "instrument": "tess", "note": "Patel+2022", "checked": True},
+        {"id": "m1", "planet": "b", "tc": 2458010.0, "tc_unc": 0.001, "checked": True},
+        {"id": "m2", "planet": "b", "tc": 2458020.0, "tc_unc": 0.001, "checked": True},
+    ]
+
+    res = _post_manual_calculate(planets_ephem, manual_points)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+
+    points = body["results"]["b"]["points"]
+    assert len(points) == 3
+    by_id = {p["manual_id"]: p for p in points}
+
+    # Every point is flagged as manual and lands on the nearest integer epoch
+    # of the reference ephemeris. Free-text instrument and note are preserved;
+    # a blank instrument falls back to "manual".
+    assert all(p["manual"] is True for p in points)
+    assert by_id["m0"]["instrument"] == "tess"
+    assert by_id["m0"]["note"] == "Patel+2022"
+    assert by_id["m1"]["instrument"] == "manual"
+    assert by_id["m0"]["epoch"] == 0
+    assert by_id["m1"]["epoch"] == 4
+    assert by_id["m2"]["epoch"] == 8
+    # Manual points get a derived YYMMDD obsdate (project convention).
+    assert len(by_id["m0"]["date"]) == 6 and by_id["m0"]["date"].isdigit()
+
+    # A perfectly linear series is fitted with no 5-sigma flags.
+    assert body["results"]["b"]["was_fit"] is True
+    assert all(p["flagged"] is False for p in points)
+
+
+def test_imported_source_epoch_is_preserved_but_page_epoch_drives_fit(
+    mock_db, _isolate_ephemeris_jobs
+):
+    planets_ephem = {"b": {"t0": 2458000.0, "period": 2.5}}
+    manual_points = [
+        {
+            "id": "csv0", "planet": "b", "tc": 2458010.0, "tc_unc": 0.001,
+            "source_epoch": -96, "source_file": "ttv.csv",
+            "time_system": "BJD_TDB", "checked": True,
+        }
+    ]
+
+    body = _post_manual_calculate(planets_ephem, manual_points).json()
+    point = body["results"]["b"]["points"][0]
+
+    assert point["epoch"] == 4
+    assert point["source_epoch"] == -96
+    assert point["epoch_offset"] == 100
+    assert point["source_file"] == "ttv.csv"
+    assert point["time_system"] == "BJD_TDB"
+
+
+def test_ephemeris_view_round_trips_imported_csv_points(mock_db):
+    state = {
+        "targets": ["HIP67522"],
+        "checked_datasets": {},
+        "manual_points": [
+            {
+                "id": "csv-1", "instrument": "tess", "planet": "b",
+                "tc": "2458604.024028", "tc_unc": "0.000811",
+                "source_epoch": -183, "source_file": "ttv.csv",
+                "time_system": "BJD_TDB", "checked": True,
+            }
+        ],
+    }
+    client = TestClient(app)
+
+    saved = client.post("/api/ephemeris/view", json={"state": state})
+    assert saved.status_code == 200
+    restored = client.get(f"/api/ephemeris/view/{saved.json()['slug']}")
+
+    assert restored.status_code == 200
+    assert restored.json()["state"]["manual_points"] == state["manual_points"]
+
+
+def test_manual_transit_center_target_and_date_optional_overrides(
+    mock_db, _isolate_ephemeris_jobs
+):
+    """Target and date are optional: when supplied they are echoed back; when
+    blank they fall back to the loaded target and the BJD-derived UTC date."""
+    planets_ephem = {"b": {"t0": 2458000.0, "period": 2.5}}
+    manual_points = [
+        {"id": "override", "planet": "b", "tc": 2458000.0, "tc_unc": 0.001,
+         "target": "TOI-1234", "date": "2018 season", "checked": True},
+        {"id": "default", "planet": "b", "tc": 2458010.0, "tc_unc": 0.001, "checked": True},
+    ]
+
+    body = _post_manual_calculate(planets_ephem, manual_points).json()
+    by_id = {p["manual_id"]: p for p in body["results"]["b"]["points"]}
+
+    # Supplied values win verbatim (date may be a free-text label).
+    assert by_id["override"]["target"] == "TOI-1234"
+    assert by_id["override"]["date"] == "2018 season"
+    # Blank -> loaded target and a derived YYMMDD obsdate.
+    assert by_id["default"]["target"] == "ZZZ_manual_only_target"
+    assert len(by_id["default"]["date"]) == 6 and by_id["default"]["date"].isdigit()
+
+
+def test_manual_transit_center_outlier_is_flagged(mock_db, _isolate_ephemeris_jobs):
+    """A transit center far off the fitted line (e.g. a typo) is flagged, while
+    still participating in the fit (warn-only)."""
+    planets_ephem = {"b": {"t0": 2458000.0, "period": 2.5}}
+    manual_points = [
+        {"id": "good0", "planet": "b", "tc": 2458000.0, "tc_unc": 0.001, "checked": True},
+        {"id": "good1", "planet": "b", "tc": 2458010.0, "tc_unc": 0.001, "checked": True},
+        # Half a day off its epoch with a 0.001 d uncertainty -> ~500 sigma.
+        {"id": "bad", "planet": "b", "tc": 2458020.5, "tc_unc": 0.001, "checked": True},
+    ]
+
+    body = _post_manual_calculate(planets_ephem, manual_points).json()
+    by_id = {p["manual_id"]: p for p in body["results"]["b"]["points"]}
+    assert body["results"]["b"]["was_fit"] is True
+    assert by_id["bad"]["flagged"] is True
+
+
+def test_manual_transit_centers_require_positive_uncertainty(
+    mock_db, _isolate_ephemeris_jobs
+):
+    """Weighting requires a real uncertainty: manual points with a missing,
+    zero, negative, or non-numeric unc are dropped before the fit."""
+    planets_ephem = {"b": {"t0": 2458000.0, "period": 2.5}}
+    manual_points = [
+        {"id": "ok", "planet": "b", "tc": 2458000.0, "tc_unc": 0.001, "checked": True},
+        {"id": "zero", "planet": "b", "tc": 2458010.0, "tc_unc": 0.0, "checked": True},
+        {"id": "neg", "planet": "b", "tc": 2458015.0, "tc_unc": -0.5, "checked": True},
+        {"id": "nan", "planet": "b", "tc": 2458020.0, "tc_unc": "abc", "checked": True},
+        {"id": "notc", "planet": "b", "tc": None, "tc_unc": 0.001, "checked": True},
+    ]
+
+    body = _post_manual_calculate(planets_ephem, manual_points).json()
+    ids = {p["manual_id"] for p in body["results"]["b"]["points"]}
+    assert ids == {"ok"}
+
+
+def test_manual_unchecked_point_is_shown_but_excluded_from_fit(
+    mock_db, _isolate_ephemeris_jobs
+):
+    """An unchecked manual point is returned for plotting but does not count
+    toward the >=2-point fit threshold."""
+    planets_ephem = {"b": {"t0": 2458000.0, "period": 2.5}}
+    manual_points = [
+        {"id": "on", "planet": "b", "tc": 2458000.0, "tc_unc": 0.001, "checked": True},
+        {"id": "off", "planet": "b", "tc": 2458010.0, "tc_unc": 0.001, "checked": False},
+    ]
+
+    body = _post_manual_calculate(planets_ephem, manual_points).json()
+    points = body["results"]["b"]["points"]
+    assert {p["manual_id"] for p in points} == {"on", "off"}
+    # Only one checked point -> below the 2-point minimum, so no fit.
+    assert body["results"]["b"]["was_fit"] is False
+
+
 def test_jobs_rerun_restores_persisted_run_identity(mock_db, monkeypatch):
     import json
 
@@ -721,6 +1077,12 @@ def test_lco_pages_render_and_nav_links_it():
     archive = client.get("/lco/archive")
     assert archive.status_code == 200
     assert "Search LCO Archive" in archive.text and "Download selected" in archive.text
+    assert "Submitted Request Monitoring" in page.text
+    assert "/api/lco/monitored-requests" in page.text
+    assert page.text.count('class="lco-section section-fold"') == 5
+    assert archive.text.count('class="lco-section section-fold"') == 3
+    assert "<summary><h3>Target &amp; Transit Windows</h3></summary>" in page.text
+    assert "<summary><h3>Results</h3></summary>" in archive.text
     # Nav (from base.html) links to /lco/schedule on every page.
     assert 'href="/lco/schedule"' in client.get("/logs").text
 
@@ -949,16 +1311,82 @@ def test_lco_submit_rejected_without_matching_dry_run(monkeypatch):
     assert "dry-run" in r.json()["error"].lower()
 
 
-def test_lco_submit_succeeds_with_matching_hash(monkeypatch):
+def test_lco_submit_succeeds_with_matching_hash(mock_db, monkeypatch):
     import muscat_db.lco as _lco
     params = _ipp_params()
     good_hash = _lco.payload_hash(_lco.build_requestgroup(params["kind"], params))
-    monkeypatch.setattr("muscat_db.lco.submit_requestgroup",
-                        lambda payload, token=None: {"id": 12345, "state": "PENDING"})
+    monkeypatch.setattr(
+        "muscat_db.lco.submit_requestgroup",
+        lambda payload, token=None: {
+            "id": 12345,
+            "name": params["name"],
+            "proposal": params["proposal"],
+            "state": "PENDING",
+            "requests": [{"id": 67890, "state": "PENDING", "windows": params["windows"]}],
+        },
+    )
     r = TestClient(app).post("/api/lco/submit",
                              json={**params, "confirm": True, "dry_run_hash": good_hash})
     assert r.status_code == 200
     assert r.json()["result"]["id"] == 12345
+    assert r.json()["monitoring"] == {"ok": True, "request_ids": [67890]}
+    with sqlite3.connect(mock_db) as conn:
+        row = conn.execute(
+            "SELECT requestgroup_id,target,instrument,request_state FROM lco_observation_requests "
+            "WHERE request_id=67890"
+        ).fetchone()
+    assert row == (12345, "WASP-12 b", "sinistro", "PENDING")
+
+    monitored = TestClient(app).get("/api/lco/monitored-requests").json()
+    assert monitored["ok"] is True
+    assert monitored["requests"][0]["request_id"] == 67890
+    assert "payload_json" not in monitored["requests"][0]
+    assert "result_json" not in monitored["requests"][0]
+
+
+def test_lco_split_partial_booking_still_registers_successful_leg(mock_db, monkeypatch):
+    import muscat_db.lco as _lco
+
+    leg_a = {**_ipp_params(), "name": "relay A", "site": "lsc", "type": "EXPOSE"}
+    leg_b = {**_ipp_params(), "name": "relay B", "site": "cpt", "type": "EXPOSE"}
+    rg_a = _lco.build_requestgroup(leg_a["kind"], leg_a)
+    rg_b = _lco.build_requestgroup(leg_b["kind"], leg_b)
+    calls = 0
+
+    def fake_submit(payload, token=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {
+                "id": 2001,
+                "name": "relay A",
+                "proposal": leg_a["proposal"],
+                "state": "PENDING",
+                "requests": [{"id": 2002, "state": "PENDING", "windows": leg_a["windows"]}],
+            }
+        raise _lco.LcoError("leg B rejected", status=503)
+
+    monkeypatch.setattr("muscat_db.lco.submit_requestgroup", fake_submit)
+    response = TestClient(app).post(
+        "/api/lco/split-submit",
+        json={
+            "leg_a": leg_a,
+            "leg_b": leg_b,
+            "confirm": True,
+            "dry_run_hash_a": _lco.payload_hash(rg_a),
+            "dry_run_hash_b": _lco.payload_hash(rg_b),
+        },
+    )
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["partial"] is True
+    assert body["leg_a"]["monitoring"] == {"ok": True, "request_ids": [2002]}
+    with sqlite3.connect(mock_db) as conn:
+        rows = conn.execute(
+            "SELECT request_id,requestgroup_id,name FROM lco_observation_requests"
+        ).fetchall()
+    assert rows == [(2002, 2001, "relay A")]
 
 
 def test_lco_archive_frames_search(monkeypatch):
@@ -1694,6 +2122,49 @@ def test_toi_page_includes_boyle_payload(monkeypatch):
     assert 'NASA confirmed' in r.text
 
 
+def test_toi_decorated_db_target_uses_canonical_link_and_dataset(mock_db, monkeypatch):
+    from muscat_db import web
+
+    raw_object = "TOI-179b_231015 J025710-560913"
+    with sqlite3.connect(mock_db) as conn:
+        conn.execute(
+            """INSERT INTO targets
+               (object, n_dates, n_frames, instruments, dates, inst_dates,
+                filters, total_exptime, is_identified, phot_status, fit_status)
+               VALUES (?, 1, 5609, 'muscat4', '231015', 'muscat4:231015',
+                       'gp,rp,ip,zs', 36216, 1, 'none', 'none')""",
+            (raw_object,),
+        )
+        conn.execute(
+            """INSERT INTO summaries
+               (instrument, obsdate, ccd, object, nframes, filter)
+               VALUES ('muscat4', '231015', 1, ?, 5609, 'gp')""",
+            (raw_object,),
+        )
+
+    web._toi_db_cache.clear()
+    cat_data = {
+        "toi": ["179.01"],
+        "tic": ["207141131"],
+        "name": ["TOI-179.01"],
+    }
+    indb, target_names = web._toi_db_membership(cat_data, mock_db)
+    assert indb == [1]
+    assert target_names == ["TOI179"]
+
+    datasets, _last_updated = web._get_datasets_for_normalized_target(mock_db, "TOI179")
+    assert [(d["object"], d["date"], d["instrument"]) for d in datasets] == [
+        (raw_object, "231015", "muscat4")
+    ]
+
+    # The homepage uses the same normalizer for its target link.
+    web._index_cache.clear()
+    homepage = TestClient(app).get("/")
+    assert homepage.status_code == 200
+    assert 'data-norm-name="TOI179"' in homepage.text
+    assert 'href="/target?name=TOI179"' in homepage.text
+
+
 def _nexsci_cat_data(names, hosts, tics):
     """Build a full nexsci column dict (all keys the loader produces) with the
     given string columns and null numerics, for monkeypatching the loader."""
@@ -2233,6 +2704,42 @@ def test_ttv_fit_runs_endpoint(tmp_path, monkeypatch):
 
     # Guardrails: target is required.
     assert client.get("/api/ttv-fit/runs", params={"target": ""}).status_code == 400
+
+
+def test_ttv_fit_model_endpoint_uses_selected_run_and_end_date(monkeypatch):
+    captured = {}
+
+    def fake_model(target, run_name, end_date):
+        captured.update(target=target, run_name=run_name, end_date=end_date)
+        return {
+            "ok": True,
+            "run_name": run_name,
+            "points": {"b": [{"epoch": 2, "tc": 2460001.25}]},
+            "chi2": 3.5,
+            "sample_count": 100,
+        }
+
+    monkeypatch.setattr("muscat_db.web.ttv.get_ttv_model", fake_model)
+    from muscat_db.web import ttv_fit_model
+
+    response = ttv_fit_model("HIP67522", "joint_tess", "2030-01-02")
+
+    assert response.status_code == 200
+    assert captured == {
+        "target": "HIP67522",
+        "run_name": "joint_tess",
+        "end_date": "2030-01-02",
+    }
+    assert json.loads(response.body)["points"]["b"][0]["epoch"] == 2
+
+
+def test_ttv_model_rejects_invalid_date_before_starting_harmonic(tmp_path, monkeypatch):
+    from muscat_db import ttv_fit as ttv
+
+    monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path))
+    result = ttv.get_ttv_model("HIP67522", "default", "2030-99-01")
+
+    assert result == {"ok": False, "error": "end_date must be YYYY-MM-DD"}
 
 
 def test_ttv_download_all_uses_disk_backed_archive(tmp_path, monkeypatch):

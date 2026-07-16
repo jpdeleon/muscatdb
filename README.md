@@ -101,10 +101,11 @@ muscat-db serve
 
 ## Configuration
 
-All runtime configuration is read from environment variables; every variable has
-a sensible in-code default, so muscat-db works out of the box. The canonical
-registry lives in `src/muscat_db/config.py`, and `.env.example` documents each
-one.
+Runtime configuration is read from environment variables. Core paths and safe
+operational settings have in-code defaults, while optional integrations (for
+example live LCO access, ADS search, and nova astrometry) require credentials.
+The central registry in `src/muscat_db/config.py` drives the startup status
+report, and `.env.example` documents the common deployment settings.
 
 On import muscat-db auto-loads a `.env` file (via `python-dotenv`,
 `find_dotenv` searching upward from the working directory). A `.env` is
@@ -115,16 +116,19 @@ Copy the template only when you want to override a default or pin a value:
 cp .env.example .env   # then edit
 ```
 
-Variables the app and the jobs it spawns inherit include `MUSCAT_DB_PATH`,
-`MUSCAT_DATA_DIR`, `MUSCAT_PROSE_DIR`, `MUSCAT_PROSE_PROJECT`,
-`MUSCAT_PROSE_CONDA_ENV`, `MUSCAT_TIMER_DIR`, the `MUSCAT_PHOT_*` job-lifecycle
+Core variables inherited by the app and its pipeline jobs include
+`MUSCAT_DB_PATH`, `MUSCAT_DATA_DIR`, `MUSCAT_OBSLOG_DIR`, `MUSCAT_PROSE_DIR`,
+`MUSCAT_PROSE_PROJECT`, `MUSCAT_PROSE_PYTHON`, `MUSCAT_PROSE_CONDA_ENV`,
+`MUSCAT_TIMER_DIR`, `MUSCAT_TTV_DIR`, the `MUSCAT_PHOT_*` job-lifecycle
 timeouts, `MUSCAT_TMPDIR`, `ASTROMETRY_NET_API_KEY`, `LCO_API_TOKEN`,
 `MUSCAT_LCO_DIR`, `MUSCAT_LCO_ALLOW_SUBMIT`, `MUSCAT_DB_SECRET` (per-user LCO
-token encryption), `MUSCAT_NGINX_GROUP` (htpasswd file group ownership), and
-`MUSCAT_BOYLE_CATALOG` (optional TOI stellar-rotation catalog), and
-`ADS_API_TOKEN`/`ADS_DEV_KEY` (target-page NASA ADS publication search) (see
-below). At startup the server prints each registered variable's status
-(`set` / `default` / `unset`).
+token encryption), the `MUSCAT_LCO_MONITOR_*` request-monitor settings,
+`MUSCAT_QUICKLOOK_URL`, and `MUSCAT_BOYLE_CATALOG` (optional TOI
+stellar-rotation catalog). Deployment helpers additionally read
+`MUSCAT_HTPASSWD_FILE` and `MUSCAT_NGINX_GROUP`; target-page NASA ADS search
+accepts `ADS_API_TOKEN` with the legacy `ADS_DEV_KEY`/`ADS_TOKEN` aliases.
+At startup the server prints the status (`set` / `default` / `unset`) of the
+core variables registered in `config.py`.
 
 `MUSCAT_DATA_DIR` is the common raw-data root, not one instrument's directory.
 Each instrument resolves below it using its canonical case-sensitive directory
@@ -248,6 +252,16 @@ requires an additional safety gate:
 ```bash
 export MUSCAT_LCO_ALLOW_SUBMIT=1  # Only set when intentionally going live
 ```
+
+Every request accepted through the scheduler is recorded locally by child LCO
+Request ID. The restart-safe monitor waits until the observing window, checks
+request-scoped archive results with an initial five-minute cadence and bounded
+backoff, and downloads new final BANZAI (reduction level 91) products as they
+appear. After the LCO request is terminal and every raw science frame has a
+level-91 counterpart, it scans each affected instrument/date and ingests the
+new observation logs into SQLite. Progress and errors appear in **Submitted
+Request Monitoring** on the scheduling page. Configure the cadence with the
+`MUSCAT_LCO_MONITOR_*` variables documented in `.env.example`.
 
 The page is linked from the navigation bar and also reachable via 
 `/lco?view=<slug>` after saving an ephemeris view on the **Ephemeris** page.
@@ -394,7 +408,7 @@ Observation-log navigation is **Logs** → **Dates** → **CCD summaries** →
 - **Exposure calculator**: MuSCAT calculations report a separate recommended exposure time for each band, conservatively limited by the target and any selected comparison stars. Stored calibration coefficients can be inspected as a table or plotted against focus by band for either coefficient or FWHM.
 - **Sinistro telescope selection**: Photometry can be filtered by LCO site, physical telescope (`TELESCOP`), and readout mode. When a target/date contains multiple physical telescopes, a telescope must be selected before reduction so frames from different cameras are not combined into one run.
 - **Field-of-View (FOV) Optimizer**: Accessible from the navbar or observation scheduler to plan pointing offsets and instrument position angle (PA) based on Gaia DR3 comparison star heuristics, with an optional bright-star avoidance constraint.
-- **Ephemeris O-C Export Headers**: Exported O-C ephemeris text starts with descriptive `#` comments specifying the BJD_TDB time standard and column formats (planet, epoch, tc, tc_unc) for easy external parsing. Each ephemeris field (RA/Dec, T0, period, duration) carries a provenance badge (NASA/TOI/AUTO/LINEAR/FIT/manual) and hand-entered values are preserved across a same-target re-fetch instead of being overwritten by a catalog miss.
+- **Ephemeris O-C analysis and imports**: The page uses completed production transit fits, plus transit centers entered manually or imported from CSV (`planet, epoch, tc, tc_unc`). Imports are previewed and validated, require confirmation for ambiguous BJD time scales, and are retained in shareable saved views, including CSV-only analyses. Exported ephemeris text identifies the BJD_TDB time standard and column formats in `#` comments. Each ephemeris field (RA/Dec, T0, period, duration) carries a provenance badge (NASA/TOI/AUTO/LINEAR/FIT/manual), and hand-entered values survive a same-target re-fetch.
 - **TTV Fitting**: The same page runs multi-harmonic TTV fits on the transit times behind the O-C plot via the `harmonic` package, with named runs, live logs, and per-run results (see [TTV Fitting](#ttv-fitting-harmonic) above).
 - **Catalog browsers (`/toi`, `/nexsci`)**: Interactive Plotly scatter plots of the TESS Objects of Interest (`data/TOIs.csv`) and the NASA Exoplanet Archive composite planet table (`data/nexsci_pscomppars.csv`), with configurable axes, filter chips (including a fast-rotator chip driven by the Boyle+2026 stellar-rotation catalog on `/toi`), a searchable table, CSV export, and bookmarkable filter state via the URL hash. Targets already in muscat-db are drawn as ★ stars. On the **NExScI** page, clicking a point opens that planet's muscat-db target page when the host is in the database, otherwise its [NASA Exoplanet Archive overview](https://exoplanetarchive.ipac.caltech.edu/overview/) page (using the archive's canonical host name, e.g. `TOI-2000`).
 - **NASA ADS publications panel**: The target page can search NASA ADS for papers matching the target name (requires `ADS_API_TOKEN`/`ADS_DEV_KEY` in `.env`) and lists matching bibcodes with links to the abstract.
@@ -416,11 +430,19 @@ bands did not complete. Hiding a job is local to the browser; starting that job
 again makes its row visible.
 
 Photometry run logs are isolated by instrument, date, and target. Transit-fit
-outputs are stored under `$MUSCAT_TIMER_DIR/<instrument>/<date>/<target>/`
-(default `$MUSCAT_TIMER_DIR` is `$HOME/ql/timer`), and TTV-fit outputs under
+outputs are stored under
+`$MUSCAT_TIMER_DIR/<instrument>/<date>/<target>/<run_id>/` (with the target
+directory itself retained for legacy runs; default `$MUSCAT_TIMER_DIR` is
+`$HOME/ql/timer`), and TTV-fit outputs under
 `$MUSCAT_TTV_DIR/<target>/_runs/<run_name>/` (default `$HOME/ql/harmonic`). Spaces are
 removed from the target directory name; empty names and names containing `..`, `/`,
 or `\` are rejected.
+
+Named photometry reductions are isolated under
+`$MUSCAT_PROSE_DIR/<instrument>/<date>/_runs/<target>/<run_id>/`; legacy
+top-level products remain discoverable. Give a new reduction a distinct run
+name to preserve older products, then use the run chips on the photometry page
+to switch between configurations and results.
 
 Calibration and engineering frames (`DARK*`, `FLAT*`, `BIAS*`, `MOVIE`, `FOCUS_ADJUST`, `FoV`, `Muscat commissioning *`, etc.) are excluded from the targets aggregation so the table only shows real science targets.
 
@@ -439,17 +461,21 @@ For an alternative modern documentation interface with client code snippet gener
 ## Cron (daily)
 
 ```cron
-0 6 * * * cd /path/to/muscat-db && .venv/bin/muscat-db scan-yesterday && .venv/bin/muscat-db build-db
+0 6 * * * cd /path/to/muscat-db && uv run muscat-db scan-yesterday && uv run muscat-db build-db
 ```
+
+The production cron also runs `scripts/download_catalogs.sh` before scanning;
+see `cronjob.txt` for the host-specific command and log paths.
 
 ## Architecture
 
 ```
 CLI (typer)
-├── scan         → scanner.py    → reads FITS headers (astropy), writes CSV
-├── summary      → summarizer.py → groups frames by OBJECT/EXPTIME/READ_MODE
-├── build-db     → database.py   → walks CSVs → SQLite (frames + summaries)
-└── serve        → web.py        → FastAPI + Jinja2 → browser
+├── scan / scan-missing / scan-all / scan-yesterday → scanner.py → FITS headers to CSV
+├── summary                                      → summarizer.py → observation rollups
+├── build-db / ingest-date                       → database.py   → CSVs to SQLite
+├── htpasswd                                     → nginx user management
+└── serve / restart                              → web.py        → FastAPI + Jinja2
 ```
 
 ## Naming conventions

@@ -310,7 +310,7 @@ class TestRunFileRoute:
         r = c.get("/transit-fit?inst=sinistro&date=250710&target=HIP%2067522&run=lsc-g")
 
         assert r.status_code == 200
-        assert "/api/transit-fit/file/sinistro/250710/HIP 67522/run/lsc-g/fit.png?v=" in r.text
+        assert "/api/transit-fit/file/sinistro/250710/HIP67522/run/lsc-g/fit.png?v=" in r.text
 
     def test_page_groups_systematics_plots_in_collapsible_section(self, client):
         c, tmp_path = client
