@@ -92,7 +92,18 @@ nav a {
   transition: color 0.15s;
 }
 nav a:hover { color: var(--accent); }
+nav a[aria-current="page"] {
+  color: var(--text);
+  text-decoration-line: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.35rem;
+}
 nav .brand { color: var(--accent2); font-weight: 700; font-size: 1.1rem; }
+nav .brand[aria-current="page"] {
+  color: var(--accent2);
+  text-decoration-color: var(--accent2);
+}
 nav .spacer { flex: 1; }
 
 /* ---------- Cards ---------- */
