@@ -399,6 +399,20 @@ muscat-db serve              # http://0.0.0.0:8000
 muscat-db serve --port 8080  # custom port
 ```
 
+### Build the static documentation site (GitHub Pages)
+
+Capture a static, navigable snapshot of the web UI (nav pages + representative
+example detail pages, with real figures) for publishing as a GitHub Page. Run on
+the host, where the real `muscat.db` and figure trees live:
+
+```bash
+muscat-db build-static-site --out site          # scrubs notes/usernames by default
+cd site && python -m http.server 8080           # preview exactly as Pages serves it
+```
+
+Commit the generated `site/` tree; `.github/workflows/pages.yml` publishes it.
+See [docs/gh-page.md](docs/gh-page.md) for the design, privacy notes, and options.
+
 ## Web Frontend
 
 The navigation bar links the observation log, photometry, transit fitting, ephemeris

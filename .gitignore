@@ -57,3 +57,9 @@ temp.txt
 
 # uv Python version pin (local preference)
 .python-version
+
+# Generated static documentation snapshot (committed for GitHub Pages). Force
+# everything under site/ to be tracked, including copied example figures whose
+# filenames may otherwise match broader generated-file rules above.
+!site/
+!site/**

@@ -1,0 +1,54 @@
+name: Pages
+
+# Publishes the pre-built static documentation snapshot under site/ to GitHub
+# Pages. The snapshot is generated on the production host (it needs the real
+# muscat.db, data/ CSVs, and the ~/ql figure trees that CI runners do not have)
+# with `uv run muscat-db build-static-site --out site/` and committed. This
+# workflow only uploads and deploys that committed tree — it never builds.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+# Allow one concurrent deployment; let an in-progress run finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy static snapshot
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard — site/ must exist
+        run: |
+          if [ ! -d site ] || [ -z "$(ls -A site 2>/dev/null)" ]; then
+            echo "::error::site/ is missing or empty. Build it on the host with 'uv run muscat-db build-static-site --out site/' and commit."
+            exit 1
+          fi
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
