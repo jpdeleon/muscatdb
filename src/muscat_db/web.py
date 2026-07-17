@@ -30,6 +30,8 @@ from jinja2 import Environment, FileSystemLoader
 from muscat_db import photometry as phot
 from muscat_db import exposure as exp_calc
 from muscat_db.auth import (
+    PROXY_SECRET_HEADER,
+    authentication_required as _authentication_required,
     trusted_forwarded_user,
     request_user as _request_user,
     settings_auth_error as _settings_auth_error,
@@ -191,16 +193,33 @@ _MAX_STATUS_FIELD_LEN = 256
 async def _nginx_auth_middleware(request: Request, call_next):
     client_host = request.client.host if request.client else None
     forwarded = request.headers.get("X-Forwarded-User")
-    user = trusted_forwarded_user(forwarded, client_host)
+    user = trusted_forwarded_user(
+        forwarded, client_host, request.headers.get(PROXY_SECRET_HEADER)
+    )
     if forwarded and user is None:
         logger.warning(
-            "ignoring X-Forwarded-User=%r from non-loopback peer %s "
-            "(request did not arrive via the nginx proxy)",
+            "ignoring untrusted X-Forwarded-User=%r from peer %s "
+            "(proxy address or shared secret did not validate)",
             forwarded, client_host,
         )
     request.state.user = user
     token = _CURRENT_USER.set(user)
     try:
+        protected = not (
+            request.url.path == "/healthz"
+            or request.url.path.startswith("/static/")
+        )
+        if _authentication_required() and protected and not user:
+            return JSONResponse(
+                {"ok": False, "error": "authentication required"},
+                status_code=401,
+            )
+        if (
+            protected
+            and request.method.upper() not in {"GET", "HEAD", "OPTIONS", "TRACE"}
+            and not _is_same_origin(request)
+        ):
+            return _csrf_error()
         if user:
             try:
                 ensure_user(user)
@@ -221,6 +240,12 @@ app.include_router(proxy_router)
 # Mount static assets (shared stylesheet, etc.) before the dynamic routes so a
 # request like /static/styles.css is not captured by the /{inst}/{date} route.
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.get("/healthz", include_in_schema=False)
+def healthz():
+    """Minimal public liveness probe; it deliberately exposes no app state."""
+    return {"ok": True}
 
 jinja = Environment(
     loader=FileSystemLoader(str(TEMPLATE_DIR)),

@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisco
 from starlette.background import BackgroundTask
 from starlette.responses import JSONResponse, StreamingResponse
 
-from muscat_db.auth import trusted_forwarded_user
+from muscat_db.auth import PROXY_SECRET_HEADER, trusted_forwarded_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -248,6 +248,7 @@ async def quicklook_websocket(websocket: WebSocket, path: str):
     user = trusted_forwarded_user(
         websocket.headers.get("x-forwarded-user"),
         websocket.client.host if websocket.client else None,
+        websocket.headers.get(PROXY_SECRET_HEADER),
     )
     if not user:
         await websocket.close(code=1008)

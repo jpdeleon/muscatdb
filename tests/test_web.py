@@ -1194,7 +1194,11 @@ def test_lco_token_save_rejects_cross_origin_request(mock_db, monkeypatch):
     client = TestClient(app, client=("127.0.0.1", 12345))
     headers = {"X-Forwarded-User": "alice"}
 
-    no_origin = client.post("/api/settings/lco-token", headers=headers, json={"token": "x"})
+    no_origin = client.post(
+        "/api/settings/lco-token",
+        headers={**headers, "X-Test-No-Origin": "1"},
+        json={"token": "x"},
+    )
     assert no_origin.status_code == 403
 
     foreign_origin = client.post(
