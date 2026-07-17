@@ -43,6 +43,10 @@ class JobRepository(Protocol):
         """All job rows, newest-first (by ``started_at``)."""
         ...
 
+    def active(self) -> list[dict]:
+        """Only running, cancelling, or pending rows, newest-first."""
+        ...
+
     def get(self, key: str) -> dict | None:
         """The single row for *key* (the table key is unique), or ``None``."""
         ...
@@ -145,6 +149,9 @@ class DatabaseJobStore(JobRepository, JobQueue, JobConcurrency):
 
     def all(self) -> list[dict]:
         return database.get_persisted_jobs()
+
+    def active(self) -> list[dict]:
+        return database.get_active_persisted_jobs()
 
     def get(self, key: str) -> dict | None:
         return next((j for j in database.get_persisted_jobs() if j.get("key") == key), None)

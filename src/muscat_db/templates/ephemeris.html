@@ -30,6 +30,12 @@
   <!-- Dynamic Planet Parameter Cards Container -->
   <details class="adv ephemeris-fold" id="planet-cards-section" style="display: none; margin-bottom: 1.5rem;" open>
     <summary>Planetary Reference Ephemerides</summary>
+    <div style="display: flex; justify-content: flex-end; margin-top: 1rem;">
+      <button class="btn sm primary" id="add-planet-btn" type="button" onclick="addManualPlanet()"
+              title="Add an ephemeris for a planet that is not listed in the catalogs or fitted datasets">
+        + Add planet
+      </button>
+    </div>
     <div id="planet-cards-container" class="card-grid" style="grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); margin-top: 1.5rem;">
       <!-- Dynamically filled with planet inputs -->
     </div>
@@ -557,6 +563,9 @@
   let combinedNasaEphem = {};
   let combinedToiEphem = {};
   let combinedDatasets = [];
+  // Planet letters added by the user for the current combined target key.
+  // Their numeric ephemerides live with the other planet options.
+  let manualPlanets = [];
   // Manually entered transit centers, scoped to the current combined-target
   // set (persisted under STORAGE_OPTS_PREFIX + combinedKey + '-manual' and in
   // the saved view). Each: {id, planet, tc, tc_unc, label, checked}.
@@ -669,6 +678,12 @@
     if (state.planet_options && typeof state.planet_options === 'object') {
       localStorage.setItem(STORAGE_OPTS_PREFIX + combinedKey, JSON.stringify(state.planet_options));
     }
+    if (Array.isArray(state.manual_planets)) {
+      localStorage.setItem(
+        STORAGE_OPTS_PREFIX + combinedKey + '-manual-planets',
+        JSON.stringify(state.manual_planets)
+      );
+    }
     if (state.planet_plot_settings && typeof state.planet_plot_settings === 'object') {
       localStorage.setItem(
         STORAGE_OPTS_PREFIX + combinedKey + '-planet-plot-settings',
@@ -747,6 +762,7 @@
       targets: loadedTargets.slice().sort(),
       checked_datasets: checkedDatasets,
       manual_points: manualPointsState,
+      manual_planets: manualPlanets.slice().sort(),
       fit_method: fitMethod,
       planet_options: planetOptions,
       planet_plot_settings: currentPlanetPlotSettings,
@@ -1168,8 +1184,31 @@
     });
   }
 
+  // Discard only the rendered/calculated state for the current selection.
+  // Target-scoped options and imported CSV/manual points stay in localStorage
+  // so selecting the same target again restores the complete analysis.
+  function clearFitPresentation() {
+    computeFitRequestSeq += 1;
+    if (computeFitTimer) {
+      clearTimeout(computeFitTimer);
+      computeFitTimer = null;
+    }
+    fitResults = null;
+
+    const plot = document.getElementById('oc-plot');
+    if (plot) {
+      if (window.Plotly && typeof Plotly.purge === 'function') Plotly.purge(plot);
+      else plot.innerHTML = '';
+    }
+    const resultsGrid = document.getElementById('results-grid');
+    if (resultsGrid) resultsGrid.innerHTML = '';
+    const loader = document.getElementById('loader');
+    if (loader) loader.style.display = 'none';
+  }
+
   // Remove a loaded target
   window.removeTarget = function(targetName) {
+    clearFitPresentation();
     loadedTargets = loadedTargets.filter(t => t !== targetName);
     localStorage.setItem(STORAGE_TARGET_KEY, JSON.stringify(loadedTargets));
     
@@ -1181,6 +1220,104 @@
   function getCombinedStorageKey() {
     return loadedTargets.slice().sort().join('+');
   }
+
+  function manualPlanetStorageKey() {
+    return STORAGE_OPTS_PREFIX + getCombinedStorageKey() + '-manual-planets';
+  }
+
+  function hasCatalogOrDatasetPlanet(planet) {
+    return Boolean(
+      combinedRefEphem[planet]
+      || combinedNasaEphem[planet]
+      || combinedToiEphem[planet]
+      || combinedDatasets.some(ds => ds.planets_fitted && ds.planets_fitted.includes(planet))
+    );
+  }
+
+  function loadManualPlanets() {
+    const previous = new Set(manualPlanets);
+    combinedPlanets = combinedPlanets.filter(
+      planet => !previous.has(planet) || hasCatalogOrDatasetPlanet(planet)
+    );
+
+    let parsed = [];
+    try {
+      parsed = JSON.parse(localStorage.getItem(manualPlanetStorageKey()) || '[]');
+    } catch (e) {}
+    if (!Array.isArray(parsed)) parsed = [];
+
+    manualPlanets = [];
+    parsed.forEach(value => {
+      const planet = String(value || '').trim().toLowerCase();
+      if (!/^[b-z]$/.test(planet) || combinedPlanets.includes(planet)) return;
+      manualPlanets.push(planet);
+      combinedPlanets.push(planet);
+    });
+    combinedPlanets.sort();
+  }
+
+  function saveManualPlanets() {
+    localStorage.setItem(manualPlanetStorageKey(), JSON.stringify(manualPlanets));
+  }
+
+  window.addManualPlanet = function() {
+    if (loadedTargets.length === 0) return;
+    const nextLetter = 'bcdefghijklmnopqrstuvwxyz'.split('').find(
+      planet => !combinedPlanets.includes(planet)
+    ) || '';
+    if (!nextLetter) {
+      showMessageModal('No planet letters available', 'All planet letters from b to z are already listed.');
+      return;
+    }
+    const planet = nextLetter;
+
+    manualPlanets.push(planet);
+    combinedPlanets.push(planet);
+    combinedPlanets.sort();
+    saveManualPlanets();
+
+    let opts = {};
+    try {
+      opts = JSON.parse(localStorage.getItem(STORAGE_OPTS_PREFIX + getCombinedStorageKey()) || '{}') || {};
+    } catch (e) {}
+    opts[planet + '_t0'] = '';
+    opts[planet + '_period'] = '';
+    opts[planet + '_duration'] = '0.1';
+    opts[planet + '_source'] = 'manual';
+    localStorage.setItem(STORAGE_OPTS_PREFIX + getCombinedStorageKey(), JSON.stringify(opts));
+
+    clearFitPresentation();
+    updateCombinedUI({skipFit: true});
+    requestAnimationFrame(() => {
+      document.getElementById(`planet-t0-${planet}`)?.focus();
+    });
+  };
+
+  window.removeManualPlanet = function(planet) {
+    if (!manualPlanets.includes(planet)) return;
+    if (manualPoints.some(point => point.planet === planet)) {
+      showMessageModal(
+        'Planet is still in use',
+        `Remove the transit-center rows for planet ${planet} before removing its ephemeris.`
+      );
+      return;
+    }
+
+    manualPlanets = manualPlanets.filter(value => value !== planet);
+    combinedPlanets = combinedPlanets.filter(value => value !== planet);
+    saveManualPlanets();
+
+    let opts = {};
+    try {
+      opts = JSON.parse(localStorage.getItem(STORAGE_OPTS_PREFIX + getCombinedStorageKey()) || '{}') || {};
+    } catch (e) {}
+    ['_t0', '_period', '_duration', '_source'].forEach(suffix => delete opts[planet + suffix]);
+    localStorage.setItem(STORAGE_OPTS_PREFIX + getCombinedStorageKey(), JSON.stringify(opts));
+    delete planetPlotSettings[planet];
+
+    clearFitPresentation();
+    updateCombinedUI();
+  };
 
   // Render combined targets list badges
   function renderTargetsPills() {
@@ -1208,7 +1345,9 @@
   }
 
   // Refresh UI and restore results for combined targets selection
-  function updateCombinedUI() {
+  function updateCombinedUI(options) {
+    options = options || {};
+    const skipFit = options.skipFit === true;
     renderTargetsPills();
     
     const defaultTitle = loadedTargets.slice().sort().join(' + ');
@@ -1250,6 +1389,7 @@
       applyViewStateToStorage(pendingViewState, combinedKey);
       pendingViewState = null;
     }
+    loadManualPlanets();
     
     document.getElementById('results-card').style.display = 'none';
     document.getElementById('plot-card').style.display = 'none';
@@ -1291,7 +1431,7 @@
     } else if (fitCache) {
       localStorage.removeItem(fitResultsCacheKey(combinedKey));
     }
-    scheduleComputeFit(0);
+    if (!skipFit) scheduleComputeFit(0);
     scheduleSaveView(1200);
     
     // Show TTV section if targets are loaded and auto-populate planet letters and INI
@@ -1335,11 +1475,12 @@
     } catch (e) {}
 
     planets.forEach(p => {
+      const isManualPlanet = manualPlanets.includes(p);
       const card = document.createElement('div');
       card.className = 'card planet-card';
       card.setAttribute('data-planet', p);
       
-      const selectedSource = storedOpts[p + '_source'] || (combinedNasaEphem[p] && Object.keys(combinedNasaEphem[p]).length > 0 ? 'nasa' : (combinedToiEphem[p] && Object.keys(combinedToiEphem[p]).length > 0 ? 'toi' : 'nasa'));
+      const selectedSource = storedOpts[p + '_source'] || (isManualPlanet ? 'manual' : (combinedNasaEphem[p] && Object.keys(combinedNasaEphem[p]).length > 0 ? 'nasa' : (combinedToiEphem[p] && Object.keys(combinedToiEphem[p]).length > 0 ? 'toi' : 'nasa')));
       
       let datasetOptions = '';
       combinedDatasets.forEach((ds, dsIdx) => {
@@ -1374,32 +1515,41 @@
           durVal = 0.1;
         }
       }
+      const ephemerisChangeHandler = isManualPlanet
+        ? 'saveTargetOpts(); scheduleComputeFitIfValid()'
+        : 'saveTargetOpts(); scheduleComputeFit()';
+      const durationChangeHandler = isManualPlanet
+        ? 'scheduleComputeFitIfValid()'
+        : 'scheduleComputeFit()';
 
       card.innerHTML = `
         <h3>
           <span>planet <strong>${p.toLowerCase()}</strong></span>
+          ${isManualPlanet ? `<button class="btn sm" type="button" onclick="removeManualPlanet('${p}')" title="Remove this manually added ephemeris" style="padding: 0.2rem 0.45rem;">Remove</button>` : ''}
         </h3>
         <div class="opt-grid" style="grid-template-columns: 1fr; gap: 0.75rem;">
           <div class="opt">
             <label for="planet-t0-${p}">Reference Epoch T0 (BJD)</label>
-            <input id="planet-t0-${p}" type="number" class="planet-t0" step="any" value="${t0Val}" onchange="saveTargetOpts(); scheduleComputeFit()">
+            <input id="planet-t0-${p}" type="number" class="planet-t0" step="any" value="${t0Val}" placeholder="e.g. 2460000.123456" onchange="${ephemerisChangeHandler}">
           </div>
           <div class="opt">
             <label for="planet-period-${p}">Period (days)</label>
-            <input id="planet-period-${p}" type="number" class="planet-period" step="any" value="${perVal}" onchange="saveTargetOpts(); scheduleComputeFit()">
+            <input id="planet-period-${p}" type="number" class="planet-period" step="any" value="${perVal}" placeholder="e.g. 3.14159" onchange="${ephemerisChangeHandler}">
           </div>
           <div class="opt">
             <label for="planet-duration-${p}">Transit Duration T14 (days)</label>
-            <input id="planet-duration-${p}" type="number" class="planet-duration" step="any" value="${parseFloat(durVal).toFixed(5)}" oninput="saveTargetOpts(); rebuildINI(true);" onchange="scheduleComputeFit()">
+            <input id="planet-duration-${p}" type="number" class="planet-duration" step="any" value="${parseFloat(durVal).toFixed(5)}" oninput="saveTargetOpts(); rebuildINI(true);" onchange="${durationChangeHandler}">
           </div>
           <div class="opt">
             <label for="planet-source-${p}">Source</label>
             <select id="planet-source-${p}" class="planet-source-select select-sm" onchange="changePlanetSource(this, '${p}')" style="width: 100%; font-size: 0.85rem; padding: 0.35rem 0.5rem; background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; outline: none; cursor: pointer;">
+              ${isManualPlanet ? `<option value="manual"${selectedSource === 'manual' ? ' selected' : ''}>Manual</option>` : ''}
               <option value="nasa"${selectedSource === 'nasa' ? ' selected' : ''}>NASA Catalog</option>
               <option value="toi"${selectedSource === 'toi' ? ' selected' : ''}>TOI Catalog</option>
               ${datasetOptions}
             </select>
           </div>
+          ${isManualPlanet ? '<span class="hint">Enter positive T0 and period values to include this planet in the O-C calculation.</span>' : ''}
         </div>
       `;
       container.appendChild(card);
@@ -1416,6 +1566,13 @@
     const periodInput = card.querySelector('.planet-period');
     const durationInput = card.querySelector('.planet-duration');
     if (!t0Input || !periodInput) return;
+
+    if (val === 'manual') {
+      saveTargetOpts();
+      scheduleComputeFit();
+      scheduleSaveView();
+      return;
+    }
     
     let newT0 = 2450000.0;
     let newPeriod = 1.0;
@@ -2203,6 +2360,11 @@
       computeFitTimer = null;
       computeFit();
     }, delay);
+  }
+
+  function scheduleComputeFitIfValid(delay = 350) {
+    if (!collectFitRequest(false)) return;
+    scheduleComputeFit(delay);
   }
 
   function collectFitRequest(showErrors = true) {

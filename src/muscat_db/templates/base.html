@@ -59,22 +59,22 @@
 <body>
 <div id="loading-bar" role="progressbar" aria-label="Loading"></div>
 <nav>
-  <a class="brand" href="/">MuSCAT-db</a>
-  <a href="/logs">ObsLog</a>
-  <a id="target-nav-link" href="/target">Target</a>
-  <a id="photometry-nav-link" href="/photometry">Photometry</a>
-  <a id="transit-fit-nav-link" href="/transit-fit">Transit Fit</a>
-  <a id="ephemeris-nav-link" href="/ephemeris">Ephemeris</a>
+  <a class="brand" href="/" data-nav-section="home">MuSCAT-db</a>
+  <a href="/logs" data-nav-section="obslog">ObsLog</a>
+  <a id="target-nav-link" href="/target" data-nav-section="target">Target</a>
+  <a id="photometry-nav-link" href="/photometry" data-nav-section="photometry">Photometry</a>
+  <a id="transit-fit-nav-link" href="/transit-fit" data-nav-section="transit-fit">Transit Fit</a>
+  <a id="ephemeris-nav-link" href="/ephemeris" data-nav-section="ephemeris">Ephemeris</a>
   <a id="ttv-fit-nav-link" href="/ephemeris" style="display: none;">TTV Fit</a>
-  <a href="/jobs">Jobs</a>
+  <a href="/jobs" data-nav-section="jobs">Jobs</a>
   <span class="spacer"></span>
-  <a href="/lco/schedule">LCO</a>
-  <a href="/fov">FOV</a>
-  <a href="/exposure">Exp Calc</a>
-  <a href="/toi">TOI</a>
-  <a href="/nexsci">NExScI</a>
-  <a href="/guide" style="margin-right: 0.5rem;">Guide</a>
-  <a href="/settings">Settings{% if current_user %} <span class="badge">{{ current_user }}</span>{% endif %}</a>
+  <a href="/lco/schedule" data-nav-section="lco">LCO</a>
+  <a href="/fov" data-nav-section="fov">FOV</a>
+  <a href="/exposure" data-nav-section="exposure">Exp Calc</a>
+  <a href="/toi" data-nav-section="toi">TOI</a>
+  <a href="/nexsci" data-nav-section="nexsci">NExScI</a>
+  <a href="/guide" data-nav-section="guide" style="margin-right: 0.5rem;">Guide</a>
+  <a href="/settings" data-nav-section="settings">Settings{% if current_user %} <span class="badge">{{ current_user }}</span>{% endif %}</a>
   <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">
     <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
       <circle cx="12" cy="12" r="4"/>
@@ -92,6 +92,37 @@
     </svg>
   </button>
 </nav>
+<script>
+  (function () {
+    var path = window.location.pathname.replace(/\/+$/, '') || '/';
+    var section = {
+      '/': 'home',
+      '/logs': 'obslog',
+      '/target': 'target',
+      '/photometry': 'photometry',
+      '/transit-fit': 'transit-fit',
+      '/ephemeris': 'ephemeris',
+      '/jobs': 'jobs',
+      '/fov': 'fov',
+      '/exposure': 'exposure',
+      '/toi': 'toi',
+      '/nexsci': 'nexsci',
+      '/guide': 'guide',
+      '/settings': 'settings'
+    }[path];
+
+    if (path.indexOf('/lco/') === 0) section = 'lco';
+    if (/^\/(?:muscat|muscat2|muscat3|muscat4|sinistro)(?:\/|$)/.test(path)) {
+      section = 'obslog';
+    }
+
+    document.querySelectorAll('nav a[data-nav-section]').forEach(function (link) {
+      if (link.dataset.navSection === section) {
+        link.setAttribute('aria-current', 'page');
+      }
+    });
+  })();
+</script>
 <div class="container">
 {% block content %}{% endblock %}
 </div>

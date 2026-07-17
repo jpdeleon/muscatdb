@@ -269,6 +269,55 @@ def build_db(
     console.print(f"[green]Database built: {count} frames indexed in {db}[/]")
 
 
+@app.command(cls=_Cmd, name="build-static-site")
+def build_static_site(
+    out: str = typer.Option("site", "--out", "-o", help="Output directory for the static site"),
+    db: str = typer.Option("muscat.db", "--db", help="SQLite database path"),
+    scrub_notes: bool = typer.Option(
+        True, "--scrub-notes/--keep-notes",
+        help="Blank private notes/usernames and redact host home paths",
+    ),
+    base_path: str = typer.Option(
+        "", "--base-path",
+        help="Force root-absolute links under this base (default: depth-relative links that work anywhere)",
+    ),
+    examples: int = typer.Option(
+        2, "--examples", min=0,
+        help="Max example detail pages per parametric route",
+    ),
+    figures: bool = typer.Option(
+        True, "--figures/--no-figures",
+        help="Copy referenced photometry/transit-fit figures into the site",
+    ),
+):
+    """Build a static, navigable snapshot of the web UI for GitHub Pages."""
+    _log_startup_banner(f"build-static-site --out {out}")
+    from muscat_db.static_site import build_site
+    console.print(f"[cyan]Building static site into {out}/ from {db}...[/]")
+    stats = build_site(
+        out,
+        db_path=db,
+        scrub_notes=scrub_notes,
+        base_path=base_path,
+        n_examples=examples,
+        include_figures=figures,
+        log=lambda m: console.print(f"[dim]{m}[/]"),
+    )
+    console.print(
+        f"[green]Static site built: {stats.pages} pages, {stats.figures} figures in {out}/[/]"
+    )
+    if stats.figures_missing:
+        console.print(f"[yellow]{stats.figures_missing} referenced figures could not be copied[/]")
+    if stats.skipped:
+        console.print(f"[yellow]{len(stats.skipped)} pages skipped:[/]")
+        for item in stats.skipped:
+            console.print(f"  [dim]{item}[/]")
+    if scrub_notes:
+        console.print("[dim]Notes/usernames/host paths scrubbed. Review site/ before publishing.[/]")
+    else:
+        console.print("[yellow]--keep-notes: real user notes/usernames are included. Review before publishing.[/]")
+
+
 @app.command(cls=_Cmd)
 def ingest_date(
     instrument: str = typer.Argument(
@@ -584,12 +633,24 @@ def htpasswd_list():
 # ---------------------------------------------------------------------------
 
 
+def _prepare_nginx_auth() -> None:
+    """Enable fail-closed proxy auth and verify its secret is readable."""
+    from muscat_db.auth import configured_proxy_secret
+    if not configured_proxy_secret():
+        raise RuntimeError(
+            "nginx mode requires /etc/muscat-db/proxy-secret (run "
+            "deploy/setup-nginx.sh) or MUSCAT_PROXY_SECRET"
+        )
+    os.environ["MUSCAT_REQUIRE_AUTH"] = "1"
+
+
 def _run_server(
     db: str, host: str, port: int, reload: bool, workers: int,
     nginx: bool,
 ) -> None:
     if nginx:
         print("nginx mode: uvicorn bound to 127.0.0.1:8001 (nginx on :8000 expected)")
+        _prepare_nginx_auth()
     os.environ["MUSCAT_DB_PATH"] = db
     import uvicorn
     if reload:
@@ -601,7 +662,7 @@ def _run_server(
 @app.command(cls=_Cmd)
 def serve(
     db: str = typer.Option("muscat.db", "--db", help="SQLite database path"),
-    host: str = typer.Option("0.0.0.0", "--host", help="Bind address"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address"),
     port: int = typer.Option(8000, "--port", "-p", help="Port number"),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes"),
     workers: int = typer.Option(1, "--workers", "-w", help="Number of worker processes"),
@@ -619,7 +680,7 @@ def serve(
 @app.command(cls=_Cmd)
 def restart(
     db: str = typer.Option("muscat.db", "--db", help="SQLite database path"),
-    host: str = typer.Option("0.0.0.0", "--host", help="Bind address"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address"),
     port: int = typer.Option(8000, "--port", "-p", help="Port number"),
     reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes"),
     workers: int = typer.Option(1, "--workers", "-w", help="Number of worker processes"),
@@ -631,6 +692,9 @@ def restart(
     """Stop any server already running on the port, then start a fresh one."""
     if nginx:
         host, port = "127.0.0.1", 8001
+        # Validate before stopping the healthy process.  A missing/unreadable
+        # proxy secret must fail the restart without causing an outage.
+        _prepare_nginx_auth()
     stopped = _stop_running_servers(port)
     if stopped:
         console.print(f"[yellow]Stopped running server (pid {', '.join(map(str, stopped))}) on port {port}[/]")

@@ -461,14 +461,44 @@ class FrameDestSecurityTest(unittest.TestCase):
 
     def test_url_must_be_https_lco_or_s3(self):
         for bad in ("http://archive-api.lco.global/x", "https://evil.example.com/x",
+                    "https://other-bucket.s3.amazonaws.com/x",
+                    "https://archive-api.lco.global:444/x",
+                    "https://user@archive-api.lco.global/x",
                     "file:///etc/passwd", "", None):
             with self.assertRaises(lco.LcoError):
                 lco._validate_download_url(bad)
 
     def test_url_allows_archive_and_s3(self):
-        for ok in ("https://archive-api.lco.global/frames/1/",
-                   "https://archive-lco-global.s3.amazonaws.com/x?sig=1"):
-            self.assertEqual(lco._validate_download_url(ok), ok)
+        public_dns = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]
+        with patch("muscat_db.lco.socket.getaddrinfo", return_value=public_dns):
+            for ok in ("https://archive-api.lco.global/frames/1/",
+                       "https://archive-lco-global.s3.amazonaws.com/x?sig=1"):
+                self.assertEqual(lco._validate_download_url(ok), ok)
+
+    def test_url_rejects_allowed_hostname_resolving_to_non_public_address(self):
+        mixed_dns = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443)),
+        ]
+        with patch("muscat_db.lco.socket.getaddrinfo", return_value=mixed_dns):
+            with self.assertRaisesRegex(lco.LcoError, "non-public address"):
+                lco._validate_download_url(
+                    "https://archive-api.lco.global/frames/1/"
+                )
+
+    def test_redirect_handler_revalidates_destination(self):
+        handler = lco._ValidatedArchiveRedirectHandler()
+        with self.assertRaisesRegex(lco.LcoError, "untrusted URL"):
+            handler.redirect_request(
+                lco.urllib.request.Request(
+                    "https://archive-api.lco.global/frames/1/"
+                ),
+                None,
+                302,
+                "Found",
+                {},
+                "https://169.254.169.254/latest/meta-data/",
+            )
 
 
 class _StallingResponse:
@@ -497,17 +527,33 @@ class DownloadToFileTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
 
+    def test_opener_installs_validated_redirect_handler(self):
+        public_dns = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]
+        opener = MagicMock()
+        with patch("muscat_db.lco.socket.getaddrinfo", return_value=public_dns), \
+                patch("muscat_db.lco.urllib.request.build_opener", return_value=opener) as build:
+            lco._open_download_url(
+                "https://archive-api.lco.global/frames/1/", timeout=12
+            )
+
+        self.assertIsInstance(
+            build.call_args.args[0], lco._ValidatedArchiveRedirectHandler
+        )
+        opener.open.assert_called_once_with(
+            "https://archive-api.lco.global/frames/1/", timeout=12
+        )
+
     def test_streams_atomically_and_leaves_no_part_file(self):
         dest = Path(self.dir) / "frame.fits.fz"
         payload = b"BINARYFITS" * 1000
-        with patch("muscat_db.lco.urllib.request.urlopen", return_value=io.BytesIO(payload)):
+        with patch("muscat_db.lco._open_download_url", return_value=io.BytesIO(payload)):
             lco._download_to_file("https://archive-api.lco.global/frames/1/", dest)
         self.assertEqual(dest.read_bytes(), payload)
         self.assertFalse(dest.with_name(dest.name + ".part").exists())
 
     def test_stall_raises_and_cleans_partial(self):
         dest = Path(self.dir) / "frame.fits.fz"
-        with patch("muscat_db.lco.urllib.request.urlopen", return_value=_StallingResponse()):
+        with patch("muscat_db.lco._open_download_url", return_value=_StallingResponse()):
             with self.assertRaises(socket.timeout):
                 lco._download_to_file("https://archive-api.lco.global/frames/1/", dest, timeout=0.01)
         # No truncated frame and no leftover .part after the stall.
@@ -562,6 +608,91 @@ class DownloadToFileTest(unittest.TestCase):
 
 
 class ArchiveDownloadJobTest(unittest.TestCase):
+    def test_interactive_download_scans_ingests_and_links_photometry(self):
+        temp_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, temp_dir, ignore_errors=True)
+        frame = {
+            "filename": "ogg2m001-ep05-20260102-0001-e91.fits",
+            "SITEID": "ogg",
+            "TELID": "2m0a",
+            "INSTRUME": "ep05",
+            "DATE_OBS": "2026-01-02T05:00:00",
+            "OBJECT": "WASP-12",
+        }
+        downloaded = {
+            "filename": frame["filename"],
+            "status": "downloaded",
+            "dest": str(Path(temp_dir) / "MuSCAT3" / "260102" / frame["filename"]),
+        }
+        scanned = []
+        ingested = []
+
+        def fake_scan(inst, obsdate, max_workers=None, data_root=None):
+            scanned.append((inst, obsdate, max_workers, data_root))
+            return {"total": 1, "per_ccd": {0: 1}}
+
+        def fake_ingest(path, inst, obsdate):
+            ingested.append((path, inst, obsdate))
+            return 1
+
+        with patch("muscat_db.lco._download_frame", return_value=downloaded), \
+                patch("muscat_db.lco.download_root", return_value=Path(temp_dir)), \
+                patch("muscat_db.lco._db_path", return_value="/data/muscat.db"), \
+                patch("muscat_db.scanner.scan_date", side_effect=fake_scan), \
+                patch("muscat_db.database.ingest_date", side_effect=fake_ingest):
+            job = lco.start_archive_download([frame], auto_ingest=True)
+            deadline = time.time() + 2
+            done = job
+            while time.time() < deadline:
+                done = lco.archive_download_status(job["job_id"])
+                if done["state"] in {"done", "error"}:
+                    break
+                time.sleep(0.01)
+
+        self.assertEqual(done["state"], "done")
+        self.assertEqual(done["phase"], "done")
+        self.assertEqual(scanned, [("muscat3", "260102", 1, temp_dir)])
+        self.assertEqual(ingested, [("/data/muscat.db", "muscat3", "260102")])
+        self.assertEqual(done["processing_results"][0]["ingested_count"], 1)
+        self.assertEqual(
+            done["photometry_url"],
+            "/photometry?inst=muscat3&date=260102&target=WASP-12",
+        )
+
+    def test_interactive_download_does_not_link_when_scan_fails(self):
+        temp_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, temp_dir, ignore_errors=True)
+        frame = {
+            "filename": "ogg2m001-ep05-20260102-0001-e91.fits",
+            "SITEID": "ogg",
+            "TELID": "2m0a",
+            "DATE_OBS": "2026-01-02T05:00:00",
+            "OBJECT": "WASP-12",
+        }
+        downloaded = {
+            "filename": frame["filename"],
+            "status": "downloaded",
+            "dest": str(Path(temp_dir) / "MuSCAT3" / "260102" / frame["filename"]),
+        }
+
+        with patch("muscat_db.lco._download_frame", return_value=downloaded), \
+                patch("muscat_db.lco.download_root", return_value=Path(temp_dir)), \
+                patch("muscat_db.scanner.scan_date", return_value={}), \
+                patch("muscat_db.database.ingest_date") as ingest:
+            job = lco.start_archive_download([frame], auto_ingest=True)
+            deadline = time.time() + 2
+            failed = job
+            while time.time() < deadline:
+                failed = lco.archive_download_status(job["job_id"])
+                if failed["state"] in {"done", "error"}:
+                    break
+                time.sleep(0.01)
+
+        self.assertEqual(failed["state"], "error")
+        self.assertIn("scan found no reduced FITS", failed["error"])
+        self.assertEqual(failed["photometry_url"], "")
+        ingest.assert_not_called()
+
     def test_background_download_status_updates_without_blocking_submitter(self):
         started = threading.Event()
         release = threading.Event()

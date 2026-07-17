@@ -304,7 +304,7 @@ equivalent script-root setting) so generated links remain under
 
 For a first-time setup, run the installer from the repository root. It installs
 nginx and OpenSSL, enables `deploy/nginx.conf`, creates the protected htpasswd
-file, and starts nginx:
+file and nginx-to-application proxy secret, and starts nginx:
 
 ```bash
 sudo bash deploy/setup-nginx.sh
@@ -341,10 +341,14 @@ ssh -L 8000:localhost:8000 <user>@<server>
 # Then open http://localhost:8000 in a browser.
 ```
 
-The auth middleware only honors the `X-Forwarded-User` header nginx sets
-after a successful login when the request's immediate TCP peer is the
-loopback socket, so binding without `--nginx` (e.g. `--host 0.0.0.0`) cannot
-be tricked into accepting a spoofed header from the network. The htpasswd
+In nginx mode, the backend fails closed unless the request has both the
+authenticated `X-Forwarded-User` and the private proxy secret generated under
+`/etc/muscat-db`. This prevents other local accounts from bypassing nginx by
+calling uvicorn on port 8001 directly. The raw secret is installed as
+`0600 <application-user>:root`. Unsafe HTTP methods also require a
+same-origin `Origin` or `Referer` header. The ordinary `serve`/`restart` default
+is loopback-only; exposing it with `--host 0.0.0.0` is an explicit development
+choice and does not enable nginx authentication. The htpasswd
 file is written `0640 root:www-data` (override the group with
 `MUSCAT_NGINX_GROUP`) so other local accounts on the shared server cannot
 read and offline-crack the password hashes, and `htpasswd add` pipes the
@@ -394,6 +398,20 @@ muscat-db build-db
 muscat-db serve              # http://0.0.0.0:8000
 muscat-db serve --port 8080  # custom port
 ```
+
+### Build the static documentation site (GitHub Pages)
+
+Capture a static, navigable snapshot of the web UI (nav pages + representative
+example detail pages, with real figures) for publishing as a GitHub Page. Run on
+the host, where the real `muscat.db` and figure trees live:
+
+```bash
+muscat-db build-static-site --out site          # scrubs notes/usernames by default
+cd site && python -m http.server 8080           # preview exactly as Pages serves it
+```
+
+Commit the generated `site/` tree; `.github/workflows/pages.yml` publishes it.
+See [docs/gh-page.md](docs/gh-page.md) for the design, privacy notes, and options.
 
 ## Web Frontend
 

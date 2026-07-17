@@ -121,7 +121,11 @@
   </div>
 </details>
 {% else %}
-  <p>No identified targets found.</p>
+  <div class="empty-state">
+    <div class="empty-icon">🔭</div>
+    <h2>No identified targets found</h2>
+    <p>Ingest observations with <code>muscat-db scan-missing &lt;instrument&gt; &lt;yy&gt;</code>, or check back after the daily sync.</p>
+  </div>
 {% endif %}
 
 {% if unidentified %}

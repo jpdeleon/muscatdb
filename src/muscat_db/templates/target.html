@@ -222,7 +222,11 @@
         })();
       </script>
       {% else %}
-        <p>No datasets found for this target.</p>
+        <div class="empty-state">
+          <div class="empty-icon">📭</div>
+          <h2>No datasets found</h2>
+          <p>No photometric observations are recorded for this target yet.</p>
+        </div>
       {% endif %}
     </div>
   </details>
@@ -669,7 +673,7 @@
 
         status.textContent = 'Querying NASA ADS...';
         status.style.color = 'var(--text-dim)';
-        resultsList.innerHTML = '';
+        resultsList.replaceChildren();
 
         fetch('/api/targets/publications?q=' + encodeURIComponent(query))
           .then(res => {
@@ -733,16 +737,23 @@
               metaDiv.style.gap = '1rem';
               metaDiv.style.flexWrap = 'wrap';
 
+              function addLabeledText(container, label, value) {
+                const strong = document.createElement('strong');
+                strong.textContent = label + ':';
+                container.appendChild(strong);
+                container.appendChild(document.createTextNode(' ' + String(value)));
+              }
+
               const journalSpan = document.createElement('span');
-              journalSpan.innerHTML = '<strong>Journal:</strong> ' + (paper.pub || 'Unknown');
+              addLabeledText(journalSpan, 'Journal', paper.pub || 'Unknown');
               metaDiv.appendChild(journalSpan);
 
               const dateSpan = document.createElement('span');
-              dateSpan.innerHTML = '<strong>Date:</strong> ' + (paper.pubdate || 'Unknown');
+              addLabeledText(dateSpan, 'Date', paper.pubdate || 'Unknown');
               metaDiv.appendChild(dateSpan);
 
               const citationSpan = document.createElement('span');
-              citationSpan.innerHTML = '<strong>Citations:</strong> ' + (paper.citation_count !== undefined ? paper.citation_count : 0);
+              addLabeledText(citationSpan, 'Citations', paper.citation_count !== undefined ? paper.citation_count : 0);
               metaDiv.appendChild(citationSpan);
 
               const bibcodeSpan = document.createElement('span');
@@ -758,7 +769,7 @@
             loaded = true;
           })
           .catch(err => {
-            status.innerHTML = 'Error: ' + err.message;
+            status.textContent = 'Error: ' + err.message;
             status.style.color = 'var(--red)';
             console.error(err);
           });

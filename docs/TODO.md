@@ -15,7 +15,9 @@ TODO
   to `muscatdb`, KEEP the Fernet KDF domain literal `muscat-db-user-settings:` and
   dual-read env vars during the window, or stored per-user LCO/ADS tokens can no longer
   be decrypted
-* add a static but navigable github-pages version as visual muscat-db documentation
+* [done] add a static but navigable github-pages version as visual muscat-db
+  documentation — see docs/gh-page.md (`muscat-db build-static-site`,
+  .github/workflows/pages.yml)
 * improve test coverage
 * setting user permissions (admin vs regular; is_admin column already exists)
 * database health check command — root-cause the audit-2026-06-30.md (Part 1)

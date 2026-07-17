@@ -31,23 +31,19 @@
         data-user-name="{{ j.user_name or '' }}"
         data-action-inst="{{ j.action_inst or '' }}"
         data-action-date="{{ j.action_date or '' }}"
+        data-job-inst="{{ j.inst }}"
+        data-job-date="{{ j.date }}"
+        data-job-target="{{ j.target }}"
+        data-job-run="{{ j.run_id }}"
+        data-photometry-url="{{ j.photometry_url or '' }}"
         data-lco-followup-ready="{% if j.type == 'lco_archive_download' and j.can_run_dataset_action %}1{% else %}0{% endif %}"
         data-search="{{ (j.target + ' ' + (j.run_name or '') + ' ' + j.inst + ' ' + j.date + ' ' + j.type + ' ' + (j.user_name or '') + ' ' + (j.details or '')) | lower }}">
       {% if j.type == 'lco_archive_download' %}
       <td class="job-actions lco-actions-cell">
-        {% if j.can_run_dataset_action %}
-          <button class="btn sm"
-                  data-inst="{{ j.action_inst }}"
-                  data-date="{{ j.action_date }}"
-                  onclick="runLcoArchiveCommand(this, 'scan')"
-                  title="muscat-db scan {{ j.action_inst }} {{ j.action_date }}">Scan</button>
-          <button class="btn sm"
-                  data-inst="{{ j.action_inst }}"
-                  data-date="{{ j.action_date }}"
-                  onclick="runLcoArchiveCommand(this, 'ingest-date')"
-                  title="muscat-db ingest-date {{ j.action_inst }} {{ j.action_date }}">Ingest</button>
+        {% if j.photometry_url %}
+          <a class="btn sm" href="{{ j.photometry_url }}" title="Open this dataset in Photometry" aria-label="Open this dataset in Photometry">🔭</a>
         {% endif %}
-        <button class="btn sm hide-btn" onclick="hideRow(this, '{{ j.key }}')" title="Hide this row">Hide</button>
+        <button class="btn sm hide-btn" data-job-action="hide" data-key="{{ j.key }}" title="Hide this row">Hide</button>
       </td>
       {% endif %}
       <td><strong><a href="{{ link_url }}">{{ j.target }}</a></strong></td>
@@ -58,7 +54,13 @@
       <td class="inst-cell"><span class="badge badge-blue">{{ j.inst }}</span></td>
       {% endif %}
       {% if j.type != 'ttv_fit' %}
-      <td class="mono">{{ j.date }}</td>
+      <td class="mono{% if j.type == 'lco_archive_download' %} obsdate-cell{% endif %}">
+        {% if j.type == 'lco_archive_download' and j.obslog_url %}
+          <a href="{{ j.obslog_url }}" title="Open obslog for {{ j.inst }} {{ j.date }}">{{ j.date }}</a>
+        {% else %}
+          {{ j.date }}
+        {% endif %}
+      </td>
       {% endif %}
       <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">{{ j.user_name or '—' }}</td>
       <td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">
@@ -111,7 +113,7 @@
                   data-date="{{ j.date }}"
                   data-target="{{ j.target }}"
                   data-run="{{ j.run_id }}"
-                  onclick="cancelJob(this)">Cancel</button>
+                  data-job-action="cancel">Cancel</button>
         {% elif j.state == 'cancelling' %}
           <button class="btn sm" disabled="">Cancelling…</button>
         {% elif j.state == 'pending' %}
@@ -122,12 +124,12 @@
                   data-date="{{ j.date }}"
                   data-target="{{ j.target }}"
                   data-run="{{ j.run_id }}"
-                  onclick="cancelJob(this)">Cancel</button>
+                  data-job-action="cancel">Cancel</button>
         {% else %}
-          <button class="btn sm" onclick="reRunJob(this, '{{ j.key }}')" title="Re-run this job">⟳ Re-run</button>
+          <button class="btn sm" data-job-action="rerun" data-key="{{ j.key }}" title="Re-run this job">⟳ Re-run</button>
         {% endif %}
-        <button class="btn sm log-btn" onclick="viewLog(this, '{{ j.type }}', '{{ j.inst }}', '{{ j.date }}', '{{ j.target }}', '{{ j.run_id }}')" title="View log" style="margin-left:0.25rem;">📄 Log</button>
-        <button class="btn sm hide-btn" onclick="hideRow(this, '{{ j.key }}')" title="Hide this row" style="margin-left:0.25rem;">✕</button>
+        <button class="btn sm log-btn" data-job-action="log" data-type="{{ j.type }}" data-inst="{{ j.inst }}" data-date="{{ j.date }}" data-target="{{ j.target }}" data-run="{{ j.run_id }}" title="View log" style="margin-left:0.25rem;">📄 Log</button>
+        <button class="btn sm hide-btn" data-job-action="hide" data-key="{{ j.key }}" title="Hide this row" style="margin-left:0.25rem;">✕</button>
       </td>
       {% endif %}
     </tr>
@@ -383,6 +385,18 @@
     return null;
   }
 
+  function setLcoObslogLink(row, url, date) {
+    if (!row || !url) return;
+    var cell = row.querySelector('.obsdate-cell');
+    if (!cell) return;
+    var link = document.createElement('a');
+    link.href = url;
+    link.textContent = date || cell.textContent.trim();
+    link.title = 'Open obslog for this dataset';
+    cell.innerHTML = '';
+    cell.appendChild(link);
+  }
+
   function ensureLcoArchiveRow(job) {
     if (!job || job.type !== 'lco_archive_download') return null;
     var existing = rowByKey(job.key);
@@ -399,6 +413,11 @@
     row.setAttribute('data-user-name', job.user_name || '');
     row.setAttribute('data-action-inst', job.action_inst || '');
     row.setAttribute('data-action-date', job.action_date || '');
+    row.setAttribute('data-job-inst', job.inst || '');
+    row.setAttribute('data-job-date', job.date || '');
+    row.setAttribute('data-job-target', job.target || '');
+    row.setAttribute('data-job-run', job.run_id || '');
+    row.setAttribute('data-photometry-url', job.photometry_url || '');
     row.setAttribute('data-lco-followup-ready', job.can_run_dataset_action ? '1' : '0');
     row.setAttribute('data-search', [
       job.target || '',
@@ -414,7 +433,7 @@
       '<td><strong><a href="/lco/archive">' + escapeHtml(job.target || 'LCO archive') + '</a></strong></td>' +
       '<td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></td>' +
       '<td class="inst-cell"><span class="badge badge-blue">' + escapeHtml(job.inst || 'lco') + '</span></td>' +
-      '<td class="mono">' + escapeHtml(job.date || 'mixed') + '</td>' +
+      '<td class="mono obsdate-cell">' + escapeHtml(job.date || 'mixed') + '</td>' +
       '<td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">' + escapeHtml(job.user_name || '—') + '</td>' +
       '<td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">' + escapeHtml(job.started_at_str || '—') + '</td>' +
       '<td class="mono elapsed-cell" data-elapsed="' + escapeHtml(job.elapsed || 0) + '">' + escapeHtml(job.state === 'pending' ? '—' : formatElapsed(job.elapsed || 0)) + '</td>' +
@@ -434,6 +453,7 @@
     updateRunName(row, job.run_name || '');
     updateDetails(row, job.details || '');
     replaceActions(row, job.state || '', job.key || '', 'lco_archive_download', job.inst || '', job.date || '', job.target || '', '');
+    setLcoObslogLink(row, job.obslog_url || '', job.action_date || job.date || '');
     return row;
   }
 
@@ -457,50 +477,79 @@
   function replaceStatusBadge(row, state) {
     var td = row.querySelector('.status-cell');
     if (!td) return;
-    var html = '';
-    if (state === 'done') html = '<span class="badge badge-green status-badge">Done</span>';
-    else if (state === 'error') html = '<span class="badge status-badge" style="background:var(--red);color:white;">Failed</span>';
-    else if (state === 'cancelled') html = '<span class="badge status-badge" style="background:var(--text-dim);color:white;">Cancelled</span>';
-    else if (state === 'running') html = '<span class="badge badge-amber status-badge pulse">Running</span>';
-    else if (state === 'cancelling') html = '<span class="badge status-badge" style="background:var(--text-dim);color:white;">Cancelling…</span>';
-    else if (state === 'pending') html = '<span class="badge status-badge" style="background:var(--blue);color:white;">Pending</span>';
-    else html = '<span class="badge badge-filter-other status-badge">' + state + '</span>';
-    td.innerHTML = html;
+    var labels = {done: 'Done', error: 'Failed', cancelled: 'Cancelled', running: 'Running', cancelling: 'Cancelling…', pending: 'Pending'};
+    var classes = {done: 'badge-green', running: 'badge-amber pulse'};
+    var badge = document.createElement('span');
+    badge.className = 'badge status-badge ' + (classes[state] || 'badge-filter-other');
+    if (state === 'error') badge.style.cssText = 'background:var(--red);color:white;';
+    else if (state === 'cancelled' || state === 'cancelling') badge.style.cssText = 'background:var(--text-dim);color:white;';
+    else if (state === 'pending') badge.style.cssText = 'background:var(--blue);color:white;';
+    badge.textContent = labels[state] || String(state || '');
+    td.replaceChildren(badge);
+  }
+
+  function actionButton(label, className, action, attrs) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.setAttribute('data-job-action', action);
+    button.textContent = label;
+    Object.keys(attrs || {}).forEach(function(name) {
+      button.setAttribute('data-' + name, String(attrs[name] == null ? '' : attrs[name]));
+    });
+    return button;
   }
 
   function replaceActions(row, state, key, type, inst, date, target, runId) {
     var td = row.querySelector('td.job-actions');
     if (!td) return;
     runId = runId || '';
+    row.setAttribute('data-job-inst', inst || '');
+    row.setAttribute('data-job-date', date || '');
+    row.setAttribute('data-job-target', target || '');
+    row.setAttribute('data-job-run', runId);
+    td.replaceChildren();
     if (type === 'lco_archive_download') {
-      var actionInst = row.getAttribute('data-action-inst') || '';
-      var actionDate = row.getAttribute('data-action-date') || '';
-      var htmlLco = '';
-      if (state === 'done' && actionInst && actionDate) {
+      var photometryUrl = row.getAttribute('data-photometry-url') || '';
+      if (state === 'done' && photometryUrl.indexOf('/photometry?') === 0) {
         row.setAttribute('data-lco-followup-ready', '1');
-        htmlLco += '<button class="btn sm" data-inst="' + actionInst + '" data-date="' + actionDate + '" onclick="runLcoArchiveCommand(this, \'scan\')" title="muscat-db scan ' + actionInst + ' ' + actionDate + '">Scan</button>';
-        htmlLco += '<button class="btn sm" data-inst="' + actionInst + '" data-date="' + actionDate + '" onclick="runLcoArchiveCommand(this, \'ingest-date\')" title="muscat-db ingest-date ' + actionInst + ' ' + actionDate + '">Ingest</button>';
+        var link = document.createElement('a');
+        link.className = 'btn sm';
+        link.href = photometryUrl;
+        link.title = 'Open this dataset in Photometry';
+        link.setAttribute('aria-label', link.title);
+        link.textContent = '🔭';
+        td.appendChild(link);
       } else {
         row.setAttribute('data-lco-followup-ready', '0');
       }
-      htmlLco += '<button class="btn sm hide-btn" onclick="hideRow(this, \'' + key + '\')" title="Hide this row">Hide</button>';
-      td.innerHTML = htmlLco;
+      var hideLco = actionButton('Hide', 'btn sm hide-btn', 'hide', {key: key});
+      hideLco.title = 'Hide this row';
+      td.appendChild(hideLco);
       return;
     }
-    var cancelAttrs = 'data-key="' + key + '" data-type="' + type + '" data-inst="' + inst + '" data-date="' + date + '" data-target="' + target + '" data-run="' + runId + '"';
-    var html = '';
+    var attrs = {key: key, type: type, inst: inst, date: date, target: target, run: runId};
+    var main;
     if (state === 'running') {
-      html = '<button class="btn sm danger" ' + cancelAttrs + ' onclick="cancelJob(this)">Cancel</button>';
+      main = actionButton('Cancel', 'btn sm danger', 'cancel', attrs);
     } else if (state === 'cancelling') {
-      html = '<button class="btn sm" disabled="">Cancelling…</button>';
+      main = actionButton('Cancelling…', 'btn sm', '', {});
+      main.disabled = true;
     } else if (state === 'pending') {
-      html = '<button class="btn sm danger" ' + cancelAttrs + ' onclick="cancelJob(this)">Cancel</button>';
+      main = actionButton('Cancel', 'btn sm danger', 'cancel', attrs);
     } else {
-      html = '<button class="btn sm" onclick="reRunJob(this, \'' + key + '\')" title="Re-run this job">⟳ Re-run</button>';
+      main = actionButton('⟳ Re-run', 'btn sm', 'rerun', {key: key});
+      main.title = 'Re-run this job';
     }
-    html += '<button class="btn sm log-btn" onclick="viewLog(this, \'' + type + '\', \'' + inst + '\', \'' + date + '\', \'' + target + '\', \'' + runId + '\')" title="View log" style="margin-left:0.25rem;">📄 Log</button>';
-    html += '<button class="btn sm hide-btn" onclick="hideRow(this, \'' + key + '\')" title="Hide this row" style="margin-left:0.25rem;">✕</button>';
-    td.innerHTML = html;
+    td.appendChild(main);
+    var log = actionButton('📄 Log', 'btn sm log-btn', 'log', attrs);
+    log.title = 'View log';
+    log.style.marginLeft = '0.25rem';
+    td.appendChild(log);
+    var hide = actionButton('✕', 'btn sm hide-btn', 'hide', {key: key});
+    hide.title = 'Hide this row';
+    hide.style.marginLeft = '0.25rem';
+    td.appendChild(hide);
   }
 
   function updateErrorDesc(row, text) {
@@ -733,10 +782,12 @@
       var row = rowByKey(key);
       if (row) {
         row.setAttribute('data-status', 'running');
-        var inst = row.querySelector('.job-actions .log-btn');
-        var instV = inst ? inst.getAttribute('onclick').match(/'([^']+)'/g).map(function(m) { return m.replace(/'/g,''); }) : [];
         replaceStatusBadge(row, 'running');
-        replaceActions(row, 'running', key, instV[0] || '', instV[1] || '', instV[2] || '', instV[3] || '', instV[4] || '');
+        replaceActions(
+          row, 'running', key, row.getAttribute('data-type') || '',
+          row.getAttribute('data-job-inst') || '', row.getAttribute('data-job-date') || '',
+          row.getAttribute('data-job-target') || '', row.getAttribute('data-job-run') || ''
+        );
         applyFilters();
       }
     })
@@ -773,34 +824,24 @@
       .catch(function(err) { pre.textContent = 'Error: ' + err.message; });
   };
 
-  window.runLcoArchiveCommand = function(btn, action) {
-    var inst = btn.getAttribute('data-inst') || '';
-    var date = btn.getAttribute('data-date') || '';
-    var endpoint = action === 'ingest-date' ? '/api/jobs/lco-archive/ingest-date' : '/api/jobs/lco-archive/scan';
-    var label = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'Running…';
-    fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ inst: inst, date: date })
-    })
-    .then(function(r) {
-      return r.json().then(function(d) {
-        if (!r.ok || !d.ok) throw new Error(d.error || d.detail || 'Command failed');
-        return d;
-      });
-    })
-    .then(function(d) {
-      btn.textContent = 'Done';
-      showMessageModal('Completed', (d.command || action) + ' completed');
-    })
-    .catch(function(err) {
-      showMessageModal('Error', err.message);
-      btn.disabled = false;
-      btn.textContent = label;
-    });
-  };
+  // Job identifiers are untrusted persisted data.  Keep them in data
+  // attributes and pass them as values; never interpolate them into inline JS.
+  document.addEventListener('click', function(event) {
+    var button = event.target.closest('[data-job-action]');
+    if (!button) return;
+    var action = button.getAttribute('data-job-action');
+    if (action === 'cancel') cancelJob(button);
+    else if (action === 'rerun') reRunJob(button, button.getAttribute('data-key') || '');
+    else if (action === 'hide') hideRow(button, button.getAttribute('data-key') || '');
+    else if (action === 'log') viewLog(
+      button,
+      button.getAttribute('data-type') || '',
+      button.getAttribute('data-inst') || '',
+      button.getAttribute('data-date') || '',
+      button.getAttribute('data-target') || '',
+      button.getAttribute('data-run') || ''
+    );
+  });
 
   // ── Live polling (in-place updates, no page reload) ────────────────────
   function refreshLiveElapsed() {
@@ -836,6 +877,8 @@
           row.setAttribute('data-status', f.state);
           if (f.action_inst != null) row.setAttribute('data-action-inst', f.action_inst || '');
           if (f.action_date != null) row.setAttribute('data-action-date', f.action_date || '');
+          if (f.photometry_url != null) row.setAttribute('data-photometry-url', f.photometry_url || '');
+          if (f.obslog_url) setLcoObslogLink(row, f.obslog_url, f.action_date || f.date || '');
           replaceStatusBadge(row, f.state);
           var td = row.querySelector('.elapsed-cell');
           if (td && f.elapsed != null) {
@@ -858,16 +901,15 @@
           updateRunName(row, f.run_name);
           updateDetails(row, f.details);
 
-          // Get inst/date/target from log-btn onclick
-          var logBtn = row.querySelector('.log-btn');
-          var parts = [];
-          if (logBtn) {
-            var m = logBtn.getAttribute('onclick').match(/'([^']+)'/g);
-            if (m) parts = m.map(function(x) { return x.replace(/'/g, ''); });
-          }
-          var type = rowType || parts[0] || '';
+          var type = rowType || '';
           if (type !== 'transit_fit' && type !== 'ttv_fit' && type !== 'lco_archive_download') type = 'photometry';
-          replaceActions(row, f.state, key, type, f.inst || parts[1] || '', f.date || parts[2] || '', f.target || parts[3] || '', parts[4] || '');
+          replaceActions(
+            row, f.state, key, type,
+            f.inst || row.getAttribute('data-job-inst') || '',
+            f.date || row.getAttribute('data-job-date') || '',
+            f.target || row.getAttribute('data-job-target') || '',
+            f.run_id || row.getAttribute('data-job-run') || ''
+          );
         }
 
         // Update running jobs in-place
@@ -885,6 +927,8 @@
               }
               if (rj.action_inst != null) row.setAttribute('data-action-inst', rj.action_inst || '');
               if (rj.action_date != null) row.setAttribute('data-action-date', rj.action_date || '');
+              if (rj.photometry_url != null) row.setAttribute('data-photometry-url', rj.photometry_url || '');
+              if (rj.obslog_url) setLcoObslogLink(row, rj.obslog_url, rj.action_date || rj.date || '');
               updateRunName(row, rj.run_name);
               updateDetails(row, rj.details);
               var userTd = row.querySelector('.user-cell');
@@ -896,15 +940,15 @@
               if (row.getAttribute('data-status') !== rj.state) {
                 row.setAttribute('data-status', rj.state);
                 replaceStatusBadge(row, rj.state);
-                var logBtn = row.querySelector('.log-btn');
-                var parts = [];
-                if (logBtn) {
-                  var m = logBtn.getAttribute('onclick').match(/'([^']+)'/g);
-                  if (m) parts = m.map(function(x) { return x.replace(/'/g, ''); });
-                }
-                var type = row.getAttribute('data-type') || parts[0] || '';
+                var type = row.getAttribute('data-type') || '';
                 if (type !== 'transit_fit' && type !== 'ttv_fit' && type !== 'lco_archive_download') type = 'photometry';
-                replaceActions(row, rj.state, rj.key, type, parts[1] || '', parts[2] || '', parts[3] || '', parts[4] || '');
+                replaceActions(
+                  row, rj.state, rj.key, type,
+                  rj.inst || row.getAttribute('data-job-inst') || '',
+                  rj.date || row.getAttribute('data-job-date') || '',
+                  rj.target || row.getAttribute('data-job-target') || '',
+                  rj.run_id || row.getAttribute('data-job-run') || ''
+                );
               }
             }
           });

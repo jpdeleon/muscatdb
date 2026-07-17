@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 {% block title %}{{ instrument }} {{ obsdate }} CCD{{ ccd }} — MuSCAT ObsLog{% endblock %}
 {% block content %}
-<h1><a href="/logs" style="color:var(--text-dim);font-weight:400;">Instruments</a>
-  / <a href="/{{ instrument }}" style="color:var(--text-dim);font-weight:400;">{{ instrument }}</a>
-  / <a href="/{{ instrument }}/{{ obsdate }}" style="color:var(--text-dim);font-weight:400;">{{ obsdate }}</a>
+<h1><a href="/logs" class="crumb">Instruments</a>
+  / <a href="/{{ instrument }}" class="crumb">{{ instrument }}</a>
+  / <a href="/{{ instrument }}/{{ obsdate }}" class="crumb">{{ obsdate }}</a>
   / CCD{{ ccd }}</h1>
 
 <table>
@@ -44,7 +44,7 @@
     {% endif %}
   </tr>
 {% else %}
-  <tr><td colspan="12">No frames for this CCD.</td></tr>
+  <tr><td colspan="12" class="empty-cell">No frames for this CCD.</td></tr>
 {% endfor %}
 </tbody>
 </table>

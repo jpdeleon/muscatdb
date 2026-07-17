@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block title %}{{ instrument }} {{ obsdate }} — MuSCAT ObsLog{% endblock %}
 {% block content %}
-<h1><a href="/logs" style="color:var(--text-dim);font-weight:400;">Instruments</a>
-  / <a href="/{{ instrument }}" style="color:var(--text-dim);font-weight:400;">{{ instrument }}</a>
+<h1><a href="/logs" class="crumb">Instruments</a>
+  / <a href="/{{ instrument }}" class="crumb">{{ instrument }}</a>
   / {{ obsdate }}</h1>
 
 {% for ccd in ccds %}
@@ -37,7 +37,7 @@
     <td><a href="/photometry?inst={{ instrument }}&date={{ obsdate }}&target={{ s.object | urlencode }}{% if instrument == 'sinistro' and s.telescope %}&site={{ s.telescope[:3] }}{% endif %}" title="View photometry">🔭</a></td>
   </tr>
 {% else %}
-  <tr><td colspan="10">No data for this CCD.</td></tr>
+  <tr><td colspan="10" class="empty-cell">No data for this CCD.</td></tr>
 {% endfor %}
 </tbody>
 </table>

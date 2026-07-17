@@ -17,6 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from starlette.testclient import TestClient
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
@@ -49,6 +50,41 @@ _WEB_CACHE_ATTRS = (
     "_harps_cache",
     "_boyle_cache",
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_proxy_auth_config(monkeypatch):
+    """Keep tests independent of an installed production proxy secret."""
+    monkeypatch.delenv("MUSCAT_REQUIRE_AUTH", raising=False)
+    monkeypatch.delenv("MUSCAT_PROXY_SECRET", raising=False)
+    monkeypatch.setenv(
+        "MUSCAT_PROXY_SECRET_FILE",
+        str(_DATA_DIR / ".missing-proxy-secret-for-tests"),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _browser_request_headers(monkeypatch):
+    """Make unsafe TestClient calls match real same-origin browser requests.
+
+    Browsers attach Origin to fetch/XHR mutations.  Individual CSRF tests can
+    pass ``X-Test-No-Origin: 1`` to deliberately model a non-browser/malicious
+    client without weakening the production middleware.
+    """
+    original = TestClient.request
+
+    def request(self, method, url, **kwargs):
+        headers = dict(kwargs.pop("headers", {}) or {})
+        omit_origin = headers.pop("X-Test-No-Origin", None)
+        if (
+            method.upper() not in {"GET", "HEAD", "OPTIONS", "TRACE"}
+            and not omit_origin
+            and not any(k.lower() in {"origin", "referer"} for k in headers)
+        ):
+            headers["Origin"] = "http://testserver"
+        return original(self, method, url, headers=headers, **kwargs)
+
+    monkeypatch.setattr(TestClient, "request", request)
 
 
 @pytest.fixture(autouse=True)

@@ -60,6 +60,16 @@ h2 { font-size: 1.15rem; font-weight: 500; margin-bottom: 1rem; color: var(--tex
 .mono { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.8rem; }
 .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
 
+/* Breadcrumb links inside an <h1> (obslog: Instruments / muscat3 / 250101 / …).
+   The parent segments read as dim, regular-weight links so the final,
+   non-link segment stays bold and full-strength — a clear "you are here". */
+h1 a.crumb {
+  color: var(--text-dim);
+  font-weight: 400;
+  transition: color 0.15s;
+}
+h1 a.crumb:hover { color: var(--accent); text-decoration: none; }
+
 /* ---------- Messages ---------- */
 .lco-msg {
   font-size: 0.82rem;
@@ -92,7 +102,18 @@ nav a {
   transition: color 0.15s;
 }
 nav a:hover { color: var(--accent); }
+nav a[aria-current="page"] {
+  color: var(--text);
+  text-decoration-line: underline;
+  text-decoration-color: var(--accent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.35rem;
+}
 nav .brand { color: var(--accent2); font-weight: 700; font-size: 1.1rem; }
+nav .brand[aria-current="page"] {
+  color: var(--accent2);
+  text-decoration-color: var(--accent2);
+}
 nav .spacer { flex: 1; }
 
 /* ---------- Cards ---------- */
@@ -174,6 +195,17 @@ th.resizing, td.col-resizing {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 tr:hover td { background: var(--surface); }
+/* Single-row "nothing here" cell spanning a table (No frames / No dates / …).
+   Dim, italic and centered so an empty table reads as intentional rather than
+   a broken row. */
+td.empty-cell {
+  color: var(--text-dim);
+  font-style: italic;
+  text-align: center;
+  padding: 1.5rem 0.75rem;
+  white-space: normal;
+}
+tr:hover td.empty-cell { background: transparent; }
 th.sortable { cursor: pointer; user-select: none; }
 th.sortable:hover { color: var(--accent); }
 th.sortable::after {

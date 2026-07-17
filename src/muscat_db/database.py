@@ -133,6 +133,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     user_name    TEXT NOT NULL DEFAULT ''
 );
 
+CREATE INDEX IF NOT EXISTS idx_jobs_state_started
+ON jobs(state, started_at DESC);
+
 CREATE TABLE IF NOT EXISTS users (
     username      TEXT PRIMARY KEY,
     password_hash TEXT NOT NULL DEFAULT '',
@@ -167,6 +170,10 @@ CREATE TABLE IF NOT EXISTS exposure_jobs (
     started_at  REAL NOT NULL,
     updated_at  REAL NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_exposure_jobs_active_instrument
+ON exposure_jobs(instrument)
+WHERE state IN ('pending', 'running', 'cancelling');
 
 -- App-owned closed-loop observation records are intentionally outside the
 -- frames/summaries/targets rebuild set and therefore survive daily rescans.
@@ -403,35 +410,37 @@ def _summary_rows(conn: sqlite3.Connection, *, instrument: str | None = None, ob
         where.append("obsdate = ?")
         params.append(obsdate)
     where_sql = f" WHERE {' AND '.join(where)}" if where else ""
-    # Extract the telescope/camera prefix from the LCO frame filename
-    # (e.g. 'lsc1m005' from 'lsc1m005-fa15-20250806-0058-e91').
-    # For non-LCO instruments the filename has no '-', so the whole name is used.
+    # Telescope is a Sinistro-only grouping dimension.  Extract its physical
+    # telescope/camera prefix from an LCO filename (e.g. ``lsc1m005`` from
+    # ``lsc1m005-fa15-20250806-0058-e91``).  A malformed Sinistro filename is
+    # kept as its own group rather than silently combining different physical
+    # telescopes.  MuSCAT filenames must use one shared empty key: using the
+    # whole filename here makes every frame a separate "summary" row.
     raw = conn.execute(
-        f"""WITH ranked AS (
+        f"""WITH keyed AS (
                SELECT *,
                       CASE
-                          WHEN INSTR(filename, '-') > 0
+                          WHEN instrument = 'sinistro' AND INSTR(filename, '-') > 0
                           THEN SUBSTR(filename, 1, INSTR(filename, '-') - 1)
-                          ELSE filename
-                      END AS telescope,
+                          WHEN instrument = 'sinistro' THEN filename
+                          ELSE ''
+                      END AS telescope
+               FROM frames
+               {where_sql}
+           ),
+           ranked AS (
+               SELECT *,
                       ROW_NUMBER() OVER (
                           PARTITION BY instrument, obsdate, ccd, object,
-                                       ROUND(exptime, 1), read_mode,
-                                       CASE WHEN INSTR(filename, '-') > 0
-                                            THEN SUBSTR(filename, 1, INSTR(filename, '-') - 1)
-                                            ELSE filename END
+                                       ROUND(exptime, 1), read_mode, telescope
                           ORDER BY jd_start ASC
                       ) as rn_asc,
                       ROW_NUMBER() OVER (
                           PARTITION BY instrument, obsdate, ccd, object,
-                                       ROUND(exptime, 1), read_mode,
-                                       CASE WHEN INSTR(filename, '-') > 0
-                                            THEN SUBSTR(filename, 1, INSTR(filename, '-') - 1)
-                                            ELSE filename END
+                                       ROUND(exptime, 1), read_mode, telescope
                           ORDER BY jd_start DESC
                       ) as rn_desc
-               FROM frames
-               {where_sql}
+               FROM keyed
            )
            SELECT
                f1.instrument, f1.obsdate, f1.ccd, f1.object, ROUND(f1.exptime, 1) AS exptime, f1.read_mode,
@@ -458,21 +467,15 @@ def _summary_rows(conn: sqlite3.Connection, *, instrument: str | None = None, ob
            JOIN (
                SELECT instrument, obsdate, ccd, object,
                       ROUND(exptime, 1) AS exptime_grp, read_mode,
-                      CASE WHEN INSTR(filename, '-') > 0
-                           THEN SUBSTR(filename, 1, INSTR(filename, '-') - 1)
-                           ELSE filename END AS telescope,
+                      telescope,
                       COUNT(*) AS nframes,
                       MAX(filter) AS filter,
                       coord_repr(ra, declination) AS coord,
                       MIN(NULLIF(airmass, 0)) AS airmass_min,
                       MAX(NULLIF(airmass, 0)) AS airmass_max
-               FROM frames
-               {where_sql}
+               FROM keyed
                GROUP BY instrument, obsdate, ccd, object,
-                        ROUND(exptime, 1), read_mode,
-                        CASE WHEN INSTR(filename, '-') > 0
-                             THEN SUBSTR(filename, 1, INSTR(filename, '-') - 1)
-                             ELSE filename END
+                        ROUND(exptime, 1), read_mode, telescope
            ) stats ON
                f1.instrument = stats.instrument AND
                f1.obsdate    = stats.obsdate    AND
@@ -481,7 +484,7 @@ def _summary_rows(conn: sqlite3.Connection, *, instrument: str | None = None, ob
                ROUND(f1.exptime, 1) = stats.exptime_grp AND
                f1.read_mode  = stats.read_mode  AND
                f1.telescope  = stats.telescope""",
-        params * 2,
+        params,
     ).fetchall()
     # columns: instrument, obsdate, ccd, object, exptime, read_mode,
     #          telescope, frame_start, frame_end, ut_start, ut_end,
@@ -1019,7 +1022,6 @@ def _is_obsdate(token: str) -> bool:
 def get_targets(db_path: str) -> list[dict]:
     """Return the per-target summary materialized at build_db time."""
     with get_conn(db_path) as conn:
-        _apply_schema(conn)  # ensure target_notes exists on first read
         return _targets_from_conn(conn)
 
 
@@ -1466,6 +1468,32 @@ def get_persisted_jobs() -> list[dict]:
             if not str(d.get("run_name") or "").strip():
                 d["run_name"] = str(d.get("run_id") or "").strip()
             result.append(d)
+        return result
+
+
+def get_active_persisted_jobs() -> list[dict]:
+    """Return only live job rows using the active-state index.
+
+    This is the read path used by the site-wide progress poller; unlike
+    :func:`get_persisted_jobs`, its work does not grow with job history.
+    """
+    path = db_path()
+    with get_conn(path) as conn:
+        _ensure_jobs_migrated(conn, path)
+        cur = conn.execute(
+            """SELECT * FROM jobs
+               WHERE state IN ('running', 'cancelling', 'pending')
+               ORDER BY started_at DESC"""
+        )
+        columns = [d[0] for d in cur.description]
+        result = []
+        for row in cur.fetchall():
+            item = dict(zip(columns, row))
+            item["inst"] = item["instrument"]
+            item["date"] = item["obsdate"]
+            if not str(item.get("run_name") or "").strip():
+                item["run_name"] = str(item.get("run_id") or "").strip()
+            result.append(item)
         return result
 
 

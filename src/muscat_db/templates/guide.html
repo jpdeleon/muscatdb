@@ -841,9 +841,9 @@ graph TD
     %% Proxy trust boundary
     D --> F["uvicorn 127.0.0.1:8001\n(muscat-db serve --nginx)"]:::default
     F --> G["Auth Middleware"]:::pipeline
-    G -->|"Peer is loopback?"| H{Trust header?}:::default
+    G -->|"Loopback peer + proxy secret valid?"| H{Trust header?}:::default
     H -->|Yes| I["request.state.user = X-Forwarded-User"]:::default
-    H -->|No, non-loopback peer| J["Ignore header, user = None"]:::default
+    H -->|No| J["Reject protected request"]:::default
 
     %% Per-user features
     I --> K["Photometry / Transit-Fit Launch"]:::default
@@ -857,10 +857,10 @@ graph TD
 
         <div style="margin-top: 1.5rem;">
           <ul>
-            <li><strong>Trust boundary:</strong> nginx authenticates the user and forwards <code>X-Forwarded-User</code>, but the FastAPI middleware only honors that header when the immediate TCP peer is the loopback socket. Running <code>muscat-db serve</code> without <code>--nginx</code> (e.g. bound to <code>0.0.0.0</code>) means the header is always ignored, so a client cannot spoof another user's identity by setting the header itself.</li>
+            <li><strong>Trust boundary:</strong> nginx authenticates the user and forwards <code>X-Forwarded-User</code> together with a private proxy secret. In <code>--nginx</code> mode, FastAPI fails closed unless the immediate peer is loopback and both values are valid, preventing another local account from bypassing nginx through port 8001. Ordinary <code>serve</code>/<code>restart</code> defaults to loopback and requires an explicit <code>--host</code> to expose a development deployment.</li>
             <li><strong>htpasswd management:</strong> <code>muscat-db htpasswd add/delete/list</code> is the only supported way to edit the auth file. Passwords are piped over stdin to <code>openssl passwd -apr1</code> (never as a CLI argument, which would leak via <code>ps</code>/<code>/proc</code>), and the file is written <code>0640 root:&lt;nginx group&gt;</code> so other local accounts on the shared server cannot read and offline-crack the hashes.</li>
             <li><strong>Per-user job attribution:</strong> the authenticated username is threaded through <code>phot.start_run()</code>, <code>fit.start_fit()</code>, and the job store, so the Jobs page's <code>User</code> column shows who launched each photometry or transit-fit run.</li>
-            <li><strong>Per-user LCO tokens:</strong> each user can save their own LCO API token on <code>/settings</code>. Tokens are encrypted at rest with Fernet symmetric encryption keyed from <code>MUSCAT_DB_SECRET</code>, stored in a <code>users</code> table, and override the server-wide <code>LCO_API_TOKEN</code> fallback when present. The settings POST endpoint checks the request's Origin/Referer against the server's own host as a CSRF defense, since FastAPI parses the body as JSON regardless of declared Content-Type (so a plain CORS-preflight assumption is not sufficient).</li>
+            <li><strong>Per-user LCO tokens:</strong> each user can save their own LCO API token on <code>/settings</code>. Tokens are encrypted at rest with Fernet symmetric encryption keyed from <code>MUSCAT_DB_SECRET</code>, stored in a <code>users</code> table, and override the server-wide <code>LCO_API_TOKEN</code> fallback when present. All unsafe HTTP methods centrally check Origin/Referer against the request host as a CSRF defense, since FastAPI can parse JSON from a browser simple request without a CORS preflight.</li>
           </ul>
         </div>
       </div>
@@ -1836,7 +1836,7 @@ erDiagram
             <span class="faq-icon">+</span>
           </div>
           <div class="faq-answer">
-            <p>nginx sets <code>X-Forwarded-User</code> after a successful HTTP Basic Auth login, but any client can set that same header directly if it can reach the FastAPI process. The middleware therefore only trusts the header when the request's immediate TCP peer is the loopback socket — i.e. when the app is actually sitting behind nginx on <code>127.0.0.1</code> (via <code>muscat-db serve --nginx</code>). If you run <code>muscat-db serve</code> bound to <code>0.0.0.0</code> without nginx in front, any <code>X-Forwarded-User</code> header is silently ignored and requests are treated as unauthenticated, rather than trusting a value an attacker could forge.</p>
+            <p>nginx sets <code>X-Forwarded-User</code> after a successful HTTP Basic Auth login and adds a private <code>X-MuSCAT-Proxy-Secret</code> header. In <code>--nginx</code> mode, the middleware requires a loopback peer, a valid username, and the matching proxy secret; protected requests fail with <code>401</code> otherwise. This prevents both remote header spoofing and direct local calls to uvicorn from impersonating nginx.</p>
           </div>
         </div>
 

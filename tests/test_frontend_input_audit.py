@@ -481,6 +481,39 @@ def test_transit_fit_archive_query_modal_uses_shared_style_variants():
     assert "', 'success')" in html
 
 
+def test_transit_center_prior_displays_timer_uniform_width_semantics():
+    """The UI must not present timer's full-width field as a +/- uncertainty."""
+    html = _read_template("transit_fit.html")
+    add_card = _function_body(html, "addPlanetCard")
+
+    assert "Transit-center prior" in add_card
+    assert "not a Gaussian uncertainty" in add_card
+    assert "Uniform prior: center, full width (days)" in add_card
+    assert 'aria-label="Predicted transit center in BJD"' in add_card
+    assert 'aria-label="Uniform prior full width in days"' in add_card
+    assert 'class="planet-tc-prior-bounds"' not in add_card
+    assert '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' not in add_card
+
+
+def test_transit_fit_results_summary_closes_its_layout_wrappers():
+    """The downloads row must not be swallowed by an unclosed summary div."""
+    html = _read_template("transit_fit.html")
+    start = html.index("{% if outputs.summary %}")
+    end = html.index("{% endif %}", start)
+    summary_block = html[start:end]
+
+    assert summary_block.count("<div") == summary_block.count("</div>")
+    assert "</table>\n      </div>\n    </div>" in summary_block
+
+
+def test_transit_fit_dense_option_rows_have_mobile_layout_hooks():
+    html = _read_template("transit_fit.html")
+
+    assert html.count('class="transit-option-grid"') >= 6
+    assert html.count('class="fit-option-row"') == 2
+    assert "@media (max-width: 560px)" in html
+
+
 def test_ephemeris_disclosure_triangles_use_standard_size():
     html = _read_template("ephemeris.html")
     css = STYLES_CSS.read_text()
@@ -585,6 +618,48 @@ def test_ephemeris_csv_import_saves_datasetless_view_before_success():
     assert "window.importTransitCSVRows = async function()" in html
     assert "await saveEphemerisViewNow()" in html
     assert "added and saved in this view" in html
+
+
+def test_ephemeris_unselect_clears_plot_without_deleting_imported_points():
+    html = _read_template("ephemeris.html")
+
+    remove_body = html.split("window.removeTarget = function(targetName) {", 1)[1].split("\n  };", 1)[0]
+    clear_body = _function_body(html, "clearFitPresentation")
+
+    assert "clearFitPresentation();" in remove_body
+    assert "computeFitRequestSeq += 1" in clear_body
+    assert "clearTimeout(computeFitTimer)" in clear_body
+    assert "Plotly.purge(plot)" in clear_body
+    assert "resultsGrid.innerHTML = ''" in clear_body
+    assert "removeItem(manualStorageKey())" not in remove_body
+    assert "removeItem(manualStorageKey())" not in clear_body
+
+
+def test_ephemeris_manual_planet_card_is_added_inline_and_persisted():
+    html = _read_template("ephemeris.html")
+
+    assert 'id="add-planet-btn"' in html
+    assert 'onclick="addManualPlanet()"' in html
+    assert 'id="manual-planet-dialog"' not in html
+
+    collect_state = _function_body(html, "collectEphemerisViewState")
+    apply_state = _function_body(html, "applyViewStateToStorage")
+    update_ui = _function_body(html, "updateCombinedUI")
+    render_cards = _function_body(html, "renderPlanetCards")
+    add_planet = html.split("window.addManualPlanet = function() {", 1)[1].split("\n  };", 1)[0]
+    remove_planet = html.split("window.removeManualPlanet = function(planet) {", 1)[1].split("\n  };", 1)[0]
+
+    assert "manual_planets:" in collect_state
+    assert "Array.isArray(state.manual_planets)" in apply_state
+    assert update_ui.index("loadManualPlanets()") < update_ui.index("renderPlanetCards(")
+    assert 'value="manual"' in render_cards
+    assert "!combinedPlanets.includes(planet)" in add_planet
+    assert "opts[planet + '_t0'] = ''" in add_planet
+    assert "opts[planet + '_period'] = ''" in add_planet
+    assert "saveManualPlanets()" in add_planet
+    assert "updateCombinedUI({skipFit: true})" in add_planet
+    assert "manualPoints.some" in remove_planet
+    assert "saveManualPlanets()" in remove_planet
 
 
 def test_ephemeris_ttv_run_selection_is_preserved_in_shareable_url():

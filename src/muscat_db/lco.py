@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime
 import concurrent.futures
 import hashlib
+import ipaddress
 import json
 import logging
 import math
@@ -52,6 +53,10 @@ _DOWNLOAD_INSTRUMENT_DIRS = {
     "muscat3": "MuSCAT3",
     "muscat4": "MuSCAT4",
 }
+_DOWNLOAD_HOSTS = frozenset({
+    "archive-api.lco.global",
+    "archive-lco-global.s3.amazonaws.com",
+})
 
 # Secondary-mirror defocus offset limits (mm), from LCO's live instrument
 # capabilities schema (observe.lco.global/api/instruments/): the InstrumentConfig
@@ -658,21 +663,63 @@ def frame_destination(frame: dict) -> tuple[str, str, Path]:
 
 
 def _validate_download_url(url: str) -> str:
-    """Only allow fetching over https from the LCO archive or its S3 backing.
+    """Allow only public HTTPS endpoints used by the LCO frame archive.
 
-    The download endpoint hands the frame's ``url`` straight to ``urlretrieve``;
-    without this an arbitrary URL (or a ``file://`` path) turns the endpoint into
-    an SSRF / local-file-read primitive.
+    Hostname allowlisting prevents arbitrary destinations, while resolving and
+    checking every address prevents an allowed hostname from reaching a local or
+    private service.  Redirects pass through the same function via
+    :class:`_ValidatedArchiveRedirectHandler`.
     """
     parsed = urllib.parse.urlparse(url or "")
     host = (parsed.hostname or "").lower()
-    if parsed.scheme != "https" or not (
-        host == "archive-api.lco.global"
-        or host.endswith(".lco.global")
-        or host.endswith(".amazonaws.com")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise LcoError(
+            "refusing to download from untrusted URL", status=400, detail=url
+        ) from exc
+    if (
+        parsed.scheme != "https"
+        or host not in _DOWNLOAD_HOSTS
+        or port not in (None, 443)
+        or parsed.username is not None
+        or parsed.password is not None
     ):
         raise LcoError("refusing to download from untrusted URL", status=400, detail=url)
+
+    try:
+        addresses = {
+            ipaddress.ip_address(sockaddr[0])
+            for _family, _type, _proto, _canonname, sockaddr in socket.getaddrinfo(
+                host, port or 443, type=socket.SOCK_STREAM
+            )
+        }
+    except (OSError, ValueError) as exc:
+        raise LcoError(
+            "could not resolve archive download host", status=502, detail=host
+        ) from exc
+    if not addresses or any(not address.is_global for address in addresses):
+        raise LcoError(
+            "refusing archive download host with non-public address",
+            status=400,
+            detail=host,
+        )
     return url
+
+
+class _ValidatedArchiveRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reapply the archive URL policy before urllib follows each redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _validate_download_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open_download_url(url: str, timeout: float):
+    """Open an archive URL with redirect validation enabled for every hop."""
+    _validate_download_url(url)
+    opener = urllib.request.build_opener(_ValidatedArchiveRedirectHandler())
+    return opener.open(url, timeout=timeout)
 
 
 # Per-frame download timeout (seconds), applied to each socket read. A stalled
@@ -695,7 +742,7 @@ def _download_to_file(url: str, dest: Path, timeout: float = _DOWNLOAD_TIMEOUT_S
     """
     tmp = dest.with_name(dest.name + ".part")
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        with _open_download_url(url, timeout=timeout) as response:
             with open(tmp, "wb") as fh:
                 shutil.copyfileobj(response, fh, _DOWNLOAD_CHUNK)
         tmp.replace(dest)
@@ -829,6 +876,9 @@ _ARCHIVE_DOWNLOAD_FRAME_WORKERS = max(1, int(os.environ.get("MUSCAT_LCO_ARCHIVE_
 _ARCHIVE_FUNPACK_WORKERS = max(1, int(os.environ.get("MUSCAT_LCO_ARCHIVE_FUNPACK_WORKERS", "2")))
 _ARCHIVE_DOWNLOAD_JOB_TTL_S = max(60, int(os.environ.get("MUSCAT_LCO_ARCHIVE_DOWNLOAD_JOB_TTL_S", "86400")))
 _ARCHIVE_DOWNLOAD_MAX_JOBS = max(10, int(os.environ.get("MUSCAT_LCO_ARCHIVE_DOWNLOAD_MAX_JOBS", "200")))
+_ARCHIVE_DOWNLOAD_MAX_FRAMES = max(1, int(os.environ.get("MUSCAT_LCO_ARCHIVE_MAX_FRAMES", "500")))
+_ARCHIVE_DOWNLOAD_MAX_PAYLOAD_BYTES = max(1024, int(os.environ.get("MUSCAT_LCO_ARCHIVE_MAX_PAYLOAD_BYTES", "2097152")))
+_ARCHIVE_DOWNLOAD_MAX_PER_USER = max(1, int(os.environ.get("MUSCAT_LCO_ARCHIVE_MAX_ACTIVE_PER_USER", "2")))
 _ARCHIVE_DOWNLOAD_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=_ARCHIVE_DOWNLOAD_WORKERS,
     thread_name_prefix="lco-archive-download",
@@ -841,6 +891,7 @@ def _archive_download_snapshot(job: dict) -> dict:
     frames = list(job["frames"])
     results = [dict(r) for r in job["results"]]
     funpack_results = [dict(r) for r in job.get("funpack_results", [])]
+    processing_results = [dict(r) for r in job.get("processing_results", [])]
     instruments: list[str] = []
     obsdates: list[str] = []
     objects: list[str] = []
@@ -878,6 +929,8 @@ def _archive_download_snapshot(job: dict) -> dict:
         "funpack_total": job.get("funpack_total", 0),
         "funpack_done": len(funpack_results),
         "funpack_results": funpack_results,
+        "processing_results": processing_results,
+        "photometry_url": job.get("photometry_url") or "",
         "instruments": instruments,
         "obsdates": obsdates,
         "objects": objects,
@@ -885,7 +938,82 @@ def _archive_download_snapshot(job: dict) -> dict:
         "started_at": job["started_at"],
         "finished_at": job.get("finished_at"),
         "error": job.get("error"),
+        "user_name": job.get("user_name", ""),
     }
+
+
+def _archive_dataset_pairs(frames: list[dict]) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for frame in frames:
+        inst, obsdate, _dest = frame_destination(frame)
+        pair = (inst, obsdate)
+        if pair not in pairs:
+            pairs.append(pair)
+    return pairs
+
+
+def _archive_photometry_url(
+    datasets: list[tuple[str, str]], frames: list[dict]
+) -> str:
+    if len(datasets) != 1:
+        return ""
+    inst, obsdate = datasets[0]
+    objects: list[str] = []
+    for frame in frames:
+        target = str(
+            frame.get("OBJECT") or frame.get("object") or frame.get("target_name") or ""
+        ).strip()
+        if target and target not in objects:
+            objects.append(target)
+    params = {"inst": inst, "date": obsdate}
+    if len(objects) == 1:
+        params["target"] = objects[0]
+    return "/photometry?" + urllib.parse.urlencode(params)
+
+
+def _process_archive_datasets(job_id: str, frames: list[dict]) -> None:
+    """Serially scan and ingest every dataset in an interactive download."""
+    from muscat_db.database import ingest_date
+    from muscat_db.scanner import scan_date
+
+    root = download_root()
+    if root is None:
+        raise RuntimeError("MUSCAT_LCO_DIR or MUSCAT_DATA_DIR must be configured")
+    datasets = _archive_dataset_pairs(frames)
+    if not datasets:
+        raise RuntimeError("Could not determine an instrument/date to ingest")
+
+    for inst, obsdate in datasets:
+        with _ARCHIVE_DOWNLOAD_LOCK:
+            current = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
+            if current is None:
+                return
+            current["phase"] = "scanning"
+        scan_result = scan_date(inst, obsdate, max_workers=1, data_root=str(root))
+        if not scan_result or not scan_result.get("total"):
+            raise RuntimeError(f"scan found no reduced FITS files for {inst} {obsdate}")
+
+        with _ARCHIVE_DOWNLOAD_LOCK:
+            current = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
+            if current is None:
+                return
+            current["phase"] = "ingesting"
+        count = ingest_date(_db_path(), inst, obsdate)
+        with _ARCHIVE_DOWNLOAD_LOCK:
+            current = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
+            if current is None:
+                return
+            current["processing_results"].append({
+                "instrument": inst,
+                "obsdate": obsdate,
+                "scanned_count": int(scan_result.get("total") or 0),
+                "ingested_count": int(count or 0),
+            })
+
+    with _ARCHIVE_DOWNLOAD_LOCK:
+        current = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
+        if current is not None:
+            current["photometry_url"] = _archive_photometry_url(datasets, frames)
 
 
 def _prune_archive_download_jobs(now: float | None = None, reserve_slots: int = 0) -> None:
@@ -943,6 +1071,8 @@ def _run_archive_download_job(job_id: str) -> None:
             results = [dict(r) for r in current["results"]]
             funpack_paths = _funpack_paths(results)
             current["funpack_total"] = len(funpack_paths)
+            auto_ingest = bool(current.get("auto_ingest"))
+        download_failed = any(result.get("status") == "error" for result in results)
         funpack_failed = False
         if funpack_paths:
             max_workers = min(_ARCHIVE_FUNPACK_WORKERS, len(funpack_paths))
@@ -970,12 +1100,17 @@ def _run_archive_download_job(job_id: str) -> None:
                         if current is None:
                             return
                         current["funpack_results"].append(result)
+        processing_failed = download_failed or funpack_failed
+        if not processing_failed and auto_ingest:
+            _process_archive_datasets(job_id, frames)
         with _ARCHIVE_DOWNLOAD_LOCK:
             current = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
             if current is not None:
                 current["phase"] = "done"
-                current["state"] = "error" if funpack_failed else "done"
-                if funpack_failed:
+                current["state"] = "error" if processing_failed else "done"
+                if download_failed:
+                    current["error"] = "One or more FITS downloads failed"
+                elif funpack_failed:
                     current["error"] = "One or more funpack commands failed"
                 current["finished_at"] = time.time()
                 _prune_archive_download_jobs(current["finished_at"])
@@ -989,21 +1124,53 @@ def _run_archive_download_job(job_id: str) -> None:
                 _prune_archive_download_jobs(current["finished_at"])
 
 
-def start_archive_download(frames: list[dict], overwrite: bool = False) -> dict:
+def _compact_archive_frames(frames: list[dict]) -> list[dict]:
+    """Retain only metadata consumed by download, ingest, and status paths."""
+    keys = {
+        "filename", "basename", "SITEID", "site_id", "TELID", "telescope_id",
+        "INSTRUME", "instrument_id", "DATE_OBS", "observation_date", "DAY_OBS",
+        "OBJECT", "object", "target_name", "url",
+    }
+    return [{key: frame[key] for key in keys if key in frame} for frame in frames]
+
+
+def start_archive_download(
+    frames: list[dict], overwrite: bool = False, auto_ingest: bool = False,
+    user_name: str | None = None,
+) -> dict:
     """Queue an LCO archive download in a dedicated worker and return its state."""
     if not isinstance(frames, list) or not frames:
         raise LcoError("no frames selected", status=400)
+    if len(frames) > _ARCHIVE_DOWNLOAD_MAX_FRAMES:
+        raise LcoError(
+            f"At most {_ARCHIVE_DOWNLOAD_MAX_FRAMES} frames are allowed per download",
+            status=413,
+        )
+    if any(not isinstance(frame, dict) for frame in frames):
+        raise LcoError("each frame must be an object", status=400)
+    compact_frames = _compact_archive_frames(frames)
+    payload_bytes = len(json.dumps(compact_frames, separators=(",", ":"), ensure_ascii=True).encode("utf-8"))
+    if payload_bytes > _ARCHIVE_DOWNLOAD_MAX_PAYLOAD_BYTES:
+        raise LcoError(
+            f"Frame payload exceeds {_ARCHIVE_DOWNLOAD_MAX_PAYLOAD_BYTES} bytes",
+            status=413,
+        )
+    user_key = (user_name or "anonymous").strip() or "anonymous"
     job_id = uuid.uuid4().hex[:16]
     now = time.time()
     job = {
         "job_id": job_id,
         "state": "pending",
-        "frames": [dict(frame) for frame in frames],
-        "frames_total": len(frames),
+        "frames": compact_frames,
+        "frames_total": len(compact_frames),
+        "user_name": user_key,
         "overwrite": overwrite,
         "results": [],
         "funpack_results": [],
         "funpack_total": 0,
+        "processing_results": [],
+        "photometry_url": "",
+        "auto_ingest": bool(auto_ingest),
         "phase": "pending",
         "started_at": now,
         "finished_at": None,
@@ -1011,6 +1178,16 @@ def start_archive_download(frames: list[dict], overwrite: bool = False) -> dict:
     }
     with _ARCHIVE_DOWNLOAD_LOCK:
         _prune_archive_download_jobs(now, reserve_slots=1)
+        active_for_user = sum(
+            1 for existing in _ARCHIVE_DOWNLOAD_JOBS.values()
+            if existing.get("state") in {"pending", "running"}
+            and existing.get("user_name", "anonymous") == user_key
+        )
+        if active_for_user >= _ARCHIVE_DOWNLOAD_MAX_PER_USER:
+            raise LcoError(
+                "Too many active LCO archive downloads for this user",
+                status=429,
+            )
         if len(_ARCHIVE_DOWNLOAD_JOBS) >= _ARCHIVE_DOWNLOAD_MAX_JOBS:
             raise LcoError(
                 "Too many LCO archive download jobs are queued",
