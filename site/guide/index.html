@@ -1,0 +1,2930 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pipeline Guide — MuSCAT-db</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230f1117' stroke='%2345d6b5' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='14' fill='none' stroke='%236c8cff' stroke-width='2.5'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%2345d6b5'/%3E%3Cg fill='%23e1e4ed'%3E%3Ccircle cx='12' cy='14' r='1.6'/%3E%3Ccircle cx='52' cy='18' r='1.2'/%3E%3Ccircle cx='50' cy='48' r='1.8'/%3E%3Ccircle cx='14' cy='50' r='1.4'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230f1117' stroke='%2345d6b5' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='14' fill='none' stroke='%236c8cff' stroke-width='2.5'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%2345d6b5'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../static/styles.css">
+<script src="../static/js/storage.js"></script>
+<script src="../static/js/format.js"></script>
+<script src="../static/js/jobPolling.js"></script>
+<script>
+  // Global fetch-activity tracker. Installed in <head> so it wraps window.fetch
+  // before any page script runs, giving every page a consistent loading
+  // indicator while it queries data (FOV → Gaia, ephemeris datasets, LCO
+  // schedule, …). It counts in-flight *same-origin* /api/ requests only, so the
+  // background job/status pollers (which hit /jobs/status, not /api/) never
+  // flash the bar. The loading-bar controller below subscribes via onChange.
+  (function () {
+    var origFetch = window.fetch ? window.fetch.bind(window) : null;
+    if (!origFetch) return;
+    var active = 0;
+    var tracker = { active: 0, onChange: null };
+    function notify() {
+      tracker.active = active;
+      if (typeof tracker.onChange === 'function') {
+        try { tracker.onChange(active); } catch (e) { /* never let UI break fetch */ }
+      }
+    }
+    function begin() { active++; notify(); }
+    function end() { active = Math.max(0, active - 1); notify(); }
+    function shouldTrack(input) {
+      try {
+        var urlStr = (typeof input === 'string') ? input
+                   : (input && input.url) ? input.url : String(input);
+        var u = new URL(urlStr, window.location.href);
+        var isStatus = u.pathname.endsWith('/status') || u.pathname.endsWith('/status-batch');
+        return u.origin === window.location.origin && u.pathname.indexOf('/api/') === 0 && !isStatus;
+      } catch (e) { return false; }
+    }
+    window.fetch = function (input, init) {
+      if (!shouldTrack(input)) return origFetch(input, init);
+      begin();
+      var p;
+      try {
+        p = origFetch(input, init);
+      } catch (e) {
+        end();
+        throw e;
+      }
+      p.then(end, end);
+      return p;
+    };
+    window.MuscatFetchTracker = tracker;
+  })();
+</script>
+</head>
+<body>
+<!--muscat-static-snapshot-banner-->
+<div id="snapshot-banner" role="note" style="display:flex;align-items:center;gap:.6rem;padding:.5rem .9rem;background:#3a2d00;color:#ffe9a8;font:500 .85rem/1.3 system-ui,sans-serif;border-bottom:1px solid #5a4700;"><span>&#128196; Static documentation snapshot of <strong>muscat-db</strong> &mdash; live data &amp; actions are disabled.</span><button type="button" aria-label="Dismiss" onclick="this.closest('#snapshot-banner').remove()" style="margin-left:auto;background:none;border:0;color:inherit;font-size:1.1rem;line-height:1;cursor:pointer;padding:0 .3rem;">&times;</button></div>
+<div id="loading-bar" role="progressbar" aria-label="Loading"></div>
+<nav>
+  <a class="brand" href="../" data-nav-section="home">MuSCAT-db</a>
+  <a href="../logs/" data-nav-section="obslog">ObsLog</a>
+  <a id="target-nav-link" href="../target/V1298_Tau/" data-nav-section="target">Target</a>
+  <a id="photometry-nav-link" href="../photometry/muscat/251119/V1298_Tau/" data-nav-section="photometry">Photometry</a>
+  <a id="transit-fit-nav-link" href="../transit-fit/muscat/260123/HAT-P-32b/" data-nav-section="transit-fit">Transit Fit</a>
+  <a id="ephemeris-nav-link" href="../ephemeris/" data-nav-section="ephemeris">Ephemeris</a>
+  <a id="ttv-fit-nav-link" href="../ephemeris/" style="display: none;">TTV Fit</a>
+  <a href="../jobs/" data-nav-section="jobs">Jobs</a>
+  <span class="spacer"></span>
+  <a href="../lco/schedule/" data-nav-section="lco">LCO</a>
+  <a href="../fov/" data-nav-section="fov">FOV</a>
+  <a href="../exposure/" data-nav-section="exposure">Exp Calc</a>
+  <a href="../toi/" data-nav-section="toi">TOI</a>
+  <a href="../nexsci/" data-nav-section="nexsci">NExScI</a>
+  <a href="../guide/" data-nav-section="guide" style="margin-right: 0.5rem;">Guide</a>
+  <a href="../settings/" data-nav-section="settings">Settings</a>
+  <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">
+    <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="4"/>
+      <line x1="12" y1="2"  x2="12" y2="5"/>
+      <line x1="12" y1="19" x2="12" y2="22"/>
+      <line x1="2"  y1="12" x2="5"  y2="12"/>
+      <line x1="19" y1="12" x2="22" y2="12"/>
+      <line x1="4.5"  y1="4.5"  x2="6.6"  y2="6.6"/>
+      <line x1="17.4" y1="17.4" x2="19.5" y2="19.5"/>
+      <line x1="4.5"  y1="19.5" x2="6.6"  y2="17.4"/>
+      <line x1="17.4" y1="6.6"  x2="19.5" y2="4.5"/>
+    </svg>
+    <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>
+    </svg>
+  </button>
+</nav>
+<script>
+  (function () {
+    var path = window.location.pathname.replace(/\/+$/, '') || '/';
+    var section = {
+      '/': 'home',
+      '/logs': 'obslog',
+      '/target': 'target',
+      '/photometry': 'photometry',
+      '/transit-fit': 'transit-fit',
+      '/ephemeris': 'ephemeris',
+      '/jobs': 'jobs',
+      '/fov': 'fov',
+      '/exposure': 'exposure',
+      '/toi': 'toi',
+      '/nexsci': 'nexsci',
+      '/guide': 'guide',
+      '/settings': 'settings'
+    }[path];
+
+    if (path.indexOf('/lco/') === 0) section = 'lco';
+    if (/^\/(?:muscat|muscat2|muscat3|muscat4|sinistro)(?:\/|$)/.test(path)) {
+      section = 'obslog';
+    }
+
+    document.querySelectorAll('nav a[data-nav-section]').forEach(function (link) {
+      if (link.dataset.navSection === section) {
+        link.setAttribute('aria-current', 'page');
+      }
+    });
+  })();
+</script>
+<div class="container">
+
+<style>
+  /* Customize Mermaid nodes using CSS variables for theme compatibility */
+  .mermaid .node.default rect,
+  .mermaid .node.default circle,
+  .mermaid .node.default polygon {
+    fill: var(--surface) !important;
+    stroke: var(--border) !important;
+  }
+  .mermaid .node.default .label,
+  .mermaid .node.default text {
+    color: var(--text) !important;
+    fill: var(--text) !important;
+  }
+  .mermaid .node.db rect,
+  .mermaid .node.db circle,
+  .mermaid .node.db polygon {
+    fill: var(--surface2) !important;
+    stroke: var(--accent) !important;
+    stroke-width: 2px !important;
+  }
+  .mermaid .node.db .label,
+  .mermaid .node.db text {
+    color: var(--text) !important;
+    fill: var(--text) !important;
+  }
+  .mermaid .node.pipeline rect,
+  .mermaid .node.pipeline circle,
+  .mermaid .node.pipeline polygon {
+    fill: var(--surface2) !important;
+    stroke: var(--accent2) !important;
+    stroke-width: 2px !important;
+  }
+  .mermaid .node.pipeline .label,
+  .mermaid .node.pipeline text {
+    color: var(--text) !important;
+    fill: var(--text) !important;
+  }
+  
+  /* Style connection lines and edge labels */
+  .mermaid .edgePath .path {
+    stroke: var(--text-dim) !important;
+    stroke-width: 1.5px !important;
+  }
+  .mermaid .marker {
+    fill: var(--text-dim) !important;
+    stroke: var(--text-dim) !important;
+  }
+  .mermaid .edgeLabel {
+    background-color: var(--bg) !important;
+    color: var(--text-dim) !important;
+  }
+  .mermaid .edgeLabel rect {
+    fill: var(--bg) !important;
+  }
+
+  /* Collapsible Cards Styling */
+  .workflow-card.collapsible {
+    transition: all 0.3s ease-in-out;
+  }
+  .workflow-card.collapsible .card-header-toggle {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    user-select: none;
+    gap: 1.5rem;
+  }
+  .workflow-card.collapsible .toggle-icon {
+    font-size: 1rem;
+    color: var(--text-dim);
+    transition: transform 0.3s ease;
+  }
+  .workflow-card.collapsible.collapsed .toggle-icon {
+    transform: rotate(-90deg);
+  }
+  .workflow-card.collapsible .card-body {
+    max-height: 2500px;
+    opacity: 1;
+    overflow: hidden;
+    transition: max-height 0.4s cubic-bezier(0, 1, 0, 1), opacity 0.3s ease, margin-top 0.3s ease;
+    margin-top: 1.5rem;
+  }
+  .workflow-card.collapsible.collapsed .card-body {
+    max-height: 0 !important;
+    opacity: 0;
+    margin-top: 0;
+  }
+
+  /* Upstream repository link at the top of an engine's card */
+  .repo-link {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    margin: 0 0 1rem 0;
+  }
+  .repo-link a {
+    color: var(--accent);
+    text-decoration: none;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .repo-link a:hover { text-decoration: underline; }
+
+  /* Table of Contents and Layout Grid */
+  .workflow-layout {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    gap: 2rem;
+    align-items: start;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  .workflow-toc {
+    position: sticky;
+    top: 5rem;
+  }
+  .toc-sticky-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+  }
+  .toc-link {
+    color: var(--text-dim);
+    text-decoration: none;
+    font-size: 0.95rem;
+    transition: color 0.2s, padding-left 0.2s;
+    display: block;
+    border-left: 2px solid transparent;
+    padding-left: 0.5rem;
+  }
+  .toc-link:hover, .toc-link.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+    padding-left: 0.75rem;
+    text-decoration: none;
+  }
+  .workflow-content {
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+    min-width: 0; /* Prevents flex children from stretching outside boundary */
+  }
+
+    /* FAQ accordion style */
+  .faq-section {
+    margin-top: 0;
+  }
+  .faq-item {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 0.75rem;
+    overflow: hidden;
+    background: var(--surface);
+  }
+  .faq-question {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.85rem 1.2rem;
+    cursor: pointer;
+    user-select: none;
+    font-weight: 500;
+    color: var(--text);
+    transition: background 0.2s;
+  }
+  .faq-question:hover {
+    background: var(--surface2);
+  }
+  .faq-icon {
+    font-size: 1.2rem;
+    color: var(--accent);
+    font-weight: bold;
+    flex-shrink: 0;
+    transition: transform 0.2s;
+  }
+  .faq-item.open .faq-icon {
+    transform: rotate(45deg);
+  }
+  .faq-answer {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.35s ease, padding 0.25s ease;
+    padding: 0 1.2rem;
+    color: var(--text-dim);
+    font-size: 0.92rem;
+    line-height: 1.5;
+  }
+  .faq-answer p { margin-top: 0; }
+  .faq-answer p:last-child { margin-bottom: 0; }
+  .faq-answer ul, .faq-answer ol { margin: 0.5rem 0; padding-left: 1.3rem; }
+  .faq-answer li { margin-bottom: 0.3rem; }
+  .faq-item.open .faq-answer {
+    max-height: 1000px;
+    padding: 0 1.2rem 1rem 1.2rem;
+  }
+
+  /* Responsive Adjustments */
+  @media (max-width: 992px) {
+    .workflow-layout {
+      grid-template-columns: 1fr;
+    }
+    .workflow-toc {
+      position: static;
+    }
+  }
+</style>
+
+<div class="workflow-layout">
+  <aside class="workflow-toc">
+    <div class="toc-sticky-card">
+      <h3 style="color: var(--text); font-size: 1rem; font-weight: 600; margin-bottom: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; margin-top: 0;">
+        On This Page
+      </h3>
+      <ul style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.75rem;">
+        <li><a href="#muscat-card" class="toc-link">MuSCAT-db Pipeline</a></li>
+        <li><a href="#prose-card" class="toc-link">prose Photometry</a></li>
+        <li><a href="#timer-card" class="toc-link">timer Transit Fitting</a></li>
+        <li><a href="#ephemeris-card" class="toc-link">Ephemeris O-C Plotter</a></li>
+        <li><a href="#ttv-card" class="toc-link">harmonic TTV Fitting</a></li>
+        <li><a href="#fov-card" class="toc-link">FOV Optimizer</a></li>
+        <li><a href="#lco-schedule-card" class="toc-link">LCO Schedule</a></li>
+        <li><a href="#lco-archive-card" class="toc-link">LCO Archive</a></li>
+        <li><a href="#exposure-calc-card" class="toc-link">Exposure Calculator</a></li>
+        <li><a href="#catalog-browsers-card" class="toc-link">Catalog Browsers</a></li>
+        <li><a href="#auth-card" class="toc-link">Multi-User Auth</a></li>
+        <li><a href="#schema-card" class="toc-link">Database Schema</a></li>
+        <li><a href="#execution-details" class="toc-link">Pipeline Features</a></li>
+        <li><a href="../docs/" target="_blank" class="toc-link">API &amp; Documentation</a></li>
+        <li><a href="#faq-card" class="toc-link">FAQs</a></li>
+      </ul>
+    </div>
+  </aside>
+
+  <div class="workflow-content">
+    <div class="workflow-card collapsible collapsed" id="muscat-card">
+      <div class="card-header-toggle" onclick="toggleCard('muscat-card')">
+        <div class="header-text-wrap">
+          <h1 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; margin-top: 0;">
+            MuSCAT-db Pipeline Workflow
+          </h1>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            An overview of observation-log ingestion, analysis pipelines, scheduling, and the closed-loop results workflow.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% Data Ingestion Stage
+    A["Raw FITS Files\n(MUSCAT_DATA_DIR)"]:::default -->|1. scan| B["Observation CSV Logs\n($MUSCAT_OBSLOG_DIR)"]:::default
+    B -->|2. build-db| C["SQLite Database\n(muscat.db)"]:::db
+
+    %% Web UI
+    C -->|Reads DB| D["Web GUI Dashboard"]:::default
+    D -->|Explore Targets, Logs, Exposures| D
+
+    %% Multi-user auth
+    AUTH["nginx Reverse Proxy\n(HTTP Basic Auth)"]:::pipeline -->|X-Forwarded-User| D
+    D -->|Per-user config| SET["Settings Page\n(/settings, encrypted LCO token)"]:::default
+
+    %% Target page integrations
+    D -->|Search papers| ADSN["NASA ADS Publications\n(target page)"]:::pipeline
+    D -->|Browse catalogs| CAT["TOI / NExScI Catalog Pages\n(/toi, /nexsci)"]:::pipeline
+    CAT -->|Link to target| D
+
+    %% Photometry Stage
+    D -->|Configure & Launch| E["Photometry Job Queue"]:::pipeline
+    E -->|Runs calibrated prose| F["Photometry Reduction"]:::default
+    F -->|CSVs & diagnostics| G["Photometry Results\n($MUSCAT_PROSE_DIR/inst/date/_runs/target/run/)"]:::default
+
+    %% Transit Fit Stage
+    G -->|Inputs lightcurves| H["Transit Fit Job Queue"]:::pipeline
+    D -->|Configure & Launch| H
+    H -->|Runs timer MCMC sampler| I["Transit Fitting"]:::default
+    I -->|Posteriors & diagnostics| J["Transit Results\n($MUSCAT_TIMER_DIR/inst/date/target/run/)"]:::default
+
+    %% Ephemeris Analysis
+    J -->|Transit centers Tc| L["Ephemeris O-C Analysis"]:::pipeline
+    L -->|Interactive fit| M["O-C Plot & Ephemeris\n(saved views in DB)"]:::default
+
+    %% TTV Fit Stage
+    L -->|Transit times| R1["TTV Fit Job Queue"]:::pipeline
+    R1 -->|Runs harmonic emcee sampler| R2["Multi-Harmonic TTV Fit"]:::default
+    R2 -->|Posteriors & plots| R3["TTV Results\n($MUSCAT_TTV_DIR/target/_runs/run/)"]:::default
+
+    %% Exposure Calculator & Targets API
+    D -->|Exposure times| N["Exposure Calculator"]:::pipeline
+    N -->|Calibration coefficients| C
+    D -->|Query past obs| N1["Exposure Target API\n(/api/exposure/target/{target})"]:::pipeline
+    N1 -->|Retrieves summary| D
+
+    %% FOV Optimizer
+    D -->|Optimize FOV| N2["FOV Optimizer\n(/fov)"]:::pipeline
+    N2 -->|Visualizes field & comps| D
+
+    %% LCO Integration
+    D -->|LCO Token & Config| O["LCO Observation Portal"]:::default
+    SET -->|Per-user token overrides global| O
+    O -->|Schedule observations| P["Submit Requestgroups"]:::pipeline
+    O -->|Download archive data| Q["Reduce & Ingest FITS"]:::pipeline
+    O -->|Optimize pointing| N2
+    O -->|Estimate exposures| N
+
+    %% Jobs monitoring & Results loop
+    E -->|Track execution| K["Jobs Page\n(per-user attribution)"]:::default
+    H -->|Track execution| K
+    R1 -->|Track execution| K
+    G -->|Display preview & plots| D
+    J -->|Display parameters & plots| D
+    M -->|Inspect TTVs, update| D
+    R3 -->|Display posteriors & plots| D
+    P -->|Track submission| K
+    Q -->|Add to muscat-db| B
+          </pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="prose-card">
+      <div class="card-header-toggle" onclick="toggleCard('prose-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            prose Photometry Pipeline Workflow
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Detailed step-by-step reduction flow of the calibrated science frames within the <code>prose</code> photometry engine.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <p class="repo-link">
+          Repository: <a href="https://github.com/jpdeleon/prose2" target="_blank" rel="noopener noreferrer">github.com/jpdeleon/prose2</a>
+        </p>
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% Input
+    A["Science FITS Files\n(raw MuSCAT/MuSCAT2; BANZAI e91 for MuSCAT3/4/Sinistro)"]:::default --> B["Calibration when required\nthen band grouping from FILTER headers"]:::default
+    
+    %% Setup & Reference Frame
+    B --> C["Reference Construction\n(position: first/middle frame; quality: clean local anchor\n+ registered top-K temporal persistence)"]:::default
+    C --> D["Point Source Detection\n(Persistent stars on the quality anchor; single-frame detections in position mode)"]:::default
+    D --> E["Celestial Target Identification\n(WCS matching / MAST coordinate resolution)"]:::default
+    E --> F["Gaia Contamination Sizing\n(Sizes sky annulus RIN & ROUT to exclude contaminants)"]:::default
+    F --> G["Aperture Sizing Grid\n(Multiple radii defined from FWHM up to RIN)"]:::default
+    
+    %% Frame-by-Frame Parallel Photometry
+    B --> H["Parallel Frame Reduction\n(prose.SequenceParallel)"]:::pipeline
+    G --> H
+    H --> H1["CCD Trim\n(Trim borders/edge noise)"]:::default
+    H1 --> H2["Gaussian Modeling\n(Gaussian2D fit for FWHM)"]:::default
+    H2 --> H3["Twirl Alignment\n(ComputeTransformTwirl & AlignReferenceSources)"]:::default
+    H3 --> H4["Centroid Tuning\n(CentroidQuadratic optimization)"]:::default
+    H4 --> H5["Flux Extraction\n(AperturePhotometry & AnnulusBackground)"]:::default
+    
+    %% Post-processing
+    H5 --> I["Differential Photometry\n(autodiff - Broeg et al. 2005)"]:::default
+    I --> J["BJD Time Correction\n(Converts JD-UTC to BJD-TDB via barycorrpy)"]:::default
+    J --> K["Export Results\n(CSV files, apertures.png, alignment.png, gif)"]:::default
+          </pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="timer-card">
+      <div class="card-header-toggle" onclick="toggleCard('timer-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            timer Transit Fitting Workflow
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Transit lightcurve modeling, parameter estimation, and posterior sampling steps executed in the <code>timer</code> MCMC engine.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <p class="repo-link">
+          Repository: <a href="https://github.com/john-livingston/timer" target="_blank" rel="noopener noreferrer">github.com/john-livingston/timer</a>
+        </p>
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% Configuration & Input
+    A["Photometry CSV Lightcurves"]:::default --> B["YAML Configuration files\n(fit.yaml & sys.yaml)"]:::default
+    B --> C["Input Validation\n(Parameter conflicts & duplicate configurations)"]:::default
+    C --> D["Data Loading\n(Read lightcurves & detrending covariates)"]:::default
+    
+    %% Model Building
+    D --> E["Prior Initialization\n(Stellar params, planet priors, limb darkening)"]:::default
+    E --> F["Transit Model Assembly\n(PyMC model definition)"]:::pipeline
+    
+    %% Optimization & Sampling
+    F --> G["Run Mode Check\n(New Fit vs Continue Sampling)"]:::default
+    G -->|New Fit| H["Mean Fitting / Pre-optimization\n(L-BFGS MAP optimization)"]:::default
+    G -->|Continue Sampling| I["Load Previous Trace\n(Resume sampling from saved trace)"]:::default
+    H --> J["MCMC Sampling\n(PyMC NUTS sampler)"]:::pipeline
+    I --> J
+    
+    %% Post-processing
+    J --> K["Outlier Clipping & Detrending\n(Sigma-clip residual outliers)"]:::default
+    K --> L["Compute Information Criteria\n(Calculate BIC, AIC)"]:::default
+    L --> M["Save Outputs\n(Posterior stats, fit.yaml configs)"]:::default
+    L --> N["Generate Visualizations\n(Corner plot, trace plot, LD profile, fit plots)"]:::default
+          </pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="ephemeris-card">
+      <div class="card-header-toggle" onclick="toggleCard('ephemeris-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Ephemeris O-C Plotter Workflow
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Interactive observed-minus-calculated analysis built from completed transit-fit runs and catalog reference ephemerides.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% Target discovery
+    A["Completed Transit Fit Jobs\n(DB jobs table + orphan fit discovery)"]:::db --> B["Target List\n/api/ephemeris/targets"]:::default
+    B --> C["Select One or More Targets\n(ephemeris.html UI)"]:::default
+
+    %% Dataset assembly
+    C --> D["Load Target Info\n/api/ephemeris/target-info"]:::pipeline
+    D --> E["Completed Production-Fit Datasets\ninstrument, date, run_id, transit coverage"]:::default
+    D --> F["Fitted Transit Centers\nTc ± σ per planet per dataset"]:::default
+    D --> G["Reference Ephemerides\nNASA Exoplanet Archive, TOI, fallback"]:::default
+    D --> H["Planet Cards\nT0, period, source override"]:::default
+
+    %% Interactive controls
+    E --> I["Dataset Selection\n(Checkboxes per run)"]:::default
+    F --> J["Automatic Recalculate\n/api/ephemeris/calculate"]:::pipeline
+    G --> J
+    H --> J
+    I --> J
+    X["External Transit CSV\nplanet, epoch, tc, tc_unc"] --> Y["Import Preview\nheader mapping, validation, time-scale confirmation"]:::default
+    Y --> J
+    K["Fitting Method\nUnweighted or Weighted"]:::default --> J
+
+    %% Fit math
+    J --> L["Epoch Assignment\nround((Tc - T0) / P)"]:::default
+    L --> M["Linear Ephemeris Fit\nTcalc = T0fit + E * Pfit"]:::default
+    M --> N["O-C Residuals\n(Tc - Tcalc) in minutes"]:::default
+
+    %% Output & persistence
+    N --> O["Observed minus Calculated Plot\nBJD or epoch x-axis"]:::default
+    M --> P["Best-Fit Ephemeris Summary\nT0, period, uncertainties"]:::default
+    O --> Q["Interactive Controls\nDate axis toggle, point exclusion, styles, PNG export"]:::default
+
+    %% Saved views
+    C --> R["Save View State\n/api/ephemeris/view POST"]:::pipeline
+    R --> S["Ephemeris Views Table\n(ephemeris_views DB)"]:::db
+    S --> T["Shareable View Links\n/api/ephemeris/view/{slug}"]:::default
+    T --> U["Resume Analysis\nRestore all settings & selections"]:::default
+
+    %% Handoff to TTV fitting
+    L --> V["TTV Fit Inputs\ndata.csv: planet, epoch, tc, tc_unc"]:::default
+    V --> W["harmonic TTV Fit\n(see next section)"]:::pipeline
+          </pre>
+        </div>
+
+        <p style="color: var(--text-dim); font-size: 0.9rem; line-height: 1.6;">
+          Use <strong>Import transit CSV</strong> beside the dataset table to add external timing measurements.
+          Enter the instrument name once in the import dialog; it is applied to every accepted CSV row.
+          Imported rows are stored in the shareable saved-view URL, including CSV-only analyses with no completed
+          transit-fit dataset, so reopening the URL in a fresh browser restores the timing table.
+          Headers such as <code>tc(BJD)</code> and <code>tc_unc(BJD)</code> are mapped to transit center and
+          uncertainty automatically; numeric planet indices use <code>0=b</code>, <code>1=c</code>, and so on.
+          The preview retains invalid rows with a specific note, rejects uncertainties below one minute, lists extra
+          columns that will be dropped, and compares a supplied CSV epoch with the new page epoch. A constant
+          per-planet offset is a safe change of epoch zero-point; inconsistent offsets are blocked. Files that say
+          only BJD require confirmation that their time scale is BJD_TDB.
+          Enabling <strong>Show date (UTC)</strong> expands the figure to accommodate the second x-axis while
+          preserving the original O-C plotting-area aspect ratio.
+        </p>
+
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="ttv-card">
+      <div class="card-header-toggle" onclick="toggleCard('ttv-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            harmonic TTV Fitting Workflow
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Multi-harmonic transit timing variation modeling run from the Ephemeris page, sampled with <code>emcee</code> in the <code>harmonic</code> engine.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <p class="repo-link">
+          Repository: <a href="https://github.com/john-livingston/harmonic" target="_blank" rel="noopener noreferrer">github.com/john-livingston/harmonic</a>
+        </p>
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% Inputs assembled on the ephemeris page
+    A["Transit Centers from O-C Plot\nTc, tc_unc, epoch per planet"]:::default --> B["Dataset Selection & Point Exclusions\n(shared with the linear fit)"]:::default
+    B --> C["Planet Letters to Indices\nb,c,d to 0,1,2"]:::default
+
+    %% Configuration
+    C --> D["data.csv\nplanet, epoch, tc, tc_unc"]:::default
+    E["Model Options\nstellar mass, non-transiting outer, phase offsets"]:::default --> F["config.ini"]:::default
+    G["INIT section, per adjacent pair\na_bc, a_cb, per_bc, t_bc"]:::default --> F
+    H["Optional sections\nT14 transit durations\nOUTER non-transiting planet"]:::default --> F
+
+    %% Validation & launch
+    D --> I["Validate Options & INI\n/api/ttv-fit/start"]:::pipeline
+    F --> I
+    I --> J["Write Run Directory\n$MUSCAT_TTV_DIR/target/_runs/run_name"]:::default
+    J --> K["Launch harmonic CLI\n(conda harmonic env, background job)"]:::pipeline
+
+    %% Sampling
+    K --> L["Multi-Harmonic TTV Model\nLithwick, Xie and Wu 2012 near-resonant formalism"]:::default
+    L --> M["MCMC Sampling\n(emcee: walkers, steps, burn-in, thinning)"]:::pipeline
+    M --> N["Live Log Streaming\nharmonic.log to run panel"]:::default
+
+    %% Outputs
+    M --> O["Posterior Samples\nsamples.csv.gz"]:::default
+    M --> P["Diagnostic Plots\ncorner.png, trace.png, fit.png, init.png"]:::default
+    J --> Q["Run Provenance\nmeta.yaml: muscat-db & harmonic versions, options"]:::default
+
+    %% Results loop
+    O --> R["TTV Fit Results Panel\nrun chips switch between stored runs"]:::default
+    P --> R
+    Q --> R
+    R --> S["Download All\nzipped run directory"]:::default
+    N --> T["Jobs Page\n(per-user attribution, cancel)"]:::db
+          </pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="fov-card">
+      <div class="card-header-toggle" onclick="toggleCard('fov-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Field-of-View Pointing & Orientation Optimization
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Maximize comparison star coverage by optimizing telescope pointing offsets and position angles (PA).
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    A["Target Input\n(Resolved Name or RA/Dec)"]:::default --> B["Instrument Selector\n(Footprint size & observatory latitude)"]:::default
+    B --> C["Load Footprint Geometry\n(XML votable or computed fallback)"]:::default
+    A --> D["Resolve Coordinates\n(Query MAST/SIMBAD)"]:::pipeline
+    D --> E["Gaia DR3 Catalog Query\n(Vizier cone-search around target)"]:::pipeline
+    E --> F["Star Scoring Heuristics\n(Mag offset, color similarity, blending)"]:::default
+    C --> G["Grid-Search Optimization\n(Vary center offset & position angle)"]:::pipeline
+    F --> G
+    G --> H["Select Optimal Pointing\n(Target within margin, maximize weights)"]:::default
+    H --> I["Display Results\n(Offsets, PA, comps table, Aladin Lite overlay)"]:::default
+          </pre>
+        </div>
+        <div style="margin-top: 1.5rem;">
+          <p>
+            The FOV Optimizer finds the optimal pointing center offset <code>(east, north)</code> and position angle (PA) that keep the science target in the field of view (with a safe edge margin) while maximizing the number of high-quality comparison stars.
+          </p>
+          <ul>
+            <li><strong>Why pointing offsets matter:</strong> For differential photometry, we want comparison stars of similar brightness and color to the target. If the ideal comparison stars are offset from the target, we can shift the telescope's center pointing and rotate the instrument to capture them.</li>
+            <li><strong>Footprint definition:</strong> The pipeline reads XML footprint definitions (e.g. for MuSCAT, MuSCAT2, MuSCAT3/4) or falls back to detector dimensions (for Sinistro's 13'x13' binned or 26'x26' full-frame modes).</li>
+            <li><strong>Observability validation:</strong> It checks if the target's declination is observable within the latitude limits of the site (e.g. altitude &ge; 20°).</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="workflow-card collapsible collapsed" id="lco-schedule-card">
+      <div class="card-header-toggle" onclick="toggleCard('lco-schedule-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            LCO Scheduling Workflow
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            End-to-end LCO Observation Portal submission: from ephemeris to dry-run IPP check to live observation request.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% Configuration & Input
+    A["Authenticated User\n(per-user token or LCO_API_TOKEN fallback)"]:::default --> B["Load Proposals\n/api/lco/proposals"]:::pipeline
+    B --> C["Select Project/Proposal"]:::default
+    C --> D["Choose Saved Ephemeris View\n(from /lco?view=slug or direct link)"]:::default
+    D --> E["Extract Target & Ephemeris\nT0, period, target name"]:::default
+    E --> E1["Show FOV Button\n(Optimize pointing offset/PA)"]:::default
+    E --> E2["Show Exp Button\n(Check target exposure history)"]:::default
+
+    %% Window Generation
+    E --> F["Configure Search Window\nUTC start date, end date, duration"]:::default
+    E1 --> F
+    E2 --> F
+    F --> G["Configure Pre/Post Padding\n(minutes before/after transit)"]:::default
+    G --> H["Generate Transit Windows\n/api/lco/windows"]:::pipeline
+    H --> I["Display Candidate Windows\nCandidate start/end times"]:::default
+
+    %% Imaging Configuration
+    I --> J["Select Imaging Mode"]:::default
+    J -->|MUSCAT| K["Configure MUSCAT Imaging\nFilters: g/r/i/z exposure times\nExposure mode: sync/async\nNarrowband in/out positions"]:::default
+    J -->|Sinistro| L["Configure Sinistro Imaging\nFilter, exposure time, count"]:::default
+
+    %% Payload & Validation
+    K --> M["Build Request Payload\nConstraints, configurations, windows"]:::default
+    L --> M
+    M --> N["Dry-Run IPP Check\n/api/lco/ipp"]:::pipeline
+
+    %% Feedback & Submission
+    N -->|IPP Valid| O["Show Payload & IPP Cost\nUser reviews request details"]:::default
+    N -->|IPP Invalid| P["Display Error Message\nUser modifies and retries"]:::default
+    P --> M
+    O --> Q["Submit Button Enabled?"]:::default
+    Q -->|No changes since dry-run| R["User Confirms Submission\n(MUSCAT_LCO_ALLOW_SUBMIT=1)"]:::default
+    Q -->|Changes detected| P
+    R -->|Submit| S["Post to Observation Portal\n/api/lco/submit"]:::pipeline
+
+    %% Tracking
+    S -->|Success| T["Persist request group + child Request IDs\nObservation scheduled"]:::default
+    S -->|Error| U["Show Error Details\nAsk user to retry"]:::default
+    U --> M
+    T --> V["Wait until observing window\nPersistent DB monitor + worker lease"]:::pipeline
+    V --> W["Poll request-scoped raw + level-91 metadata\n5 min initially, bounded backoff"]:::pipeline
+    W -->|New level-91 frames| X["Download + funpack immediately\nAtomic files, bounded parallelism"]:::pipeline
+    X --> W
+    W -->|Terminal and every raw has level 91| Y["Scan affected instrument/date\nIngest obslogs into SQLite"]:::pipeline
+    Y --> Z["Complete\nVisible on scheduler monitoring table"]:::default
+          </pre>
+        </div>
+        <p style="color: var(--text-dim); font-size: 0.9rem; line-height: 1.6;">
+          Generated transit windows are invalidated whenever a target, ephemeris, date range, padding, site, or
+          observability constraint changes. The old table and visibility plot are hidden until
+          <strong>Generate windows</strong> is clicked again, so stale predictions cannot be submitted.
+        </p>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="lco-archive-card">
+      <div class="card-header-toggle" onclick="toggleCard('lco-archive-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            LCO Archive Download Workflow
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Search LCO data archive and download reduced frames to the local server.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% User input and filtering
+    A["Archive Search Interface"]:::default --> B["Set Search Filters"]:::default
+    B --> B1["Project/Proposal ID\n(optional constraint)"]:::default
+    B --> B2["Target Object Name\n(optional substring)"]:::default
+    B --> B3["Instrument\n(1M0-SCICAM-SINISTRO or 2M0-SCICAM-MUSCAT)"]:::default
+    B --> B4["Site / Telescope\n(e.g. ogg, coj, cpt, lsc, elp)"]:::default
+    B --> B5["Reduction Level\n(raw, processed, fits)"]:::default
+    B --> B6["Date Range\n(start and end UTC dates)"]:::default
+    B --> B7["Result Limit\n(max frames to return)"]:::default
+
+    %% API call
+    B1 --> C["Query Archive\n/api/lco/archive/frames"]:::pipeline
+    B2 --> C
+    B3 --> C
+    B4 --> C
+    B5 --> C
+    B6 --> C
+    B7 --> C
+
+    %% Results display
+    C -->|Success| D["Display Frames Table\nColumns: filename, site, instrument, date, filter"]:::default
+    C -->|No results| E["Show 'No frames found'\nSuggest different filters"]:::default
+
+    %% Selection and preparation
+    D --> F["User Selects Frames\n(Checkboxes for multiple selection)"]:::default
+    F --> G["Review Selection\nFilename, size, reduction level"]:::default
+    G --> H["Confirm Download"]:::default
+
+    %% Server-side download
+    H --> I["Send Selected Frame URLs\n/api/lco/archive/download"]:::pipeline
+    I --> J["Server Validates Paths\n(No overwrite by default)"]:::default
+    J -->|Overwrite Disabled| K["Check if files exist locally"]:::default
+    K -->|Files exist| L["Skip existing files\nShow 'already exists' status"]:::default
+    K -->|New files| M["Download from archive-api.lco.global"]:::default
+    J -->|Overwrite Enabled| M
+
+    %% Path resolution
+    M --> N["Determine Save Location"]:::default
+    N --> N1["MUSCAT_LCO_DIR set?\nYes: MUSCAT_LCO_DIR/inst/date/"]:::default
+    N --> N2["No: MUSCAT_DATA_DIR/inst/date/"]:::default
+
+    %% Results
+    N1 --> O["Save Downloaded Files"]:::default
+    N2 --> O
+    O -->|Success| P["Display Results\nFilename, size, path"]:::default
+    O -->|Error| Q["Show Error Details\nPermission or disk issues"]:::default
+
+    %% Final status
+    P --> R["Download Complete\nFiles ready in muscat-db data tree"]:::default
+          </pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="exposure-calc-card">
+      <div class="card-header-toggle" onclick="toggleCard('exposure-calc-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Exposure Calculator &amp; Coefficient Calibration
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Calculate recommended exposure times or expected signal-to-noise ratios (S/N) and manage instrument sensitivity coefficients.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    A["Target Parameters\n(Vmag, Filter/Band, Focus mm)"]:::default --> B["Calculation Mode"]:::default
+    B -->|Time-to-S/N| C["Estimate Exposure Time\n(Computes time needed to hit target S/N)"]:::pipeline
+    B -->|S/N-at-Time| D["Estimate Expected S/N\n(Computes S/N for a given exposure time)"]:::pipeline
+    
+    C --> E["Full-Well & Saturation Check\n(Alerts user if exposure time risks saturation)"]:::default
+    D --> E
+    
+    F["Calibration Data\n(Standard stars & target observations)"]:::default --> G["Fit Coefficients Job\n(/exposure/calibrate)"]:::pipeline
+    G --> H["exposure_coeffs Table\n(Update instrument band coefficients in DB)"]:::db
+    H -->|Provides sensitivity parameters| C
+    H -->|Provides sensitivity parameters| D
+          </pre>
+        </div>
+        <div style="margin-top: 1.5rem;">
+          <p>
+            The Exposure Calculator helps observers optimize their sequences to maximize the S/N ratio of their photometry while keeping the peak pixel values safely below full-well saturation.
+          </p>
+          <ul>
+            <li><strong>Sensitivity Coefficients:</strong> The calculator relies on empirical coefficients (fitted per instrument, band, and focus) to model the stellar flux. These coefficients can be periodically calibrated using historical photometry of standard stars.</li>
+            <li><strong>Safety Limits:</strong> The tool checks the full-well limits of each CCD (e.g., 99,000e⁻ for MuSCAT3/4) and warns the user if their settings risk non-linear detector response or saturation.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="catalog-browsers-card">
+      <div class="card-header-toggle" onclick="toggleCard('catalog-browsers-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Interactive Catalog Browsers (TOI &amp; NExScI)
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Explore TESS Objects of Interest and the NASA Exoplanet Archive database with interactive charts and Boyle+2026 rotation catalogs.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    A["Catalog Files\n(TOIs.csv & nexsci_pscomppars.csv)"]:::default --> B["Interactive Plotly Plots\n(Configurable X/Y axes & color dimensions)"]:::pipeline
+    C["Boyle+2026 Catalog\n(TIC ID matching)"]:::default -->|Left-join rotation stats| D["TOI Table Browse\n(Includes period Prot, RUWE, binarity)"]:::default
+    
+    E["SQLite muscat.db\n(targets table)"]:::db -->|Query presence| F["Highlight Targets\n(Targets in DB are drawn as stars ★)"]:::pipeline
+    F --> B
+    D --> G["Filter Chips & Search\n(Save filter state to URL hash fragment)"]:::default
+    B --> H["CSV Export & Navigation\n(Links to LCO Scheduler or Exoplanet Archive)"]:::default
+          </pre>
+        </div>
+        <div style="margin-top: 1.5rem;">
+          <p>
+            The catalog browsers allow users to filter targets based on planet size, orbital period, transit depth, host star characteristics, and rotation periods.
+          </p>
+          <ul>
+            <li><strong>Fast Rotators:</strong> Using rotation periods from the Boyle+2026 catalog, users can isolate fast-rotating hosts (P<sub>rot</sub> &lt; 10 d) which exhibit higher stellar activity.</li>
+            <li><strong>Database Integration:</strong> Known targets already inside the <code>muscat-db</code> are highlighted differently so users can quickly see which exoplanets have local observation logs.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="auth-card">
+      <div class="card-header-toggle" onclick="toggleCard('auth-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Multi-User Auth &amp; Deployment
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            HTTP Basic Auth via nginx, per-user job attribution, and encrypted per-user LCO tokens for shared-server deployments.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% Login
+    A["Browser Request"]:::default --> B["nginx :8000\n(HTTP Basic Auth, deploy/nginx.conf)"]:::pipeline
+    B -->|"Checks credential"| C["htpasswd file\n(0640 root:www-data)"]:::db
+    C -->|Valid| D["nginx sets X-Forwarded-User"]:::pipeline
+    C -->|Invalid| E["401 Challenge"]:::default
+
+    %% Proxy trust boundary
+    D --> F["uvicorn 127.0.0.1:8001\n(muscat-db serve --nginx)"]:::default
+    F --> G["Auth Middleware"]:::pipeline
+    G -->|"Loopback peer + proxy secret valid?"| H{Trust header?}:::default
+    H -->|Yes| I["request.state.user = X-Forwarded-User"]:::default
+    H -->|No| J["Reject protected request"]:::default
+
+    %% Per-user features
+    I --> K["Photometry / Transit-Fit Launch"]:::default
+    K -->|Tag job with user_name| L["Jobs Page\nUser column"]:::db
+    I --> M["Settings Page (/settings)"]:::default
+    M -->|"POST /api/settings/lco-token\n(Origin/Referer same-host check)"| N["Fernet-encrypt token\n(key derived from MUSCAT_DB_SECRET)"]:::pipeline
+    N --> O["users table\n(settings JSON column)"]:::db
+    O -->|Overrides global LCO_API_TOKEN| P["LCO API calls (lco.py)"]:::default
+          </pre>
+        </div>
+
+        <div style="margin-top: 1.5rem;">
+          <ul>
+            <li><strong>Trust boundary:</strong> nginx authenticates the user and forwards <code>X-Forwarded-User</code> together with a private proxy secret. In <code>--nginx</code> mode, FastAPI fails closed unless the immediate peer is loopback and both values are valid, preventing another local account from bypassing nginx through port 8001. Ordinary <code>serve</code>/<code>restart</code> defaults to loopback and requires an explicit <code>--host</code> to expose a development deployment.</li>
+            <li><strong>htpasswd management:</strong> <code>muscat-db htpasswd add/delete/list</code> is the only supported way to edit the auth file. Passwords are piped over stdin to <code>openssl passwd -apr1</code> (never as a CLI argument, which would leak via <code>ps</code>/<code>/proc</code>), and the file is written <code>0640 root:&lt;nginx group&gt;</code> so other local accounts on the shared server cannot read and offline-crack the hashes.</li>
+            <li><strong>Per-user job attribution:</strong> the authenticated username is threaded through <code>phot.start_run()</code>, <code>fit.start_fit()</code>, and the job store, so the Jobs page's <code>User</code> column shows who launched each photometry or transit-fit run.</li>
+            <li><strong>Per-user LCO tokens:</strong> each user can save their own LCO API token on <code>/settings</code>. Tokens are encrypted at rest with Fernet symmetric encryption keyed from <code>MUSCAT_DB_SECRET</code>, stored in a <code>users</code> table, and override the server-wide <code>LCO_API_TOKEN</code> fallback when present. All unsafe HTTP methods centrally check Origin/Referer against the request host as a CSRF defense, since FastAPI can parse JSON from a browser simple request without a CORS preflight.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="schema-card">
+      <div class="card-header-toggle" onclick="toggleCard('schema-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Database Schema
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Entity-relationship diagram and core column definitions for <code>muscat.db</code>.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+erDiagram
+    frames {
+        int id PK
+        text instrument
+        text obsdate
+        int ccd
+        text filename
+        text object
+        real jd_start
+        text ut_start
+        real exptime
+        text read_mode
+        text filter
+        text ra
+        text declination
+        real airmass
+        real focus
+        real pa
+    }
+    summaries {
+        int id PK
+        text instrument
+        text obsdate
+        int ccd
+        text object
+        real exptime
+        text read_mode
+        text telescope
+        text frame_start
+        text frame_end
+        text ut_start
+        text ut_end
+        int nframes
+        text filter
+        text ra
+        text declination
+        real airmass_min
+        real airmass_max
+    }
+    targets {
+        text object PK
+        int n_dates
+        int n_frames
+        text instruments
+        text dates
+        text inst_dates
+        text filters
+        real total_exptime
+        text ra
+        text declination
+        real airmass_min
+        real airmass_max
+        int is_identified
+        text phot_status
+        text fit_status
+    }
+    target_notes {
+        text object PK
+        text note
+        text updated_at
+    }
+    target_overrides {
+        text object PK
+        int is_identified
+        text updated_at
+    }
+    jobs {
+        text key PK
+        text type
+        text instrument
+        text obsdate
+        text target
+        text state
+        int returncode
+        int elapsed
+        real started_at
+        text error_desc
+        text run_type
+        text params
+        text run_id
+        text run_name
+        text user_name
+    }
+    users {
+        text username PK
+        text password_hash
+        text display_name
+        int is_admin
+        text created_at
+        text last_login
+        text settings
+    }
+    db_meta {
+        text key PK
+        text value
+    }
+    exposure_coeffs {
+        text instrument PK
+        text band PK
+        real focus_mm PK
+        real coef
+        real fwhm_pix
+        int n_frames
+        text updated_at
+    }
+    exposure_jobs {
+        text id PK
+        text instrument
+        text state
+        text progress
+        real started_at
+        real updated_at
+    }
+    ephemeris_views {
+        text slug PK
+        text state_hash
+        text state_json
+        text targets_json
+        text created_at
+        text updated_at
+    }
+    test_observations {
+        text id PK
+        text target
+        text instrument
+        text site
+        text state
+        text plan_json
+        text result_json
+        text request_ids_json
+    }
+    lco_observation_requests {
+        int request_id PK
+        int requestgroup_id
+        text target
+        text instrument
+        text user_name
+        text request_state
+        text monitor_state
+        text result_json
+    }
+    lco_observation_frames {
+        int request_id PK
+        text frame_id PK
+        text observation_id
+        text filename
+        text instrument
+        text obsdate
+        text state
+        text error
+        text metadata_json
+        real updated_at
+    }
+    lco_monitor_leases {
+        text name PK
+        text owner
+        real expires_at
+    }
+    exofop_cache {
+        text tic_id PK
+        int has_confirmed_planets
+        text confirmed_planets
+        text updated_at
+    }
+    job_concurrency_slots {
+        text pipeline PK
+        text holder_key PK
+        real claimed_at
+    }
+
+    frames ||--o{ summaries : "grouped into"
+    targets ||--o{ frames : "contains"
+    targets ||--o{ summaries : "contains"
+    targets ||--|| target_notes : "annotates"
+    targets ||--|| target_overrides : "overrides"
+    users ||--o{ jobs : "launches"
+    users ||--o{ lco_observation_requests : "submits"
+    lco_observation_requests ||--o{ lco_observation_frames : "produces"
+          </pre>
+        </div>
+
+        <div style="margin-top: 2rem;">
+          <h3 style="color: var(--accent); margin-bottom: 1rem; font-size: 1.1rem;">Table Reference</h3>
+          <div style="overflow-x: auto;">
+            <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+              <thead>
+                <tr style="border-bottom: 2px solid var(--border);">
+                  <th style="text-align: left; padding: 0.5rem 0.75rem; color: var(--text-dim); font-weight: 600;">Table</th>
+                  <th style="text-align: left; padding: 0.5rem 0.75rem; color: var(--text-dim); font-weight: 600;">Description</th>
+                  <th style="text-align: left; padding: 0.5rem 0.75rem; color: var(--text-dim); font-weight: 600;">Rows</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">frames</td>
+                  <td style="padding: 0.5rem 0.75rem;">Per-FITS-row metadata: instrument, date, CCD, target name, JD, filter, coordinates, airmass</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per science frame</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">summaries</td>
+                  <td style="padding: 0.5rem 0.75rem;">Per-observation rollup: date range, frame count, airmass range, filter</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per (inst, date, CCD, object)</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">targets</td>
+                  <td style="padding: 0.5rem 0.75rem;">Aggregate target stats: observation count, instrument list, date coverage, total exposure time</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per unique object name</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">target_notes</td>
+                  <td style="padding: 0.5rem 0.75rem;">User-defined notes attached to a target</td>
+                  <td style="padding: 0.5rem 0.75rem;">Zero or one per target</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">target_overrides</td>
+                  <td style="padding: 0.5rem 0.75rem;">Manual override for the <code>is_identified</code> flag on a target</td>
+                  <td style="padding: 0.5rem 0.75rem;">Zero or one per target</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">jobs</td>
+                  <td style="padding: 0.5rem 0.75rem;">Pipeline job tracking: photometry, transit-fit, and TTV-fit state, run identity, user attribution, elapsed time, and serialized parameters</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per pipeline launch</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">users</td>
+                  <td style="padding: 0.5rem 0.75rem;">Authenticated-user metadata and encrypted per-user settings such as LCO and ADS tokens</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per configured user</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">db_meta</td>
+                  <td style="padding: 0.5rem 0.75rem;">Key-value metadata store (build version, last rebuild timestamp, etc.)</td>
+                  <td style="padding: 0.5rem 0.75rem;">Few rows</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">exposure_coeffs</td>
+                  <td style="padding: 0.5rem 0.75rem;">Exposure-time calibration coefficients per (instrument, band, focus)</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per calibration point</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">exposure_jobs</td>
+                  <td style="padding: 0.5rem 0.75rem;">Exposure calculator job tracking: state, progress, timestamps</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per exposure calc run</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">ephemeris_views</td>
+                  <td style="padding: 0.5rem 0.75rem;">Saved interactive O-C plot views: persisted filter state, target list, and plot configuration</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per saved view</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">test_observations</td>
+                  <td style="padding: 0.5rem 0.75rem;">Guarded closed-loop test plans, validation provenance, submissions, and results</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per test plan</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">lco_observation_requests</td>
+                  <td style="padding: 0.5rem 0.75rem;">Submitted LCO child requests and restart-safe monitoring/ingestion state</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per LCO child Request ID</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">lco_observation_frames</td>
+                  <td style="padding: 0.5rem 0.75rem;">Raw and BANZAI frame inventory, archive metadata, and download status for monitored requests</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per request/frame pair</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">lco_monitor_leases</td>
+                  <td style="padding: 0.5rem 0.75rem;">Short-lived cross-worker leases that prevent duplicate LCO monitoring work</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per active monitor lease</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">exofop_cache</td>
+                  <td style="padding: 0.5rem 0.75rem;">Cached ExoFOP confirmed-planet lookups used by the TOI catalog</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per cached TIC</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">job_concurrency_slots</td>
+                  <td style="padding: 0.5rem 0.75rem;">Cross-process claims enforcing safe full-pipeline concurrency limits</td>
+                  <td style="padding: 0.5rem 0.75rem;">One per claimed pipeline slot</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="faq-section" style="margin-top: 1.5rem;">
+          <h3 style="color: var(--accent); margin-bottom: 0.5rem; font-size: 1.1rem;">Build Strategy</h3>
+          <div class="faq-item">
+            <div class="faq-question" onclick="toggleFaq(this)">
+              <span>How are tables rebuilt without losing app data?</span>
+              <span class="faq-icon">+</span>
+            </div>
+            <div class="faq-answer">
+              <p>The <code>build-db</code> command writes a new database to a temporary file first, then atomically replaces <code>muscat.db</code>. Before replacement it preserves app-owned tables: <code>jobs</code>, <code>users</code>, <code>ephemeris_views</code>, <code>target_notes</code>, <code>target_overrides</code>, <code>exposure_coeffs</code>, <code>test_observations</code>, <code>lco_observation_requests</code>, and <code>lco_observation_frames</code>. The observation-derived <code>frames</code>, <code>summaries</code>, and <code>targets</code> tables are rebuilt from the CSV obslogs. Transient exposure-job rows, monitor leases, and concurrency-slot claims are intentionally recreated instead of copied into the new database.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="execution-details">
+      <div class="card-header-toggle" onclick="toggleCard('execution-details')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Pipeline Features
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Sequential stages of the MuSCAT-db pipeline from data ingestion through analysis.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+      <div class="card-body">
+        <div class="workflow-grid">
+      
+      <!-- Stage 1 -->
+      <div class="workflow-stage">
+        <div class="workflow-header">
+          <span class="workflow-badge">1</span>
+          <span class="workflow-title">FITS Header Scanning</span>
+        </div>
+        <div class="workflow-desc">
+          Extracts metadata from raw scientific FITS files. It excludes calibration frames (dark/flat/bias) and writes clean logs.
+        </div>
+        <div class="workflow-cmd">muscat-db scan &lt;inst&gt; &lt;yymmdd&gt;</div>
+      </div>
+
+      <!-- Stage 2 -->
+      <div class="workflow-stage">
+        <div class="workflow-header">
+          <span class="workflow-badge">2</span>
+          <span class="workflow-title">Database Assembly</span>
+        </div>
+        <div class="workflow-desc">
+          Ingests the scanned CSV files, building indices and tables in a unified, optimized SQLite database.
+        </div>
+        <div class="workflow-cmd">muscat-db build-db</div>
+      </div>
+
+      <!-- Stage 3 -->
+      <div class="workflow-stage">
+        <div class="workflow-header">
+          <span class="workflow-badge">3</span>
+          <span class="workflow-title">Interactive Browsing</span>
+        </div>
+        <div class="workflow-desc">
+          Allows real-time target searches (with regex support), logs inspection, and observation schedules directly from the Web GUI.
+        </div>
+        <div class="workflow-cmd">muscat-db serve</div>
+      </div>
+
+      <!-- Stage 4 -->
+      <div class="workflow-stage stage-phot">
+        <div class="workflow-header">
+          <span class="workflow-badge">4</span>
+          <span class="workflow-title">Photometry Reduction</span>
+        </div>
+        <div class="workflow-desc">
+          Launches a calibrated background reduction using the <code>prose</code> pipeline to align frames, build PSF models, and extract raw lightcurves.
+        </div>
+      </div>
+
+      <!-- Stage 5 -->
+      <div class="workflow-stage stage-phot">
+        <div class="workflow-header">
+          <span class="workflow-badge">5</span>
+          <span class="workflow-title">Transit Fitting</span>
+        </div>
+        <div class="workflow-desc">
+          Runs a <code>PyMC</code> MCMC sampler to model the transit curve, compute planetary/stellar parameters, and output high-quality fit plots.
+        </div>
+      </div>
+
+      <!-- Stage 6 -->
+      <div class="workflow-stage">
+        <div class="workflow-header">
+          <span class="workflow-badge">6</span>
+          <span class="workflow-title">Job Monitoring</span>
+        </div>
+        <div class="workflow-desc">
+          Tracks queued, active, finalizing, or completed photometry, transit-fit, and TTV-fit background processes. Shows logs and error tracebacks.
+        </div>
+      </div>
+
+      <!-- Stage 7 -->
+      <div class="workflow-stage stage-phot">
+        <div class="workflow-header">
+          <span class="workflow-badge">7</span>
+          <span class="workflow-title">Ephemeris O-C Analysis</span>
+        </div>
+        <div class="workflow-desc">
+          Combines completed transit-fit midpoint measurements across datasets, fits a linear ephemeris, and renders an interactive O-C plot for timing-variation inspection.
+        </div>
+      </div>
+
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="faq-card">
+      <div class="card-header-toggle" onclick="toggleCard('faq-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Frequently Asked Questions
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            Detailed explanations of pipeline internals, configuration options, and common workflows.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body faq-section">
+
+        <!-- ==================== Database ==================== -->
+        <h3 style="color: var(--accent); margin-top: 0; margin-bottom: 0.25rem; font-size: 1.1rem;">Database</h3>
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the database work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The database is a SQLite file (<code>muscat.db</code>) that stores observation metadata extracted from FITS headers. The pipeline has two stages:</p>
+            <ol>
+              <li><strong>Scan</strong> — <code>muscat-db scan &lt;inst&gt; &lt;yymmdd&gt;</code> reads every FITS file in the raw data directory, extracts HEADER keywords (OBJECT, FILTER, RA, DEC, EXPTIME, etc.), and writes a CSV log per CCD under <code>$MUSCAT_OBSLOG_DIR</code> (default <code>$HOME/muscat/obslog</code>). Calibration frames (bias, dark, flat) are excluded; only science frames are recorded.</li>
+              <li><strong>Build</strong> — <code>muscat-db build-db</code> ingests all scanned CSV logs into SQLite with indexes on instrument, date, object, and filter. The resulting DB powers the web GUI's browse, search, and target discovery features.</li>
+            </ol>
+            <p>The DB also persists background job state (photometry and transit fit runs), submitted LCO request IDs and monitoring progress, and guarded test-observation plans. The LCO monitor resumes after a server restart and uses a database lease so multiple web workers do not duplicate API polling, downloads, or ingestion.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How often does the database get updated?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The database is rebuilt automatically once per day at <strong>5:00 PM</strong> local time via a cronjob:</p>
+            <pre>30 17 * * * cd /path/to/muscat-db &amp;&amp; uv run muscat-db build-db &gt;&gt; logs/build-db.log 2&gt;&amp;1</pre>
+            <p>This re-scans all CSV observation logs under <code>$MUSCAT_OBSLOG_DIR</code> and rebuilds the <code>summaries</code> and <code>targets</code> tables to reflect any new or corrected scans. Log output is written to <code>logs/build-db.log</code> for troubleshooting.</p>
+            <p>To trigger a manual rebuild at any time, run <code>muscat-db build-db</code> from the repo root.</p>
+          </div>
+        </div>
+
+        <!-- ==================== Photometry ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Photometry</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the photometry pipeline work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The prose pipeline processes calibrated FITS frames through a sequence of steps:</p>
+            <ol>
+              <li><strong>Band grouping</strong> — science frames are sorted into photometric bands using the FILTER header keyword</li>
+              <li><strong>Reference construction</strong> — one real frame remains the alignment anchor: by default the first frame (self-reference) or the middle frame of the reference band (<code>--ref_band</code>); with <code>--ref_select quality</code>, the pipeline selects a clean anchor and uses registered catalogs from nearby candidates to reject transient detections (see FAQ below)</li>
+              <li><strong>Source detection</strong> — point sources are identified on the anchor; quality mode retains only sources that recur across the candidate catalogs</li>
+              <li><strong>Target identification</strong> — the target is located via WCS matching against the resolved sky coordinates (from MAST/SIMBAD name resolution)</li>
+              <li><strong>Gaia-based aperture sizing</strong> — annulus and aperture radii are set to avoid contaminating sources</li>
+              <li><strong>Parallel reduction</strong> — each frame is aligned, centroided, and photometered in parallel</li>
+              <li><strong>Differential photometry</strong> — automatic selection and weighting of comparison stars (Broeg et al. 2005)</li>
+              <li><strong>Time correction</strong> — JD-UTC is converted to BJD-TDB</li>
+              <li><strong>Export</strong> — per-band CSV lightcurves, PNG diagnostics, optional GIF animation</li>
+            </ol>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What does Reference selection = quality (--ref_select) do?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>By default (<code>position</code>) the reference frame is chosen positionally — the first frame for self-reference, or the middle frame of the reference band when <code>--ref_band</code> is set — with no check on whether that frame is actually any good (clouds, poor focus, and high airmass can all silently become the reference). <code>--ref_select quality</code> replaces this with a two-tier pre-check that runs before the full reduction:</p>
+            <ol>
+              <li><strong>Header triage (Tier 1, MuSCAT3/MuSCAT4/Sinistro only)</strong> — every frame's header is scanned without reading pixel data for BANZAI's per-frame FWHM estimate (<code>L1FWHM</code>), airmass, focus position, humidity, and background level. Frames with physically broken values (e.g. airmass &gt; 3.5, humidity &gt; 95%) are excluded, and a composite score dominated by FWHM identifies the best-quality anchor. The candidate window is then formed from viable frames nearest that anchor in time, limiting telescope drift.</li>
+              <li><strong>Pixel validation and persistence (Tier 2, all instruments)</strong> — the local candidates (<code>--ref_select_top_k</code>, default 5) are run through the normal source-detection pipeline in parallel and ranked using target match, non-outlier star count, measured FWHM, and target saturation. Their catalogs are registered to the selected anchor, and a detection is retained only when it occurs in at least 60% of the registered catalogs (3 of 5 by default). This removes one-frame cosmic-ray and hot-pixel detections while preserving the WCS-selected or explicit target. MuSCAT/MuSCAT2 use a local window around the positional midpoint because they lack the BANZAI header proxy.</li>
+            </ol>
+            <p>An explicit <strong>Reference frame ID</strong> always overrides quality selection. If fewer than two candidate catalogs can be registered, the pipeline safely keeps the anchor catalog instead of applying an unreliable persistence filter. The chosen frame, candidate comparison, registration status, and persistence counts are written to a <code>*_ref_selection.txt</code> sidecar (linked from the results page as "view ref selection") so the decision can be audited without re-running anything. Quality mode adds work roughly proportional to top-K, so it remains opt-in.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the Broeg et al. 2005 autodiff algorithm work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The automatic differential photometry algorithm (implemented in prose) optimally selects and weights comparison stars to minimize the scatter in the target's differential lightcurve:</p>
+            <ol>
+              <li><strong>Candidate pool</strong> — all detected stars (excluding the target) are considered as potential comparison stars</li>
+              <li><strong>Iterative selection</strong> — starting with a first guess of the target lightcurve, the algorithm iterates between:
+                <ul>
+                  <li>Building an optimal reference lightcurve as a weighted average of comparison stars</li>
+                  <li>Computing the target's differential lightcurve by dividing its raw flux by this reference</li>
+                  <li>Updating the comparison star weights based on their correlation with the current reference</li>
+                </ul>
+              </li>
+              <li><strong>Weights</strong> — stars with lower intrinsic scatter and higher correlation receive higher weights. To ensure robustness against outliers (e.g. cosmic rays, transient spikes), the weights are computed using a robust scale estimator, the <strong>Median Absolute Deviation (MAD)</strong> (i.e. weight $\propto 1/\text{MAD}$), rather than the standard deviation.</li>
+              <li><strong>Convergence</strong> — the iteration continues until the target lightcurve stabilizes, typically within a few iterations</li>
+            </ol>
+            <p>The key advantage is that no manual selection of comparison stars is needed — the algorithm handles both the choice and the relative weighting, and it can exclude bad comparison stars that would otherwise introduce noise.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What is Broeg's NaN limitation, and how can we address it?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p><strong>The NaN Limitation:</strong> The matrix-based implementation of <code>autodiff</code> in prose requires a dense matrix with no <code>NaN</code>s. Because of this, we cannot easily mask out localized outliers (like a cosmic ray hitting a single comparison star on a single frame) by setting them to <code>NaN</code> without propagating that <code>NaN</code> to all other stars through the matrix multiplications.</p>
+            <p><strong>Proposed Fix (Imputation):</strong> Instead of dropping the entire frame (which is wasteful) or using <code>NaN</code>s (which breaks the algebra), we can apply star-level sigma clipping on the flux matrix and <strong>impute/replace individual outlier points with the median flux of that star</strong> before running the <code>autodiff</code> calculation.</p>
+            <p><strong>Implications:</strong></p>
+            <ul>
+              <li><strong>Zero Data Loss:</strong> We preserve the target and all other comparison stars' data at that epoch rather than throwing the whole frame away.</li>
+              <li><strong>No Outlier Propagation:</strong> Since the outlier is replaced by the median, it does not leak into the weighted artificial lightcurve and pollute other stars' differential lightcurves.</li>
+              <li><strong>Matrix Compatibility:</strong> The matrix remains fully dense and compatible with the vectorized NumPy operations.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How are comparison stars determined and how is it related to max_num_stars?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The comparison stars used to compute the differential lightcurve of the target are determined as follows:</p>
+            <ul>
+              <li><strong>max_num_stars Relation</strong> — During source detection, the pipeline is configured to detect and track exactly up to <code>max_num_stars</code> (default 10) of the brightest point sources across all frames. All comparison star candidates are chosen from this subset of tracked stars.</li>
+              <li><strong>Manual Selection</strong> — If explicit comparison star indices (<code>--cID</code>) are provided by the user, the pipeline validates that they are in-range and do not belong to the avoided/excluded list before using them directly.</li>
+              <li><strong>Automatic Selection (Broeg et al. 2005)</strong> — If no explicit IDs are provided, the pipeline executes the <code>autodiff()</code> algorithm. This algorithm dynamically determines and weights comparison stars from the candidate pool (excluding the target and any avoided stars) to minimize the scatter in the target's differential lightcurve.</li>
+              <li><strong>Avoided Stars</strong> — Stars can be manually excluded via <code>--avoid_cids</code>. Additionally, the pipeline automatically detects stars near the CCD edge (<code>edge_cids</code>) and adds them to the avoid pool to prevent edge-effect systematics from contaminating the comparison pool.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How are the optimal comparison stars and aperture size computed?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p><strong>Optimal Comparison Stars:</strong></p>
+            <ul>
+              <li><strong>Candidate Pool:</strong> Taken from the tracked sources (up to <code>max_num_stars</code>), excluding the target and avoided stars.</li>
+              <li><strong>Iterative Weighting:</strong> The Broeg et al. 2005 algorithm assigns weights to each candidate star inversely proportional to their Median Absolute Deviation (MAD) (i.e., $w \propto 1/\text{MAD}$). Using MAD instead of standard deviation prevents transient outliers (like cosmic rays or hot pixels) from skewing the weight.</li>
+              <li><strong>Combination Optimization:</strong> Comparison stars are sorted by weight. The pipeline (in <code>auto_diff_1d</code>) starts with the highest-weighted star, iteratively adding the next-highest, and computes the binned white noise (<code>binned_nanstd</code>) of the target's resulting differential lightcurve. It retains the subset of comparison stars that minimizes this white noise.</li>
+            </ul>
+            <p><strong>Optimal Aperture Size:</strong></p>
+            <ul>
+              <li><strong>Aperture Grid:</strong> The pipeline runs photometry on a series of aperture radii (either defined by Gaia heuristics or custom parameters).</li>
+              <li><strong>Outlier Filtering:</strong> During evaluation, points that are $> 4\sigma$ from the median are temporarily clipped to avoid biasing the aperture metric.</li>
+              <li><strong>Noise Minimization (stddiff):</strong> For each aperture, the standard deviation of successive differences ($\sigma(\Delta f)$) is computed. This acts as a high-pass filter to remove slow trends (red noise, systematics, or the transit itself) and focus purely on high-frequency white noise. The aperture size that minimizes this metric is selected as the optimal aperture.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What is the difference between a test run and a full run?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <ul>
+              <li><strong>Test run</strong> — processes only the first 10 frames per band (configurable via <code>--test_run_frames</code>). The pipeline runs all stages (alignment, source detection, centroiding, photometry) but produces a short lightcurve. Used to verify settings, check alignment quality, and preview results before committing to a full reduction.</li>
+              <li><strong>Full run</strong> — processes every science frame in the data directory. Required for publishable lightcurves and transit fitting.</li>
+            </ul>
+            <p>You can always re-run with <code>--overwrite</code> to replace a test run with a full run later.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How do I interpret the diagnostic plots?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <ul>
+              <li><strong>Reference image</strong> (<code>*_ref.png</code>) — the stacked reference frame with detected sources circled and the target marked. Verifies that sources are correctly identified and the target is at the right position.</li>
+              <li><strong>Apertures</strong> (<code>*_apertures.png</code>) — overplot of aperture radii and sky annuli on the reference. Check that the inner annulus excludes nearby stars and the outer annulus is within clean sky.</li>
+              <li><strong>Alignment</strong> (<code>*_alignment.png</code>) — shows the shift (dx, dy) computed for each frame relative to the reference. Large or discontinuous shifts may indicate guiding problems or a bad reference frame.</li>
+              <li><strong>Lightcurves</strong> (<code>lightcurves.png</code>) — multi-band raw and differential lightcurves side by side. The raw flux should be stable; the differential should be flat for non-variable targets. Trends in the differential suggest poor comparison star selection.</li>
+              <li><strong>Covariates</strong> (<code>covariates.png</code>) — systematics summary: FWHM, airmass, background, and centroid positions across the sequence. Correlations between these and the lightcurve can guide detrending choices.</li>
+              <li><strong>Stacks</strong> (<code>stacks.png</code>) — grouped thumbnail grid of one cutout per frame per band to quickly flag outliers (cosmic rays, clouds, tracking losses).</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does Gaia-based aperture sizing work and when should I override it?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The pipeline queries the Gaia DR3 catalog around the target position to identify contaminating sources:</p>
+            <ul>
+              <li><strong>Annulus sizing</strong> — the inner radius (R<sub>in</sub>) is set to 6 &times; FWHM, the outer (R<sub>out</sub>) to 10 &times; FWHM (capped at 100 pix). These values are then adjusted inward if a Gaia source brighter than 10% of the target flux falls within the annulus.</li>
+              <li><strong>Aperture grid</strong> — a series of radii from 1 &times; FWHM up to R<sub>in</sub> in 2-pixel steps is generated, and the one that minimizes scatter on the brightest stars is selected individually per image.</li>
+            </ul>
+            <p><strong>When to override:</strong> for crowded fields where Gaia sources are too numerous (the annulus becomes unusably small), or for isolated bright targets where the heuristic is overly conservative. Use <code>--aper_radii MIN,MAX,DR</code> and <code>--annulus RIN,ROUT</code> to set custom values.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>Why does photometry need a WCS solution?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>WCS (World Coordinate System) maps pixel coordinates to sky coordinates (RA, Dec). The pipeline needs it for two things:</p>
+            <ul>
+              <li><strong>Target identification</strong> — the resolved target coordinates (from MAST/SIMBAD name resolution) are projected onto the image via WCS to locate the target's pixel position among the detected sources. Without WCS, the pipeline cannot automatically identify which star is the target.</li>
+              <li><strong>Gaia query</strong> — the target's sky position is used to query Gaia DR3 around the field for contamination analysis.</li>
+            </ul>
+            <p>If WCS is missing from calibrated headers, <code>--target_coord RA Dec</code> can be passed instead — but source identification then relies on source ordering (brightest = target), which is unreliable for crowded fields.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How is barycentric correction (BJD-TDB) computed?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The pipeline converts observation times from JD-UTC to BJD-TDB to remove the light-travel time variation caused by Earth's orbital motion around the Solar System barycenter:</p>
+            <ul>
+              <li><strong>Default method</strong> — astropy's <code>light_travel_time</code> function computes the barycentric correction using the target's sky coordinates and the observatory geocentric position (derived from the FITS header's SITE keyword or instrument defaults like Teide Observatory for MuSCAT2).</li>
+              <li><strong>barycorrpy option</strong> — when <code>--use_barycorrpy</code> is enabled, the <code>barycorrpy</code> package (a Python wrapper for Jason Eastman's <code>barycorr</code>) is used instead. It accounts for additional effects including Shapiro delay and Earth's precession/nutation.</li>
+            </ul>
+            <p>The difference between the two methods is typically &lt;0.1 seconds for MuSCAT observing cadences. barycorrpy is recommended for sub-minute transit timing measurements.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How is the target_id (tID) auto-detected and when should I override it?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The pipeline identifies the target star among all detected sources by matching the resolved target coordinates (from MAST) against the WCS-transformed positions of every detected source, selecting the nearest match within a tolerance.</p>
+            <p><strong>When to override</strong> — if the WCS solution is poor, if the field contains multiple stars at similar coordinates, or if MAST resolution failed and the fallback assumed the brightest star is the target. Set <code>--tID N</code> where N is the 0-indexed source number from the reference image (circled labels on the <code>*_ref.png</code> plot).</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the pipeline handle narrowband filters differently?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The pipeline auto-detects narrow-band observations by inspecting the obslog CSVs for known narrow-band filter names (<code>g_narrow</code>, <code>Na_D</code>, <code>i_narrow</code>, <code>z_narrow</code>). When narrow bands are present:</p>
+            <ul>
+              <li>The default band list is expanded from the four broadband filters (gp, rp, ip, zs) to include all detected narrow bands.</li>
+              <li>Narrow-band frames are reduced with the same pipeline steps (alignment, centroiding, photometry) as broadband frames.</li>
+              <li>Products are named with the narrow-band token so they don't collide with broadband outputs.</li>
+            </ul>
+            <p>To override the auto-detection, specify bands explicitly with <code>--bands gp rp Na_D</code>.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How do I re-reduce a target with different settings?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>Give the reduction a distinct <strong>Run name</strong> to isolate it under <code>$MUSCAT_PROSE_DIR/&lt;instrument&gt;/&lt;date&gt;/_runs/&lt;target&gt;/&lt;run_id&gt;/</code>. Run chips on the results page switch between saved reductions. The <code>--overwrite</code> option (enabled by default in the GUI) only replaces products in the selected run, which is useful when retrying the same configuration with changed apertures, bands, or reference settings. Use a new run name whenever the previous products must remain intact.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How do I download all output files for a reduction at once?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>Both the photometry and transit-fit result pages have a <strong>Download all output</strong> button. It calls a server-side endpoint (<code>/api/photometry/download-all/...</code> or <code>/api/transit-fit/download-all/...</code>) that zips every product file for that run into a single archive and streams it back — no need to download plots and CSVs one at a time. For run-scoped reductions the zip walks the run directory recursively; legacy (non run-scoped) reductions zip the top-level files plus the <code>out/</code> subdirectory. The temporary zip is written under the pipeline's tmpdir and deleted immediately after the response finishes streaming.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What are the default photometry parameters and where are they configured?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>Default parameters are defined in <code>src/muscat_db/photometry.py</code> in the <code>RUN_DEFAULTS</code> dictionary. Key defaults:</p>
+            <ul>
+              <li><strong>bands</strong>: gp, rp, ip, zs</li>
+              <li><strong>aper_radii</strong>: auto (Gaia heuristic)</li>
+              <li><strong>annulus</strong>: auto (Gaia heuristic)</li>
+              <li><strong>aper_unit</strong>: pix</li>
+              <li><strong>max_num_stars</strong>: 10</li>
+              <li><strong>min_star_separation</strong>: 10.0 pix</li>
+              <li><strong>avoid_nearby_star_mode</strong>: auto (max(2 x FWHM, 3 arcsec))</li>
+              <li><strong>cutout_size</strong>: 35 pix</li>
+              <li><strong>bin_size_minutes</strong>: 10.0</li>
+              <li><strong>gif_stride</strong>: 100</li>
+              <li><strong>test_run_frames</strong>: 10</li>
+              <li><strong>make_gif</strong>: True</li>
+              <li><strong>overwrite</strong>: True</li>
+            </ul>
+            <p>These can be overridden individually in the GUI form or via command-line flags.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What is the difference between aper_unit pix and fwhm?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <ul>
+              <li><strong>pix</strong> — aperture radii and annulus dimensions are specified and applied in absolute pixel units. The same pixel values are used for every frame regardless of seeing conditions.</li>
+              <li><strong>fwhm</strong> — radii are specified as multiples of the FWHM measured on each frame. This adapts the aperture size to the actual seeing: in good seeing (small FWHM), the aperture shrinks to exclude more sky; in poor seeing (large FWHM), it expands to capture more of the star's flux.</li>
+            </ul>
+            <p>Use <code>pix</code> when the PSF is stable and you want a fixed physical aperture. Use <code>fwhm</code> when seeing varies significantly across the sequence — it produces more consistent photometry at the cost of slightly more complex interpretation.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How are saturated stars handled by the pipeline?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The pipeline reads the saturation level from the FITS header (SATURATE keyword or BSCALE/DATAMAX). During source detection, pixels above a configurable fraction of the saturation level are flagged. However:</p>
+            <ul>
+              <li><strong>Detection</strong> — saturated sources are still detected but their centroids may be biased. The pipeline uses Gaussian2D centroiding which degrades on saturated cores.</li>
+              <li><strong>Photometry</strong> — aperture photometry on saturated stars underestimates the true flux because flux is lost in the saturated core. The pipeline does not apply a non-linearity correction.</li>
+              <li><strong>Comparison stars</strong> — the autodiff algorithm will naturally down-weight saturated comparison stars because they produce noisier differential lightcurves.</li>
+            </ul>
+            <p>For heavily saturated targets, use shorter exposure sequences or apply a non-linearity correction externally before running the pipeline.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the ref_band alignment strategy affect photometric precision?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The <code>--ref_band</code> flag controls whether all bands are aligned to a single reference band or each band self-references its own first frame:</p>
+            <ul>
+              <li><strong>Per-band self-reference (default, <code>--ref_band</code> not set)</strong> — each band creates its own reference frame from its first science frame. Alignment is within-camera only. Recommended for multi-camera instruments (MuSCAT3/4) where each band uses a separate CCD, because cross-camera registration would introduce interpolation artifacts from slightly different pointing and distortion.</li>
+              <li><strong>Single reference (<code>--ref_band gp</code> for example)</strong> — all bands align to the reference band's middle frame. This can introduce systematic offsets between bands because different cameras have different pixel scales, rotations, and distortions. The resulting lightcurves may show band-dependent systematics.</li>
+            </ul>
+            <p>For MuSCAT2 (single CCD with filter wheel), both strategies work because all bands share the same detector. Per-band self-reference is still the default and generally recommended. For Sinistro, <code>--ref_band</code> is disabled in the GUI because simultaneous bands can be observed by different LCO telescopes with large pointing offsets, so mapping one band's reference catalog onto another can fail or produce invalid alignment.</p>
+          </div>
+        </div>
+
+        <!-- ==================== Transit Fit ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Transit Fitting</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the transit fitting pipeline work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The timer transit fitting pipeline models the transit lightcurve using PyMC's NUTS sampler:</p>
+            <ol>
+              <li><strong>Configuration</strong> — YAML files (<code>fit.yaml</code>, <code>sys.yaml</code>) specify stellar and planetary parameters, priors, detrending covariates, and sampler settings.</li>
+              <li><strong>Data loading</strong> — photometry CSVs are read and merged with covariate data (FWHM, airmass, centroid offsets).</li>
+              <li><strong>Prior initialization</strong> — stellar parameters (Teff, logg, metallicity) are sourced from the TOI catalog or manually entered; planetary priors (period, T0, duration, impact parameter) are set from known ephemerides or the TOI catalog.</li>
+              <li><strong>Model assembly</strong> — a PyMC model is built with the transit model (batman or starry), limb darkening (quadratic or nonlinear), and systematics model (linear or GP).</li>
+              <li><strong>Pre-optimization</strong> — L-BFGS finds the maximum a posteriori (MAP) solution to initialize the sampler.</li>
+              <li><strong>MCMC sampling</strong> — NUTS sampler runs multiple chains (default 4) with several thousand tuning and production steps.</li>
+              <li><strong>Post-processing</strong> — residual outliers are sigma-clipped, information criteria (BIC, AIC) are computed, and diagnostic plots (corner, trace, LD profile, fit) are generated.</li>
+            </ol>
+          </div>
+        </div>
+
+      <div class="faq-item">
+        <div class="faq-question" onclick="toggleFaq(this)">
+          <span>What is the difference between "New Fit" and "Continue Sampling" in transit fitting?</span>
+          <span class="faq-icon">+</span>
+        </div>
+        <div class="faq-answer">
+          <p>The transit fitting pipeline supports two run modes to handle existing reduction results:</p>
+          <ul>
+            <li><strong>New Fit (start fresh)</strong> — Sets <code>clobber: true</code> in the fit configuration. It discards any previous traces, runs L-BFGS MAP pre-optimization to find an initial solution, and starts MCMC sampling from scratch.</li>
+            <li><strong>Continue Sampling</strong> — Sets <code>clobber: false</code>. It loads the previous MCMC trace from saved pickle files and resumes sampling, appending new draws to the existing chain. This option is only available when a previous fit run exists.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <div class="faq-question" onclick="toggleFaq(this)">
+          <span>How do I fit a secondary eclipse instead of a primary transit?</span>
+          <span class="faq-icon">+</span>
+        </div>
+        <div class="faq-answer">
+          <p>Check the <strong>Secondary eclipse</strong> box in the Fitting Pipeline Options section before launching a fit. This sets <code>secondary_eclipse: true</code> in the <code>fit.yaml</code> configuration, which places the modeled event at orbital phase 0.5 rather than phase 0 (the primary transit). It is off by default and is independent of the New Fit / Continue Sampling run mode — combine it with a fresh set of lightcurves centered on the expected eclipse time.</p>
+        </div>
+      </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the parameter query from the TOI / NASA Exoplanet Archive work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The transit fit page has a <em>Query Archive</em> button that fetches stellar and planetary parameters from two sources:</p>
+            <ul>
+              <li><strong>TOI Catalog</strong> (<code>source=toi</code>) — queries the TESS Objects of Interest table via the Exoplanet Archive TAP service. The target name is cleaned by removing the TOI prefix, leading zeros, and <code>.01</code> suffix (e.g. <code>TOI07475.01</code> → <code>7475</code>), then matched against the <code>toi</code> column with fallback queries on <code>toidisplay</code> and substring matching. Returns Teff, logg, orbital period, transit midpoint, and transit duration.</li>
+              <li><strong>NASA Exoplanet Archive</strong> (<code>source=nasa</code>) — queries the <code>pscomppars</code> (Planetary Systems Composite Parameters) table by <code>pl_name</code> or <code>hostname</code>. Returns the same parameters plus metallicity, radius ratio, and impact parameter, with literature references.</li>
+            </ul>
+            <p>The fetched values are used to pre-populate the priors in the YAML configuration, which can be edited before running the fit.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does timer compare to the MuSCAT2 transit pipeline?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The <code>timer</code> transit fitting pipeline used here is distinct from the <a href="https://github.com/hpparvi/MuSCAT2_transit_pipeline" target="_blank" rel="noopener noreferrer">MuSCAT2 transit pipeline</a> (Parvi et al.). Key differences:</p>
+            <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem; margin-top: 0.5rem;">
+              <thead>
+                <tr style="border-bottom: 2px solid var(--border);">
+                  <th style="text-align: left; padding: 0.5rem; color: var(--text-dim); font-weight: 600;">Aspect</th>
+                  <th style="text-align: left; padding: 0.5rem; color: var(--text-dim); font-weight: 600;">timer (MuSCAT-db)</th>
+                  <th style="text-align: left; padding: 0.5rem; color: var(--text-dim); font-weight: 600;">MuSCAT2 Pipeline</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Sampling engine</td>
+                  <td style="padding: 0.5rem;"><strong>PyMC (v3 or v4)</strong> with NUTS sampler</td>
+                  <td style="padding: 0.5rem;"><strong>emcee</strong> ensemble sampler</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Transit model</td>
+                  <td style="padding: 0.5rem;">batman or starry (flexible)</td>
+                  <td style="padding: 0.5rem;">Custom analytical model</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Limb darkening</td>
+                  <td style="padding: 0.5rem;">Quadratic, nonlinear, fixed, or priors</td>
+                  <td style="padding: 0.5rem;">Fixed from stellar parameters</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Systematics model</td>
+                  <td style="padding: 0.5rem;">Linear regression or Gaussian process</td>
+                  <td style="padding: 0.5rem;">Airmass + centroid polynomial</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Configuration</td>
+                  <td style="padding: 0.5rem;">YAML files (<code>fit.yaml</code>, <code>sys.yaml</code>)</td>
+                  <td style="padding: 0.5rem;">Python scripts</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Web integration</td>
+                  <td style="padding: 0.5rem;"><strong>Native</strong> — runs via web UI, persists results in DB</td>
+                  <td style="padding: 0.5rem;">Standalone — independent command-line tool</td>
+                </tr>
+                <tr style="border-bottom: 1px solid var(--border);">
+                  <td style="padding: 0.5rem;">Archive integration</td>
+                  <td style="padding: 0.5rem;">Loads photometry CSVs from prose pipeline</td>
+                  <td style="padding: 0.5rem;">Works with raw MuSCAT2 observations</td>
+                </tr>
+                <tr>
+                  <td style="padding: 0.5rem;">Output</td>
+                  <td style="padding: 0.5rem;">Posterior samples, corner/trace/LD/fit plots, O-C analysis</td>
+                  <td style="padding: 0.5rem;">Posterior samples and publication-quality plots</td>
+                </tr>
+              </tbody>
+            </table>
+            <p style="margin-top: 1rem;"><strong>When to use each:</strong></p>
+            <ul>
+              <li><strong>timer (here)</strong> — for rapid, reproducible multi-band transit analysis integrated with the MuSCAT-db photometry pipeline, with flexible detrending and modern Bayesian inference.</li>
+              <li><strong>MuSCAT2 pipeline</strong> — for standalone MuSCAT2-specific analysis, or when custom analytical models or emcee-specific workflows are preferred.</li>
+            </ul>
+            <p>Both pipelines produce scientifically rigorous results; the choice depends on your data source and workflow integration needs.</p>
+          </div>
+        </div>
+
+        <!-- ==================== TTV Fitting ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">TTV Fitting</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>Where is the TTV fit page?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>There is no separate TTV page. TTV fitting lives on the <a href="../ephemeris/">Ephemeris</a> page, in the <strong>Configure &amp; Run TTV Fitting</strong> section below the O-C plot. A TTV signal is only meaningful relative to a reference linear ephemeris, so the fit is the last step of the O-C workflow rather than its own destination. The old <code>/ttv-fit</code> URL redirects to <code>/ephemeris</code>.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the TTV fitting pipeline work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The <a href="https://github.com/john-livingston/harmonic" target="_blank" rel="noopener noreferrer">harmonic</a> engine fits the multi-harmonic near-resonant TTV model of Lithwick, Xie &amp; Wu (2012), sampled with <code>emcee</code>:</p>
+            <ol>
+              <li><strong>Input assembly</strong> — transit centers behind the O-C plot (<code>Tc</code>, <code>tc_unc</code>, epoch per planet) are written to <code>data.csv</code>, with planet letters remapped to the integer indices harmonic expects. The dataset checkboxes and point exclusions that shape the linear fit shape the TTV fit too.</li>
+              <li><strong>Configuration</strong> — <code>config.ini</code> carries an <code>[INIT]</code> section with the TTV amplitude, super-period, and phase reference (<code>a_bc</code>, <code>a_cb</code>, <code>per_bc</code>, <code>t_bc</code>) for each adjacent pair, plus optional <code>[T14]</code> (transit durations) and <code>[OUTER]</code> (non-transiting outer planet) sections.</li>
+              <li><strong>Launch</strong> — options and INI are validated, the run directory is written, and the harmonic CLI runs as a background job in the conda <code>harmonic</code> environment. The exact command is shown in the run panel so it can be reproduced in a terminal.</li>
+              <li><strong>Sampling</strong> — <code>emcee</code> runs with the configured walkers, steps, burn-in, thinning, processes, and seed, streaming <code>harmonic.log</code> live to the page. Completed results include a <strong>fit run log</strong> link that opens the full log in a new tab.</li>
+              <li><strong>Outputs</strong> — posterior samples (<code>samples.csv.gz</code>), diagnostic plots (<code>corner.png</code>, <code>trace.png</code>, <code>fit.png</code>, <code>init.png</code>), and <code>meta.yaml</code> recording the muscat-db and harmonic versions plus the full option set.</li>
+            </ol>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>Where are TTV fit results stored, and how do named runs work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>TTV results are keyed on <strong>target alone</strong> — not instrument and date, unlike photometry — because a TTV fit spans every transit of that system regardless of which night or instrument produced each transit center. They live under <code>$MUSCAT_TTV_DIR/&lt;target&gt;/_runs/&lt;run_name&gt;/</code> (default <code>$HOME/ql/harmonic</code>), mirroring the photometry <code>_runs/</code> convention.</p>
+            <p>Naming a run keeps it isolated, so you can compare, say, a two-planet fit against a fit with a non-transiting outer planet. The run chips above the results switch between stored runs, and <strong>Delete Results</strong> is scoped to the run currently on screen rather than the name typed in the box. A run directory without <code>samples.csv.gz</code> is treated as empty and hidden from the chip list.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What do the "non-transiting outer planet" and "phase offsets" options do?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <ul>
+              <li><strong>Non-transiting outer planet</strong> — adds an outer perturber that never transits, inferring its properties from the TTVs it induces on the transiting planets. Requires an <code>[OUTER]</code> section in the INI.</li>
+              <li><strong>Phase offsets</strong> — lets each planet pair take its own relative phase instead of the default shared anti-phase. The default assumes the two TTV sinusoids are exactly anti-correlated (180° apart), which the Lithwick, Xie &amp; Wu (2012) formalism gives in two limits: TTVs dominated by forced eccentricity, and TTVs dominated by free eccentricity. Between those limits the two contributions become comparable and, because the free-eccentricity term is complex, the pair's amplitudes rotate by different angles and the relative phase departs from 180°. Enable this when the system may sit in that intermediate regime.</li>
+            </ul>
+            <p>The <strong>stellar mass</strong> field feeds the mass and eccentricity constraints derived from the fitted TTV amplitudes.</p>
+          </div>
+        </div>
+
+        <!-- ==================== Deployment & Multi-User ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Deployment &amp; Multi-User</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How do I add a new user for the nginx-authenticated deployment?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>Run <code>muscat-db htpasswd add &lt;username&gt;</code> (it prompts for a password) or <code>muscat-db htpasswd add &lt;username&gt; --password-stdin</code> for scripting — never edit the htpasswd file by hand. <code>muscat-db htpasswd list</code> shows current users and <code>muscat-db htpasswd delete &lt;username&gt;</code> removes one. The file lives at <code>/etc/nginx/.htpasswd-muscatdb</code> by default (falling back to <code>data/.htpasswd-muscatdb</code> when nginx isn't installed, e.g. in dev) and is written <code>0640 root:www-data</code> so only root and nginx's worker group can read the password hashes.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>Why does the auth middleware ignore X-Forwarded-User sometimes?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>nginx sets <code>X-Forwarded-User</code> after a successful HTTP Basic Auth login and adds a private <code>X-MuSCAT-Proxy-Secret</code> header. In <code>--nginx</code> mode, the middleware requires a loopback peer, a valid username, and the matching proxy secret; protected requests fail with <code>401</code> otherwise. This prevents both remote header spoofing and direct local calls to uvicorn from impersonating nginx.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What happens to per-user LCO tokens if MUSCAT_DB_SECRET is unset?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>Per-user LCO tokens saved on <code>/settings</code> are encrypted at rest with Fernet symmetric encryption, keyed from <code>MUSCAT_DB_SECRET</code>. If that variable is unset (or changes), saving or reading a token fails with a <code>503</code> (<em>"could not save LCO token"</em> / <em>"stored LCO token cannot be read"</em>) rather than silently storing or returning it in cleartext. Set a long, random <code>MUSCAT_DB_SECRET</code> before onboarding real users, and keep it stable across restarts (e.g. export it from the service environment or a `.env` file, not an ephemeral interactive shell) — rotating it makes previously-encrypted tokens permanently undecryptable, so affected users must re-save their token.</p>
+          </div>
+        </div>
+
+        <!-- ==================== Observation Planning ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Observation Planning</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the Field-of-View (FOV) Optimizer select comparison stars?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The FOV Optimizer evaluates possible telescope pointings using a grid-search algorithm over center offsets and position angles (PA). It queries the Gaia DR3 catalog and assigns utility weights to candidate comparison stars based on:</p>
+            <ul>
+              <li><strong>Magnitude offset</strong> — Prefers stars slightly fainter than the target (ideal difference is 0.3 mag). Hard penalties are applied to stars brighter than the target (which would trigger early saturation and limit exposure times).</li>
+              <li><strong>Color similarity</strong> — Compares Gaia BP-RP colors to the target. Similar colors reduce systematic trends in differential photometry.</li>
+              <li><strong>Blending</strong> — Stars with close, similarly-bright neighbors (within 12 arcseconds) are penalized because crowding degrades aperture photometry accuracy.</li>
+            </ul>
+            <p>The optimizer selects the center offset and rotation angle that maximize the cumulative weight of the captured stars while keeping the target safely inside the instrument's footprint edge (margin of 30 arcseconds).</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does bright-star avoidance work in the FOV Optimizer?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>An optional <strong>avoid brighter than</strong> Gmag threshold rejects any candidate pointing whose full footprint contains a star brighter than that limit (the science target itself is exempt). This is useful for steering the field away from a nearby saturating star that would otherwise bleed into the frame or degrade guiding.</p>
+            <ul>
+              <li>The grid search queries Gaia down to the avoidance magnitude (even if brighter than the normal comparison-star magnitude range) so it knows about every star that must be avoided.</li>
+              <li>If every candidate pointing contains at least one too-bright star, the optimizer reports infeasibility explicitly rather than silently returning an unsafe pointing — try a fainter avoidance limit or a larger PA search step.</li>
+              <li>Avoided stars are listed in the results (position, Gmag, separation) so you can confirm which sources drove the chosen pointing.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What do the "Show FOV" and "Show Exp" buttons on the LCO Schedule page do?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>These planning shortcut buttons prefill target and instrument parameters, linking directly to the respective planning tool:</p>
+            <ul>
+              <li><strong>Show FOV</strong> — Redirects to the FOV Optimizer page preloaded with the target coordinates and selected LCO instrument to compute optimal offsets.</li>
+              <li><strong>Show Exp</strong> — Redirects to the Exposure Calculator page. Under the hood, it queries the target observations history API (<code>/api/exposure/target/{target}</code>) to retrieve unique filters and exposure times previously used.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>Why did the format of O-C ephemeris export text change?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The exported Observed-minus-Calculated (O-C) summary CSV text now starts with descriptive comment lines (prefixed by <code>#</code>) explaining that the transit center times (TCs) are in Barycentric Dynamical Time (BJD_TDB). This makes it easy for automated scripts and external fitting tools to parse column formats (planet, epoch, tc, tc_unc) and track time-standard coordinates correctly.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What do the provenance badges (NASA/TOI/AUTO/LINEAR/FIT/manual) on the LCO Schedule ephemeris fields mean?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>Each target-scoped ephemeris field (RA/Dec, T0, period, duration) on the LCO Schedule page shows a small badge indicating where its value came from: <code>NASA</code> or <code>TOI</code> for a catalog lookup, <code>AUTO</code> for a fallback default, <code>LINEAR</code>/<code>FIT</code> for a value derived from a saved ephemeris view's linear fit, or <code>manual</code> once you've hand-edited it.</p>
+            <p>Switching targets blanks all four fields first — an empty field honestly means "no data for this target" rather than a stale value left over from whatever you looked at previously. Re-querying the same target preserves any field you've tagged <code>manual</code> instead of overwriting it, and a catalog miss no longer blanks coordinates you entered by hand.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What safeguards prevent scheduling an unobservable REPEAT_EXPOSE request?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>LCO validates a request's configuration duration against target visibility across the <em>entire</em> request window, including pre/post padding — not just the bare transit shown in the window generator. Before a dry-run IPP check or live submission, the backend re-checks observability at the selected site over the full padded window and rejects the request with a specific reason (which window index, whether it is partially or fully unobservable, the request span in hours) instead of letting it fail opaquely at LCO.</p>
+            <p>If a window is flagged, regenerate windows with "Include padding in obs check" enabled, reduce the pre/post padding, pick a different window or site, or loosen the airmass/moon-separation constraints.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How do the bookmarkable URLs on the scheduler and catalog pages work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The LCO Schedule form and the <code>/toi</code>/<code>/nexsci</code> catalog pages encode their current filter/form state into the URL hash fragment as you interact with them (e.g. <code>/lco/schedule#proposal=TOM00001234&amp;target=TOI-2000&amp;kind=muscat3</code> or <code>/toi#q=TOI-2000&amp;planet=SuperEarth&amp;star=M&amp;sort=period:1</code>), updated in place via <code>history.replaceState()</code> so it never adds browser-history entries.</p>
+            <p>On load, state is restored with this priority: <strong>URL hash &gt; localStorage &gt; built-in defaults</strong>. That means bookmarking or sharing the URL reproduces the exact view regardless of what is saved in the visiting browser's <code>localStorage</code>.</p>
+          </div>
+        </div>
+
+        <!-- ==================== Catalogs & Publications ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Catalogs &amp; Publications</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the NASA ADS publications search on the target page work?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The target page has a collapsible <strong>NASA ADS Publications</strong> panel that queries the ADS search API for papers matching a text query (pre-filled with the target name). It requires an ADS API token — set <code>ADS_API_TOKEN</code> (or <code>ADS_DEV_KEY</code>/<code>ADS_TOKEN</code>) in <code>.env</code>, generated from <a href="https://ui.adsabs.harvard.edu/user/settings/token" target="_blank" rel="noopener noreferrer">your ADS token settings</a>. A status dot on the panel shows whether the server has a token configured before you search; results link out to each paper's ADS abstract page by bibcode. No token is ever sent to the browser — the server holds it and proxies the query.</p>
+          </div>
+        </div>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>What does the "fast rotator" filter chip on the TOI page mean?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The <code>/toi</code> page left-joins the Boyle+2026 stellar-rotation catalog (<code>final_catalog.feather</code>, matched by TIC ID) onto the TOI table, adding rotation period (P<sub>rot</sub> ± uncertainty), RUWE, contaminant/sector stats, and binarity flag columns. The <strong>Fast rotator (P<sub>rot</sub> &lt; 10 d)</strong> chip in the Rotation chip group filters to TOI hosts with a measured period below 10 days — fast-rotating host stars are more likely to show spot-crossing anomalies and higher photometric variability during a transit, which is useful context before scheduling. A dynamic note near the chip reports how many of the currently filtered targets have a measured P<sub>rot</sub>, with a link to the source paper (arXiv:2603.05586).</p>
+          </div>
+        </div>
+
+        <!-- ==================== Exposure Calculator ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Exposure Calculator</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How does the Exposure Calculator determine S/N and exposure times?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The exposure calculator fits empirical coefficients (using <code>muscat-db build-db</code> or calibration runs) to predict how many stellar photoelectrons will hit the CCD per second for a star of a given magnitude. It then applies standard CCD noise models (Poisson noise of the source, sky background noise, dark current, and read noise) to compute either the exposure time to reach a target S/N or the estimated S/N for a specified exposure time. Key parameters include the instrument aperture, focus offset, and filter transmission band.</p>
+          </div>
+        </div>
+
+        <!-- ==================== Catalog Browsers ==================== -->
+        <h3 style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">Catalog Browsers</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>How are local observations linked to catalog rows?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>The catalog browsers query the SQLite database's <code>targets</code> table on load to compile a list of all objects that have already been ingested into <code>muscat-db</code>. In the Plotly scatter plots, these matched targets are rendered as prominent ★ star markers instead of standard circular dots. In the searchable tables, clicking these rows opens the local target details page, while unmatched catalog rows link out directly to their NASA Exoplanet Archive overview page.</p>
+          </div>
+        </div>
+
+        <!-- ==================== API & Documentation ==================== -->
+        <h3 id="api-docs" style="color: var(--accent); margin-bottom: 0.25rem; font-size: 1.1rem; margin-top: 1.5rem;">API &amp; Documentation</h3>
+
+        <div class="faq-item">
+          <div class="faq-question" onclick="toggleFaq(this)">
+            <span>Where can I find the interactive API documentation?</span>
+            <span class="faq-icon">+</span>
+          </div>
+          <div class="faq-answer">
+            <p>FastAPI automatically generates interactive API documentation for all JSON endpoints:</p>
+            <ul>
+              <li><strong>Swagger UI</strong> — Available at <a href="../docs/" target="_blank"><code>/docs</code></a>. This interface allows you to interactively test endpoints directly from the browser.</li>
+              <li><strong>ReDoc</strong> — Available at <a href="../redoc/" target="_blank"><code>/redoc</code></a>. This provides a clean, read-only layout of the API specifications.</li>
+            </ul>
+            <p>Additionally, modern documentation engines like <strong>Scalar</strong> can be served side-by-side or mounted to override <code>/docs</code> by returning a custom <code>HTMLResponse</code> that fetches the Scalar web components from its official CDN pointing to the <code>/openapi.json</code> schema.</p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div> <!-- closes workflow-content -->
+</div> <!-- closes workflow-layout -->
+
+</div>
+<div id="status-bar" role="status" aria-live="polite">
+  <span class="dot"></span>
+  <span id="status-text">Loading…</span>
+</div>
+
+<div id="message-modal" data-mode="message" data-kind="default" role="dialog" aria-modal="true" aria-labelledby="message-modal-title" aria-describedby="message-modal-text">
+  <div class="modal-box">
+    <p id="message-modal-title" class="modal-title"></p>
+    <p id="message-modal-text" class="modal-text"></p>
+    <div class="modal-actions">
+      <button class="btn" id="message-modal-cancel" type="button" hidden>Cancel</button>
+      <button class="btn" id="message-modal-ok" type="button">OK</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const root = document.documentElement;
+    const btn = document.getElementById('theme-toggle');
+    if (window.MuscatRouteState) window.MuscatRouteState.applyNavbar();
+    const stored = localStorage.getItem('muscat-theme');
+    apply(stored || 'light');
+    btn.addEventListener('click', function () {
+      const next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      apply(next);
+      localStorage.setItem('muscat-theme', next);
+    });
+    function apply(t) { root.setAttribute('data-theme', t); }
+  })();
+
+  (function () {
+    const bar    = document.getElementById('loading-bar');
+    const status = document.getElementById('status-bar');
+    const text   = document.getElementById('status-text');
+    const table  = document.getElementById('targets-table');
+
+    // The bar is visible while ANY of these is true: the page is still loading,
+    // a tracked background job is active, or a same-origin /api/ request is in
+    // flight. A running job keeps it up indefinitely (that label wins over the
+    // transient page-load / fetch labels). It only slides away once all three
+    // are false.
+    let pageLoading = true;
+    let pageLabel   = 'Loading…';
+    let jobRunning  = false;
+    let jobLabel    = '';
+    let fetchActive = false;
+    let fetchLabel  = 'Loading…';
+    let hideTimer   = null;
+
+    if (table) {
+      const rows = table.tBodies[0] ? table.tBodies[0].rows.length : 0;
+      pageLabel = 'Rendering ' + rows.toLocaleString() + ' targets…';
+    }
+
+    function render() {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      if (pageLoading || jobRunning || fetchActive) {
+        bar.classList.remove('done');
+        status.classList.add('visible');
+        text.textContent = jobRunning ? jobLabel : (pageLoading ? pageLabel : fetchLabel);
+      } else {
+        bar.classList.add('done');
+        if (status.classList.contains('visible')) {
+          text.textContent = 'Ready';
+          hideTimer = setTimeout(function () { status.classList.remove('visible'); }, 700);
+        }
+      }
+      // Keep the bar in the DOM so we can re-show it on the next navigation.
+    }
+
+    function showLoading(label) {
+      pageLabel = label || 'Loading…';
+      pageLoading = true;
+      render();
+    }
+    function done() {
+      pageLoading = false;
+      render();
+    }
+    // Called by the site-wide background-job watcher below.
+    function setJob(running, label) {
+      jobRunning = !!running;
+      jobLabel   = label || 'Running…';
+      render();
+    }
+    // Called by the global /api/ fetch tracker (installed in <head>). A generic
+    // label is used unless a page has set its own via showLoading.
+    function setFetch(active, label) {
+      fetchActive = !!active;
+      fetchLabel  = label || 'Loading…';
+      render();
+    }
+    window.showLoading = showLoading;
+    window.done = done;
+    window.MuscatLoadingBar = { showLoading: showLoading, done: done, setJob: setJob, setFetch: setFetch };
+
+    // Subscribe to in-flight /api/ requests so every page shows the same
+    // loading indicator while fetching data, with no per-page wiring.
+    if (window.MuscatFetchTracker) {
+      window.MuscatFetchTracker.onChange = function (n) { setFetch(n > 0); };
+      setFetch(window.MuscatFetchTracker.active > 0);
+    }
+
+    if (document.readyState === 'complete') {
+      done();
+    } else {
+      showLoading(pageLabel);
+      window.addEventListener('load', done);
+    }
+
+    // Re-show the bar when the user navigates away via a same-origin link.
+    document.addEventListener('click', function (e) {
+      const link = e.target.closest('a');
+      if (!link) return;
+      if (link.target && link.target !== '_self') return;
+      if (link.hasAttribute('download')) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+      const href = link.getAttribute('href');
+      if (!href || href.startsWith('#') || href.startsWith('javascript:') || href.startsWith('mailto:')) return;
+      const url = new URL(link.href, window.location.href);
+      if (url.origin !== window.location.origin) return;
+      // Skip pure in-page hash changes (same path, different fragment).
+      if (url.pathname === window.location.pathname && url.hash) return;
+      showLoading('Loading…');
+    }, true);
+
+    // Restore on bfcache restores (back/forward navigation).
+    window.addEventListener('pageshow', function (e) {
+      if (e.persisted) done();
+    });
+  })();
+
+  // Site-wide background-job watcher: keeps the loading bar up on ANY page for
+  // as long as a job the user launched (saved under `phot:job` / `fit:job`) is
+  // still active on the server, and takes it down once that job finishes.
+  (function () {
+    const st  = window.MuscatStorage;
+    const bar = window.MuscatLoadingBar;
+    if (!st || !bar) return;
+
+    const POLL_MS = 4000;
+    let timer = null;
+
+    // Reconstruct the canonical job key: "<type>:<inst>/<date>/<target>[/<run_id>]"
+    // (server strips spaces from the target — see photometry.job_key).
+    function jobKey(type, j) {
+      if (!j || !j.inst || !j.date || !j.target) return null;
+      let k = type + ':' + j.inst + '/' + j.date + '/' + String(j.target).replace(/ /g, '');
+      if (j.run_id) k += '/' + j.run_id;
+      return k;
+    }
+    // TTV runs are keyed on a slugged run name rather than a run_id — see
+    // ttv_fit.ttv_job_key() / jobs.slugify_run_name().
+    function ttvJobKey(j) {
+      if (!j || !j.target) return null;
+      const slug = String(j.run_name || '').trim().toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40)
+        .replace(/^_+|_+$/g, '') || 'default';
+      return 'ttv_fit:' + String(j.target).replace(/ /g, '') + '/' + slug;
+    }
+    function trackedKeys() {
+      const keys = [];
+      const p = jobKey('photometry', st.getJSON('phot:job', null));
+      if (p) keys.push(p);
+      const f = jobKey('transit_fit', st.getJSON('fit:job', null));
+      if (f) keys.push(f);
+      const t = ttvJobKey(st.getJSON('muscat-ttv-job', null));
+      if (t) keys.push(t);
+      return keys;
+    }
+    function stop() { if (timer) { clearTimeout(timer); timer = null; } }
+    function schedule() {
+      if (!timer) timer = setTimeout(function () { timer = null; tick(); }, POLL_MS);
+    }
+    function labelFor(states) {
+      if (states.length === 1) {
+        return states[0] === 'pending' ? 'Queued — waiting to start…' : 'Running job…';
+      }
+      return 'Running ' + states.length + ' jobs…';
+    }
+    function tick() {
+      const tracked = trackedKeys();
+      if (tracked.length === 0) { bar.setJob(false, ''); stop(); return; }
+      fetch('/api/jobs/status?active_only=1', { headers: { 'X-Requested-With': 'fetch' } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          const active = {};
+          (d.active || []).forEach(function (a) { active[a.key] = a.state; });
+          const mine = tracked.filter(function (k) { return active[k]; });
+          if (mine.length > 0) {
+            bar.setJob(true, labelFor(mine.map(function (k) { return active[k]; })));
+            schedule();
+          } else {
+            // Tracked job(s) are no longer active — finished, cancelled, or
+            // cleared. Take the bar down and stop polling until the next launch
+            // or navigation re-checks. (The launching page owns clearing the
+            // localStorage key on its own terminal-state handling.)
+            bar.setJob(false, '');
+            stop();
+          }
+        })
+        .catch(function () { schedule(); });
+    }
+
+    // Let a page trigger an immediate re-check right after it launches a job,
+    // instead of waiting up to POLL_MS for the next tick.
+    window.MuscatJobIndicator = { refresh: function () { stop(); tick(); } };
+
+    if (trackedKeys().length > 0) tick();
+  })();
+
+  // ----- resizable table columns ------------------------------------------
+  (function () {
+    function initTable(table) {
+      if (table.dataset.resizableInit === '1') return;
+      if (table.offsetParent === null) return; // Skip if table is currently hidden
+      table.dataset.resizableInit = '1';
+      const headRow = table.tHead && table.tHead.rows[0];
+      if (!headRow) return;
+      const ths = Array.from(headRow.cells);
+      const tableId = table.id || 'tbl-' + Math.random().toString(36).slice(2);
+      // Lock in current natural widths (measured under table-layout: auto) so
+      // dragging one column doesn't shove the others around.
+      const measured = ths.map(function (th, i) {
+        const stored = localStorage.getItem('colw:' + tableId + ':' + i);
+        if (stored) {
+          const w = parseFloat(stored);
+          if (w > 30) {
+            th.style.maxWidth = 'none';
+            return w;
+          }
+        }
+        return th.getBoundingClientRect().width;
+      });
+      let hasStored = false;
+      for (let i = 0; i < ths.length; i++) {
+        if (localStorage.getItem('colw:' + tableId + ':' + i)) {
+          hasStored = true;
+          break;
+        }
+      }
+      if (!hasStored) {
+        const containerW = table.parentElement.clientWidth;
+        let totalMeasured = 0;
+        measured.forEach(function (w) {
+          totalMeasured += w;
+        });
+        ths.forEach(function (th, i) {
+          const share = totalMeasured > 0 ? (measured[i] / totalMeasured) : (1 / ths.length);
+          th.style.width = (containerW * share) + 'px';
+          th.style.maxWidth = 'none';
+        });
+      } else {
+        ths.forEach(function (th, i) {
+          th.style.width = measured[i] + 'px';
+        });
+      }
+
+      // Now switch to fixed layout so column widths are honoured exactly.
+      table.classList.add('resizable-init');
+      ths.forEach(function (th, i) {
+        if (i === ths.length - 1) return;  // no handle on the last column
+        const handle = document.createElement('div');
+        handle.className = 'col-resizer';
+        handle.title = 'Drag to resize column';
+        th.appendChild(handle);
+        handle.addEventListener('mousedown', function (e) {
+          startResize(e, table, th, th.cellIndex, tableId);
+        });
+        handle.addEventListener('dblclick', function () {
+          // Double-click resets this column to auto-fit content.
+          th.style.width = '';
+          th.style.maxWidth = '';
+          const currentIdx = th.cellIndex;
+          localStorage.removeItem('colw:' + tableId + ':' + currentIdx);
+          th.style.width = th.getBoundingClientRect().width + 'px';
+          localStorage.setItem('colw:' + tableId + ':' + currentIdx,
+                               parseFloat(th.style.width));
+        });
+      });
+    }
+
+    function startResize(e, table, th, idx, tableId) {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = th.getBoundingClientRect().width;
+      const handle = e.currentTarget;
+      handle.classList.add('resizing');
+      th.classList.add('resizing');
+      th.style.maxWidth = 'none';
+      document.body.style.cursor = 'col-resize';
+      function onMove(ev) {
+        const minW = th.dataset.sortAttr === 'filters' ? 15 : 40;
+        const newW = Math.max(minW, startW + (ev.clientX - startX));
+        th.style.width = newW + 'px';
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        handle.classList.remove('resizing');
+        th.classList.remove('resizing');
+        document.body.style.cursor = '';
+        const finalW = parseFloat(th.style.width);
+        if (!isNaN(finalW)) {
+          localStorage.setItem('colw:' + tableId + ':' + idx, finalW);
+        }
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    }
+
+    function initAll() {
+      document.querySelectorAll('table').forEach(initTable);
+    }
+    window.initTable = initTable;
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAll);
+    } else {
+      initAll();
+    }
+
+    // Re-init tables inside <details> when expanded (their cells have no
+    // measured width while hidden).
+    // ----- click-to-sort columns ------------------------------------------
+    function raToHours(s) {
+      const m = (s || '').match(/^\s*(-?\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      return parseInt(m[1], 10) + parseInt(m[2], 10)/60 + (parseFloat(m[3]) || 0)/3600;
+    }
+    function decToDegrees(s) {
+      const m = (s || '').match(/^\s*([+-]?)(\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      const sign = m[1] === '-' ? -1 : 1;
+      return sign * (parseInt(m[2], 10) + parseInt(m[3], 10)/60 + (parseFloat(m[4]) || 0)/3600);
+    }
+
+    function detectKind(values) {
+      const non = values.filter(v => v && v.trim() !== '');
+      if (!non.length) return 'string';
+      if (non.every(v => /^[+-]\d{1,2}:\d{2}(:\d+(\.\d+)?)?$/.test(v.trim()))) return 'dec';
+      if (non.every(v => /^\d{1,2}:\d{2}(:\d+(\.\d+)?)?$/.test(v.trim()))) return 'ra';
+      if (non.every(v => !isNaN(parseFloat(v.replace(/[^\d.+\-eE]/g, ''))))) return 'number';
+      return 'string';
+    }
+    function keyFor(kind, raw) {
+      if (raw == null) return null;
+      if (kind === 'number') {
+        const n = parseFloat(raw.replace(/[^\d.+\-eE]/g, ''));
+        return isNaN(n) ? null : n;
+      }
+      if (kind === 'ra')  { const h = raToHours(raw);   return isNaN(h) ? null : h; }
+      if (kind === 'dec') { const d = decToDegrees(raw); return isNaN(d) ? null : d; }
+      return (raw || '').toString().toLowerCase();
+    }
+    function rowKey(row, colIdx, sortAttr, kind) {
+      if (sortAttr && row.dataset[sortAttr] !== undefined) {
+        const raw = row.dataset[sortAttr];
+        if (kind === 'number') {
+          const n = parseFloat(raw);
+          return isNaN(n) ? null : n;
+        }
+        if (kind === 'ra')  { const h = raToHours(raw);    return isNaN(h) ? null : h; }
+        if (kind === 'dec') { const d = decToDegrees(raw); return isNaN(d) ? null : d; }
+        return (raw || '').toString().toLowerCase();
+      }
+      const cell = row.cells[colIdx];
+      return keyFor(kind, cell ? cell.textContent.trim() : '');
+    }
+
+    function initSortable(table) {
+      if (table.dataset.sortableInit === '1') return;
+      table.dataset.sortableInit = '1';
+      const headerRow = table.tHead && table.tHead.rows[0];
+      const tbody = table.tBodies[0];
+      if (!headerRow || !tbody) return;
+      // Snapshot original row order so a third click can restore it.
+      // Pair detail rows (log-row) with their primary so restore keeps them together.
+      const allInitRows = Array.from(tbody.rows);
+      const initPairs = [];
+      for (let i = 0; i < allInitRows.length; i++) {
+        const primary = allInitRows[i];
+        const detail = (i + 1 < allInitRows.length && allInitRows[i + 1].classList.contains('log-row'))
+          ? allInitRows[++i] : null;
+        initPairs.push({ primary, detail });
+      }
+      initPairs.forEach((p, i) => { p.primary.dataset._origIdx = i; });
+      const originalOrder = initPairs;
+
+      Array.from(headerRow.cells).forEach((th, colIdx) => {
+        if (th.classList.contains('no-sort')) return;
+        th.classList.add('sortable');
+        th.addEventListener('click', function (e) {
+          if (e.target.closest('.col-resizer')) return;  // ignore handle clicks
+          const dir = th.dataset.sortDir;
+          const next = dir === 'asc' ? 'desc' : dir === 'desc' ? '' : 'asc';
+          Array.from(headerRow.cells).forEach(h => h.removeAttribute('data-sort-dir'));
+          if (next) th.dataset.sortDir = next;
+
+          if (!next) {
+            // Restore original order (pairs kept together).
+            originalOrder.forEach(p => {
+              tbody.appendChild(p.primary || p);
+              if (p.detail) tbody.appendChild(p.detail);
+            });
+            return;
+          }
+
+          // Decide sort kind: explicit hint or auto-detect from cell text.
+          let kind = th.dataset.sortType;
+          const currentIdx = th.cellIndex;
+          if (!kind) {
+            const samples = Array.from(tbody.rows).slice(0, 25)
+              .map(r => r.cells[currentIdx] ? r.cells[currentIdx].textContent.trim() : '');
+            kind = detectKind(samples);
+          }
+          const sortAttr = th.dataset.sortAttr;  // camelCase data-* key
+
+          const dirSign = next === 'asc' ? 1 : -1;
+          // Pair detail rows (e.g. .log-row) with their preceding primary row
+          // so sorting doesn't break the adjacency.
+          const allRows = Array.from(tbody.rows);
+          const pairs = [];
+          for (let i = 0; i < allRows.length; i++) {
+            const primary = allRows[i];
+            const detail = (i + 1 < allRows.length && allRows[i + 1].classList.contains('log-row'))
+              ? allRows[++i] : null;
+            pairs.push({ primary, detail });
+          }
+          const sorted = pairs.slice().sort((a, b) => {
+            if (sortAttr === 'startedAt') {
+              const statusA = a.primary.dataset.status;
+              const statusB = b.primary.dataset.status;
+              const isRunningA = (statusA === 'running' || statusA === 'cancelling');
+              const isRunningB = (statusB === 'running' || statusB === 'cancelling');
+              if (isRunningA && !isRunningB) return -1;
+              if (isRunningB && !isRunningA) return 1;
+            }
+            const ka = rowKey(a.primary, currentIdx, sortAttr, kind);
+            const kb = rowKey(b.primary, currentIdx, sortAttr, kind);
+            if (ka == null && kb == null) return 0;
+            if (ka == null) return 1;   // nulls always last
+            if (kb == null) return -1;
+            if (ka < kb) return -1 * dirSign;
+            if (ka > kb) return  1 * dirSign;
+            // stable tiebreak on original index
+            return (parseInt(a.primary.dataset._origIdx, 10) - parseInt(b.primary.dataset._origIdx, 10));
+          });
+          sorted.forEach(p => {
+            tbody.appendChild(p.primary);
+            if (p.detail) tbody.appendChild(p.detail);
+          });
+        });
+      });
+    }
+
+    function initAllSortable() {
+      document.querySelectorAll('table').forEach(initSortable);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAllSortable);
+    } else {
+      initAllSortable();
+    }
+
+    // ----- draggable columns ----------------------------------------------
+    function initDraggableColumns(table) {
+      if (table.dataset.draggableInit === '1') return;
+      table.dataset.draggableInit = '1';
+      const headerRow = table.tHead && table.tHead.rows[0];
+      if (!headerRow) return;
+      const ths = Array.from(headerRow.cells);
+      
+      ths.forEach(function (th) {
+        th.setAttribute('draggable', 'true');
+        
+        th.addEventListener('dragstart', function (e) {
+          if (e.target.closest('.col-resizer')) {
+            e.preventDefault();
+            return;
+          }
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', th.cellIndex);
+          th.classList.add('dragging');
+        });
+        
+        th.addEventListener('dragend', function () {
+          ths.forEach(function (t) {
+            t.classList.remove('dragging', 'drag-over-left', 'drag-over-right');
+          });
+        });
+        
+        th.addEventListener('dragover', function (e) {
+          e.preventDefault();
+          const rect = th.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          
+          ths.forEach(function (t) {
+            t.classList.remove('drag-over-left', 'drag-over-right');
+          });
+          
+          if (relX < rect.width / 2) {
+            th.classList.add('drag-over-left');
+          } else {
+            th.classList.add('drag-over-right');
+          }
+        });
+        
+        th.addEventListener('dragleave', function () {
+          th.classList.remove('drag-over-left', 'drag-over-right');
+        });
+        
+        th.addEventListener('drop', function (e) {
+          e.preventDefault();
+          th.classList.remove('drag-over-left', 'drag-over-right');
+          
+          const sourceIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
+          const targetIdx = th.cellIndex;
+          if (isNaN(sourceIdx) || sourceIdx === targetIdx) return;
+          
+          const rect = th.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          const insertBefore = relX < rect.width / 2;
+          
+          Array.from(table.rows).forEach(function (row) {
+            const cell = row.cells[sourceIdx];
+            const targetCell = row.cells[targetIdx];
+            if (!cell || !targetCell) return;
+            
+            if (insertBefore) {
+              row.insertBefore(cell, targetCell);
+            } else {
+              row.insertBefore(cell, targetCell.nextSibling);
+            }
+          });
+        });
+      });
+    }
+
+    function initAllDraggable() {
+      document.querySelectorAll('table').forEach(initDraggableColumns);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAllDraggable);
+    } else {
+      initAllDraggable();
+    }
+
+    // ----- inline notes editor (delegated) --------------------------------
+    document.addEventListener('click', function (e) {
+      const cell = e.target.closest('.note-cell');
+      if (!cell || cell.classList.contains('editing')) return;
+      if (e.target.closest('a, button')) return;
+      openEditor(cell);
+    });
+
+    function openEditor(cell) {
+      const obj = cell.dataset.object;
+      const current = cell.querySelector('.note-text').textContent;
+      cell.classList.add('editing');
+      cell.innerHTML = '';
+      const ta = document.createElement('textarea');
+      ta.value = current;
+      ta.rows = 2;
+      ta.placeholder = 'Type a note…';
+      const actions = document.createElement('div');
+      actions.className = 'note-actions';
+      const save = document.createElement('button');
+      save.className = 'save'; save.textContent = 'Save';
+      const cancel = document.createElement('button');
+      cancel.textContent = 'Cancel';
+      const del = document.createElement('button');
+      del.className = 'del'; del.textContent = 'Delete';
+      actions.append(save, cancel, del);
+      cell.append(ta, actions);
+      ta.focus(); ta.select();
+
+      function close(note) {
+        cell.classList.remove('editing');
+        cell.innerHTML =
+          '<span class="note-text">' + escapeHtml(note) + '</span>' +
+          '<span class="note-placeholder"' + (note ? ' style="display:none;"' : '') + '>+ add note</span>';
+      }
+      function escapeHtml(s) {
+        return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      }
+
+      async function commit() {
+        const value = ta.value.trim();
+        try {
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({note: value}),
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          close(value);
+        } catch (err) {
+          showMessageModal('Error', 'Save failed: ' + err.message);
+        }
+      }
+      async function destroy() {
+        try {
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {method: 'DELETE'});
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          close('');
+        } catch (err) {
+          showMessageModal('Error', 'Delete failed: ' + err.message);
+        }
+      }
+
+      save.addEventListener('click', commit);
+      del.addEventListener('click', destroy);
+      cancel.addEventListener('click', () => close(current));
+      ta.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); }
+        else if (e.key === 'Escape') { e.preventDefault(); close(current); }
+      });
+    }
+
+    document.addEventListener('toggle', function (e) {
+      if (e.target.tagName === 'DETAILS' && e.target.open) {
+        e.target.querySelectorAll('table').forEach(function (t) {
+          delete t.dataset.resizableInit;
+          t.classList.remove('resizable-init');
+          // Clear previously-set widths so we re-measure from real layout.
+          if (t.tHead && t.tHead.rows[0]) {
+            Array.from(t.tHead.rows[0].cells).forEach(function (th) {
+              th.querySelectorAll('.col-resizer').forEach(h => h.remove());
+              th.style.width = '';
+            });
+          }
+          initTable(t);
+        });
+      }
+    }, true);
+  })();
+
+  (function () {
+    var modal = document.getElementById('message-modal');
+    var titleEl = document.getElementById('message-modal-title');
+    var textEl = document.getElementById('message-modal-text');
+    var okBtn = document.getElementById('message-modal-ok');
+    var cancelBtn = document.getElementById('message-modal-cancel');
+    var pendingResolve = null;
+
+    function modalOptions(opts) {
+      if (typeof opts === 'string') return { kind: opts };
+      return opts || {};
+    }
+
+    function showModal(title, text, opts) {
+      opts = modalOptions(opts);
+      titleEl.textContent = title || '';
+      textEl.textContent = text || '';
+      modal.dataset.kind = opts.kind || 'default';
+      modal.classList.add('visible');
+      okBtn.focus();
+    }
+
+    window.showMessageModal = function(title, text, opts) {
+      opts = modalOptions(opts);
+      pendingResolve = null;
+      modal.dataset.mode = 'message';
+      okBtn.textContent = 'OK';
+      okBtn.className = 'btn';
+      cancelBtn.hidden = true;
+      showModal(title, text, opts);
+    };
+    window.closeMessageModal = function(result) {
+      modal.classList.remove('visible');
+      modal.dataset.mode = 'message';
+      modal.dataset.kind = 'default';
+      if (pendingResolve) {
+        var resolve = pendingResolve;
+        pendingResolve = null;
+        resolve(!!result);
+      }
+    };
+    window.showConfirmModal = function(title, text, opts) {
+      opts = opts || {};
+      return new Promise(function (resolve) {
+        pendingResolve = resolve;
+        modal.dataset.mode = 'confirm';
+        okBtn.textContent = opts.confirmLabel || 'Confirm';
+        okBtn.className = opts.confirmClass || 'btn primary';
+        cancelBtn.textContent = opts.cancelLabel || 'Cancel';
+        cancelBtn.hidden = false;
+        showModal(title, text, opts);
+      });
+    };
+    okBtn.addEventListener('click', function () {
+      window.closeMessageModal(pendingResolve ? true : false);
+    });
+    cancelBtn.addEventListener('click', function () {
+      window.closeMessageModal(false);
+    });
+  })();
+</script>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  
+  // Theme check
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: isDark ? 'dark' : 'default',
+    securityLevel: 'loose',
+    themeVariables: {
+      primaryColor: isDark ? '#1a1d27' : '#ffffff',
+      primaryTextColor: isDark ? '#e1e4ed' : '#1a1d27',
+      primaryBorderColor: isDark ? '#2e3348' : '#d8dce6',
+      lineColor: isDark ? '#8b90a5' : '#5b6178',
+      secondaryColor: isDark ? '#242838' : '#eef0f6',
+      tertiaryColor: isDark ? '#0f1117' : '#f7f8fb'
+    }
+  });
+
+  // Watch for theme toggle and reload to re-render mermaid with correct colors
+  const observer = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+      if (mutation.type === 'attributes' && mutation.attributeName === 'data-theme') {
+        window.location.reload();
+      }
+    });
+  });
+  observer.observe(document.documentElement, { attributes: true });
+
+  // Collapsible toggle helper
+  window.toggleCard = function(cardId) {
+    const card = document.getElementById(cardId);
+    if (card) {
+      card.classList.toggle('collapsed');
+    }
+  };
+
+  // FAQ accordion toggle
+  window.toggleFaq = function(el) {
+    const item = el.closest('.faq-item');
+    if (item) {
+      item.classList.toggle('open');
+    }
+  };
+
+  // Scroll spy for TOC links
+  const observerOptions = {
+    root: null,
+    rootMargin: '0px 0px -40% 0px',
+    threshold: 0
+  };
+
+  const spyObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      const id = entry.target.getAttribute('id');
+      const link = document.querySelector(`.toc-link[href="#${id}"]`);
+      if (!link) return;
+      if (entry.isIntersecting) {
+        document.querySelectorAll('.toc-link').forEach(l => l.classList.remove('active'));
+        link.classList.add('active');
+      }
+    });
+  }, observerOptions);
+
+  document.querySelectorAll('.workflow-card, #faq-card').forEach(card => {
+    spyObserver.observe(card);
+  });
+</script>
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.workflow-toc .toc-link').forEach(link => {
+      link.addEventListener('click', function(e) {
+        const targetId = this.getAttribute('href').substring(1); // Remove '#'
+        const targetCard = document.getElementById(targetId);
+        if (targetCard && targetCard.classList.contains('collapsed')) {
+          toggleCard(targetId);
+        }
+      });
+    });
+  });
+</script>
+
+</body>
+</html>

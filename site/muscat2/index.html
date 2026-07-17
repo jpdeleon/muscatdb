@@ -1,0 +1,8308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>muscat2 — MuSCAT ObsLog</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230f1117' stroke='%2345d6b5' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='14' fill='none' stroke='%236c8cff' stroke-width='2.5'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%2345d6b5'/%3E%3Cg fill='%23e1e4ed'%3E%3Ccircle cx='12' cy='14' r='1.6'/%3E%3Ccircle cx='52' cy='18' r='1.2'/%3E%3Ccircle cx='50' cy='48' r='1.8'/%3E%3Ccircle cx='14' cy='50' r='1.4'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230f1117' stroke='%2345d6b5' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='14' fill='none' stroke='%236c8cff' stroke-width='2.5'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%2345d6b5'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../static/styles.css">
+<script src="../static/js/storage.js"></script>
+<script src="../static/js/format.js"></script>
+<script src="../static/js/jobPolling.js"></script>
+<script>
+  // Global fetch-activity tracker. Installed in <head> so it wraps window.fetch
+  // before any page script runs, giving every page a consistent loading
+  // indicator while it queries data (FOV → Gaia, ephemeris datasets, LCO
+  // schedule, …). It counts in-flight *same-origin* /api/ requests only, so the
+  // background job/status pollers (which hit /jobs/status, not /api/) never
+  // flash the bar. The loading-bar controller below subscribes via onChange.
+  (function () {
+    var origFetch = window.fetch ? window.fetch.bind(window) : null;
+    if (!origFetch) return;
+    var active = 0;
+    var tracker = { active: 0, onChange: null };
+    function notify() {
+      tracker.active = active;
+      if (typeof tracker.onChange === 'function') {
+        try { tracker.onChange(active); } catch (e) { /* never let UI break fetch */ }
+      }
+    }
+    function begin() { active++; notify(); }
+    function end() { active = Math.max(0, active - 1); notify(); }
+    function shouldTrack(input) {
+      try {
+        var urlStr = (typeof input === 'string') ? input
+                   : (input && input.url) ? input.url : String(input);
+        var u = new URL(urlStr, window.location.href);
+        var isStatus = u.pathname.endsWith('/status') || u.pathname.endsWith('/status-batch');
+        return u.origin === window.location.origin && u.pathname.indexOf('/api/') === 0 && !isStatus;
+      } catch (e) { return false; }
+    }
+    window.fetch = function (input, init) {
+      if (!shouldTrack(input)) return origFetch(input, init);
+      begin();
+      var p;
+      try {
+        p = origFetch(input, init);
+      } catch (e) {
+        end();
+        throw e;
+      }
+      p.then(end, end);
+      return p;
+    };
+    window.MuscatFetchTracker = tracker;
+  })();
+</script>
+</head>
+<body>
+<!--muscat-static-snapshot-banner-->
+<div id="snapshot-banner" role="note" style="display:flex;align-items:center;gap:.6rem;padding:.5rem .9rem;background:#3a2d00;color:#ffe9a8;font:500 .85rem/1.3 system-ui,sans-serif;border-bottom:1px solid #5a4700;"><span>&#128196; Static documentation snapshot of <strong>muscat-db</strong> &mdash; live data &amp; actions are disabled.</span><button type="button" aria-label="Dismiss" onclick="this.closest('#snapshot-banner').remove()" style="margin-left:auto;background:none;border:0;color:inherit;font-size:1.1rem;line-height:1;cursor:pointer;padding:0 .3rem;">&times;</button></div>
+<div id="loading-bar" role="progressbar" aria-label="Loading"></div>
+<nav>
+  <a class="brand" href="../" data-nav-section="home">MuSCAT-db</a>
+  <a href="../logs/" data-nav-section="obslog">ObsLog</a>
+  <a id="target-nav-link" href="../target/V1298_Tau/" data-nav-section="target">Target</a>
+  <a id="photometry-nav-link" href="../photometry/muscat/251119/V1298_Tau/" data-nav-section="photometry">Photometry</a>
+  <a id="transit-fit-nav-link" href="../transit-fit/muscat/260123/HAT-P-32b/" data-nav-section="transit-fit">Transit Fit</a>
+  <a id="ephemeris-nav-link" href="../ephemeris/" data-nav-section="ephemeris">Ephemeris</a>
+  <a id="ttv-fit-nav-link" href="../ephemeris/" style="display: none;">TTV Fit</a>
+  <a href="../jobs/" data-nav-section="jobs">Jobs</a>
+  <span class="spacer"></span>
+  <a href="../lco/schedule/" data-nav-section="lco">LCO</a>
+  <a href="../fov/" data-nav-section="fov">FOV</a>
+  <a href="../exposure/" data-nav-section="exposure">Exp Calc</a>
+  <a href="../toi/" data-nav-section="toi">TOI</a>
+  <a href="../nexsci/" data-nav-section="nexsci">NExScI</a>
+  <a href="../guide/" data-nav-section="guide" style="margin-right: 0.5rem;">Guide</a>
+  <a href="../settings/" data-nav-section="settings">Settings</a>
+  <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">
+    <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="4"/>
+      <line x1="12" y1="2"  x2="12" y2="5"/>
+      <line x1="12" y1="19" x2="12" y2="22"/>
+      <line x1="2"  y1="12" x2="5"  y2="12"/>
+      <line x1="19" y1="12" x2="22" y2="12"/>
+      <line x1="4.5"  y1="4.5"  x2="6.6"  y2="6.6"/>
+      <line x1="17.4" y1="17.4" x2="19.5" y2="19.5"/>
+      <line x1="4.5"  y1="19.5" x2="6.6"  y2="17.4"/>
+      <line x1="17.4" y1="6.6"  x2="19.5" y2="4.5"/>
+    </svg>
+    <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>
+    </svg>
+  </button>
+</nav>
+<script>
+  (function () {
+    var path = window.location.pathname.replace(/\/+$/, '') || '/';
+    var section = {
+      '/': 'home',
+      '/logs': 'obslog',
+      '/target': 'target',
+      '/photometry': 'photometry',
+      '/transit-fit': 'transit-fit',
+      '/ephemeris': 'ephemeris',
+      '/jobs': 'jobs',
+      '/fov': 'fov',
+      '/exposure': 'exposure',
+      '/toi': 'toi',
+      '/nexsci': 'nexsci',
+      '/guide': 'guide',
+      '/settings': 'settings'
+    }[path];
+
+    if (path.indexOf('/lco/') === 0) section = 'lco';
+    if (/^\/(?:muscat|muscat2|muscat3|muscat4|sinistro)(?:\/|$)/.test(path)) {
+      section = 'obslog';
+    }
+
+    document.querySelectorAll('nav a[data-nav-section]').forEach(function (link) {
+      if (link.dataset.navSection === section) {
+        link.setAttribute('aria-current', 'page');
+      }
+    });
+  })();
+</script>
+<div class="container">
+
+<h1><a href="../logs/" class="crumb">Instruments</a> / muscat2</h1>
+<table>
+<thead>
+  <tr><th>Date</th><th>CCDs</th><th>Frames</th></tr>
+</thead>
+<tbody>
+
+  <tr>
+    <td><a href="../muscat2/260621/">260621</a></td>
+    <td>4</td>
+    <td>7167</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260620/">260620</a></td>
+    <td>4</td>
+    <td>19671</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260619/">260619</a></td>
+    <td>4</td>
+    <td>12404</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260618/">260618</a></td>
+    <td>4</td>
+    <td>6518</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260617/">260617</a></td>
+    <td>4</td>
+    <td>3014</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260616/">260616</a></td>
+    <td>4</td>
+    <td>7263</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260615/">260615</a></td>
+    <td>4</td>
+    <td>6673</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260614/">260614</a></td>
+    <td>4</td>
+    <td>5335</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260613/">260613</a></td>
+    <td>4</td>
+    <td>13648</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260612/">260612</a></td>
+    <td>4</td>
+    <td>19580</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260611/">260611</a></td>
+    <td>4</td>
+    <td>7992</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260610/">260610</a></td>
+    <td>4</td>
+    <td>3552</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260609/">260609</a></td>
+    <td>4</td>
+    <td>15776</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260608/">260608</a></td>
+    <td>4</td>
+    <td>5603</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260607/">260607</a></td>
+    <td>4</td>
+    <td>2521</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260606/">260606</a></td>
+    <td>4</td>
+    <td>2886</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260605/">260605</a></td>
+    <td>4</td>
+    <td>5209</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260604/">260604</a></td>
+    <td>4</td>
+    <td>17191</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260603/">260603</a></td>
+    <td>4</td>
+    <td>4856</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260602/">260602</a></td>
+    <td>4</td>
+    <td>6342</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260529/">260529</a></td>
+    <td>4</td>
+    <td>5593</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260528/">260528</a></td>
+    <td>4</td>
+    <td>15436</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260527/">260527</a></td>
+    <td>4</td>
+    <td>5150</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260526/">260526</a></td>
+    <td>4</td>
+    <td>604</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260525/">260525</a></td>
+    <td>4</td>
+    <td>2413</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260524/">260524</a></td>
+    <td>4</td>
+    <td>5922</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260523/">260523</a></td>
+    <td>4</td>
+    <td>945</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260522/">260522</a></td>
+    <td>4</td>
+    <td>6578</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260521/">260521</a></td>
+    <td>4</td>
+    <td>4219</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260520/">260520</a></td>
+    <td>4</td>
+    <td>6217</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260518/">260518</a></td>
+    <td>4</td>
+    <td>1476</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260517/">260517</a></td>
+    <td>4</td>
+    <td>4614</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260516/">260516</a></td>
+    <td>4</td>
+    <td>14032</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260515/">260515</a></td>
+    <td>4</td>
+    <td>4367</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260513/">260513</a></td>
+    <td>4</td>
+    <td>1225</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260512/">260512</a></td>
+    <td>4</td>
+    <td>17519</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260511/">260511</a></td>
+    <td>4</td>
+    <td>4273</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260510/">260510</a></td>
+    <td>4</td>
+    <td>4805</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260509/">260509</a></td>
+    <td>4</td>
+    <td>3419</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260508/">260508</a></td>
+    <td>4</td>
+    <td>3402</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260507/">260507</a></td>
+    <td>4</td>
+    <td>4182</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260505/">260505</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260504/">260504</a></td>
+    <td>4</td>
+    <td>2931</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260428/">260428</a></td>
+    <td>4</td>
+    <td>150</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260427/">260427</a></td>
+    <td>4</td>
+    <td>3984</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260426/">260426</a></td>
+    <td>4</td>
+    <td>2590</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260425/">260425</a></td>
+    <td>4</td>
+    <td>6286</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260424/">260424</a></td>
+    <td>4</td>
+    <td>7444</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260423/">260423</a></td>
+    <td>4</td>
+    <td>8515</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260422/">260422</a></td>
+    <td>4</td>
+    <td>3176</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260421/">260421</a></td>
+    <td>4</td>
+    <td>17630</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260420/">260420</a></td>
+    <td>4</td>
+    <td>9826</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260417/">260417</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260416/">260416</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260415/">260415</a></td>
+    <td>4</td>
+    <td>15272</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260414/">260414</a></td>
+    <td>4</td>
+    <td>12717</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260413/">260413</a></td>
+    <td>4</td>
+    <td>4824</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260412/">260412</a></td>
+    <td>4</td>
+    <td>5992</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260411/">260411</a></td>
+    <td>4</td>
+    <td>2387</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260408/">260408</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260407/">260407</a></td>
+    <td>4</td>
+    <td>9266</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260403/">260403</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260402/">260402</a></td>
+    <td>4</td>
+    <td>4168</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260401/">260401</a></td>
+    <td>4</td>
+    <td>4651</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260330/">260330</a></td>
+    <td>4</td>
+    <td>4552</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260329/">260329</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260328/">260328</a></td>
+    <td>4</td>
+    <td>3148</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260327/">260327</a></td>
+    <td>4</td>
+    <td>5583</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260322/">260322</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260317/">260317</a></td>
+    <td>4</td>
+    <td>2182</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260316/">260316</a></td>
+    <td>4</td>
+    <td>5194</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260315/">260315</a></td>
+    <td>4</td>
+    <td>19575</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260314/">260314</a></td>
+    <td>4</td>
+    <td>8943</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260313/">260313</a></td>
+    <td>4</td>
+    <td>5508</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260312/">260312</a></td>
+    <td>4</td>
+    <td>5318</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260311/">260311</a></td>
+    <td>4</td>
+    <td>14410</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260310/">260310</a></td>
+    <td>4</td>
+    <td>17234</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260309/">260309</a></td>
+    <td>4</td>
+    <td>1301</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260308/">260308</a></td>
+    <td>4</td>
+    <td>6100</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260307/">260307</a></td>
+    <td>4</td>
+    <td>6484</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260306/">260306</a></td>
+    <td>4</td>
+    <td>11203</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260223/">260223</a></td>
+    <td>4</td>
+    <td>4766</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260222/">260222</a></td>
+    <td>4</td>
+    <td>15966</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260221/">260221</a></td>
+    <td>4</td>
+    <td>9837</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260220/">260220</a></td>
+    <td>4</td>
+    <td>18680</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260219/">260219</a></td>
+    <td>4</td>
+    <td>7087</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260218/">260218</a></td>
+    <td>4</td>
+    <td>25809</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260217/">260217</a></td>
+    <td>4</td>
+    <td>9290</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260213/">260213</a></td>
+    <td>4</td>
+    <td>8635</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260212/">260212</a></td>
+    <td>4</td>
+    <td>11652</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260211/">260211</a></td>
+    <td>4</td>
+    <td>5503</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260210/">260210</a></td>
+    <td>4</td>
+    <td>5107</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260209/">260209</a></td>
+    <td>4</td>
+    <td>14439</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260129/">260129</a></td>
+    <td>4</td>
+    <td>7158</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260128/">260128</a></td>
+    <td>4</td>
+    <td>24643</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260127/">260127</a></td>
+    <td>4</td>
+    <td>6695</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260124/">260124</a></td>
+    <td>4</td>
+    <td>19245</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260123/">260123</a></td>
+    <td>4</td>
+    <td>7920</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260121/">260121</a></td>
+    <td>4</td>
+    <td>4944</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260120/">260120</a></td>
+    <td>4</td>
+    <td>2548</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260119/">260119</a></td>
+    <td>4</td>
+    <td>18140</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260118/">260118</a></td>
+    <td>4</td>
+    <td>440</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260115/">260115</a></td>
+    <td>4</td>
+    <td>2163</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260114/">260114</a></td>
+    <td>4</td>
+    <td>17089</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260113/">260113</a></td>
+    <td>1</td>
+    <td>1</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260112/">260112</a></td>
+    <td>4</td>
+    <td>3640</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/260109/">260109</a></td>
+    <td>4</td>
+    <td>10509</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251230/">251230</a></td>
+    <td>4</td>
+    <td>2752</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251229/">251229</a></td>
+    <td>4</td>
+    <td>4911</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251222/">251222</a></td>
+    <td>4</td>
+    <td>10353</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251221/">251221</a></td>
+    <td>4</td>
+    <td>2649</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251220/">251220</a></td>
+    <td>4</td>
+    <td>7041</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251211/">251211</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251203/">251203</a></td>
+    <td>4</td>
+    <td>5779</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251202/">251202</a></td>
+    <td>4</td>
+    <td>3399</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251201/">251201</a></td>
+    <td>4</td>
+    <td>13144</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251130/">251130</a></td>
+    <td>4</td>
+    <td>1469</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251129/">251129</a></td>
+    <td>4</td>
+    <td>19017</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251128/">251128</a></td>
+    <td>4</td>
+    <td>8453</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251127/">251127</a></td>
+    <td>4</td>
+    <td>4776</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251126/">251126</a></td>
+    <td>4</td>
+    <td>5856</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251125/">251125</a></td>
+    <td>4</td>
+    <td>11224</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251124/">251124</a></td>
+    <td>4</td>
+    <td>2952</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251120/">251120</a></td>
+    <td>4</td>
+    <td>876</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251119/">251119</a></td>
+    <td>4</td>
+    <td>2664</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251118/">251118</a></td>
+    <td>4</td>
+    <td>333</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251116/">251116</a></td>
+    <td>4</td>
+    <td>7763</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251114/">251114</a></td>
+    <td>4</td>
+    <td>11526</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251024/">251024</a></td>
+    <td>4</td>
+    <td>5571</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/251019/">251019</a></td>
+    <td>4</td>
+    <td>3858</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250924/">250924</a></td>
+    <td>4</td>
+    <td>6657</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250905/">250905</a></td>
+    <td>4</td>
+    <td>5921</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250828/">250828</a></td>
+    <td>4</td>
+    <td>3250</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250714/">250714</a></td>
+    <td>4</td>
+    <td>4677</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250707/">250707</a></td>
+    <td>4</td>
+    <td>9966</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250703/">250703</a></td>
+    <td>4</td>
+    <td>6317</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250622/">250622</a></td>
+    <td>4</td>
+    <td>3768</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250616/">250616</a></td>
+    <td>4</td>
+    <td>4455</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250614/">250614</a></td>
+    <td>4</td>
+    <td>14790</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250601/">250601</a></td>
+    <td>4</td>
+    <td>14124</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250531/">250531</a></td>
+    <td>4</td>
+    <td>4517</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250523/">250523</a></td>
+    <td>4</td>
+    <td>9202</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250423/">250423</a></td>
+    <td>4</td>
+    <td>5812</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250421/">250421</a></td>
+    <td>4</td>
+    <td>6816</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250319/">250319</a></td>
+    <td>4</td>
+    <td>5474</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250310/">250310</a></td>
+    <td>4</td>
+    <td>4327</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250224/">250224</a></td>
+    <td>4</td>
+    <td>13243</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250223/">250223</a></td>
+    <td>4</td>
+    <td>3625</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250127/">250127</a></td>
+    <td>4</td>
+    <td>14555</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250119/">250119</a></td>
+    <td>4</td>
+    <td>11207</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250117/">250117</a></td>
+    <td>4</td>
+    <td>6029</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250116/">250116</a></td>
+    <td>4</td>
+    <td>3801</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/250115/">250115</a></td>
+    <td>4</td>
+    <td>19099</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241213/">241213</a></td>
+    <td>4</td>
+    <td>2349</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241211/">241211</a></td>
+    <td>4</td>
+    <td>9691</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241210/">241210</a></td>
+    <td>4</td>
+    <td>6448</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241206/">241206</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241130/">241130</a></td>
+    <td>4</td>
+    <td>10958</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241129/">241129</a></td>
+    <td>4</td>
+    <td>10950</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241128/">241128</a></td>
+    <td>4</td>
+    <td>7439</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241127/">241127</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241126/">241126</a></td>
+    <td>4</td>
+    <td>2359</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241125/">241125</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241124/">241124</a></td>
+    <td>4</td>
+    <td>2724</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241123/">241123</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241122/">241122</a></td>
+    <td>4</td>
+    <td>5181</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241121/">241121</a></td>
+    <td>4</td>
+    <td>3281</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241120/">241120</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241115/">241115</a></td>
+    <td>4</td>
+    <td>3088</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241114/">241114</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241113/">241113</a></td>
+    <td>4</td>
+    <td>5582</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241112/">241112</a></td>
+    <td>4</td>
+    <td>1389</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241111/">241111</a></td>
+    <td>4</td>
+    <td>11700</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241110/">241110</a></td>
+    <td>4</td>
+    <td>11101</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241109/">241109</a></td>
+    <td>4</td>
+    <td>14152</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241108/">241108</a></td>
+    <td>4</td>
+    <td>3899</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241106/">241106</a></td>
+    <td>4</td>
+    <td>2352</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241105/">241105</a></td>
+    <td>4</td>
+    <td>6598</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241104/">241104</a></td>
+    <td>4</td>
+    <td>15980</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241103/">241103</a></td>
+    <td>4</td>
+    <td>11657</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241102/">241102</a></td>
+    <td>4</td>
+    <td>9809</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241101/">241101</a></td>
+    <td>4</td>
+    <td>12701</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241031/">241031</a></td>
+    <td>4</td>
+    <td>15996</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241030/">241030</a></td>
+    <td>4</td>
+    <td>12005</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241029/">241029</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241028/">241028</a></td>
+    <td>4</td>
+    <td>1523</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241026/">241026</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241025/">241025</a></td>
+    <td>3</td>
+    <td>5368</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241024/">241024</a></td>
+    <td>3</td>
+    <td>9064</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241023/">241023</a></td>
+    <td>3</td>
+    <td>7402</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241019/">241019</a></td>
+    <td>3</td>
+    <td>4364</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241018/">241018</a></td>
+    <td>3</td>
+    <td>4774</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241017/">241017</a></td>
+    <td>4</td>
+    <td>6633</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241014/">241014</a></td>
+    <td>3</td>
+    <td>4622</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241013/">241013</a></td>
+    <td>4</td>
+    <td>11</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241012/">241012</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241011/">241011</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241010/">241010</a></td>
+    <td>4</td>
+    <td>8437</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241007/">241007</a></td>
+    <td>4</td>
+    <td>2032</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241006/">241006</a></td>
+    <td>4</td>
+    <td>9259</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241005/">241005</a></td>
+    <td>4</td>
+    <td>16436</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241004/">241004</a></td>
+    <td>4</td>
+    <td>6242</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241003/">241003</a></td>
+    <td>4</td>
+    <td>4903</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241002/">241002</a></td>
+    <td>4</td>
+    <td>15809</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/241001/">241001</a></td>
+    <td>4</td>
+    <td>16407</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240930/">240930</a></td>
+    <td>4</td>
+    <td>14821</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240929/">240929</a></td>
+    <td>4</td>
+    <td>13904</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240928/">240928</a></td>
+    <td>4</td>
+    <td>13673</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240924/">240924</a></td>
+    <td>4</td>
+    <td>14616</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240923/">240923</a></td>
+    <td>4</td>
+    <td>7547</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240922/">240922</a></td>
+    <td>4</td>
+    <td>8228</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240919/">240919</a></td>
+    <td>4</td>
+    <td>2729</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240918/">240918</a></td>
+    <td>4</td>
+    <td>4141</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240917/">240917</a></td>
+    <td>4</td>
+    <td>4737</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240916/">240916</a></td>
+    <td>4</td>
+    <td>17952</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240915/">240915</a></td>
+    <td>4</td>
+    <td>7233</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240914/">240914</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240913/">240913</a></td>
+    <td>4</td>
+    <td>4910</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240912/">240912</a></td>
+    <td>4</td>
+    <td>7141</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240911/">240911</a></td>
+    <td>4</td>
+    <td>3730</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240910/">240910</a></td>
+    <td>4</td>
+    <td>1578</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240909/">240909</a></td>
+    <td>4</td>
+    <td>6985</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240908/">240908</a></td>
+    <td>4</td>
+    <td>9754</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240907/">240907</a></td>
+    <td>4</td>
+    <td>10172</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240906/">240906</a></td>
+    <td>4</td>
+    <td>4501</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240905/">240905</a></td>
+    <td>4</td>
+    <td>5888</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240904/">240904</a></td>
+    <td>4</td>
+    <td>5417</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240903/">240903</a></td>
+    <td>4</td>
+    <td>6673</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240902/">240902</a></td>
+    <td>4</td>
+    <td>8945</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240901/">240901</a></td>
+    <td>4</td>
+    <td>6936</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240831/">240831</a></td>
+    <td>4</td>
+    <td>8167</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240830/">240830</a></td>
+    <td>4</td>
+    <td>5457</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240829/">240829</a></td>
+    <td>4</td>
+    <td>5506</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240828/">240828</a></td>
+    <td>4</td>
+    <td>3429</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240827/">240827</a></td>
+    <td>4</td>
+    <td>3364</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240826/">240826</a></td>
+    <td>4</td>
+    <td>2724</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240825/">240825</a></td>
+    <td>4</td>
+    <td>4105</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240824/">240824</a></td>
+    <td>4</td>
+    <td>7548</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240823/">240823</a></td>
+    <td>4</td>
+    <td>2553</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240822/">240822</a></td>
+    <td>4</td>
+    <td>20954</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240821/">240821</a></td>
+    <td>4</td>
+    <td>4890</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240820/">240820</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240819/">240819</a></td>
+    <td>4</td>
+    <td>312</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240818/">240818</a></td>
+    <td>4</td>
+    <td>4291</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240817/">240817</a></td>
+    <td>4</td>
+    <td>2182</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240816/">240816</a></td>
+    <td>4</td>
+    <td>6134</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240815/">240815</a></td>
+    <td>4</td>
+    <td>3239</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240814/">240814</a></td>
+    <td>4</td>
+    <td>11052</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240813/">240813</a></td>
+    <td>4</td>
+    <td>510</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240812/">240812</a></td>
+    <td>4</td>
+    <td>2870</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240811/">240811</a></td>
+    <td>4</td>
+    <td>4716</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240620/">240620</a></td>
+    <td>4</td>
+    <td>14426</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240619/">240619</a></td>
+    <td>4</td>
+    <td>3304</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240618/">240618</a></td>
+    <td>4</td>
+    <td>3629</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240617/">240617</a></td>
+    <td>4</td>
+    <td>1842</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240614/">240614</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240610/">240610</a></td>
+    <td>4</td>
+    <td>2911</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240607/">240607</a></td>
+    <td>4</td>
+    <td>2977</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240606/">240606</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240605/">240605</a></td>
+    <td>4</td>
+    <td>7327</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240604/">240604</a></td>
+    <td>4</td>
+    <td>3953</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240603/">240603</a></td>
+    <td>4</td>
+    <td>4324</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240601/">240601</a></td>
+    <td>4</td>
+    <td>5148</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240531/">240531</a></td>
+    <td>4</td>
+    <td>3245</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240530/">240530</a></td>
+    <td>4</td>
+    <td>4758</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240529/">240529</a></td>
+    <td>4</td>
+    <td>13710</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240528/">240528</a></td>
+    <td>4</td>
+    <td>12216</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240527/">240527</a></td>
+    <td>4</td>
+    <td>14650</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240526/">240526</a></td>
+    <td>4</td>
+    <td>4508</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240525/">240525</a></td>
+    <td>4</td>
+    <td>5350</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240524/">240524</a></td>
+    <td>4</td>
+    <td>5314</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240522/">240522</a></td>
+    <td>4</td>
+    <td>4136</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240521/">240521</a></td>
+    <td>4</td>
+    <td>2937</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240520/">240520</a></td>
+    <td>4</td>
+    <td>2673</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240516/">240516</a></td>
+    <td>4</td>
+    <td>9721</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240515/">240515</a></td>
+    <td>4</td>
+    <td>5928</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240514/">240514</a></td>
+    <td>4</td>
+    <td>5608</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240513/">240513</a></td>
+    <td>4</td>
+    <td>11789</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240511/">240511</a></td>
+    <td>4</td>
+    <td>1090</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240510/">240510</a></td>
+    <td>4</td>
+    <td>5384</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240509/">240509</a></td>
+    <td>4</td>
+    <td>200</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240508/">240508</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240505/">240505</a></td>
+    <td>4</td>
+    <td>4425</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240504/">240504</a></td>
+    <td>4</td>
+    <td>4199</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240503/">240503</a></td>
+    <td>4</td>
+    <td>9445</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240501/">240501</a></td>
+    <td>4</td>
+    <td>6091</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240430/">240430</a></td>
+    <td>4</td>
+    <td>3540</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240429/">240429</a></td>
+    <td>4</td>
+    <td>15356</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240426/">240426</a></td>
+    <td>4</td>
+    <td>7998</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240423/">240423</a></td>
+    <td>4</td>
+    <td>4107</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240422/">240422</a></td>
+    <td>4</td>
+    <td>8668</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240421/">240421</a></td>
+    <td>4</td>
+    <td>5023</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240420/">240420</a></td>
+    <td>4</td>
+    <td>6797</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240419/">240419</a></td>
+    <td>4</td>
+    <td>5837</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240418/">240418</a></td>
+    <td>4</td>
+    <td>2463</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240417/">240417</a></td>
+    <td>4</td>
+    <td>7236</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240414/">240414</a></td>
+    <td>4</td>
+    <td>8944</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240413/">240413</a></td>
+    <td>4</td>
+    <td>1635</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240412/">240412</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240410/">240410</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240408/">240408</a></td>
+    <td>4</td>
+    <td>4799</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240407/">240407</a></td>
+    <td>4</td>
+    <td>6470</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240406/">240406</a></td>
+    <td>4</td>
+    <td>3713</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240405/">240405</a></td>
+    <td>4</td>
+    <td>2015</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240404/">240404</a></td>
+    <td>4</td>
+    <td>2994</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240403/">240403</a></td>
+    <td>4</td>
+    <td>16647</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240402/">240402</a></td>
+    <td>4</td>
+    <td>3127</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240401/">240401</a></td>
+    <td>4</td>
+    <td>8341</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240331/">240331</a></td>
+    <td>4</td>
+    <td>5465</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240330/">240330</a></td>
+    <td>4</td>
+    <td>5462</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240329/">240329</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240328/">240328</a></td>
+    <td>4</td>
+    <td>1048</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240327/">240327</a></td>
+    <td>4</td>
+    <td>2387</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240325/">240325</a></td>
+    <td>4</td>
+    <td>4567</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240320/">240320</a></td>
+    <td>4</td>
+    <td>4264</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240319/">240319</a></td>
+    <td>4</td>
+    <td>6082</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240318/">240318</a></td>
+    <td>4</td>
+    <td>3479</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240314/">240314</a></td>
+    <td>4</td>
+    <td>8988</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240313/">240313</a></td>
+    <td>4</td>
+    <td>20767</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240312/">240312</a></td>
+    <td>4</td>
+    <td>1042</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240311/">240311</a></td>
+    <td>4</td>
+    <td>4807</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240310/">240310</a></td>
+    <td>4</td>
+    <td>12153</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240309/">240309</a></td>
+    <td>4</td>
+    <td>5125</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240308/">240308</a></td>
+    <td>4</td>
+    <td>1793</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240306/">240306</a></td>
+    <td>4</td>
+    <td>6635</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240305/">240305</a></td>
+    <td>4</td>
+    <td>9110</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240304/">240304</a></td>
+    <td>4</td>
+    <td>5075</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240303/">240303</a></td>
+    <td>4</td>
+    <td>9347</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240227/">240227</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240226/">240226</a></td>
+    <td>4</td>
+    <td>10109</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240225/">240225</a></td>
+    <td>4</td>
+    <td>8404</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240224/">240224</a></td>
+    <td>4</td>
+    <td>16366</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240223/">240223</a></td>
+    <td>4</td>
+    <td>15833</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240222/">240222</a></td>
+    <td>4</td>
+    <td>8954</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240221/">240221</a></td>
+    <td>4</td>
+    <td>8960</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240220/">240220</a></td>
+    <td>4</td>
+    <td>3394</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240219/">240219</a></td>
+    <td>4</td>
+    <td>5549</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240218/">240218</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240217/">240217</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240216/">240216</a></td>
+    <td>4</td>
+    <td>5196</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240215/">240215</a></td>
+    <td>4</td>
+    <td>13319</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240214/">240214</a></td>
+    <td>4</td>
+    <td>7996</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240213/">240213</a></td>
+    <td>4</td>
+    <td>11421</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240212/">240212</a></td>
+    <td>4</td>
+    <td>8298</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240211/">240211</a></td>
+    <td>4</td>
+    <td>8313</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240210/">240210</a></td>
+    <td>4</td>
+    <td>12247</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240208/">240208</a></td>
+    <td>4</td>
+    <td>2764</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240206/">240206</a></td>
+    <td>4</td>
+    <td>18693</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240205/">240205</a></td>
+    <td>4</td>
+    <td>8233</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240204/">240204</a></td>
+    <td>4</td>
+    <td>6480</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240203/">240203</a></td>
+    <td>4</td>
+    <td>5869</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240202/">240202</a></td>
+    <td>4</td>
+    <td>8206</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240201/">240201</a></td>
+    <td>4</td>
+    <td>15586</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240131/">240131</a></td>
+    <td>4</td>
+    <td>6226</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240130/">240130</a></td>
+    <td>4</td>
+    <td>6924</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240129/">240129</a></td>
+    <td>4</td>
+    <td>10645</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240128/">240128</a></td>
+    <td>4</td>
+    <td>5883</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240127/">240127</a></td>
+    <td>4</td>
+    <td>5436</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240126/">240126</a></td>
+    <td>4</td>
+    <td>9408</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240125/">240125</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240124/">240124</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240123/">240123</a></td>
+    <td>4</td>
+    <td>1495</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240122/">240122</a></td>
+    <td>4</td>
+    <td>4502</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240121/">240121</a></td>
+    <td>4</td>
+    <td>10636</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240120/">240120</a></td>
+    <td>4</td>
+    <td>2820</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240119/">240119</a></td>
+    <td>4</td>
+    <td>5160</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240118/">240118</a></td>
+    <td>4</td>
+    <td>656</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240117/">240117</a></td>
+    <td>4</td>
+    <td>3375</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240115/">240115</a></td>
+    <td>4</td>
+    <td>370</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240114/">240114</a></td>
+    <td>4</td>
+    <td>2917</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240113/">240113</a></td>
+    <td>4</td>
+    <td>2504</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240112/">240112</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240111/">240111</a></td>
+    <td>4</td>
+    <td>646</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240107/">240107</a></td>
+    <td>4</td>
+    <td>11014</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240106/">240106</a></td>
+    <td>4</td>
+    <td>4351</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240105/">240105</a></td>
+    <td>4</td>
+    <td>3457</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240104/">240104</a></td>
+    <td>4</td>
+    <td>5433</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240103/">240103</a></td>
+    <td>4</td>
+    <td>12492</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/240102/">240102</a></td>
+    <td>4</td>
+    <td>8770</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231228/">231228</a></td>
+    <td>4</td>
+    <td>7550</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231227/">231227</a></td>
+    <td>4</td>
+    <td>5185</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231226/">231226</a></td>
+    <td>4</td>
+    <td>10132</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231221/">231221</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231220/">231220</a></td>
+    <td>4</td>
+    <td>2688</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231219/">231219</a></td>
+    <td>4</td>
+    <td>2467</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231218/">231218</a></td>
+    <td>4</td>
+    <td>7925</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231217/">231217</a></td>
+    <td>4</td>
+    <td>9760</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231216/">231216</a></td>
+    <td>4</td>
+    <td>3606</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231215/">231215</a></td>
+    <td>4</td>
+    <td>5316</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231211/">231211</a></td>
+    <td>4</td>
+    <td>5868</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231210/">231210</a></td>
+    <td>4</td>
+    <td>16429</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231209/">231209</a></td>
+    <td>4</td>
+    <td>13829</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231208/">231208</a></td>
+    <td>4</td>
+    <td>14610</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231207/">231207</a></td>
+    <td>4</td>
+    <td>5907</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231206/">231206</a></td>
+    <td>4</td>
+    <td>3362</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231205/">231205</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231204/">231204</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231203/">231203</a></td>
+    <td>4</td>
+    <td>12296</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231202/">231202</a></td>
+    <td>4</td>
+    <td>8311</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231201/">231201</a></td>
+    <td>4</td>
+    <td>5886</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231129/">231129</a></td>
+    <td>4</td>
+    <td>2170</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231128/">231128</a></td>
+    <td>4</td>
+    <td>11931</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231127/">231127</a></td>
+    <td>4</td>
+    <td>3529</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231126/">231126</a></td>
+    <td>4</td>
+    <td>6836</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231125/">231125</a></td>
+    <td>4</td>
+    <td>5215</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231124/">231124</a></td>
+    <td>4</td>
+    <td>1924</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231123/">231123</a></td>
+    <td>4</td>
+    <td>5313</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231120/">231120</a></td>
+    <td>4</td>
+    <td>5122</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231119/">231119</a></td>
+    <td>4</td>
+    <td>13123</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231118/">231118</a></td>
+    <td>4</td>
+    <td>20715</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231117/">231117</a></td>
+    <td>4</td>
+    <td>12350</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231116/">231116</a></td>
+    <td>4</td>
+    <td>15376</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231115/">231115</a></td>
+    <td>4</td>
+    <td>8629</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231114/">231114</a></td>
+    <td>4</td>
+    <td>9193</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231113/">231113</a></td>
+    <td>4</td>
+    <td>14276</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231112/">231112</a></td>
+    <td>4</td>
+    <td>4434</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231111/">231111</a></td>
+    <td>4</td>
+    <td>20641</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231110/">231110</a></td>
+    <td>4</td>
+    <td>6887</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231109/">231109</a></td>
+    <td>4</td>
+    <td>22606</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231108/">231108</a></td>
+    <td>4</td>
+    <td>3356</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231107/">231107</a></td>
+    <td>4</td>
+    <td>21888</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231105/">231105</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231104/">231104</a></td>
+    <td>4</td>
+    <td>8818</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231103/">231103</a></td>
+    <td>4</td>
+    <td>21597</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231102/">231102</a></td>
+    <td>4</td>
+    <td>8531</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231101/">231101</a></td>
+    <td>4</td>
+    <td>9400</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231031/">231031</a></td>
+    <td>4</td>
+    <td>5008</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231030/">231030</a></td>
+    <td>4</td>
+    <td>4811</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231029/">231029</a></td>
+    <td>4</td>
+    <td>9338</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231028/">231028</a></td>
+    <td>4</td>
+    <td>6178</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231027/">231027</a></td>
+    <td>4</td>
+    <td>5425</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231026/">231026</a></td>
+    <td>4</td>
+    <td>8367</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231025/">231025</a></td>
+    <td>4</td>
+    <td>11062</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231024/">231024</a></td>
+    <td>4</td>
+    <td>6206</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231021/">231021</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231020/">231020</a></td>
+    <td>4</td>
+    <td>16127</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231019/">231019</a></td>
+    <td>4</td>
+    <td>3126</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231015/">231015</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231014/">231014</a></td>
+    <td>4</td>
+    <td>6066</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231013/">231013</a></td>
+    <td>4</td>
+    <td>7044</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231012/">231012</a></td>
+    <td>4</td>
+    <td>7949</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231011/">231011</a></td>
+    <td>4</td>
+    <td>5784</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231010/">231010</a></td>
+    <td>4</td>
+    <td>16410</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231009/">231009</a></td>
+    <td>4</td>
+    <td>4046</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231008/">231008</a></td>
+    <td>4</td>
+    <td>6735</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231007/">231007</a></td>
+    <td>4</td>
+    <td>6763</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231006/">231006</a></td>
+    <td>4</td>
+    <td>4616</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231005/">231005</a></td>
+    <td>4</td>
+    <td>8525</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231004/">231004</a></td>
+    <td>4</td>
+    <td>3221</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231003/">231003</a></td>
+    <td>4</td>
+    <td>6888</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231002/">231002</a></td>
+    <td>4</td>
+    <td>7621</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/231001/">231001</a></td>
+    <td>4</td>
+    <td>8574</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230930/">230930</a></td>
+    <td>4</td>
+    <td>9720</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230929/">230929</a></td>
+    <td>4</td>
+    <td>1007</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230928/">230928</a></td>
+    <td>4</td>
+    <td>3308</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230927/">230927</a></td>
+    <td>4</td>
+    <td>13948</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230926/">230926</a></td>
+    <td>4</td>
+    <td>8468</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230925/">230925</a></td>
+    <td>4</td>
+    <td>17068</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230924/">230924</a></td>
+    <td>4</td>
+    <td>7233</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230923/">230923</a></td>
+    <td>4</td>
+    <td>17030</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230922/">230922</a></td>
+    <td>4</td>
+    <td>663</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230921/">230921</a></td>
+    <td>4</td>
+    <td>5648</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230920/">230920</a></td>
+    <td>4</td>
+    <td>1850</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230917/">230917</a></td>
+    <td>4</td>
+    <td>6100</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230916/">230916</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230915/">230915</a></td>
+    <td>4</td>
+    <td>13264</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230914/">230914</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230913/">230913</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230912/">230912</a></td>
+    <td>4</td>
+    <td>2509</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230816/">230816</a></td>
+    <td>4</td>
+    <td>4000</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230815/">230815</a></td>
+    <td>4</td>
+    <td>10112</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230814/">230814</a></td>
+    <td>4</td>
+    <td>8476</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230813/">230813</a></td>
+    <td>4</td>
+    <td>3152</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230812/">230812</a></td>
+    <td>4</td>
+    <td>2079</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230811/">230811</a></td>
+    <td>4</td>
+    <td>3460</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230810/">230810</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230809/">230809</a></td>
+    <td>4</td>
+    <td>2917</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230808/">230808</a></td>
+    <td>4</td>
+    <td>10576</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230807/">230807</a></td>
+    <td>4</td>
+    <td>9758</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230806/">230806</a></td>
+    <td>4</td>
+    <td>12834</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230805/">230805</a></td>
+    <td>4</td>
+    <td>17590</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230804/">230804</a></td>
+    <td>4</td>
+    <td>6937</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230803/">230803</a></td>
+    <td>4</td>
+    <td>7027</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230802/">230802</a></td>
+    <td>4</td>
+    <td>8444</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230801/">230801</a></td>
+    <td>4</td>
+    <td>6837</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230731/">230731</a></td>
+    <td>4</td>
+    <td>8031</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230730/">230730</a></td>
+    <td>4</td>
+    <td>1832</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230729/">230729</a></td>
+    <td>4</td>
+    <td>3299</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230728/">230728</a></td>
+    <td>4</td>
+    <td>13646</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230727/">230727</a></td>
+    <td>4</td>
+    <td>4971</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230726/">230726</a></td>
+    <td>4</td>
+    <td>11959</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230716/">230716</a></td>
+    <td>4</td>
+    <td>10857</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230715/">230715</a></td>
+    <td>4</td>
+    <td>4058</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230714/">230714</a></td>
+    <td>4</td>
+    <td>14630</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230713/">230713</a></td>
+    <td>4</td>
+    <td>3949</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230712/">230712</a></td>
+    <td>4</td>
+    <td>2857</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230711/">230711</a></td>
+    <td>4</td>
+    <td>3593</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230710/">230710</a></td>
+    <td>4</td>
+    <td>5508</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230709/">230709</a></td>
+    <td>4</td>
+    <td>3277</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230708/">230708</a></td>
+    <td>4</td>
+    <td>10586</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230707/">230707</a></td>
+    <td>4</td>
+    <td>5947</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230706/">230706</a></td>
+    <td>4</td>
+    <td>10614</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230705/">230705</a></td>
+    <td>4</td>
+    <td>3779</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230704/">230704</a></td>
+    <td>4</td>
+    <td>3542</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230703/">230703</a></td>
+    <td>4</td>
+    <td>3370</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230702/">230702</a></td>
+    <td>4</td>
+    <td>3486</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230701/">230701</a></td>
+    <td>4</td>
+    <td>13814</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230630/">230630</a></td>
+    <td>4</td>
+    <td>3472</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230629/">230629</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230628/">230628</a></td>
+    <td>4</td>
+    <td>7942</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230625/">230625</a></td>
+    <td>4</td>
+    <td>1928</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230624/">230624</a></td>
+    <td>4</td>
+    <td>13222</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230623/">230623</a></td>
+    <td>4</td>
+    <td>1397</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230622/">230622</a></td>
+    <td>4</td>
+    <td>6016</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230621/">230621</a></td>
+    <td>4</td>
+    <td>9442</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230620/">230620</a></td>
+    <td>4</td>
+    <td>3409</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230619/">230619</a></td>
+    <td>4</td>
+    <td>3477</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230618/">230618</a></td>
+    <td>4</td>
+    <td>6313</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230617/">230617</a></td>
+    <td>4</td>
+    <td>9122</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230616/">230616</a></td>
+    <td>4</td>
+    <td>5200</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230615/">230615</a></td>
+    <td>4</td>
+    <td>5799</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230614/">230614</a></td>
+    <td>4</td>
+    <td>3111</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230613/">230613</a></td>
+    <td>4</td>
+    <td>3178</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230612/">230612</a></td>
+    <td>4</td>
+    <td>9347</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230611/">230611</a></td>
+    <td>4</td>
+    <td>4416</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230609/">230609</a></td>
+    <td>4</td>
+    <td>3275</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230608/">230608</a></td>
+    <td>4</td>
+    <td>9098</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230607/">230607</a></td>
+    <td>4</td>
+    <td>7230</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230602/">230602</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230601/">230601</a></td>
+    <td>4</td>
+    <td>2240</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230531/">230531</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230530/">230530</a></td>
+    <td>4</td>
+    <td>3343</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230529/">230529</a></td>
+    <td>4</td>
+    <td>6646</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230528/">230528</a></td>
+    <td>4</td>
+    <td>735</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230527/">230527</a></td>
+    <td>4</td>
+    <td>3792</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230526/">230526</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230525/">230525</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230524/">230524</a></td>
+    <td>4</td>
+    <td>3336</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230523/">230523</a></td>
+    <td>4</td>
+    <td>9314</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230522/">230522</a></td>
+    <td>4</td>
+    <td>252</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230521/">230521</a></td>
+    <td>4</td>
+    <td>999</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230520/">230520</a></td>
+    <td>4</td>
+    <td>6421</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230519/">230519</a></td>
+    <td>4</td>
+    <td>4203</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230516/">230516</a></td>
+    <td>4</td>
+    <td>10302</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230515/">230515</a></td>
+    <td>4</td>
+    <td>1890</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230514/">230514</a></td>
+    <td>4</td>
+    <td>3775</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230513/">230513</a></td>
+    <td>4</td>
+    <td>5309</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230512/">230512</a></td>
+    <td>4</td>
+    <td>3452</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230511/">230511</a></td>
+    <td>4</td>
+    <td>10655</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230510/">230510</a></td>
+    <td>4</td>
+    <td>3579</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230509/">230509</a></td>
+    <td>4</td>
+    <td>4071</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230508/">230508</a></td>
+    <td>4</td>
+    <td>6090</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230507/">230507</a></td>
+    <td>4</td>
+    <td>5515</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230506/">230506</a></td>
+    <td>4</td>
+    <td>1688</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230505/">230505</a></td>
+    <td>4</td>
+    <td>5350</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230504/">230504</a></td>
+    <td>4</td>
+    <td>8207</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230503/">230503</a></td>
+    <td>4</td>
+    <td>8506</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230502/">230502</a></td>
+    <td>4</td>
+    <td>4112</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230501/">230501</a></td>
+    <td>4</td>
+    <td>2507</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230430/">230430</a></td>
+    <td>4</td>
+    <td>11545</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230429/">230429</a></td>
+    <td>4</td>
+    <td>10206</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230428/">230428</a></td>
+    <td>4</td>
+    <td>5675</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230427/">230427</a></td>
+    <td>4</td>
+    <td>2566</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230426/">230426</a></td>
+    <td>4</td>
+    <td>3437</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230425/">230425</a></td>
+    <td>4</td>
+    <td>5613</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230424/">230424</a></td>
+    <td>4</td>
+    <td>10473</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230423/">230423</a></td>
+    <td>4</td>
+    <td>5615</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230422/">230422</a></td>
+    <td>4</td>
+    <td>6521</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230421/">230421</a></td>
+    <td>4</td>
+    <td>2211</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230420/">230420</a></td>
+    <td>4</td>
+    <td>6459</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230419/">230419</a></td>
+    <td>4</td>
+    <td>3882</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230418/">230418</a></td>
+    <td>4</td>
+    <td>3661</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230417/">230417</a></td>
+    <td>4</td>
+    <td>1861</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230416/">230416</a></td>
+    <td>4</td>
+    <td>4488</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230415/">230415</a></td>
+    <td>4</td>
+    <td>6014</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230414/">230414</a></td>
+    <td>4</td>
+    <td>7183</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230413/">230413</a></td>
+    <td>4</td>
+    <td>7952</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230410/">230410</a></td>
+    <td>4</td>
+    <td>5924</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230409/">230409</a></td>
+    <td>4</td>
+    <td>6496</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230408/">230408</a></td>
+    <td>4</td>
+    <td>2488</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230407/">230407</a></td>
+    <td>4</td>
+    <td>2095</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230406/">230406</a></td>
+    <td>4</td>
+    <td>5347</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230405/">230405</a></td>
+    <td>4</td>
+    <td>3001</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230403/">230403</a></td>
+    <td>4</td>
+    <td>8008</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230402/">230402</a></td>
+    <td>4</td>
+    <td>11352</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230401/">230401</a></td>
+    <td>4</td>
+    <td>3952</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230331/">230331</a></td>
+    <td>4</td>
+    <td>703</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230326/">230326</a></td>
+    <td>4</td>
+    <td>8709</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230325/">230325</a></td>
+    <td>4</td>
+    <td>6848</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230324/">230324</a></td>
+    <td>4</td>
+    <td>6104</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230323/">230323</a></td>
+    <td>4</td>
+    <td>3987</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230322/">230322</a></td>
+    <td>4</td>
+    <td>4788</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230319/">230319</a></td>
+    <td>4</td>
+    <td>4134</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230318/">230318</a></td>
+    <td>4</td>
+    <td>4241</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230317/">230317</a></td>
+    <td>4</td>
+    <td>5963</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230316/">230316</a></td>
+    <td>4</td>
+    <td>5116</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230315/">230315</a></td>
+    <td>4</td>
+    <td>5216</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230314/">230314</a></td>
+    <td>4</td>
+    <td>5021</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230313/">230313</a></td>
+    <td>4</td>
+    <td>14076</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230312/">230312</a></td>
+    <td>4</td>
+    <td>1746</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230311/">230311</a></td>
+    <td>4</td>
+    <td>23004</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230310/">230310</a></td>
+    <td>4</td>
+    <td>8703</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230309/">230309</a></td>
+    <td>4</td>
+    <td>14509</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230308/">230308</a></td>
+    <td>4</td>
+    <td>3669</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230307/">230307</a></td>
+    <td>4</td>
+    <td>21523</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230306/">230306</a></td>
+    <td>4</td>
+    <td>3900</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230305/">230305</a></td>
+    <td>4</td>
+    <td>8314</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230304/">230304</a></td>
+    <td>4</td>
+    <td>10883</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230303/">230303</a></td>
+    <td>4</td>
+    <td>4964</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230302/">230302</a></td>
+    <td>4</td>
+    <td>3166</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230226/">230226</a></td>
+    <td>4</td>
+    <td>2577</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230225/">230225</a></td>
+    <td>4</td>
+    <td>1316</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230224/">230224</a></td>
+    <td>4</td>
+    <td>10996</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230223/">230223</a></td>
+    <td>4</td>
+    <td>284</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230221/">230221</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230220/">230220</a></td>
+    <td>4</td>
+    <td>580</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230219/">230219</a></td>
+    <td>4</td>
+    <td>5449</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230218/">230218</a></td>
+    <td>4</td>
+    <td>11144</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230213/">230213</a></td>
+    <td>4</td>
+    <td>4462</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230212/">230212</a></td>
+    <td>4</td>
+    <td>3653</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230208/">230208</a></td>
+    <td>4</td>
+    <td>10233</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230130/">230130</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230127/">230127</a></td>
+    <td>4</td>
+    <td>2820</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230126/">230126</a></td>
+    <td>4</td>
+    <td>6421</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230125/">230125</a></td>
+    <td>4</td>
+    <td>5575</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230124/">230124</a></td>
+    <td>4</td>
+    <td>5415</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230123/">230123</a></td>
+    <td>4</td>
+    <td>4996</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230121/">230121</a></td>
+    <td>4</td>
+    <td>1817</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230120/">230120</a></td>
+    <td>4</td>
+    <td>8437</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230119/">230119</a></td>
+    <td>4</td>
+    <td>584</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230118/">230118</a></td>
+    <td>4</td>
+    <td>1882</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230117/">230117</a></td>
+    <td>4</td>
+    <td>2916</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230116/">230116</a></td>
+    <td>4</td>
+    <td>1148</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230115/">230115</a></td>
+    <td>4</td>
+    <td>2237</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230114/">230114</a></td>
+    <td>4</td>
+    <td>440</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230113/">230113</a></td>
+    <td>4</td>
+    <td>2626</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230112/">230112</a></td>
+    <td>4</td>
+    <td>2082</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230108/">230108</a></td>
+    <td>4</td>
+    <td>8201</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/230107/">230107</a></td>
+    <td>4</td>
+    <td>6489</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221223/">221223</a></td>
+    <td>4</td>
+    <td>5502</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221222/">221222</a></td>
+    <td>4</td>
+    <td>4054</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221221/">221221</a></td>
+    <td>4</td>
+    <td>9877</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221220/">221220</a></td>
+    <td>4</td>
+    <td>2030</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221219/">221219</a></td>
+    <td>4</td>
+    <td>8</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221218/">221218</a></td>
+    <td>4</td>
+    <td>5697</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221217/">221217</a></td>
+    <td>4</td>
+    <td>5762</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221216/">221216</a></td>
+    <td>4</td>
+    <td>7386</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221215/">221215</a></td>
+    <td>4</td>
+    <td>13631</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221214/">221214</a></td>
+    <td>4</td>
+    <td>5077</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221211/">221211</a></td>
+    <td>4</td>
+    <td>4797</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221210/">221210</a></td>
+    <td>4</td>
+    <td>3326</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221209/">221209</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221206/">221206</a></td>
+    <td>4</td>
+    <td>563</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221205/">221205</a></td>
+    <td>4</td>
+    <td>3338</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221204/">221204</a></td>
+    <td>4</td>
+    <td>1664</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221203/">221203</a></td>
+    <td>4</td>
+    <td>2767</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221130/">221130</a></td>
+    <td>4</td>
+    <td>14672</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221129/">221129</a></td>
+    <td>4</td>
+    <td>5936</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221128/">221128</a></td>
+    <td>4</td>
+    <td>12677</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221127/">221127</a></td>
+    <td>4</td>
+    <td>12237</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221126/">221126</a></td>
+    <td>4</td>
+    <td>10818</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221125/">221125</a></td>
+    <td>4</td>
+    <td>10682</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221120/">221120</a></td>
+    <td>4</td>
+    <td>9839</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221119/">221119</a></td>
+    <td>4</td>
+    <td>4107</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221118/">221118</a></td>
+    <td>4</td>
+    <td>4615</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221117/">221117</a></td>
+    <td>4</td>
+    <td>9536</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221116/">221116</a></td>
+    <td>4</td>
+    <td>4664</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221115/">221115</a></td>
+    <td>4</td>
+    <td>5929</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221113/">221113</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221112/">221112</a></td>
+    <td>4</td>
+    <td>706</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221111/">221111</a></td>
+    <td>4</td>
+    <td>2434</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221110/">221110</a></td>
+    <td>4</td>
+    <td>11456</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221109/">221109</a></td>
+    <td>4</td>
+    <td>5423</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221106/">221106</a></td>
+    <td>4</td>
+    <td>13245</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221105/">221105</a></td>
+    <td>4</td>
+    <td>7190</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221103/">221103</a></td>
+    <td>4</td>
+    <td>6416</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221102/">221102</a></td>
+    <td>4</td>
+    <td>4576</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221101/">221101</a></td>
+    <td>4</td>
+    <td>7193</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221031/">221031</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221030/">221030</a></td>
+    <td>4</td>
+    <td>8167</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221029/">221029</a></td>
+    <td>4</td>
+    <td>6209</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221028/">221028</a></td>
+    <td>4</td>
+    <td>1425</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221027/">221027</a></td>
+    <td>4</td>
+    <td>9735</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221026/">221026</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221025/">221025</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221024/">221024</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221023/">221023</a></td>
+    <td>4</td>
+    <td>11219</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221022/">221022</a></td>
+    <td>4</td>
+    <td>7186</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221021/">221021</a></td>
+    <td>4</td>
+    <td>6531</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221020/">221020</a></td>
+    <td>4</td>
+    <td>7669</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221019/">221019</a></td>
+    <td>4</td>
+    <td>6501</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221016/">221016</a></td>
+    <td>4</td>
+    <td>6975</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221015/">221015</a></td>
+    <td>4</td>
+    <td>6721</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221014/">221014</a></td>
+    <td>4</td>
+    <td>4991</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221013/">221013</a></td>
+    <td>4</td>
+    <td>287</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221012/">221012</a></td>
+    <td>4</td>
+    <td>1252</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221011/">221011</a></td>
+    <td>4</td>
+    <td>7930</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221010/">221010</a></td>
+    <td>4</td>
+    <td>7779</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221007/">221007</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/221006/">221006</a></td>
+    <td>4</td>
+    <td>6230</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220930/">220930</a></td>
+    <td>4</td>
+    <td>2177</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220929/">220929</a></td>
+    <td>4</td>
+    <td>6234</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220928/">220928</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220923/">220923</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220922/">220922</a></td>
+    <td>4</td>
+    <td>14167</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220921/">220921</a></td>
+    <td>4</td>
+    <td>10836</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220916/">220916</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220914/">220914</a></td>
+    <td>4</td>
+    <td>4958</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220913/">220913</a></td>
+    <td>4</td>
+    <td>1930</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220912/">220912</a></td>
+    <td>4</td>
+    <td>2283</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220911/">220911</a></td>
+    <td>4</td>
+    <td>7587</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220910/">220910</a></td>
+    <td>4</td>
+    <td>3478</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220909/">220909</a></td>
+    <td>4</td>
+    <td>3639</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220907/">220907</a></td>
+    <td>4</td>
+    <td>6908</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220616/">220616</a></td>
+    <td>4</td>
+    <td>8930</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220615/">220615</a></td>
+    <td>4</td>
+    <td>7094</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220614/">220614</a></td>
+    <td>4</td>
+    <td>2603</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220613/">220613</a></td>
+    <td>4</td>
+    <td>503</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220612/">220612</a></td>
+    <td>4</td>
+    <td>3824</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220611/">220611</a></td>
+    <td>4</td>
+    <td>11330</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220610/">220610</a></td>
+    <td>4</td>
+    <td>12770</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220609/">220609</a></td>
+    <td>4</td>
+    <td>5549</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220608/">220608</a></td>
+    <td>4</td>
+    <td>5175</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220607/">220607</a></td>
+    <td>4</td>
+    <td>11075</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220606/">220606</a></td>
+    <td>4</td>
+    <td>2628</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220605/">220605</a></td>
+    <td>4</td>
+    <td>6327</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220604/">220604</a></td>
+    <td>4</td>
+    <td>5582</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220603/">220603</a></td>
+    <td>4</td>
+    <td>7209</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220602/">220602</a></td>
+    <td>4</td>
+    <td>2635</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220601/">220601</a></td>
+    <td>4</td>
+    <td>2914</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220531/">220531</a></td>
+    <td>4</td>
+    <td>3036</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220530/">220530</a></td>
+    <td>4</td>
+    <td>8835</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220529/">220529</a></td>
+    <td>4</td>
+    <td>2964</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220528/">220528</a></td>
+    <td>4</td>
+    <td>9687</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220527/">220527</a></td>
+    <td>4</td>
+    <td>5693</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220526/">220526</a></td>
+    <td>4</td>
+    <td>4158</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220525/">220525</a></td>
+    <td>4</td>
+    <td>6802</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220524/">220524</a></td>
+    <td>4</td>
+    <td>3762</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220523/">220523</a></td>
+    <td>4</td>
+    <td>12893</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220522/">220522</a></td>
+    <td>4</td>
+    <td>5009</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220521/">220521</a></td>
+    <td>4</td>
+    <td>5215</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220520/">220520</a></td>
+    <td>4</td>
+    <td>3415</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220519/">220519</a></td>
+    <td>4</td>
+    <td>8315</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220518/">220518</a></td>
+    <td>4</td>
+    <td>9305</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220517/">220517</a></td>
+    <td>4</td>
+    <td>2848</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220516/">220516</a></td>
+    <td>4</td>
+    <td>4342</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220515/">220515</a></td>
+    <td>4</td>
+    <td>6029</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220513/">220513</a></td>
+    <td>4</td>
+    <td>2146</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220508/">220508</a></td>
+    <td>4</td>
+    <td>7522</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220507/">220507</a></td>
+    <td>4</td>
+    <td>5260</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220506/">220506</a></td>
+    <td>4</td>
+    <td>3384</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220505/">220505</a></td>
+    <td>4</td>
+    <td>5740</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220504/">220504</a></td>
+    <td>4</td>
+    <td>4849</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220503/">220503</a></td>
+    <td>4</td>
+    <td>8521</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220502/">220502</a></td>
+    <td>4</td>
+    <td>4035</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220501/">220501</a></td>
+    <td>4</td>
+    <td>2848</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220430/">220430</a></td>
+    <td>4</td>
+    <td>7448</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220429/">220429</a></td>
+    <td>4</td>
+    <td>4877</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220428/">220428</a></td>
+    <td>4</td>
+    <td>4342</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220427/">220427</a></td>
+    <td>4</td>
+    <td>4312</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220423/">220423</a></td>
+    <td>3</td>
+    <td>8025</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220422/">220422</a></td>
+    <td>3</td>
+    <td>2577</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220421/">220421</a></td>
+    <td>3</td>
+    <td>6877</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220420/">220420</a></td>
+    <td>3</td>
+    <td>10477</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220419/">220419</a></td>
+    <td>3</td>
+    <td>2442</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220418/">220418</a></td>
+    <td>3</td>
+    <td>2130</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220417/">220417</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220416/">220416</a></td>
+    <td>3</td>
+    <td>3005</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220415/">220415</a></td>
+    <td>3</td>
+    <td>3501</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220414/">220414</a></td>
+    <td>3</td>
+    <td>4156</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220413/">220413</a></td>
+    <td>3</td>
+    <td>4850</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220412/">220412</a></td>
+    <td>3</td>
+    <td>3013</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220411/">220411</a></td>
+    <td>3</td>
+    <td>2775</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220410/">220410</a></td>
+    <td>3</td>
+    <td>4492</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220409/">220409</a></td>
+    <td>3</td>
+    <td>15118</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220408/">220408</a></td>
+    <td>3</td>
+    <td>14661</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220407/">220407</a></td>
+    <td>3</td>
+    <td>6341</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220406/">220406</a></td>
+    <td>3</td>
+    <td>8856</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220405/">220405</a></td>
+    <td>3</td>
+    <td>7206</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220402/">220402</a></td>
+    <td>3</td>
+    <td>330</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220401/">220401</a></td>
+    <td>3</td>
+    <td>3528</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220331/">220331</a></td>
+    <td>3</td>
+    <td>2689</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220330/">220330</a></td>
+    <td>3</td>
+    <td>7769</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220329/">220329</a></td>
+    <td>3</td>
+    <td>2691</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220328/">220328</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220327/">220327</a></td>
+    <td>3</td>
+    <td>311</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220326/">220326</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220325/">220325</a></td>
+    <td>3</td>
+    <td>4049</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220324/">220324</a></td>
+    <td>3</td>
+    <td>3343</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220323/">220323</a></td>
+    <td>3</td>
+    <td>1165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220320/">220320</a></td>
+    <td>3</td>
+    <td>6439</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220319/">220319</a></td>
+    <td>3</td>
+    <td>7080</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220318/">220318</a></td>
+    <td>3</td>
+    <td>1719</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220317/">220317</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220313/">220313</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220312/">220312</a></td>
+    <td>3</td>
+    <td>4071</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220311/">220311</a></td>
+    <td>3</td>
+    <td>3607</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220310/">220310</a></td>
+    <td>3</td>
+    <td>3352</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220309/">220309</a></td>
+    <td>3</td>
+    <td>2509</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220308/">220308</a></td>
+    <td>3</td>
+    <td>6966</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220307/">220307</a></td>
+    <td>3</td>
+    <td>7473</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220306/">220306</a></td>
+    <td>3</td>
+    <td>4281</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220305/">220305</a></td>
+    <td>3</td>
+    <td>3595</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220304/">220304</a></td>
+    <td>3</td>
+    <td>6781</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220303/">220303</a></td>
+    <td>3</td>
+    <td>5191</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220302/">220302</a></td>
+    <td>3</td>
+    <td>3586</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220301/">220301</a></td>
+    <td>3</td>
+    <td>5018</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220228/">220228</a></td>
+    <td>3</td>
+    <td>2386</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220227/">220227</a></td>
+    <td>3</td>
+    <td>4758</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220225/">220225</a></td>
+    <td>3</td>
+    <td>377</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220224/">220224</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220223/">220223</a></td>
+    <td>3</td>
+    <td>3604</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220222/">220222</a></td>
+    <td>3</td>
+    <td>9579</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220219/">220219</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220218/">220218</a></td>
+    <td>3</td>
+    <td>9766</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220217/">220217</a></td>
+    <td>3</td>
+    <td>5222</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220216/">220216</a></td>
+    <td>3</td>
+    <td>4148</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220215/">220215</a></td>
+    <td>3</td>
+    <td>4643</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220214/">220214</a></td>
+    <td>3</td>
+    <td>6160</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220213/">220213</a></td>
+    <td>3</td>
+    <td>6342</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220212/">220212</a></td>
+    <td>3</td>
+    <td>3378</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220211/">220211</a></td>
+    <td>3</td>
+    <td>7808</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220210/">220210</a></td>
+    <td>1</td>
+    <td>3971</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220208/">220208</a></td>
+    <td>3</td>
+    <td>213</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220207/">220207</a></td>
+    <td>3</td>
+    <td>2738</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220206/">220206</a></td>
+    <td>3</td>
+    <td>7053</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220205/">220205</a></td>
+    <td>3</td>
+    <td>1948</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220204/">220204</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220203/">220203</a></td>
+    <td>4</td>
+    <td>179</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220201/">220201</a></td>
+    <td>1</td>
+    <td>1</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220131/">220131</a></td>
+    <td>4</td>
+    <td>2200</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220130/">220130</a></td>
+    <td>4</td>
+    <td>2920</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220129/">220129</a></td>
+    <td>4</td>
+    <td>6992</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220124/">220124</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220123/">220123</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220122/">220122</a></td>
+    <td>3</td>
+    <td>3015</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220121/">220121</a></td>
+    <td>3</td>
+    <td>6023</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220120/">220120</a></td>
+    <td>4</td>
+    <td>3107</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220119/">220119</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220118/">220118</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220115/">220115</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220114/">220114</a></td>
+    <td>4</td>
+    <td>802</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220113/">220113</a></td>
+    <td>4</td>
+    <td>5506</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220112/">220112</a></td>
+    <td>4</td>
+    <td>1272</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220111/">220111</a></td>
+    <td>4</td>
+    <td>8079</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220110/">220110</a></td>
+    <td>4</td>
+    <td>1489</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220109/">220109</a></td>
+    <td>4</td>
+    <td>404</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220108/">220108</a></td>
+    <td>4</td>
+    <td>2675</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220107/">220107</a></td>
+    <td>4</td>
+    <td>6027</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220106/">220106</a></td>
+    <td>4</td>
+    <td>3452</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220105/">220105</a></td>
+    <td>4</td>
+    <td>8930</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220104/">220104</a></td>
+    <td>4</td>
+    <td>7971</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220103/">220103</a></td>
+    <td>3</td>
+    <td>10700</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/220102/">220102</a></td>
+    <td>3</td>
+    <td>3655</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/211229/">211229</a></td>
+    <td>4</td>
+    <td>17002</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/211222/">211222</a></td>
+    <td>3</td>
+    <td>1984</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/211212/">211212</a></td>
+    <td>4</td>
+    <td>8270</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/211208/">211208</a></td>
+    <td>4</td>
+    <td>1838</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/211112/">211112</a></td>
+    <td>4</td>
+    <td>5120</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210925/">210925</a></td>
+    <td>4</td>
+    <td>4686</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210921/">210921</a></td>
+    <td>4</td>
+    <td>5483</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210904/">210904</a></td>
+    <td>3</td>
+    <td>1745</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210830/">210830</a></td>
+    <td>3</td>
+    <td>4202</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210822/">210822</a></td>
+    <td>3</td>
+    <td>1925</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210721/">210721</a></td>
+    <td>1</td>
+    <td>11</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210718/">210718</a></td>
+    <td>1</td>
+    <td>13</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210717/">210717</a></td>
+    <td>4</td>
+    <td>5615</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210716/">210716</a></td>
+    <td>1</td>
+    <td>10</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210711/">210711</a></td>
+    <td>1</td>
+    <td>22</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210710/">210710</a></td>
+    <td>1</td>
+    <td>35</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210705/">210705</a></td>
+    <td>4</td>
+    <td>6321</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210513/">210513</a></td>
+    <td>4</td>
+    <td>3793</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210506/">210506</a></td>
+    <td>4</td>
+    <td>10072</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210505/">210505</a></td>
+    <td>4</td>
+    <td>13241</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210504/">210504</a></td>
+    <td>4</td>
+    <td>3996</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210428/">210428</a></td>
+    <td>4</td>
+    <td>1915</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210323/">210323</a></td>
+    <td>4</td>
+    <td>3832</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210321/">210321</a></td>
+    <td>4</td>
+    <td>5222</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210319/">210319</a></td>
+    <td>4</td>
+    <td>10428</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210314/">210314</a></td>
+    <td>4</td>
+    <td>6027</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210308/">210308</a></td>
+    <td>1</td>
+    <td>22</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210305/">210305</a></td>
+    <td>4</td>
+    <td>767</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210216/">210216</a></td>
+    <td>4</td>
+    <td>3230</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210215/">210215</a></td>
+    <td>4</td>
+    <td>7334</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210214/">210214</a></td>
+    <td>4</td>
+    <td>3857</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210213/">210213</a></td>
+    <td>4</td>
+    <td>7050</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210212/">210212</a></td>
+    <td>4</td>
+    <td>4236</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210211/">210211</a></td>
+    <td>4</td>
+    <td>5421</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210210/">210210</a></td>
+    <td>4</td>
+    <td>5399</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210209/">210209</a></td>
+    <td>4</td>
+    <td>7857</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210202/">210202</a></td>
+    <td>4</td>
+    <td>5513</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210126/">210126</a></td>
+    <td>1</td>
+    <td>18</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210125/">210125</a></td>
+    <td>1</td>
+    <td>1</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210124/">210124</a></td>
+    <td>1</td>
+    <td>13</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210123/">210123</a></td>
+    <td>1</td>
+    <td>6</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210122/">210122</a></td>
+    <td>1</td>
+    <td>8</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210121/">210121</a></td>
+    <td>1</td>
+    <td>13</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210120/">210120</a></td>
+    <td>1</td>
+    <td>3</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210119/">210119</a></td>
+    <td>1</td>
+    <td>23</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210118/">210118</a></td>
+    <td>4</td>
+    <td>9298</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210117/">210117</a></td>
+    <td>1</td>
+    <td>78</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210106/">210106</a></td>
+    <td>1</td>
+    <td>393</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210105/">210105</a></td>
+    <td>4</td>
+    <td>2793</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/210102/">210102</a></td>
+    <td>4</td>
+    <td>297</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201230/">201230</a></td>
+    <td>4</td>
+    <td>4298</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201229/">201229</a></td>
+    <td>4</td>
+    <td>7426</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201228/">201228</a></td>
+    <td>4</td>
+    <td>7455</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201227/">201227</a></td>
+    <td>4</td>
+    <td>1458</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201223/">201223</a></td>
+    <td>4</td>
+    <td>3279</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201222/">201222</a></td>
+    <td>4</td>
+    <td>11799</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201221/">201221</a></td>
+    <td>4</td>
+    <td>7556</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201220/">201220</a></td>
+    <td>4</td>
+    <td>9666</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201219/">201219</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201218/">201218</a></td>
+    <td>4</td>
+    <td>14451</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201217/">201217</a></td>
+    <td>4</td>
+    <td>3763</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201216/">201216</a></td>
+    <td>4</td>
+    <td>232</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201215/">201215</a></td>
+    <td>4</td>
+    <td>3102</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201214/">201214</a></td>
+    <td>4</td>
+    <td>5307</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201213/">201213</a></td>
+    <td>4</td>
+    <td>5716</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201212/">201212</a></td>
+    <td>4</td>
+    <td>3344</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201211/">201211</a></td>
+    <td>4</td>
+    <td>1384</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201210/">201210</a></td>
+    <td>4</td>
+    <td>4636</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201209/">201209</a></td>
+    <td>4</td>
+    <td>1234</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201208/">201208</a></td>
+    <td>4</td>
+    <td>799</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201207/">201207</a></td>
+    <td>4</td>
+    <td>19977</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201206/">201206</a></td>
+    <td>4</td>
+    <td>10017</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201205/">201205</a></td>
+    <td>4</td>
+    <td>2212</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201204/">201204</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201203/">201203</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201130/">201130</a></td>
+    <td>4</td>
+    <td>3350</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201129/">201129</a></td>
+    <td>4</td>
+    <td>3718</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201128/">201128</a></td>
+    <td>4</td>
+    <td>1999</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201127/">201127</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201125/">201125</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201124/">201124</a></td>
+    <td>4</td>
+    <td>2146</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201123/">201123</a></td>
+    <td>4</td>
+    <td>3698</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201122/">201122</a></td>
+    <td>4</td>
+    <td>10476</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201121/">201121</a></td>
+    <td>4</td>
+    <td>4409</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201120/">201120</a></td>
+    <td>4</td>
+    <td>8695</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201119/">201119</a></td>
+    <td>4</td>
+    <td>3603</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201118/">201118</a></td>
+    <td>4</td>
+    <td>4788</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201117/">201117</a></td>
+    <td>4</td>
+    <td>4513</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201116/">201116</a></td>
+    <td>4</td>
+    <td>1531</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201115/">201115</a></td>
+    <td>4</td>
+    <td>5034</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201114/">201114</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201113/">201113</a></td>
+    <td>4</td>
+    <td>1742</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201112/">201112</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201111/">201111</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201110/">201110</a></td>
+    <td>4</td>
+    <td>8192</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201109/">201109</a></td>
+    <td>4</td>
+    <td>7305</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201108/">201108</a></td>
+    <td>4</td>
+    <td>20119</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201107/">201107</a></td>
+    <td>4</td>
+    <td>3806</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201106/">201106</a></td>
+    <td>4</td>
+    <td>3152</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201105/">201105</a></td>
+    <td>4</td>
+    <td>4026</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201104/">201104</a></td>
+    <td>3</td>
+    <td>165</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201103/">201103</a></td>
+    <td>3</td>
+    <td>1272</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201101/">201101</a></td>
+    <td>3</td>
+    <td>1505</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201031/">201031</a></td>
+    <td>3</td>
+    <td>3469</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201030/">201030</a></td>
+    <td>3</td>
+    <td>1481</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201029/">201029</a></td>
+    <td>3</td>
+    <td>3627</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201028/">201028</a></td>
+    <td>3</td>
+    <td>2949</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201025/">201025</a></td>
+    <td>3</td>
+    <td>2494</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201024/">201024</a></td>
+    <td>3</td>
+    <td>2433</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201023/">201023</a></td>
+    <td>3</td>
+    <td>2575</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201021/">201021</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201019/">201019</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201018/">201018</a></td>
+    <td>4</td>
+    <td>11744</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201017/">201017</a></td>
+    <td>4</td>
+    <td>4558</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201016/">201016</a></td>
+    <td>4</td>
+    <td>8598</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201015/">201015</a></td>
+    <td>4</td>
+    <td>6627</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201014/">201014</a></td>
+    <td>4</td>
+    <td>15079</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201013/">201013</a></td>
+    <td>4</td>
+    <td>13898</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201012/">201012</a></td>
+    <td>4</td>
+    <td>3130</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201011/">201011</a></td>
+    <td>4</td>
+    <td>3540</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201010/">201010</a></td>
+    <td>4</td>
+    <td>8336</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201009/">201009</a></td>
+    <td>4</td>
+    <td>10216</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201008/">201008</a></td>
+    <td>4</td>
+    <td>9138</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/201007/">201007</a></td>
+    <td>4</td>
+    <td>8125</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200916/">200916</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200915/">200915</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200914/">200914</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200913/">200913</a></td>
+    <td>4</td>
+    <td>440</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200912/">200912</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200911/">200911</a></td>
+    <td>4</td>
+    <td>2264</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200910/">200910</a></td>
+    <td>4</td>
+    <td>1710</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200909/">200909</a></td>
+    <td>4</td>
+    <td>4302</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200908/">200908</a></td>
+    <td>4</td>
+    <td>4590</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200907/">200907</a></td>
+    <td>4</td>
+    <td>4859</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200906/">200906</a></td>
+    <td>4</td>
+    <td>1388</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200905/">200905</a></td>
+    <td>4</td>
+    <td>9075</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200904/">200904</a></td>
+    <td>4</td>
+    <td>8550</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200903/">200903</a></td>
+    <td>4</td>
+    <td>6871</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200902/">200902</a></td>
+    <td>4</td>
+    <td>15122</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200901/">200901</a></td>
+    <td>4</td>
+    <td>4079</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200831/">200831</a></td>
+    <td>4</td>
+    <td>2045</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200830/">200830</a></td>
+    <td>4</td>
+    <td>3065</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200829/">200829</a></td>
+    <td>4</td>
+    <td>4161</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200828/">200828</a></td>
+    <td>4</td>
+    <td>4460</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200826/">200826</a></td>
+    <td>4</td>
+    <td>15245</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200825/">200825</a></td>
+    <td>4</td>
+    <td>4112</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200824/">200824</a></td>
+    <td>4</td>
+    <td>7601</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200823/">200823</a></td>
+    <td>4</td>
+    <td>3103</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200822/">200822</a></td>
+    <td>4</td>
+    <td>9761</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200821/">200821</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200820/">200820</a></td>
+    <td>4</td>
+    <td>2827</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200819/">200819</a></td>
+    <td>4</td>
+    <td>8704</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200818/">200818</a></td>
+    <td>4</td>
+    <td>3958</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200817/">200817</a></td>
+    <td>4</td>
+    <td>8362</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200816/">200816</a></td>
+    <td>4</td>
+    <td>7592</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200815/">200815</a></td>
+    <td>4</td>
+    <td>10568</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200814/">200814</a></td>
+    <td>4</td>
+    <td>4057</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200812/">200812</a></td>
+    <td>4</td>
+    <td>5921</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200811/">200811</a></td>
+    <td>4</td>
+    <td>1584</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200810/">200810</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200805/">200805</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200804/">200804</a></td>
+    <td>4</td>
+    <td>6169</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200730/">200730</a></td>
+    <td>4</td>
+    <td>5571</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200729/">200729</a></td>
+    <td>4</td>
+    <td>2594</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200728/">200728</a></td>
+    <td>4</td>
+    <td>2326</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200727/">200727</a></td>
+    <td>4</td>
+    <td>3284</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200726/">200726</a></td>
+    <td>4</td>
+    <td>8238</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200725/">200725</a></td>
+    <td>4</td>
+    <td>5881</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200724/">200724</a></td>
+    <td>4</td>
+    <td>8302</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200723/">200723</a></td>
+    <td>4</td>
+    <td>4203</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200722/">200722</a></td>
+    <td>4</td>
+    <td>5829</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200721/">200721</a></td>
+    <td>4</td>
+    <td>9122</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200720/">200720</a></td>
+    <td>4</td>
+    <td>7414</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200719/">200719</a></td>
+    <td>4</td>
+    <td>5122</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200718/">200718</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200717/">200717</a></td>
+    <td>4</td>
+    <td>15166</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200716/">200716</a></td>
+    <td>4</td>
+    <td>311</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200715/">200715</a></td>
+    <td>4</td>
+    <td>3899</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200714/">200714</a></td>
+    <td>4</td>
+    <td>4492</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200713/">200713</a></td>
+    <td>4</td>
+    <td>13413</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200712/">200712</a></td>
+    <td>4</td>
+    <td>2986</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200711/">200711</a></td>
+    <td>4</td>
+    <td>3350</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200710/">200710</a></td>
+    <td>4</td>
+    <td>4433</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200709/">200709</a></td>
+    <td>4</td>
+    <td>3635</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200708/">200708</a></td>
+    <td>4</td>
+    <td>8975</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200707/">200707</a></td>
+    <td>4</td>
+    <td>1962</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200706/">200706</a></td>
+    <td>4</td>
+    <td>1057</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200705/">200705</a></td>
+    <td>4</td>
+    <td>4403</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200704/">200704</a></td>
+    <td>4</td>
+    <td>12362</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200703/">200703</a></td>
+    <td>4</td>
+    <td>6871</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200702/">200702</a></td>
+    <td>4</td>
+    <td>5994</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200701/">200701</a></td>
+    <td>4</td>
+    <td>3572</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200630/">200630</a></td>
+    <td>4</td>
+    <td>1437</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200629/">200629</a></td>
+    <td>4</td>
+    <td>11443</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200628/">200628</a></td>
+    <td>4</td>
+    <td>12222</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200627/">200627</a></td>
+    <td>4</td>
+    <td>9382</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200626/">200626</a></td>
+    <td>4</td>
+    <td>3627</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200625/">200625</a></td>
+    <td>4</td>
+    <td>3641</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200624/">200624</a></td>
+    <td>4</td>
+    <td>3590</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200623/">200623</a></td>
+    <td>4</td>
+    <td>3952</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200622/">200622</a></td>
+    <td>4</td>
+    <td>11446</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200621/">200621</a></td>
+    <td>4</td>
+    <td>5291</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200620/">200620</a></td>
+    <td>4</td>
+    <td>9788</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200619/">200619</a></td>
+    <td>4</td>
+    <td>4502</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200618/">200618</a></td>
+    <td>4</td>
+    <td>5497</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200617/">200617</a></td>
+    <td>4</td>
+    <td>11833</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200616/">200616</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200615/">200615</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200614/">200614</a></td>
+    <td>4</td>
+    <td>170</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200613/">200613</a></td>
+    <td>4</td>
+    <td>4447</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200612/">200612</a></td>
+    <td>4</td>
+    <td>2814</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200611/">200611</a></td>
+    <td>4</td>
+    <td>8173</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200610/">200610</a></td>
+    <td>4</td>
+    <td>829</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200609/">200609</a></td>
+    <td>4</td>
+    <td>5978</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200608/">200608</a></td>
+    <td>4</td>
+    <td>4026</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200605/">200605</a></td>
+    <td>4</td>
+    <td>6012</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200604/">200604</a></td>
+    <td>4</td>
+    <td>1424</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200603/">200603</a></td>
+    <td>4</td>
+    <td>10982</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200602/">200602</a></td>
+    <td>4</td>
+    <td>9726</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200601/">200601</a></td>
+    <td>4</td>
+    <td>4635</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200531/">200531</a></td>
+    <td>4</td>
+    <td>5191</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200530/">200530</a></td>
+    <td>4</td>
+    <td>8953</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200529/">200529</a></td>
+    <td>4</td>
+    <td>5237</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200528/">200528</a></td>
+    <td>4</td>
+    <td>2767</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200527/">200527</a></td>
+    <td>4</td>
+    <td>3684</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200526/">200526</a></td>
+    <td>4</td>
+    <td>2942</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200525/">200525</a></td>
+    <td>4</td>
+    <td>5550</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200524/">200524</a></td>
+    <td>4</td>
+    <td>8786</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200523/">200523</a></td>
+    <td>4</td>
+    <td>9311</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200522/">200522</a></td>
+    <td>4</td>
+    <td>6618</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200521/">200521</a></td>
+    <td>4</td>
+    <td>14204</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200520/">200520</a></td>
+    <td>4</td>
+    <td>4194</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200519/">200519</a></td>
+    <td>4</td>
+    <td>6658</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200518/">200518</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200517/">200517</a></td>
+    <td>4</td>
+    <td>3924</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200516/">200516</a></td>
+    <td>4</td>
+    <td>5407</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200515/">200515</a></td>
+    <td>4</td>
+    <td>10801</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200514/">200514</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200513/">200513</a></td>
+    <td>4</td>
+    <td>7762</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200512/">200512</a></td>
+    <td>4</td>
+    <td>8514</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200511/">200511</a></td>
+    <td>4</td>
+    <td>5549</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200510/">200510</a></td>
+    <td>4</td>
+    <td>12028</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200509/">200509</a></td>
+    <td>4</td>
+    <td>7110</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200508/">200508</a></td>
+    <td>4</td>
+    <td>10436</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200507/">200507</a></td>
+    <td>4</td>
+    <td>6671</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200506/">200506</a></td>
+    <td>4</td>
+    <td>5386</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200505/">200505</a></td>
+    <td>4</td>
+    <td>8491</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200504/">200504</a></td>
+    <td>4</td>
+    <td>2789</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200503/">200503</a></td>
+    <td>4</td>
+    <td>8140</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200502/">200502</a></td>
+    <td>4</td>
+    <td>14779</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200501/">200501</a></td>
+    <td>4</td>
+    <td>4153</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200430/">200430</a></td>
+    <td>4</td>
+    <td>14866</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200429/">200429</a></td>
+    <td>4</td>
+    <td>5912</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200428/">200428</a></td>
+    <td>4</td>
+    <td>5811</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200427/">200427</a></td>
+    <td>4</td>
+    <td>4100</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200426/">200426</a></td>
+    <td>4</td>
+    <td>4485</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200425/">200425</a></td>
+    <td>4</td>
+    <td>5002</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200424/">200424</a></td>
+    <td>4</td>
+    <td>8228</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200422/">200422</a></td>
+    <td>4</td>
+    <td>6273</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200421/">200421</a></td>
+    <td>4</td>
+    <td>14690</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200420/">200420</a></td>
+    <td>4</td>
+    <td>13566</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200419/">200419</a></td>
+    <td>4</td>
+    <td>5718</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200418/">200418</a></td>
+    <td>4</td>
+    <td>215</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200417/">200417</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200416/">200416</a></td>
+    <td>4</td>
+    <td>1497</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200414/">200414</a></td>
+    <td>4</td>
+    <td>6599</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200413/">200413</a></td>
+    <td>4</td>
+    <td>7231</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200328/">200328</a></td>
+    <td>4</td>
+    <td>2223</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200326/">200326</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200325/">200325</a></td>
+    <td>4</td>
+    <td>275</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200324/">200324</a></td>
+    <td>4</td>
+    <td>1094</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200322/">200322</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200321/">200321</a></td>
+    <td>4</td>
+    <td>10304</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200320/">200320</a></td>
+    <td>4</td>
+    <td>13449</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200319/">200319</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200318/">200318</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200317/">200317</a></td>
+    <td>4</td>
+    <td>12440</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200316/">200316</a></td>
+    <td>4</td>
+    <td>4260</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200314/">200314</a></td>
+    <td>4</td>
+    <td>6964</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200313/">200313</a></td>
+    <td>4</td>
+    <td>3290</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200312/">200312</a></td>
+    <td>4</td>
+    <td>5101</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200311/">200311</a></td>
+    <td>4</td>
+    <td>6246</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200310/">200310</a></td>
+    <td>4</td>
+    <td>14171</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200309/">200309</a></td>
+    <td>4</td>
+    <td>8899</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200308/">200308</a></td>
+    <td>4</td>
+    <td>7171</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200307/">200307</a></td>
+    <td>4</td>
+    <td>6883</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200306/">200306</a></td>
+    <td>4</td>
+    <td>12662</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200305/">200305</a></td>
+    <td>4</td>
+    <td>5006</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200304/">200304</a></td>
+    <td>4</td>
+    <td>10991</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200303/">200303</a></td>
+    <td>4</td>
+    <td>7275</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200302/">200302</a></td>
+    <td>4</td>
+    <td>5083</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200301/">200301</a></td>
+    <td>4</td>
+    <td>11079</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200229/">200229</a></td>
+    <td>4</td>
+    <td>6275</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200228/">200228</a></td>
+    <td>4</td>
+    <td>7996</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200227/">200227</a></td>
+    <td>4</td>
+    <td>5525</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200226/">200226</a></td>
+    <td>4</td>
+    <td>5300</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200222/">200222</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200221/">200221</a></td>
+    <td>4</td>
+    <td>2710</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200219/">200219</a></td>
+    <td>4</td>
+    <td>4936</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200217/">200217</a></td>
+    <td>4</td>
+    <td>14528</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200216/">200216</a></td>
+    <td>4</td>
+    <td>14390</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200215/">200215</a></td>
+    <td>4</td>
+    <td>13607</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200214/">200214</a></td>
+    <td>4</td>
+    <td>1526</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200213/">200213</a></td>
+    <td>4</td>
+    <td>3783</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200212/">200212</a></td>
+    <td>4</td>
+    <td>8420</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200211/">200211</a></td>
+    <td>4</td>
+    <td>10469</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200210/">200210</a></td>
+    <td>4</td>
+    <td>6531</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200209/">200209</a></td>
+    <td>4</td>
+    <td>5209</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200208/">200208</a></td>
+    <td>4</td>
+    <td>8897</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200207/">200207</a></td>
+    <td>4</td>
+    <td>5590</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200206/">200206</a></td>
+    <td>4</td>
+    <td>13613</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200205/">200205</a></td>
+    <td>4</td>
+    <td>7201</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200204/">200204</a></td>
+    <td>4</td>
+    <td>242</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200203/">200203</a></td>
+    <td>4</td>
+    <td>634</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200202/">200202</a></td>
+    <td>4</td>
+    <td>7291</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200201/">200201</a></td>
+    <td>4</td>
+    <td>19723</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200131/">200131</a></td>
+    <td>4</td>
+    <td>5069</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200130/">200130</a></td>
+    <td>4</td>
+    <td>11613</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200129/">200129</a></td>
+    <td>4</td>
+    <td>5812</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200128/">200128</a></td>
+    <td>4</td>
+    <td>10443</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200127/">200127</a></td>
+    <td>4</td>
+    <td>9888</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200126/">200126</a></td>
+    <td>4</td>
+    <td>9614</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200125/">200125</a></td>
+    <td>4</td>
+    <td>5209</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200124/">200124</a></td>
+    <td>4</td>
+    <td>4365</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200123/">200123</a></td>
+    <td>4</td>
+    <td>8292</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200122/">200122</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200121/">200121</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200120/">200120</a></td>
+    <td>4</td>
+    <td>8468</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200119/">200119</a></td>
+    <td>4</td>
+    <td>7995</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200118/">200118</a></td>
+    <td>4</td>
+    <td>3580</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200117/">200117</a></td>
+    <td>4</td>
+    <td>5111</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200116/">200116</a></td>
+    <td>4</td>
+    <td>12792</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200115/">200115</a></td>
+    <td>4</td>
+    <td>11724</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200114/">200114</a></td>
+    <td>4</td>
+    <td>10301</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200113/">200113</a></td>
+    <td>4</td>
+    <td>7499</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200112/">200112</a></td>
+    <td>4</td>
+    <td>7471</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200111/">200111</a></td>
+    <td>4</td>
+    <td>13236</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200110/">200110</a></td>
+    <td>4</td>
+    <td>23658</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200109/">200109</a></td>
+    <td>4</td>
+    <td>6622</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200108/">200108</a></td>
+    <td>4</td>
+    <td>9683</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200107/">200107</a></td>
+    <td>4</td>
+    <td>6010</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200106/">200106</a></td>
+    <td>4</td>
+    <td>220</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200105/">200105</a></td>
+    <td>4</td>
+    <td>332</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200104/">200104</a></td>
+    <td>4</td>
+    <td>7515</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200103/">200103</a></td>
+    <td>4</td>
+    <td>1614</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/200102/">200102</a></td>
+    <td>4</td>
+    <td>6363</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/191122/">191122</a></td>
+    <td>4</td>
+    <td>13199</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/191119/">191119</a></td>
+    <td>4</td>
+    <td>4547</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/191112/">191112</a></td>
+    <td>4</td>
+    <td>12365</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/191111/">191111</a></td>
+    <td>4</td>
+    <td>14381</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/191110/">191110</a></td>
+    <td>4</td>
+    <td>14546</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/190925/">190925</a></td>
+    <td>3</td>
+    <td>2251</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/190816/">190816</a></td>
+    <td>3</td>
+    <td>4216</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/190815/">190815</a></td>
+    <td>3</td>
+    <td>2645</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/190812/">190812</a></td>
+    <td>3</td>
+    <td>3088</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/190809/">190809</a></td>
+    <td>3</td>
+    <td>3931</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/190808/">190808</a></td>
+    <td>3</td>
+    <td>3408</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/190802/">190802</a></td>
+    <td>3</td>
+    <td>2044</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/190729/">190729</a></td>
+    <td>3</td>
+    <td>1634</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/190630/">190630</a></td>
+    <td>4</td>
+    <td>8684</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/190627/">190627</a></td>
+    <td>4</td>
+    <td>8991</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/190621/">190621</a></td>
+    <td>3</td>
+    <td>8862</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/190614/">190614</a></td>
+    <td>3</td>
+    <td>1014</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/190612/">190612</a></td>
+    <td>3</td>
+    <td>1558</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/190523/">190523</a></td>
+    <td>3</td>
+    <td>4802</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/190122/">190122</a></td>
+    <td>3</td>
+    <td>3779</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/190102/">190102</a></td>
+    <td>3</td>
+    <td>3002</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/181217/">181217</a></td>
+    <td>3</td>
+    <td>13869</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/181129/">181129</a></td>
+    <td>3</td>
+    <td>10854</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/181018/">181018</a></td>
+    <td>4</td>
+    <td>6481</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/180802/">180802</a></td>
+    <td>4</td>
+    <td>3703</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/180629/">180629</a></td>
+    <td>4</td>
+    <td>2612</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/180521/">180521</a></td>
+    <td>4</td>
+    <td>6941</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/180224/">180224</a></td>
+    <td>4</td>
+    <td>4188</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/180125/">180125</a></td>
+    <td>4</td>
+    <td>7671</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/171006/">171006</a></td>
+    <td>4</td>
+    <td>3280</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/171001/">171001</a></td>
+    <td>4</td>
+    <td>4249</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/170930/">170930</a></td>
+    <td>4</td>
+    <td>10352</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/170929/">170929</a></td>
+    <td>4</td>
+    <td>972</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/170928/">170928</a></td>
+    <td>4</td>
+    <td>8644</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/170926/">170926</a></td>
+    <td>4</td>
+    <td>420</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/170925/">170925</a></td>
+    <td>4</td>
+    <td>340</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/170924/">170924</a></td>
+    <td>4</td>
+    <td>8091</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/170831/">170831</a></td>
+    <td>4</td>
+    <td>7776</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/170830/">170830</a></td>
+    <td>4</td>
+    <td>5744</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/170829/">170829</a></td>
+    <td>4</td>
+    <td>2424</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/170828/">170828</a></td>
+    <td>4</td>
+    <td>4331</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/170827/">170827</a></td>
+    <td>4</td>
+    <td>996</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/170824/">170824</a></td>
+    <td>4</td>
+    <td>1617</td>
+  </tr>
+
+  <tr>
+    <td><a href="../muscat2/170823/">170823</a></td>
+    <td>4</td>
+    <td>320</td>
+  </tr>
+
+</tbody>
+</table>
+
+</div>
+<div id="status-bar" role="status" aria-live="polite">
+  <span class="dot"></span>
+  <span id="status-text">Loading…</span>
+</div>
+
+<div id="message-modal" data-mode="message" data-kind="default" role="dialog" aria-modal="true" aria-labelledby="message-modal-title" aria-describedby="message-modal-text">
+  <div class="modal-box">
+    <p id="message-modal-title" class="modal-title"></p>
+    <p id="message-modal-text" class="modal-text"></p>
+    <div class="modal-actions">
+      <button class="btn" id="message-modal-cancel" type="button" hidden>Cancel</button>
+      <button class="btn" id="message-modal-ok" type="button">OK</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const root = document.documentElement;
+    const btn = document.getElementById('theme-toggle');
+    if (window.MuscatRouteState) window.MuscatRouteState.applyNavbar();
+    const stored = localStorage.getItem('muscat-theme');
+    apply(stored || 'light');
+    btn.addEventListener('click', function () {
+      const next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      apply(next);
+      localStorage.setItem('muscat-theme', next);
+    });
+    function apply(t) { root.setAttribute('data-theme', t); }
+  })();
+
+  (function () {
+    const bar    = document.getElementById('loading-bar');
+    const status = document.getElementById('status-bar');
+    const text   = document.getElementById('status-text');
+    const table  = document.getElementById('targets-table');
+
+    // The bar is visible while ANY of these is true: the page is still loading,
+    // a tracked background job is active, or a same-origin /api/ request is in
+    // flight. A running job keeps it up indefinitely (that label wins over the
+    // transient page-load / fetch labels). It only slides away once all three
+    // are false.
+    let pageLoading = true;
+    let pageLabel   = 'Loading…';
+    let jobRunning  = false;
+    let jobLabel    = '';
+    let fetchActive = false;
+    let fetchLabel  = 'Loading…';
+    let hideTimer   = null;
+
+    if (table) {
+      const rows = table.tBodies[0] ? table.tBodies[0].rows.length : 0;
+      pageLabel = 'Rendering ' + rows.toLocaleString() + ' targets…';
+    }
+
+    function render() {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      if (pageLoading || jobRunning || fetchActive) {
+        bar.classList.remove('done');
+        status.classList.add('visible');
+        text.textContent = jobRunning ? jobLabel : (pageLoading ? pageLabel : fetchLabel);
+      } else {
+        bar.classList.add('done');
+        if (status.classList.contains('visible')) {
+          text.textContent = 'Ready';
+          hideTimer = setTimeout(function () { status.classList.remove('visible'); }, 700);
+        }
+      }
+      // Keep the bar in the DOM so we can re-show it on the next navigation.
+    }
+
+    function showLoading(label) {
+      pageLabel = label || 'Loading…';
+      pageLoading = true;
+      render();
+    }
+    function done() {
+      pageLoading = false;
+      render();
+    }
+    // Called by the site-wide background-job watcher below.
+    function setJob(running, label) {
+      jobRunning = !!running;
+      jobLabel   = label || 'Running…';
+      render();
+    }
+    // Called by the global /api/ fetch tracker (installed in <head>). A generic
+    // label is used unless a page has set its own via showLoading.
+    function setFetch(active, label) {
+      fetchActive = !!active;
+      fetchLabel  = label || 'Loading…';
+      render();
+    }
+    window.showLoading = showLoading;
+    window.done = done;
+    window.MuscatLoadingBar = { showLoading: showLoading, done: done, setJob: setJob, setFetch: setFetch };
+
+    // Subscribe to in-flight /api/ requests so every page shows the same
+    // loading indicator while fetching data, with no per-page wiring.
+    if (window.MuscatFetchTracker) {
+      window.MuscatFetchTracker.onChange = function (n) { setFetch(n > 0); };
+      setFetch(window.MuscatFetchTracker.active > 0);
+    }
+
+    if (document.readyState === 'complete') {
+      done();
+    } else {
+      showLoading(pageLabel);
+      window.addEventListener('load', done);
+    }
+
+    // Re-show the bar when the user navigates away via a same-origin link.
+    document.addEventListener('click', function (e) {
+      const link = e.target.closest('a');
+      if (!link) return;
+      if (link.target && link.target !== '_self') return;
+      if (link.hasAttribute('download')) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+      const href = link.getAttribute('href');
+      if (!href || href.startsWith('#') || href.startsWith('javascript:') || href.startsWith('mailto:')) return;
+      const url = new URL(link.href, window.location.href);
+      if (url.origin !== window.location.origin) return;
+      // Skip pure in-page hash changes (same path, different fragment).
+      if (url.pathname === window.location.pathname && url.hash) return;
+      showLoading('Loading…');
+    }, true);
+
+    // Restore on bfcache restores (back/forward navigation).
+    window.addEventListener('pageshow', function (e) {
+      if (e.persisted) done();
+    });
+  })();
+
+  // Site-wide background-job watcher: keeps the loading bar up on ANY page for
+  // as long as a job the user launched (saved under `phot:job` / `fit:job`) is
+  // still active on the server, and takes it down once that job finishes.
+  (function () {
+    const st  = window.MuscatStorage;
+    const bar = window.MuscatLoadingBar;
+    if (!st || !bar) return;
+
+    const POLL_MS = 4000;
+    let timer = null;
+
+    // Reconstruct the canonical job key: "<type>:<inst>/<date>/<target>[/<run_id>]"
+    // (server strips spaces from the target — see photometry.job_key).
+    function jobKey(type, j) {
+      if (!j || !j.inst || !j.date || !j.target) return null;
+      let k = type + ':' + j.inst + '/' + j.date + '/' + String(j.target).replace(/ /g, '');
+      if (j.run_id) k += '/' + j.run_id;
+      return k;
+    }
+    // TTV runs are keyed on a slugged run name rather than a run_id — see
+    // ttv_fit.ttv_job_key() / jobs.slugify_run_name().
+    function ttvJobKey(j) {
+      if (!j || !j.target) return null;
+      const slug = String(j.run_name || '').trim().toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40)
+        .replace(/^_+|_+$/g, '') || 'default';
+      return 'ttv_fit:' + String(j.target).replace(/ /g, '') + '/' + slug;
+    }
+    function trackedKeys() {
+      const keys = [];
+      const p = jobKey('photometry', st.getJSON('phot:job', null));
+      if (p) keys.push(p);
+      const f = jobKey('transit_fit', st.getJSON('fit:job', null));
+      if (f) keys.push(f);
+      const t = ttvJobKey(st.getJSON('muscat-ttv-job', null));
+      if (t) keys.push(t);
+      return keys;
+    }
+    function stop() { if (timer) { clearTimeout(timer); timer = null; } }
+    function schedule() {
+      if (!timer) timer = setTimeout(function () { timer = null; tick(); }, POLL_MS);
+    }
+    function labelFor(states) {
+      if (states.length === 1) {
+        return states[0] === 'pending' ? 'Queued — waiting to start…' : 'Running job…';
+      }
+      return 'Running ' + states.length + ' jobs…';
+    }
+    function tick() {
+      const tracked = trackedKeys();
+      if (tracked.length === 0) { bar.setJob(false, ''); stop(); return; }
+      fetch('/api/jobs/status?active_only=1', { headers: { 'X-Requested-With': 'fetch' } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          const active = {};
+          (d.active || []).forEach(function (a) { active[a.key] = a.state; });
+          const mine = tracked.filter(function (k) { return active[k]; });
+          if (mine.length > 0) {
+            bar.setJob(true, labelFor(mine.map(function (k) { return active[k]; })));
+            schedule();
+          } else {
+            // Tracked job(s) are no longer active — finished, cancelled, or
+            // cleared. Take the bar down and stop polling until the next launch
+            // or navigation re-checks. (The launching page owns clearing the
+            // localStorage key on its own terminal-state handling.)
+            bar.setJob(false, '');
+            stop();
+          }
+        })
+        .catch(function () { schedule(); });
+    }
+
+    // Let a page trigger an immediate re-check right after it launches a job,
+    // instead of waiting up to POLL_MS for the next tick.
+    window.MuscatJobIndicator = { refresh: function () { stop(); tick(); } };
+
+    if (trackedKeys().length > 0) tick();
+  })();
+
+  // ----- resizable table columns ------------------------------------------
+  (function () {
+    function initTable(table) {
+      if (table.dataset.resizableInit === '1') return;
+      if (table.offsetParent === null) return; // Skip if table is currently hidden
+      table.dataset.resizableInit = '1';
+      const headRow = table.tHead && table.tHead.rows[0];
+      if (!headRow) return;
+      const ths = Array.from(headRow.cells);
+      const tableId = table.id || 'tbl-' + Math.random().toString(36).slice(2);
+      // Lock in current natural widths (measured under table-layout: auto) so
+      // dragging one column doesn't shove the others around.
+      const measured = ths.map(function (th, i) {
+        const stored = localStorage.getItem('colw:' + tableId + ':' + i);
+        if (stored) {
+          const w = parseFloat(stored);
+          if (w > 30) {
+            th.style.maxWidth = 'none';
+            return w;
+          }
+        }
+        return th.getBoundingClientRect().width;
+      });
+      let hasStored = false;
+      for (let i = 0; i < ths.length; i++) {
+        if (localStorage.getItem('colw:' + tableId + ':' + i)) {
+          hasStored = true;
+          break;
+        }
+      }
+      if (!hasStored) {
+        const containerW = table.parentElement.clientWidth;
+        let totalMeasured = 0;
+        measured.forEach(function (w) {
+          totalMeasured += w;
+        });
+        ths.forEach(function (th, i) {
+          const share = totalMeasured > 0 ? (measured[i] / totalMeasured) : (1 / ths.length);
+          th.style.width = (containerW * share) + 'px';
+          th.style.maxWidth = 'none';
+        });
+      } else {
+        ths.forEach(function (th, i) {
+          th.style.width = measured[i] + 'px';
+        });
+      }
+
+      // Now switch to fixed layout so column widths are honoured exactly.
+      table.classList.add('resizable-init');
+      ths.forEach(function (th, i) {
+        if (i === ths.length - 1) return;  // no handle on the last column
+        const handle = document.createElement('div');
+        handle.className = 'col-resizer';
+        handle.title = 'Drag to resize column';
+        th.appendChild(handle);
+        handle.addEventListener('mousedown', function (e) {
+          startResize(e, table, th, th.cellIndex, tableId);
+        });
+        handle.addEventListener('dblclick', function () {
+          // Double-click resets this column to auto-fit content.
+          th.style.width = '';
+          th.style.maxWidth = '';
+          const currentIdx = th.cellIndex;
+          localStorage.removeItem('colw:' + tableId + ':' + currentIdx);
+          th.style.width = th.getBoundingClientRect().width + 'px';
+          localStorage.setItem('colw:' + tableId + ':' + currentIdx,
+                               parseFloat(th.style.width));
+        });
+      });
+    }
+
+    function startResize(e, table, th, idx, tableId) {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = th.getBoundingClientRect().width;
+      const handle = e.currentTarget;
+      handle.classList.add('resizing');
+      th.classList.add('resizing');
+      th.style.maxWidth = 'none';
+      document.body.style.cursor = 'col-resize';
+      function onMove(ev) {
+        const minW = th.dataset.sortAttr === 'filters' ? 15 : 40;
+        const newW = Math.max(minW, startW + (ev.clientX - startX));
+        th.style.width = newW + 'px';
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        handle.classList.remove('resizing');
+        th.classList.remove('resizing');
+        document.body.style.cursor = '';
+        const finalW = parseFloat(th.style.width);
+        if (!isNaN(finalW)) {
+          localStorage.setItem('colw:' + tableId + ':' + idx, finalW);
+        }
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    }
+
+    function initAll() {
+      document.querySelectorAll('table').forEach(initTable);
+    }
+    window.initTable = initTable;
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAll);
+    } else {
+      initAll();
+    }
+
+    // Re-init tables inside <details> when expanded (their cells have no
+    // measured width while hidden).
+    // ----- click-to-sort columns ------------------------------------------
+    function raToHours(s) {
+      const m = (s || '').match(/^\s*(-?\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      return parseInt(m[1], 10) + parseInt(m[2], 10)/60 + (parseFloat(m[3]) || 0)/3600;
+    }
+    function decToDegrees(s) {
+      const m = (s || '').match(/^\s*([+-]?)(\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      const sign = m[1] === '-' ? -1 : 1;
+      return sign * (parseInt(m[2], 10) + parseInt(m[3], 10)/60 + (parseFloat(m[4]) || 0)/3600);
+    }
+
+    function detectKind(values) {
+      const non = values.filter(v => v && v.trim() !== '');
+      if (!non.length) return 'string';
+      if (non.every(v => /^[+-]\d{1,2}:\d{2}(:\d+(\.\d+)?)?$/.test(v.trim()))) return 'dec';
+      if (non.every(v => /^\d{1,2}:\d{2}(:\d+(\.\d+)?)?$/.test(v.trim()))) return 'ra';
+      if (non.every(v => !isNaN(parseFloat(v.replace(/[^\d.+\-eE]/g, ''))))) return 'number';
+      return 'string';
+    }
+    function keyFor(kind, raw) {
+      if (raw == null) return null;
+      if (kind === 'number') {
+        const n = parseFloat(raw.replace(/[^\d.+\-eE]/g, ''));
+        return isNaN(n) ? null : n;
+      }
+      if (kind === 'ra')  { const h = raToHours(raw);   return isNaN(h) ? null : h; }
+      if (kind === 'dec') { const d = decToDegrees(raw); return isNaN(d) ? null : d; }
+      return (raw || '').toString().toLowerCase();
+    }
+    function rowKey(row, colIdx, sortAttr, kind) {
+      if (sortAttr && row.dataset[sortAttr] !== undefined) {
+        const raw = row.dataset[sortAttr];
+        if (kind === 'number') {
+          const n = parseFloat(raw);
+          return isNaN(n) ? null : n;
+        }
+        if (kind === 'ra')  { const h = raToHours(raw);    return isNaN(h) ? null : h; }
+        if (kind === 'dec') { const d = decToDegrees(raw); return isNaN(d) ? null : d; }
+        return (raw || '').toString().toLowerCase();
+      }
+      const cell = row.cells[colIdx];
+      return keyFor(kind, cell ? cell.textContent.trim() : '');
+    }
+
+    function initSortable(table) {
+      if (table.dataset.sortableInit === '1') return;
+      table.dataset.sortableInit = '1';
+      const headerRow = table.tHead && table.tHead.rows[0];
+      const tbody = table.tBodies[0];
+      if (!headerRow || !tbody) return;
+      // Snapshot original row order so a third click can restore it.
+      // Pair detail rows (log-row) with their primary so restore keeps them together.
+      const allInitRows = Array.from(tbody.rows);
+      const initPairs = [];
+      for (let i = 0; i < allInitRows.length; i++) {
+        const primary = allInitRows[i];
+        const detail = (i + 1 < allInitRows.length && allInitRows[i + 1].classList.contains('log-row'))
+          ? allInitRows[++i] : null;
+        initPairs.push({ primary, detail });
+      }
+      initPairs.forEach((p, i) => { p.primary.dataset._origIdx = i; });
+      const originalOrder = initPairs;
+
+      Array.from(headerRow.cells).forEach((th, colIdx) => {
+        if (th.classList.contains('no-sort')) return;
+        th.classList.add('sortable');
+        th.addEventListener('click', function (e) {
+          if (e.target.closest('.col-resizer')) return;  // ignore handle clicks
+          const dir = th.dataset.sortDir;
+          const next = dir === 'asc' ? 'desc' : dir === 'desc' ? '' : 'asc';
+          Array.from(headerRow.cells).forEach(h => h.removeAttribute('data-sort-dir'));
+          if (next) th.dataset.sortDir = next;
+
+          if (!next) {
+            // Restore original order (pairs kept together).
+            originalOrder.forEach(p => {
+              tbody.appendChild(p.primary || p);
+              if (p.detail) tbody.appendChild(p.detail);
+            });
+            return;
+          }
+
+          // Decide sort kind: explicit hint or auto-detect from cell text.
+          let kind = th.dataset.sortType;
+          const currentIdx = th.cellIndex;
+          if (!kind) {
+            const samples = Array.from(tbody.rows).slice(0, 25)
+              .map(r => r.cells[currentIdx] ? r.cells[currentIdx].textContent.trim() : '');
+            kind = detectKind(samples);
+          }
+          const sortAttr = th.dataset.sortAttr;  // camelCase data-* key
+
+          const dirSign = next === 'asc' ? 1 : -1;
+          // Pair detail rows (e.g. .log-row) with their preceding primary row
+          // so sorting doesn't break the adjacency.
+          const allRows = Array.from(tbody.rows);
+          const pairs = [];
+          for (let i = 0; i < allRows.length; i++) {
+            const primary = allRows[i];
+            const detail = (i + 1 < allRows.length && allRows[i + 1].classList.contains('log-row'))
+              ? allRows[++i] : null;
+            pairs.push({ primary, detail });
+          }
+          const sorted = pairs.slice().sort((a, b) => {
+            if (sortAttr === 'startedAt') {
+              const statusA = a.primary.dataset.status;
+              const statusB = b.primary.dataset.status;
+              const isRunningA = (statusA === 'running' || statusA === 'cancelling');
+              const isRunningB = (statusB === 'running' || statusB === 'cancelling');
+              if (isRunningA && !isRunningB) return -1;
+              if (isRunningB && !isRunningA) return 1;
+            }
+            const ka = rowKey(a.primary, currentIdx, sortAttr, kind);
+            const kb = rowKey(b.primary, currentIdx, sortAttr, kind);
+            if (ka == null && kb == null) return 0;
+            if (ka == null) return 1;   // nulls always last
+            if (kb == null) return -1;
+            if (ka < kb) return -1 * dirSign;
+            if (ka > kb) return  1 * dirSign;
+            // stable tiebreak on original index
+            return (parseInt(a.primary.dataset._origIdx, 10) - parseInt(b.primary.dataset._origIdx, 10));
+          });
+          sorted.forEach(p => {
+            tbody.appendChild(p.primary);
+            if (p.detail) tbody.appendChild(p.detail);
+          });
+        });
+      });
+    }
+
+    function initAllSortable() {
+      document.querySelectorAll('table').forEach(initSortable);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAllSortable);
+    } else {
+      initAllSortable();
+    }
+
+    // ----- draggable columns ----------------------------------------------
+    function initDraggableColumns(table) {
+      if (table.dataset.draggableInit === '1') return;
+      table.dataset.draggableInit = '1';
+      const headerRow = table.tHead && table.tHead.rows[0];
+      if (!headerRow) return;
+      const ths = Array.from(headerRow.cells);
+      
+      ths.forEach(function (th) {
+        th.setAttribute('draggable', 'true');
+        
+        th.addEventListener('dragstart', function (e) {
+          if (e.target.closest('.col-resizer')) {
+            e.preventDefault();
+            return;
+          }
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', th.cellIndex);
+          th.classList.add('dragging');
+        });
+        
+        th.addEventListener('dragend', function () {
+          ths.forEach(function (t) {
+            t.classList.remove('dragging', 'drag-over-left', 'drag-over-right');
+          });
+        });
+        
+        th.addEventListener('dragover', function (e) {
+          e.preventDefault();
+          const rect = th.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          
+          ths.forEach(function (t) {
+            t.classList.remove('drag-over-left', 'drag-over-right');
+          });
+          
+          if (relX < rect.width / 2) {
+            th.classList.add('drag-over-left');
+          } else {
+            th.classList.add('drag-over-right');
+          }
+        });
+        
+        th.addEventListener('dragleave', function () {
+          th.classList.remove('drag-over-left', 'drag-over-right');
+        });
+        
+        th.addEventListener('drop', function (e) {
+          e.preventDefault();
+          th.classList.remove('drag-over-left', 'drag-over-right');
+          
+          const sourceIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
+          const targetIdx = th.cellIndex;
+          if (isNaN(sourceIdx) || sourceIdx === targetIdx) return;
+          
+          const rect = th.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          const insertBefore = relX < rect.width / 2;
+          
+          Array.from(table.rows).forEach(function (row) {
+            const cell = row.cells[sourceIdx];
+            const targetCell = row.cells[targetIdx];
+            if (!cell || !targetCell) return;
+            
+            if (insertBefore) {
+              row.insertBefore(cell, targetCell);
+            } else {
+              row.insertBefore(cell, targetCell.nextSibling);
+            }
+          });
+        });
+      });
+    }
+
+    function initAllDraggable() {
+      document.querySelectorAll('table').forEach(initDraggableColumns);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAllDraggable);
+    } else {
+      initAllDraggable();
+    }
+
+    // ----- inline notes editor (delegated) --------------------------------
+    document.addEventListener('click', function (e) {
+      const cell = e.target.closest('.note-cell');
+      if (!cell || cell.classList.contains('editing')) return;
+      if (e.target.closest('a, button')) return;
+      openEditor(cell);
+    });
+
+    function openEditor(cell) {
+      const obj = cell.dataset.object;
+      const current = cell.querySelector('.note-text').textContent;
+      cell.classList.add('editing');
+      cell.innerHTML = '';
+      const ta = document.createElement('textarea');
+      ta.value = current;
+      ta.rows = 2;
+      ta.placeholder = 'Type a note…';
+      const actions = document.createElement('div');
+      actions.className = 'note-actions';
+      const save = document.createElement('button');
+      save.className = 'save'; save.textContent = 'Save';
+      const cancel = document.createElement('button');
+      cancel.textContent = 'Cancel';
+      const del = document.createElement('button');
+      del.className = 'del'; del.textContent = 'Delete';
+      actions.append(save, cancel, del);
+      cell.append(ta, actions);
+      ta.focus(); ta.select();
+
+      function close(note) {
+        cell.classList.remove('editing');
+        cell.innerHTML =
+          '<span class="note-text">' + escapeHtml(note) + '</span>' +
+          '<span class="note-placeholder"' + (note ? ' style="display:none;"' : '') + '>+ add note</span>';
+      }
+      function escapeHtml(s) {
+        return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      }
+
+      async function commit() {
+        const value = ta.value.trim();
+        try {
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({note: value}),
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          close(value);
+        } catch (err) {
+          showMessageModal('Error', 'Save failed: ' + err.message);
+        }
+      }
+      async function destroy() {
+        try {
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {method: 'DELETE'});
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          close('');
+        } catch (err) {
+          showMessageModal('Error', 'Delete failed: ' + err.message);
+        }
+      }
+
+      save.addEventListener('click', commit);
+      del.addEventListener('click', destroy);
+      cancel.addEventListener('click', () => close(current));
+      ta.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); }
+        else if (e.key === 'Escape') { e.preventDefault(); close(current); }
+      });
+    }
+
+    document.addEventListener('toggle', function (e) {
+      if (e.target.tagName === 'DETAILS' && e.target.open) {
+        e.target.querySelectorAll('table').forEach(function (t) {
+          delete t.dataset.resizableInit;
+          t.classList.remove('resizable-init');
+          // Clear previously-set widths so we re-measure from real layout.
+          if (t.tHead && t.tHead.rows[0]) {
+            Array.from(t.tHead.rows[0].cells).forEach(function (th) {
+              th.querySelectorAll('.col-resizer').forEach(h => h.remove());
+              th.style.width = '';
+            });
+          }
+          initTable(t);
+        });
+      }
+    }, true);
+  })();
+
+  (function () {
+    var modal = document.getElementById('message-modal');
+    var titleEl = document.getElementById('message-modal-title');
+    var textEl = document.getElementById('message-modal-text');
+    var okBtn = document.getElementById('message-modal-ok');
+    var cancelBtn = document.getElementById('message-modal-cancel');
+    var pendingResolve = null;
+
+    function modalOptions(opts) {
+      if (typeof opts === 'string') return { kind: opts };
+      return opts || {};
+    }
+
+    function showModal(title, text, opts) {
+      opts = modalOptions(opts);
+      titleEl.textContent = title || '';
+      textEl.textContent = text || '';
+      modal.dataset.kind = opts.kind || 'default';
+      modal.classList.add('visible');
+      okBtn.focus();
+    }
+
+    window.showMessageModal = function(title, text, opts) {
+      opts = modalOptions(opts);
+      pendingResolve = null;
+      modal.dataset.mode = 'message';
+      okBtn.textContent = 'OK';
+      okBtn.className = 'btn';
+      cancelBtn.hidden = true;
+      showModal(title, text, opts);
+    };
+    window.closeMessageModal = function(result) {
+      modal.classList.remove('visible');
+      modal.dataset.mode = 'message';
+      modal.dataset.kind = 'default';
+      if (pendingResolve) {
+        var resolve = pendingResolve;
+        pendingResolve = null;
+        resolve(!!result);
+      }
+    };
+    window.showConfirmModal = function(title, text, opts) {
+      opts = opts || {};
+      return new Promise(function (resolve) {
+        pendingResolve = resolve;
+        modal.dataset.mode = 'confirm';
+        okBtn.textContent = opts.confirmLabel || 'Confirm';
+        okBtn.className = opts.confirmClass || 'btn primary';
+        cancelBtn.textContent = opts.cancelLabel || 'Cancel';
+        cancelBtn.hidden = false;
+        showModal(title, text, opts);
+      });
+    };
+    okBtn.addEventListener('click', function () {
+      window.closeMessageModal(pendingResolve ? true : false);
+    });
+    cancelBtn.addEventListener('click', function () {
+      window.closeMessageModal(false);
+    });
+  })();
+</script>
+
+</body>
+</html>

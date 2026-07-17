@@ -1,0 +1,1789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Photometry — MuSCAT-db</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230f1117' stroke='%2345d6b5' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='14' fill='none' stroke='%236c8cff' stroke-width='2.5'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%2345d6b5'/%3E%3Cg fill='%23e1e4ed'%3E%3Ccircle cx='12' cy='14' r='1.6'/%3E%3Ccircle cx='52' cy='18' r='1.2'/%3E%3Ccircle cx='50' cy='48' r='1.8'/%3E%3Ccircle cx='14' cy='50' r='1.4'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230f1117' stroke='%2345d6b5' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='14' fill='none' stroke='%236c8cff' stroke-width='2.5'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%2345d6b5'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../static/styles.css">
+<script src="../static/js/storage.js"></script>
+<script src="../static/js/format.js"></script>
+<script src="../static/js/jobPolling.js"></script>
+<script>
+  // Global fetch-activity tracker. Installed in <head> so it wraps window.fetch
+  // before any page script runs, giving every page a consistent loading
+  // indicator while it queries data (FOV → Gaia, ephemeris datasets, LCO
+  // schedule, …). It counts in-flight *same-origin* /api/ requests only, so the
+  // background job/status pollers (which hit /jobs/status, not /api/) never
+  // flash the bar. The loading-bar controller below subscribes via onChange.
+  (function () {
+    var origFetch = window.fetch ? window.fetch.bind(window) : null;
+    if (!origFetch) return;
+    var active = 0;
+    var tracker = { active: 0, onChange: null };
+    function notify() {
+      tracker.active = active;
+      if (typeof tracker.onChange === 'function') {
+        try { tracker.onChange(active); } catch (e) { /* never let UI break fetch */ }
+      }
+    }
+    function begin() { active++; notify(); }
+    function end() { active = Math.max(0, active - 1); notify(); }
+    function shouldTrack(input) {
+      try {
+        var urlStr = (typeof input === 'string') ? input
+                   : (input && input.url) ? input.url : String(input);
+        var u = new URL(urlStr, window.location.href);
+        var isStatus = u.pathname.endsWith('/status') || u.pathname.endsWith('/status-batch');
+        return u.origin === window.location.origin && u.pathname.indexOf('/api/') === 0 && !isStatus;
+      } catch (e) { return false; }
+    }
+    window.fetch = function (input, init) {
+      if (!shouldTrack(input)) return origFetch(input, init);
+      begin();
+      var p;
+      try {
+        p = origFetch(input, init);
+      } catch (e) {
+        end();
+        throw e;
+      }
+      p.then(end, end);
+      return p;
+    };
+    window.MuscatFetchTracker = tracker;
+  })();
+</script>
+</head>
+<body>
+<!--muscat-static-snapshot-banner-->
+<div id="snapshot-banner" role="note" style="display:flex;align-items:center;gap:.6rem;padding:.5rem .9rem;background:#3a2d00;color:#ffe9a8;font:500 .85rem/1.3 system-ui,sans-serif;border-bottom:1px solid #5a4700;"><span>&#128196; Static documentation snapshot of <strong>muscat-db</strong> &mdash; live data &amp; actions are disabled.</span><button type="button" aria-label="Dismiss" onclick="this.closest('#snapshot-banner').remove()" style="margin-left:auto;background:none;border:0;color:inherit;font-size:1.1rem;line-height:1;cursor:pointer;padding:0 .3rem;">&times;</button></div>
+<div id="loading-bar" role="progressbar" aria-label="Loading"></div>
+<nav>
+  <a class="brand" href="../" data-nav-section="home">MuSCAT-db</a>
+  <a href="../logs/" data-nav-section="obslog">ObsLog</a>
+  <a id="target-nav-link" href="../target/V1298_Tau/" data-nav-section="target">Target</a>
+  <a id="photometry-nav-link" href="../photometry/muscat/251119/V1298_Tau/" data-nav-section="photometry">Photometry</a>
+  <a id="transit-fit-nav-link" href="../transit-fit/muscat/260123/HAT-P-32b/" data-nav-section="transit-fit">Transit Fit</a>
+  <a id="ephemeris-nav-link" href="../ephemeris/" data-nav-section="ephemeris">Ephemeris</a>
+  <a id="ttv-fit-nav-link" href="../ephemeris/" style="display: none;">TTV Fit</a>
+  <a href="../jobs/" data-nav-section="jobs">Jobs</a>
+  <span class="spacer"></span>
+  <a href="../lco/schedule/" data-nav-section="lco">LCO</a>
+  <a href="../fov/" data-nav-section="fov">FOV</a>
+  <a href="../exposure/" data-nav-section="exposure">Exp Calc</a>
+  <a href="../toi/" data-nav-section="toi">TOI</a>
+  <a href="../nexsci/" data-nav-section="nexsci">NExScI</a>
+  <a href="../guide/" data-nav-section="guide" style="margin-right: 0.5rem;">Guide</a>
+  <a href="../settings/" data-nav-section="settings">Settings</a>
+  <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">
+    <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="4"/>
+      <line x1="12" y1="2"  x2="12" y2="5"/>
+      <line x1="12" y1="19" x2="12" y2="22"/>
+      <line x1="2"  y1="12" x2="5"  y2="12"/>
+      <line x1="19" y1="12" x2="22" y2="12"/>
+      <line x1="4.5"  y1="4.5"  x2="6.6"  y2="6.6"/>
+      <line x1="17.4" y1="17.4" x2="19.5" y2="19.5"/>
+      <line x1="4.5"  y1="19.5" x2="6.6"  y2="17.4"/>
+      <line x1="17.4" y1="6.6"  x2="19.5" y2="4.5"/>
+    </svg>
+    <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>
+    </svg>
+  </button>
+</nav>
+<script>
+  (function () {
+    var path = window.location.pathname.replace(/\/+$/, '') || '/';
+    var section = {
+      '/': 'home',
+      '/logs': 'obslog',
+      '/target': 'target',
+      '/photometry': 'photometry',
+      '/transit-fit': 'transit-fit',
+      '/ephemeris': 'ephemeris',
+      '/jobs': 'jobs',
+      '/fov': 'fov',
+      '/exposure': 'exposure',
+      '/toi': 'toi',
+      '/nexsci': 'nexsci',
+      '/guide': 'guide',
+      '/settings': 'settings'
+    }[path];
+
+    if (path.indexOf('/lco/') === 0) section = 'lco';
+    if (/^\/(?:muscat|muscat2|muscat3|muscat4|sinistro)(?:\/|$)/.test(path)) {
+      section = 'obslog';
+    }
+
+    document.querySelectorAll('nav a[data-nav-section]').forEach(function (link) {
+      if (link.dataset.navSection === section) {
+        link.setAttribute('aria-current', 'page');
+      }
+    });
+  })();
+</script>
+<div class="container">
+
+<style>
+  /* Page-specific styles only. Shared components (buttons, .opt* form fields,
+     .opt-section-title, .opt-collapse, details.adv, .run-panel, .run-cmd,
+     .phot-section, .phot-fold, .selector-group, .help-tooltip, #run-log,
+     .dl-row) live in /static/styles.css. */
+  /* The instrument/date/target picker (.selector-group), empty-state panel
+     (.empty-state) and figure cards (.fig-grid / .fig / .cap / .fig img) now
+     come from the shared stylesheet so they match the transit-fit and
+     ephemeris pages. Only the photometry-specific figure behaviours below
+     (single-column summary layout, drag-to-reorder) stay page-local. */
+  /* Default summary layout: one vertical column (light curve, stack, covariates). */
+  .fig-grid.col { grid-template-columns: 1fr; max-width: 780px; }
+  /* drag-to-reorder */
+  .drag-handle {
+    cursor: grab; color: var(--text-dim); font-size: 1rem; line-height: 1;
+    padding: 0 0.2rem; user-select: none; touch-action: none;
+  }
+  .drag-handle:hover { color: var(--accent); }
+  .drag-handle:active { cursor: grabbing; }
+  .fig.drag-ghost { opacity: 0.4; }
+  .fig-grid.sortable .fig { will-change: transform; }
+  .band-tabs { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .band-tab {
+    background: var(--surface2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 0.3rem 0.9rem; font-size: 0.85rem; cursor: pointer;
+  }
+  .band-tab.active { border-color: var(--accent); color: var(--accent); }
+  /* .site-chips / .site-chip come from the shared stylesheet. */
+  .band-panel { display: none; }
+  .band-panel.active { display: block; }
+  .warn { color: var(--red); font-size: 0.85rem; margin-top: 0.5rem; }
+  .band-checks { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+  .band-checks label { display: flex; align-items: center; gap: 0.3rem; color: var(--text); font-size: 0.85rem; }
+  .opt-span2 { grid-column: span 2; }
+  #opt-error { color: var(--red); font-size: 0.8rem; min-height: 1rem; }
+</style>
+
+<h1>Photometry</h1>
+<p class="page-lede">
+  Browse reduced photometry products for a target, and configure and launch new reductions with the prose pipeline.
+</p>
+
+<div id="job-banner" style="display:none; margin-bottom:1rem; padding:0.6rem 1rem; border-radius:8px; background:var(--surface2); border:1px solid var(--accent); font-size:0.9rem;">
+  <span id="job-banner-msg"></span>
+  <a id="job-banner-link" style="margin-left:0.5rem; font-weight:600;" href="#">view</a>
+</div>
+
+<form class="selector-group" method="get" action="../photometry/muscat/251119/V1298_Tau/" id="phot-form">
+  <label for="sel-inst">Instrument
+    <select id="sel-inst" name="inst">
+      <option value="">— select —</option>
+      
+      <option value="muscat" >muscat</option>
+      
+      <option value="muscat2" >muscat2</option>
+      
+      <option value="muscat3" >muscat3</option>
+      
+      <option value="muscat4" >muscat4</option>
+      
+      <option value="sinistro" >sinistro</option>
+      
+    </select>
+  </label>
+  <label for="sel-date">Obs date
+    <select id="sel-date" name="date" disabled>
+      <option value="">— select —</option>
+      
+    </select>
+  </label>
+  <label for="sel-target">Target
+    <select id="sel-target" name="target" disabled>
+      <option value="">— select —</option>
+      
+    </select>
+  </label>
+  
+  <noscript><button class="btn" type="submit">View</button></noscript>
+</form>
+
+
+  <div class="empty-state">
+    <div class="empty-icon">🔭</div>
+    <p>
+      Pick an instrument, observation date, and target to view its reduction.
+    </p>
+  </div>
+
+
+
+</div>
+<div id="status-bar" role="status" aria-live="polite">
+  <span class="dot"></span>
+  <span id="status-text">Loading…</span>
+</div>
+
+<div id="message-modal" data-mode="message" data-kind="default" role="dialog" aria-modal="true" aria-labelledby="message-modal-title" aria-describedby="message-modal-text">
+  <div class="modal-box">
+    <p id="message-modal-title" class="modal-title"></p>
+    <p id="message-modal-text" class="modal-text"></p>
+    <div class="modal-actions">
+      <button class="btn" id="message-modal-cancel" type="button" hidden>Cancel</button>
+      <button class="btn" id="message-modal-ok" type="button">OK</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const root = document.documentElement;
+    const btn = document.getElementById('theme-toggle');
+    if (window.MuscatRouteState) window.MuscatRouteState.applyNavbar();
+    const stored = localStorage.getItem('muscat-theme');
+    apply(stored || 'light');
+    btn.addEventListener('click', function () {
+      const next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      apply(next);
+      localStorage.setItem('muscat-theme', next);
+    });
+    function apply(t) { root.setAttribute('data-theme', t); }
+  })();
+
+  (function () {
+    const bar    = document.getElementById('loading-bar');
+    const status = document.getElementById('status-bar');
+    const text   = document.getElementById('status-text');
+    const table  = document.getElementById('targets-table');
+
+    // The bar is visible while ANY of these is true: the page is still loading,
+    // a tracked background job is active, or a same-origin /api/ request is in
+    // flight. A running job keeps it up indefinitely (that label wins over the
+    // transient page-load / fetch labels). It only slides away once all three
+    // are false.
+    let pageLoading = true;
+    let pageLabel   = 'Loading…';
+    let jobRunning  = false;
+    let jobLabel    = '';
+    let fetchActive = false;
+    let fetchLabel  = 'Loading…';
+    let hideTimer   = null;
+
+    if (table) {
+      const rows = table.tBodies[0] ? table.tBodies[0].rows.length : 0;
+      pageLabel = 'Rendering ' + rows.toLocaleString() + ' targets…';
+    }
+
+    function render() {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      if (pageLoading || jobRunning || fetchActive) {
+        bar.classList.remove('done');
+        status.classList.add('visible');
+        text.textContent = jobRunning ? jobLabel : (pageLoading ? pageLabel : fetchLabel);
+      } else {
+        bar.classList.add('done');
+        if (status.classList.contains('visible')) {
+          text.textContent = 'Ready';
+          hideTimer = setTimeout(function () { status.classList.remove('visible'); }, 700);
+        }
+      }
+      // Keep the bar in the DOM so we can re-show it on the next navigation.
+    }
+
+    function showLoading(label) {
+      pageLabel = label || 'Loading…';
+      pageLoading = true;
+      render();
+    }
+    function done() {
+      pageLoading = false;
+      render();
+    }
+    // Called by the site-wide background-job watcher below.
+    function setJob(running, label) {
+      jobRunning = !!running;
+      jobLabel   = label || 'Running…';
+      render();
+    }
+    // Called by the global /api/ fetch tracker (installed in <head>). A generic
+    // label is used unless a page has set its own via showLoading.
+    function setFetch(active, label) {
+      fetchActive = !!active;
+      fetchLabel  = label || 'Loading…';
+      render();
+    }
+    window.showLoading = showLoading;
+    window.done = done;
+    window.MuscatLoadingBar = { showLoading: showLoading, done: done, setJob: setJob, setFetch: setFetch };
+
+    // Subscribe to in-flight /api/ requests so every page shows the same
+    // loading indicator while fetching data, with no per-page wiring.
+    if (window.MuscatFetchTracker) {
+      window.MuscatFetchTracker.onChange = function (n) { setFetch(n > 0); };
+      setFetch(window.MuscatFetchTracker.active > 0);
+    }
+
+    if (document.readyState === 'complete') {
+      done();
+    } else {
+      showLoading(pageLabel);
+      window.addEventListener('load', done);
+    }
+
+    // Re-show the bar when the user navigates away via a same-origin link.
+    document.addEventListener('click', function (e) {
+      const link = e.target.closest('a');
+      if (!link) return;
+      if (link.target && link.target !== '_self') return;
+      if (link.hasAttribute('download')) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+      const href = link.getAttribute('href');
+      if (!href || href.startsWith('#') || href.startsWith('javascript:') || href.startsWith('mailto:')) return;
+      const url = new URL(link.href, window.location.href);
+      if (url.origin !== window.location.origin) return;
+      // Skip pure in-page hash changes (same path, different fragment).
+      if (url.pathname === window.location.pathname && url.hash) return;
+      showLoading('Loading…');
+    }, true);
+
+    // Restore on bfcache restores (back/forward navigation).
+    window.addEventListener('pageshow', function (e) {
+      if (e.persisted) done();
+    });
+  })();
+
+  // Site-wide background-job watcher: keeps the loading bar up on ANY page for
+  // as long as a job the user launched (saved under `phot:job` / `fit:job`) is
+  // still active on the server, and takes it down once that job finishes.
+  (function () {
+    const st  = window.MuscatStorage;
+    const bar = window.MuscatLoadingBar;
+    if (!st || !bar) return;
+
+    const POLL_MS = 4000;
+    let timer = null;
+
+    // Reconstruct the canonical job key: "<type>:<inst>/<date>/<target>[/<run_id>]"
+    // (server strips spaces from the target — see photometry.job_key).
+    function jobKey(type, j) {
+      if (!j || !j.inst || !j.date || !j.target) return null;
+      let k = type + ':' + j.inst + '/' + j.date + '/' + String(j.target).replace(/ /g, '');
+      if (j.run_id) k += '/' + j.run_id;
+      return k;
+    }
+    // TTV runs are keyed on a slugged run name rather than a run_id — see
+    // ttv_fit.ttv_job_key() / jobs.slugify_run_name().
+    function ttvJobKey(j) {
+      if (!j || !j.target) return null;
+      const slug = String(j.run_name || '').trim().toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40)
+        .replace(/^_+|_+$/g, '') || 'default';
+      return 'ttv_fit:' + String(j.target).replace(/ /g, '') + '/' + slug;
+    }
+    function trackedKeys() {
+      const keys = [];
+      const p = jobKey('photometry', st.getJSON('phot:job', null));
+      if (p) keys.push(p);
+      const f = jobKey('transit_fit', st.getJSON('fit:job', null));
+      if (f) keys.push(f);
+      const t = ttvJobKey(st.getJSON('muscat-ttv-job', null));
+      if (t) keys.push(t);
+      return keys;
+    }
+    function stop() { if (timer) { clearTimeout(timer); timer = null; } }
+    function schedule() {
+      if (!timer) timer = setTimeout(function () { timer = null; tick(); }, POLL_MS);
+    }
+    function labelFor(states) {
+      if (states.length === 1) {
+        return states[0] === 'pending' ? 'Queued — waiting to start…' : 'Running job…';
+      }
+      return 'Running ' + states.length + ' jobs…';
+    }
+    function tick() {
+      const tracked = trackedKeys();
+      if (tracked.length === 0) { bar.setJob(false, ''); stop(); return; }
+      fetch('/api/jobs/status?active_only=1', { headers: { 'X-Requested-With': 'fetch' } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          const active = {};
+          (d.active || []).forEach(function (a) { active[a.key] = a.state; });
+          const mine = tracked.filter(function (k) { return active[k]; });
+          if (mine.length > 0) {
+            bar.setJob(true, labelFor(mine.map(function (k) { return active[k]; })));
+            schedule();
+          } else {
+            // Tracked job(s) are no longer active — finished, cancelled, or
+            // cleared. Take the bar down and stop polling until the next launch
+            // or navigation re-checks. (The launching page owns clearing the
+            // localStorage key on its own terminal-state handling.)
+            bar.setJob(false, '');
+            stop();
+          }
+        })
+        .catch(function () { schedule(); });
+    }
+
+    // Let a page trigger an immediate re-check right after it launches a job,
+    // instead of waiting up to POLL_MS for the next tick.
+    window.MuscatJobIndicator = { refresh: function () { stop(); tick(); } };
+
+    if (trackedKeys().length > 0) tick();
+  })();
+
+  // ----- resizable table columns ------------------------------------------
+  (function () {
+    function initTable(table) {
+      if (table.dataset.resizableInit === '1') return;
+      if (table.offsetParent === null) return; // Skip if table is currently hidden
+      table.dataset.resizableInit = '1';
+      const headRow = table.tHead && table.tHead.rows[0];
+      if (!headRow) return;
+      const ths = Array.from(headRow.cells);
+      const tableId = table.id || 'tbl-' + Math.random().toString(36).slice(2);
+      // Lock in current natural widths (measured under table-layout: auto) so
+      // dragging one column doesn't shove the others around.
+      const measured = ths.map(function (th, i) {
+        const stored = localStorage.getItem('colw:' + tableId + ':' + i);
+        if (stored) {
+          const w = parseFloat(stored);
+          if (w > 30) {
+            th.style.maxWidth = 'none';
+            return w;
+          }
+        }
+        return th.getBoundingClientRect().width;
+      });
+      let hasStored = false;
+      for (let i = 0; i < ths.length; i++) {
+        if (localStorage.getItem('colw:' + tableId + ':' + i)) {
+          hasStored = true;
+          break;
+        }
+      }
+      if (!hasStored) {
+        const containerW = table.parentElement.clientWidth;
+        let totalMeasured = 0;
+        measured.forEach(function (w) {
+          totalMeasured += w;
+        });
+        ths.forEach(function (th, i) {
+          const share = totalMeasured > 0 ? (measured[i] / totalMeasured) : (1 / ths.length);
+          th.style.width = (containerW * share) + 'px';
+          th.style.maxWidth = 'none';
+        });
+      } else {
+        ths.forEach(function (th, i) {
+          th.style.width = measured[i] + 'px';
+        });
+      }
+
+      // Now switch to fixed layout so column widths are honoured exactly.
+      table.classList.add('resizable-init');
+      ths.forEach(function (th, i) {
+        if (i === ths.length - 1) return;  // no handle on the last column
+        const handle = document.createElement('div');
+        handle.className = 'col-resizer';
+        handle.title = 'Drag to resize column';
+        th.appendChild(handle);
+        handle.addEventListener('mousedown', function (e) {
+          startResize(e, table, th, th.cellIndex, tableId);
+        });
+        handle.addEventListener('dblclick', function () {
+          // Double-click resets this column to auto-fit content.
+          th.style.width = '';
+          th.style.maxWidth = '';
+          const currentIdx = th.cellIndex;
+          localStorage.removeItem('colw:' + tableId + ':' + currentIdx);
+          th.style.width = th.getBoundingClientRect().width + 'px';
+          localStorage.setItem('colw:' + tableId + ':' + currentIdx,
+                               parseFloat(th.style.width));
+        });
+      });
+    }
+
+    function startResize(e, table, th, idx, tableId) {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = th.getBoundingClientRect().width;
+      const handle = e.currentTarget;
+      handle.classList.add('resizing');
+      th.classList.add('resizing');
+      th.style.maxWidth = 'none';
+      document.body.style.cursor = 'col-resize';
+      function onMove(ev) {
+        const minW = th.dataset.sortAttr === 'filters' ? 15 : 40;
+        const newW = Math.max(minW, startW + (ev.clientX - startX));
+        th.style.width = newW + 'px';
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        handle.classList.remove('resizing');
+        th.classList.remove('resizing');
+        document.body.style.cursor = '';
+        const finalW = parseFloat(th.style.width);
+        if (!isNaN(finalW)) {
+          localStorage.setItem('colw:' + tableId + ':' + idx, finalW);
+        }
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    }
+
+    function initAll() {
+      document.querySelectorAll('table').forEach(initTable);
+    }
+    window.initTable = initTable;
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAll);
+    } else {
+      initAll();
+    }
+
+    // Re-init tables inside <details> when expanded (their cells have no
+    // measured width while hidden).
+    // ----- click-to-sort columns ------------------------------------------
+    function raToHours(s) {
+      const m = (s || '').match(/^\s*(-?\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      return parseInt(m[1], 10) + parseInt(m[2], 10)/60 + (parseFloat(m[3]) || 0)/3600;
+    }
+    function decToDegrees(s) {
+      const m = (s || '').match(/^\s*([+-]?)(\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      const sign = m[1] === '-' ? -1 : 1;
+      return sign * (parseInt(m[2], 10) + parseInt(m[3], 10)/60 + (parseFloat(m[4]) || 0)/3600);
+    }
+
+    function detectKind(values) {
+      const non = values.filter(v => v && v.trim() !== '');
+      if (!non.length) return 'string';
+      if (non.every(v => /^[+-]\d{1,2}:\d{2}(:\d+(\.\d+)?)?$/.test(v.trim()))) return 'dec';
+      if (non.every(v => /^\d{1,2}:\d{2}(:\d+(\.\d+)?)?$/.test(v.trim()))) return 'ra';
+      if (non.every(v => !isNaN(parseFloat(v.replace(/[^\d.+\-eE]/g, ''))))) return 'number';
+      return 'string';
+    }
+    function keyFor(kind, raw) {
+      if (raw == null) return null;
+      if (kind === 'number') {
+        const n = parseFloat(raw.replace(/[^\d.+\-eE]/g, ''));
+        return isNaN(n) ? null : n;
+      }
+      if (kind === 'ra')  { const h = raToHours(raw);   return isNaN(h) ? null : h; }
+      if (kind === 'dec') { const d = decToDegrees(raw); return isNaN(d) ? null : d; }
+      return (raw || '').toString().toLowerCase();
+    }
+    function rowKey(row, colIdx, sortAttr, kind) {
+      if (sortAttr && row.dataset[sortAttr] !== undefined) {
+        const raw = row.dataset[sortAttr];
+        if (kind === 'number') {
+          const n = parseFloat(raw);
+          return isNaN(n) ? null : n;
+        }
+        if (kind === 'ra')  { const h = raToHours(raw);    return isNaN(h) ? null : h; }
+        if (kind === 'dec') { const d = decToDegrees(raw); return isNaN(d) ? null : d; }
+        return (raw || '').toString().toLowerCase();
+      }
+      const cell = row.cells[colIdx];
+      return keyFor(kind, cell ? cell.textContent.trim() : '');
+    }
+
+    function initSortable(table) {
+      if (table.dataset.sortableInit === '1') return;
+      table.dataset.sortableInit = '1';
+      const headerRow = table.tHead && table.tHead.rows[0];
+      const tbody = table.tBodies[0];
+      if (!headerRow || !tbody) return;
+      // Snapshot original row order so a third click can restore it.
+      // Pair detail rows (log-row) with their primary so restore keeps them together.
+      const allInitRows = Array.from(tbody.rows);
+      const initPairs = [];
+      for (let i = 0; i < allInitRows.length; i++) {
+        const primary = allInitRows[i];
+        const detail = (i + 1 < allInitRows.length && allInitRows[i + 1].classList.contains('log-row'))
+          ? allInitRows[++i] : null;
+        initPairs.push({ primary, detail });
+      }
+      initPairs.forEach((p, i) => { p.primary.dataset._origIdx = i; });
+      const originalOrder = initPairs;
+
+      Array.from(headerRow.cells).forEach((th, colIdx) => {
+        if (th.classList.contains('no-sort')) return;
+        th.classList.add('sortable');
+        th.addEventListener('click', function (e) {
+          if (e.target.closest('.col-resizer')) return;  // ignore handle clicks
+          const dir = th.dataset.sortDir;
+          const next = dir === 'asc' ? 'desc' : dir === 'desc' ? '' : 'asc';
+          Array.from(headerRow.cells).forEach(h => h.removeAttribute('data-sort-dir'));
+          if (next) th.dataset.sortDir = next;
+
+          if (!next) {
+            // Restore original order (pairs kept together).
+            originalOrder.forEach(p => {
+              tbody.appendChild(p.primary || p);
+              if (p.detail) tbody.appendChild(p.detail);
+            });
+            return;
+          }
+
+          // Decide sort kind: explicit hint or auto-detect from cell text.
+          let kind = th.dataset.sortType;
+          const currentIdx = th.cellIndex;
+          if (!kind) {
+            const samples = Array.from(tbody.rows).slice(0, 25)
+              .map(r => r.cells[currentIdx] ? r.cells[currentIdx].textContent.trim() : '');
+            kind = detectKind(samples);
+          }
+          const sortAttr = th.dataset.sortAttr;  // camelCase data-* key
+
+          const dirSign = next === 'asc' ? 1 : -1;
+          // Pair detail rows (e.g. .log-row) with their preceding primary row
+          // so sorting doesn't break the adjacency.
+          const allRows = Array.from(tbody.rows);
+          const pairs = [];
+          for (let i = 0; i < allRows.length; i++) {
+            const primary = allRows[i];
+            const detail = (i + 1 < allRows.length && allRows[i + 1].classList.contains('log-row'))
+              ? allRows[++i] : null;
+            pairs.push({ primary, detail });
+          }
+          const sorted = pairs.slice().sort((a, b) => {
+            if (sortAttr === 'startedAt') {
+              const statusA = a.primary.dataset.status;
+              const statusB = b.primary.dataset.status;
+              const isRunningA = (statusA === 'running' || statusA === 'cancelling');
+              const isRunningB = (statusB === 'running' || statusB === 'cancelling');
+              if (isRunningA && !isRunningB) return -1;
+              if (isRunningB && !isRunningA) return 1;
+            }
+            const ka = rowKey(a.primary, currentIdx, sortAttr, kind);
+            const kb = rowKey(b.primary, currentIdx, sortAttr, kind);
+            if (ka == null && kb == null) return 0;
+            if (ka == null) return 1;   // nulls always last
+            if (kb == null) return -1;
+            if (ka < kb) return -1 * dirSign;
+            if (ka > kb) return  1 * dirSign;
+            // stable tiebreak on original index
+            return (parseInt(a.primary.dataset._origIdx, 10) - parseInt(b.primary.dataset._origIdx, 10));
+          });
+          sorted.forEach(p => {
+            tbody.appendChild(p.primary);
+            if (p.detail) tbody.appendChild(p.detail);
+          });
+        });
+      });
+    }
+
+    function initAllSortable() {
+      document.querySelectorAll('table').forEach(initSortable);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAllSortable);
+    } else {
+      initAllSortable();
+    }
+
+    // ----- draggable columns ----------------------------------------------
+    function initDraggableColumns(table) {
+      if (table.dataset.draggableInit === '1') return;
+      table.dataset.draggableInit = '1';
+      const headerRow = table.tHead && table.tHead.rows[0];
+      if (!headerRow) return;
+      const ths = Array.from(headerRow.cells);
+      
+      ths.forEach(function (th) {
+        th.setAttribute('draggable', 'true');
+        
+        th.addEventListener('dragstart', function (e) {
+          if (e.target.closest('.col-resizer')) {
+            e.preventDefault();
+            return;
+          }
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', th.cellIndex);
+          th.classList.add('dragging');
+        });
+        
+        th.addEventListener('dragend', function () {
+          ths.forEach(function (t) {
+            t.classList.remove('dragging', 'drag-over-left', 'drag-over-right');
+          });
+        });
+        
+        th.addEventListener('dragover', function (e) {
+          e.preventDefault();
+          const rect = th.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          
+          ths.forEach(function (t) {
+            t.classList.remove('drag-over-left', 'drag-over-right');
+          });
+          
+          if (relX < rect.width / 2) {
+            th.classList.add('drag-over-left');
+          } else {
+            th.classList.add('drag-over-right');
+          }
+        });
+        
+        th.addEventListener('dragleave', function () {
+          th.classList.remove('drag-over-left', 'drag-over-right');
+        });
+        
+        th.addEventListener('drop', function (e) {
+          e.preventDefault();
+          th.classList.remove('drag-over-left', 'drag-over-right');
+          
+          const sourceIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
+          const targetIdx = th.cellIndex;
+          if (isNaN(sourceIdx) || sourceIdx === targetIdx) return;
+          
+          const rect = th.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          const insertBefore = relX < rect.width / 2;
+          
+          Array.from(table.rows).forEach(function (row) {
+            const cell = row.cells[sourceIdx];
+            const targetCell = row.cells[targetIdx];
+            if (!cell || !targetCell) return;
+            
+            if (insertBefore) {
+              row.insertBefore(cell, targetCell);
+            } else {
+              row.insertBefore(cell, targetCell.nextSibling);
+            }
+          });
+        });
+      });
+    }
+
+    function initAllDraggable() {
+      document.querySelectorAll('table').forEach(initDraggableColumns);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAllDraggable);
+    } else {
+      initAllDraggable();
+    }
+
+    // ----- inline notes editor (delegated) --------------------------------
+    document.addEventListener('click', function (e) {
+      const cell = e.target.closest('.note-cell');
+      if (!cell || cell.classList.contains('editing')) return;
+      if (e.target.closest('a, button')) return;
+      openEditor(cell);
+    });
+
+    function openEditor(cell) {
+      const obj = cell.dataset.object;
+      const current = cell.querySelector('.note-text').textContent;
+      cell.classList.add('editing');
+      cell.innerHTML = '';
+      const ta = document.createElement('textarea');
+      ta.value = current;
+      ta.rows = 2;
+      ta.placeholder = 'Type a note…';
+      const actions = document.createElement('div');
+      actions.className = 'note-actions';
+      const save = document.createElement('button');
+      save.className = 'save'; save.textContent = 'Save';
+      const cancel = document.createElement('button');
+      cancel.textContent = 'Cancel';
+      const del = document.createElement('button');
+      del.className = 'del'; del.textContent = 'Delete';
+      actions.append(save, cancel, del);
+      cell.append(ta, actions);
+      ta.focus(); ta.select();
+
+      function close(note) {
+        cell.classList.remove('editing');
+        cell.innerHTML =
+          '<span class="note-text">' + escapeHtml(note) + '</span>' +
+          '<span class="note-placeholder"' + (note ? ' style="display:none;"' : '') + '>+ add note</span>';
+      }
+      function escapeHtml(s) {
+        return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      }
+
+      async function commit() {
+        const value = ta.value.trim();
+        try {
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({note: value}),
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          close(value);
+        } catch (err) {
+          showMessageModal('Error', 'Save failed: ' + err.message);
+        }
+      }
+      async function destroy() {
+        try {
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {method: 'DELETE'});
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          close('');
+        } catch (err) {
+          showMessageModal('Error', 'Delete failed: ' + err.message);
+        }
+      }
+
+      save.addEventListener('click', commit);
+      del.addEventListener('click', destroy);
+      cancel.addEventListener('click', () => close(current));
+      ta.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); }
+        else if (e.key === 'Escape') { e.preventDefault(); close(current); }
+      });
+    }
+
+    document.addEventListener('toggle', function (e) {
+      if (e.target.tagName === 'DETAILS' && e.target.open) {
+        e.target.querySelectorAll('table').forEach(function (t) {
+          delete t.dataset.resizableInit;
+          t.classList.remove('resizable-init');
+          // Clear previously-set widths so we re-measure from real layout.
+          if (t.tHead && t.tHead.rows[0]) {
+            Array.from(t.tHead.rows[0].cells).forEach(function (th) {
+              th.querySelectorAll('.col-resizer').forEach(h => h.remove());
+              th.style.width = '';
+            });
+          }
+          initTable(t);
+        });
+      }
+    }, true);
+  })();
+
+  (function () {
+    var modal = document.getElementById('message-modal');
+    var titleEl = document.getElementById('message-modal-title');
+    var textEl = document.getElementById('message-modal-text');
+    var okBtn = document.getElementById('message-modal-ok');
+    var cancelBtn = document.getElementById('message-modal-cancel');
+    var pendingResolve = null;
+
+    function modalOptions(opts) {
+      if (typeof opts === 'string') return { kind: opts };
+      return opts || {};
+    }
+
+    function showModal(title, text, opts) {
+      opts = modalOptions(opts);
+      titleEl.textContent = title || '';
+      textEl.textContent = text || '';
+      modal.dataset.kind = opts.kind || 'default';
+      modal.classList.add('visible');
+      okBtn.focus();
+    }
+
+    window.showMessageModal = function(title, text, opts) {
+      opts = modalOptions(opts);
+      pendingResolve = null;
+      modal.dataset.mode = 'message';
+      okBtn.textContent = 'OK';
+      okBtn.className = 'btn';
+      cancelBtn.hidden = true;
+      showModal(title, text, opts);
+    };
+    window.closeMessageModal = function(result) {
+      modal.classList.remove('visible');
+      modal.dataset.mode = 'message';
+      modal.dataset.kind = 'default';
+      if (pendingResolve) {
+        var resolve = pendingResolve;
+        pendingResolve = null;
+        resolve(!!result);
+      }
+    };
+    window.showConfirmModal = function(title, text, opts) {
+      opts = opts || {};
+      return new Promise(function (resolve) {
+        pendingResolve = resolve;
+        modal.dataset.mode = 'confirm';
+        okBtn.textContent = opts.confirmLabel || 'Confirm';
+        okBtn.className = opts.confirmClass || 'btn primary';
+        cancelBtn.textContent = opts.cancelLabel || 'Cancel';
+        cancelBtn.hidden = false;
+        showModal(title, text, opts);
+      });
+    };
+    okBtn.addEventListener('click', function () {
+      window.closeMessageModal(pendingResolve ? true : false);
+    });
+    cancelBtn.addEventListener('click', function () {
+      window.closeMessageModal(false);
+    });
+  })();
+</script>
+
+<script>
+(function () {
+  var inst   = "";
+  var date   = "";
+  var routeTarget = "";
+  var target = "";
+  var runId  = "";
+  var rawMissing = false;
+  var siteSel = document.getElementById('opt-site');
+  var telescopeSel = document.getElementById('opt-telescope');
+  var modeSel = document.getElementById('opt-mode');
+
+  var SEL_KEY = 'phot:last';
+  var OPT_KEY = 'phot:options:' + inst + ':' + date + ':' + target;
+  var PANEL_KEY = 'phot:panel';
+  var JOB_KEY = 'phot:job';
+
+  // ----- restore the last selection on a bare /photometry visit -----
+  (function () {
+    if (inst || date || routeTarget || window.location.search) return;
+    var saved = MuscatStorage.getJSON(SEL_KEY, null);
+    if (saved && saved.inst) {
+      var qs = ['inst', 'date', 'target'].filter(function (k) { return saved[k]; })
+        .map(function (k) { return k + '=' + encodeURIComponent(saved[k]); }).join('&');
+      window.location.replace('/photometry?' + qs);
+    }
+  })();
+  // ...and remember the current selection for next time.
+  if (inst) {
+    MuscatStorage.setJSON(SEL_KEY, { inst: inst, date: date, target: routeTarget });
+  }
+  if (inst && date && target && window.MuscatRouteState) {
+    window.MuscatRouteState.rememberPhotometry({ inst: inst, date: date, target: routeTarget, run: runId || '' });
+    window.MuscatRouteState.applyNavbar();
+  }
+
+  // ----- persistent job: resume or show banner across page navigations -----
+  function saveJob() { MuscatStorage.setJSON(JOB_KEY, { inst: inst, date: date, target: target, run_id: runId }); }
+  function clearJob() { MuscatStorage.remove(JOB_KEY); }
+  // Defined here but invoked at the end of the script, after cancelBtn, logEl,
+  // runBtns, and polling are assigned. Calling it inline would run setRunning()
+  // while those vars are still undefined, so the cancel button would never show
+  // (and runBtns.forEach would throw) when returning to a page with a live job.
+  function checkSavedJob() {
+    // Always reflect the CURRENT target's real server-side state, even when
+    // localStorage has no record of it (e.g. a full run queued in a previous
+    // session or another tab). This keeps the Run buttons disabled and the
+    // Cancel button visible whenever the server reports an active/queued job.
+    if (inst && date && target) {
+      var cqs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
+      if (runId) cqs += '&run=' + encodeURIComponent(runId);
+      fetch('/api/photometry/status?' + cqs).then(function (r) { return r.json(); }).then(function (s) {
+        if (s.state === 'pending' || s.state === 'running' || s.state === 'cancelling' || s.state === 'finalizing') {
+          saveJob();
+          setRunning(true);
+          if (logEl) logEl.style.display = 'block';
+          if (s.state === 'pending' && !s.log && logEl) {
+            logEl.textContent = '⏳ Queued — waiting for the running full reduction to finish…';
+          }
+          stopPolling(); poll();
+        } else {
+          // Terminal or no job: never leave the buttons stuck disabled from a
+          // previous run. Reconcile to the server's truth instead of trusting
+          // whatever (possibly cached) state the page loaded with.
+          setRunning(false);
+          clearJob();
+        }
+      }).catch(function () { setRunning(false); });
+    }
+    // Banner for background jobs will be updated by the unified polling system
+  }
+
+  // ----- cascading selectors: navigate on change -----
+  var selInst   = document.getElementById('sel-inst');
+  var selDate   = document.getElementById('sel-date');
+  var selTarget = document.getElementById('sel-target');
+  function go(params) {
+    if (typeof window.showLoading === 'function') {
+      window.showLoading('Loading…');
+    }
+    var qs = Object.keys(params).filter(function (k) { return params[k]; })
+      .map(function (k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
+    window.location = '/photometry' + (qs ? '?' + qs : '');
+  }
+  if (selInst)   selInst.addEventListener('change', function () { go({ inst: this.value }); });
+  if (selDate)   selDate.addEventListener('change', function () { go({ inst: selInst.value, date: this.value }); });
+  if (selTarget) selTarget.addEventListener('change', function () { go({ inst: selInst.value, date: selDate.value, target: this.value }); });
+
+  // ----- foldable sections: keep summary controls (csv links) from toggling -----
+  document.querySelectorAll('.phot-fold > summary a').forEach(function (el) {
+    el.addEventListener('click', function (e) { e.stopPropagation(); });
+  });
+
+  // ----- band tabs (results view) -----
+  document.querySelectorAll('.band-tab').forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      var band = this.dataset.band;
+      document.querySelectorAll('.band-tab').forEach(function (t) { t.classList.toggle('active', t.dataset.band === band); });
+      document.querySelectorAll('.band-panel').forEach(function (p) { p.classList.toggle('active', p.dataset.band === band); });
+    });
+  });
+
+  // ----- smooth drag-to-reorder figures (native DnD + FLIP) -----
+  function figItems(container) {
+    return Array.prototype.slice.call(container.children).filter(function (c) {
+      return c.classList && c.classList.contains('fig');
+    });
+  }
+  function orderKey(container) { return 'figorder:' + (container.dataset.sortKey || 'default'); }
+
+  function restoreOrder(container) {
+    var saved = MuscatStorage.getJSON(orderKey(container), null);
+    if (!saved || !saved.length) return;
+    var byId = {};
+    figItems(container).forEach(function (el) { byId[el.dataset.figId] = el; });
+    saved.forEach(function (id) { if (byId[id]) { container.appendChild(byId[id]); delete byId[id]; } });
+  }
+  function saveOrder(container) {
+    MuscatStorage.setJSON(
+      orderKey(container),
+      figItems(container).map(function (el) { return el.dataset.figId; })
+    );
+  }
+
+  // FLIP: animate siblings smoothly to their new positions after a DOM move.
+  function flip(container, mutate) {
+    var els = figItems(container);
+    var first = els.map(function (el) { return [el, el.getBoundingClientRect()]; });
+    mutate();
+    first.forEach(function (pair) {
+      var el = pair[0], f = pair[1], l = el.getBoundingClientRect();
+      var dx = f.left - l.left, dy = f.top - l.top;
+      if (dx || dy) {
+        el.style.transition = 'none';
+        el.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
+        requestAnimationFrame(function () {
+          el.style.transition = 'transform 180ms ease';
+          el.style.transform = '';
+        });
+      }
+    });
+  }
+
+  // Reference node to insert the dragged item before (null -> append), chosen by
+  // nearest figure center so it works for both the column and the band grids.
+  function insertRef(container, dragEl, x, y) {
+    var els = figItems(container).filter(function (el) { return el !== dragEl; });
+    if (!els.length) return null;
+    var best = null, bestD = Infinity, before = true;
+    els.forEach(function (el) {
+      var b = el.getBoundingClientRect();
+      var cx = b.left + b.width / 2, cy = b.top + b.height / 2;
+      var d = Math.hypot(x - cx, y - cy);
+      if (d < bestD) {
+        bestD = d; best = el;
+        before = (y < cy - 1) || (y <= b.bottom && y >= b.top && x < cx);
+      }
+    });
+    return before ? best : best.nextElementSibling;
+  }
+
+  function makeSortable(container) {
+    restoreOrder(container);
+    var dragEl = null;
+    figItems(container).forEach(function (el) {
+      var handle = el.querySelector('.drag-handle');
+      // Only let a drag start from the grip handle (keeps image links clickable).
+      if (handle) {
+        handle.addEventListener('mousedown', function () { el.setAttribute('draggable', 'true'); });
+        handle.addEventListener('touchstart', function () { el.setAttribute('draggable', 'true'); }, { passive: true });
+      }
+      el.addEventListener('dragstart', function (e) {
+        dragEl = el; el.classList.add('drag-ghost');
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move';
+          try { e.dataTransfer.setData('text/plain', el.dataset.figId || ''); } catch (_) {}
+        }
+      });
+      el.addEventListener('dragend', function () {
+        el.classList.remove('drag-ghost');
+        el.removeAttribute('draggable');
+        dragEl = null;
+        saveOrder(container);
+      });
+    });
+    container.addEventListener('dragover', function (e) {
+      if (!dragEl) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      var ref = insertRef(container, dragEl, e.clientX, e.clientY);
+      if (ref === dragEl || ref === dragEl.nextElementSibling) return;
+      flip(container, function () { container.insertBefore(dragEl, ref); });
+    });
+    container.addEventListener('drop', function (e) { e.preventDefault(); });
+  }
+
+  document.querySelectorAll('.fig-grid.sortable').forEach(makeSortable);
+
+  // ----- options form -----
+  function val(id) { var e = document.getElementById(id); return e ? e.value : ''; }
+  function chk(id) { var e = document.getElementById(id); return e ? e.checked : false; }
+  function collectOptions() {
+    var bands = Array.prototype.slice.call(document.querySelectorAll('input[name="band"]:checked'))
+      .map(function (c) { return c.value; });
+    return {
+      run_name: val('opt-run_name'),
+      bands: bands,
+      ref_band: val('opt-ref_band'),
+      refid: val('opt-refid'),
+      ref_select: val('opt-ref_select'),
+      ref_select_top_k: val('opt-ref_select_top_k'),
+      aper_unit: val('opt-aper_unit'),
+      aper_radii: val('opt-aper_radii'),
+      annulus: val('opt-annulus'),
+      target_id: val('opt-target_id'),
+      comparison_ids: val('opt-comparison_ids'),
+      avoid_comparison_ids: val('opt-avoid_comparison_ids'),
+      avoid_nearby_star_mode: val('opt-avoid_nearby_star_mode'),
+      avoid_nearby_star: val('opt-avoid_nearby_star'),
+      target_coord: val('opt-target_coord'),
+      make_gif: chk('opt-make_gif'),
+      plot_gaia_sources: chk('opt-plot_gaia_sources'),
+      use_barycorrpy: chk('opt-use_barycorrpy'),
+      test_run_frames: val('opt-test_run_frames'),
+      min_star_separation: val('opt-min_star_separation'),
+      max_num_stars: val('opt-max_num_stars'),
+      n_stars_align: val('opt-n_stars_align'),
+      cutout_size: val('opt-cutout_size'),
+      display_stack_nframes: val('opt-display_stack_nframes'),
+      ccd_trim: val('opt-ccd_trim'),
+      edge_margin: val('opt-edge_margin'),
+      bin_size_minutes: val('opt-bin_size_minutes'),
+      nan_imputation_method: val('opt-nan_imputation_method'),
+      overwrite: chk('opt-overwrite'),
+      sig_bkg: val('opt-sig_bkg'),
+      sig_fwhm: val('opt-sig_fwhm'),
+      sig_dx: val('opt-sig_dx'),
+      sig_dy: val('opt-sig_dy'),
+      min_star_area: val('opt-min_star_area'),
+      wcs_method: val('opt-wcs_method'),
+      centroid_method: val('opt-centroid_method'),
+      cmap: val('opt-cmap'),
+      site: val('opt-site'),
+      telescope: val('opt-telescope'),
+      mode: val('opt-mode')
+    };
+  }
+  function saveOptions() {
+    MuscatOptions.save(OPT_KEY, collectOptions);
+  }
+  function restoreOptions() {
+    var saved = MuscatOptions.restore(OPT_KEY);
+    if (!saved) return;
+    // migrate legacy persisted value after the 'nova' -> 'astrometry.net' rename
+    if (saved.wcs_method === 'nova') saved.wcs_method = 'astrometry.net';
+    if (saved.avoid_nearby_star_mode === undefined && saved.avoid_nearby_stars !== undefined) {
+      saved.avoid_nearby_star_mode = saved.avoid_nearby_stars
+        ? ((saved.avoid_nearby_star || '').toString().trim() !== '' ? 'custom' : 'auto')
+        : 'off';
+    }
+    document.querySelectorAll('input[name="band"]').forEach(function (c) {
+      c.checked = saved.bands && saved.bands.indexOf(c.value) !== -1;
+    });
+    ['run_name','ref_band','refid','ref_select','ref_select_top_k','aper_unit','aper_radii','annulus',
+     'target_id','comparison_ids','avoid_comparison_ids','avoid_nearby_star_mode','avoid_nearby_star','target_coord','test_run_frames','min_star_separation','max_num_stars',
+       'n_stars_align','cutout_size','display_stack_nframes','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','centroid_method','cmap','site','telescope','mode'].forEach(function (id) {
+      var el = document.getElementById('opt-'+id);
+      if (el && saved[id] !== undefined) el.value = saved[id];
+    });
+    ['make_gif','plot_gaia_sources','use_barycorrpy','overwrite'].forEach(function (id) {
+      var el = document.getElementById('opt-'+id);
+      if (el && saved[id] !== undefined) el.checked = saved[id];
+    });
+  }
+  function updateApertureHints() {
+    var unit = val('opt-aper_unit');
+    var radiiEl = document.getElementById('opt-aper_radii');
+    var annulusEl = document.getElementById('opt-annulus');
+    var radiiHint = document.getElementById('hint-aper_radii');
+    var annulusHint = document.getElementById('hint-annulus');
+    if (unit === 'fwhm') {
+      if (radiiEl) radiiEl.placeholder = 'e.g. 0.5,3.0,0.5';
+      if (annulusEl) annulusEl.placeholder = 'e.g. 6,10';
+      if (radiiHint) radiiHint.textContent = 'blank → auto from Gaia (always in pix); FWHM unit applies only to values you enter';
+      if (annulusHint) annulusHint.textContent = 'required with aperture radii (in FWHM)';
+    } else {
+      if (radiiEl) radiiEl.placeholder = 'e.g. 1.5,6.0,0.5';
+      if (annulusEl) annulusEl.placeholder = 'e.g. 25,40';
+      if (radiiHint) radiiHint.textContent = 'blank → auto from Gaia (in pix)';
+      if (annulusHint) annulusHint.textContent = 'required with aperture radii (in pix)';
+    }
+  }
+
+  restoreOptions();
+
+  // Apply URL parameter overrides (e.g., ?overwrite=false overrides localStorage)
+  (function () {
+    var params = new URLSearchParams(window.location.search);
+    // Handle overwrite URL parameter
+    if (params.has('overwrite')) {
+      var val = params.get('overwrite').toLowerCase();
+      var el = document.getElementById('opt-overwrite');
+      if (el) {
+        el.checked = val !== '0' && val !== 'false' && val !== 'no';
+      }
+    }
+  })();
+
+  updateApertureHints();
+
+  function updateWcsMethod() {
+    var el = document.getElementById('opt-wcs_method');
+    if (!el) return;
+    var inst = selInst ? selInst.value : '';
+    var needsWcs = (inst === 'muscat' || inst === 'muscat2');
+    el.disabled = !needsWcs;
+    el.style.opacity = needsWcs ? '1' : '0.4';
+    el.title = needsWcs ? '' : 'WCS in header — method not configurable for this instrument';
+  }
+  updateWcsMethod();
+  if (selInst) {
+    selInst.addEventListener('change', updateWcsMethod);
+  }
+
+  var aperUnitEl = document.getElementById('opt-aper_unit');
+  if (aperUnitEl) {
+    aperUnitEl.addEventListener('change', function () {
+      updateApertureHints();
+      saveOptions();
+      refreshCmd();
+    });
+  }
+
+  var DEFAULTS = {"annulus": "", "aper_radii": "", "aper_unit": "pix", "avoid_comparison_ids": "", "avoid_nearby_star": "", "avoid_nearby_star_mode": "auto", "bands": ["gp", "rp", "ip", "zs"], "bin_size_minutes": 10.0, "calib_dir": "", "ccd_trim": "", "centroid_method": "auto", "cmap": "gray", "comparison_ids": "", "cutout_size": 35, "display_stack_nframes": 15, "edge_margin": "", "gif_stride": 100, "make_gif": true, "max_num_stars": 10, "min_star_area": 10, "min_star_separation": 10.0, "mode": "", "n_stars_align": "", "nan_imputation_method": "linear", "overwrite": true, "plot_gaia_sources": true, "ref_band": "", "ref_select": "position", "ref_select_top_k": 5, "refid": "", "run_name": "default", "sig_bkg": null, "sig_dx": null, "sig_dy": null, "sig_fwhm": null, "site": "", "target_coord": "", "target_id": "", "telescope": "", "test_run_frames": 10, "use_barycorrpy": false, "wcs_method": "astrometry.net"};
+  var defaultsBtn = document.getElementById('defaults-btn');
+  if (defaultsBtn) {
+    defaultsBtn.addEventListener('click', function () {
+      document.querySelectorAll('input[name="band"]').forEach(function (c) {
+        c.checked = DEFAULTS.bands && DEFAULTS.bands.indexOf(c.value) !== -1;
+      });
+      ['run_name','ref_band','refid','ref_select','ref_select_top_k','aper_unit','aper_radii','annulus',
+       'target_id','comparison_ids','avoid_comparison_ids','avoid_nearby_star_mode','avoid_nearby_star','target_coord','test_run_frames','min_star_separation','max_num_stars',
+     'n_stars_align','cutout_size','display_stack_nframes','ccd_trim','edge_margin','bin_size_minutes','nan_imputation_method','sig_bkg','sig_fwhm','sig_dx','sig_dy','min_star_area','wcs_method','centroid_method','cmap','site','telescope','mode'].forEach(function (id) {
+        var el = document.getElementById('opt-'+id);
+        if (el) el.value = DEFAULTS[id] !== undefined ? DEFAULTS[id] : '';
+      });
+      ['make_gif','plot_gaia_sources','use_barycorrpy','overwrite'].forEach(function (id) {
+        var el = document.getElementById('opt-'+id);
+        if (el) el.checked = !!DEFAULTS[id];
+      });
+      saveOptions();
+      updateApertureHints();
+      refreshCmd();
+    });
+  }
+  (function () {
+    var panel = document.getElementById('opt-panel');
+    MuscatOptions.bindPanel(PANEL_KEY, panel);
+  })();
+
+  var cmdEl     = document.getElementById('full-cmd');
+  var errEl     = document.getElementById('opt-error');
+  var testBtn   = document.getElementById('run-test-btn');
+  var fullBtn   = document.getElementById('run-full-btn');
+  var cancelBtn = document.getElementById('cancel-btn');
+  var deleteBtn = document.getElementById('delete-btn');
+  var logEl     = document.getElementById('run-log');
+  var runBtns   = [testBtn, fullBtn].filter(Boolean);
+
+  function logKey() {
+    return 'phot:log:' + inst + ':' + date + ':' + target + ':' + (runId || 'legacy');
+  }
+
+  // ----- restore the log if it was previously saved -----
+  (function restoreLog() {
+    if (!logEl) return;
+    var savedLog = MuscatStorage.get(logKey(), null);
+    if (savedLog) {
+      logEl.style.display = 'block';
+      logEl.textContent = savedLog;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+  })();
+  var hasOptError = false;
+  var poller = window.MuscatJobPolling.createTimeoutPoller(poll);
+  var jobActive = false;
+
+  // ----- centralized active job tracking for batch polling -----
+  function getActiveJobs() {
+    var jobs = [];
+    // Current target's job
+    if (inst && date && target && jobActive) {
+      jobs.push({ inst: inst, date: date, target: target, run: runId || '' });
+    }
+    // Background job(s) from saved state
+    var saved = MuscatStorage.getJSON(JOB_KEY, null);
+    if (saved && saved.inst && !(saved.inst === inst && saved.date === date && saved.target === target)) {
+      jobs.push({ inst: saved.inst, date: saved.date, target: saved.target, run: saved.run_id || '' });
+    }
+    return jobs;
+  }
+
+  function debounce(fn, ms) {
+    var t; return function () { clearTimeout(t); t = setTimeout(fn, ms); };
+  }
+  function refreshCmd() {
+    saveOptions();
+    if (!cmdEl) return;
+    fetch('/api/photometry/command', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target, test_run: false, options: collectOptions() })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.command) cmdEl.textContent = d.command;
+      if (errEl) errEl.textContent = d.error || '';
+      hasOptError = !!d.error;
+      if (!jobActive) {
+        runBtns.forEach(function (b) { b.disabled = hasOptError || rawMissing; });
+      }
+    }).catch(function () {});
+  }
+  function selectedBands() {
+    return Array.prototype.slice.call(document.querySelectorAll('input[name="band"]:checked'))
+      .map(function (c) { return c.value; });
+  }
+  function updateReferenceBandChoices() {
+    var refBand = document.getElementById('opt-ref_band');
+    if (!refBand) return;
+    var bands = selectedBands();
+    var allowed = new Set(bands);
+    var current = refBand.value;
+    Array.prototype.slice.call(refBand.options).forEach(function (opt) {
+      if (opt.value === '') {
+        opt.hidden = false;
+        opt.disabled = false;
+      } else {
+        var enabled = allowed.has(opt.value);
+        opt.hidden = !enabled;
+        opt.disabled = !enabled;
+      }
+    });
+    if (current && !allowed.has(current)) {
+      refBand.value = '';
+    }
+  }
+  function updateSinistroReferenceBand() {
+    var refBand = document.getElementById('opt-ref_band');
+    if (!refBand || inst !== 'sinistro') return;
+    var bands = selectedBands();
+    var singleBand = bands.length === 1;
+    refBand.disabled = !singleBand;
+    if (singleBand) {
+      refBand.value = bands[0];
+    } else {
+      refBand.value = '';
+    }
+  }
+  function updateReferenceBandState() {
+    updateReferenceBandChoices();
+    updateSinistroReferenceBand();
+  }
+  function toggleAvoidField() {
+    var refBand = document.getElementById('opt-ref_band');
+    var avoidField = document.getElementById('opt-avoid_comparison_ids');
+    if (refBand && avoidField) {
+      var disabled = refBand.value === '';
+      avoidField.disabled = disabled;
+      if (disabled) avoidField.value = '';
+    }
+  }
+  function toggleAvoidNearbyField() {
+    var enabled = val('opt-avoid_nearby_star_mode') === 'custom';
+    var field = document.getElementById('opt-avoid_nearby_star');
+    if (field) {
+      field.disabled = !enabled;
+      field.style.opacity = enabled ? '1' : '0.5';
+    }
+  }
+  var refBand = document.getElementById('opt-ref_band');
+  if (refBand) {
+    updateReferenceBandState();
+    refBand.addEventListener('change', toggleAvoidField);
+  }
+  document.querySelectorAll('input[name="band"]').forEach(function (el) {
+    el.addEventListener('change', function () {
+      updateReferenceBandState();
+      toggleAvoidField();
+    });
+  });
+  toggleAvoidField();
+  toggleAvoidNearbyField();
+  var avoidNearbyMode = document.getElementById('opt-avoid_nearby_star_mode');
+  if (avoidNearbyMode) {
+    avoidNearbyMode.addEventListener('change', toggleAvoidNearbyField);
+  }
+
+  var panel = document.querySelector('.run-panel');
+  if (panel) {
+    panel.addEventListener('change', debounce(refreshCmd, 150));
+    panel.addEventListener('input', debounce(refreshCmd, 400));
+  }
+
+  // Site/telescope/mode are both reduction options and URL view filters.  A
+  // normal reload would retain the old query string, so navigate with the
+  // current filter values instead.
+  function navigateSinistroFilters() {
+    saveOptions();
+    var qs = new URLSearchParams();
+    if (inst) qs.set('inst', inst);
+    if (date) qs.set('date', date);
+    if (target) qs.set('target', target);
+    if (siteSel && siteSel.value) qs.set('site', siteSel.value);
+    if (telescopeSel && telescopeSel.value) qs.set('telescope', telescopeSel.value);
+    if (modeSel && modeSel.value) qs.set('mode', modeSel.value);
+    if (runId) qs.set('run', runId);
+    if (typeof window.showLoading === 'function') {
+      window.showLoading('Updating…');
+    }
+    window.location.href = '/photometry?' + qs.toString();
+  }
+  ['opt-site', 'opt-telescope', 'opt-mode'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('change', navigateSinistroFilters);
+  });
+
+  // ----- copy command -----
+  var copyBtn = document.getElementById('copy-cmd');
+  if (copyBtn) {
+    copyBtn.addEventListener('click', function () {
+      var text = cmdEl ? cmdEl.textContent : '';
+      if (!text) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () {
+          copyBtn.textContent = 'Copied';
+          setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1500);
+        }).catch(function () {
+          fallbackCopy(text);
+        });
+      } else {
+        fallbackCopy(text);
+      }
+    });
+  }
+
+  function fallbackCopy(text) {
+    var textArea = document.createElement("textarea");
+    textArea.value = text;
+    textArea.style.position = "fixed";
+    textArea.style.left = "-999999px";
+    textArea.style.top = "-999999px";
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    try {
+      if (document.execCommand('copy')) {
+        copyBtn.textContent = 'Copied';
+        setTimeout(function () { copyBtn.textContent = 'Copy'; }, 1500);
+      }
+    } catch (err) {
+      console.error('Fallback copy failed', err);
+    }
+    document.body.removeChild(textArea);
+  }
+
+  // ----- launch / cancel a reduction with live log polling -----
+  function setRunning(on) {
+    jobActive = on;
+    runBtns.forEach(function (b) { b.disabled = on || hasOptError || rawMissing; });
+    if (cancelBtn) cancelBtn.style.display = on ? '' : 'none';
+    var oa = document.getElementById('output-area');
+    if (oa) oa.style.display = on ? 'none' : '';
+  }
+  function stopPolling() { poller.stop(); }
+  function schedulePoll(delayMs) { poller.schedule(delayMs); }
+
+  function poll() {
+    var jobs = getActiveJobs();
+    if (jobs.length === 0) {
+      stopPolling();
+      return;
+    }
+
+    // Use batch endpoint if monitoring multiple jobs, single if just one
+    if (jobs.length === 1) {
+      pollSingle(jobs[0]);
+    } else {
+      pollBatch(jobs);
+    }
+
+    // Schedule next poll unless explicitly stopped by a terminal state
+    // (scheduling is handled in handleStatusResponse for the current job)
+  }
+
+  function pollSingle(jobSpec) {
+    nextPollDelay = null;
+    var qs = 'inst=' + encodeURIComponent(jobSpec.inst) + '&date=' + encodeURIComponent(jobSpec.date) + '&target=' + encodeURIComponent(jobSpec.target);
+    if (jobSpec.run) qs += '&run=' + encodeURIComponent(jobSpec.run);
+    fetch('/api/photometry/status?' + qs).then(function (r) { return r.json(); }).then(function (s) {
+      handleStatusResponse(jobSpec, s);
+      // Schedule next poll based on accumulated delay or default
+      if (nextPollDelay !== null) {
+        schedulePoll(nextPollDelay);
+      } else if (getActiveJobs().length > 0) {
+        schedulePoll(5000);
+      } else {
+        stopPolling();
+      }
+    }).catch(function () { schedulePoll(5000); });
+  }
+
+  function pollBatch(jobsList) {
+    nextPollDelay = null;
+    fetch('/api/photometry/status-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobs: jobsList })
+    }).then(function (r) { return r.json(); }).then(function (response) {
+      var jobs = response.jobs || [];
+      jobs.forEach(function (status) {
+        handleStatusResponse(status, status);
+      });
+      // Schedule next poll based on accumulated delay or default
+      if (nextPollDelay !== null) {
+        schedulePoll(nextPollDelay);
+      } else if (getActiveJobs().length > 0) {
+        schedulePoll(5000);
+      } else {
+        stopPolling();
+      }
+    }).catch(function () { schedulePoll(5000); });
+  }
+
+  var nextPollDelay = null;
+
+  function handleStatusResponse(jobSpec, s) {
+    // Update current target's log if this is the job we're monitoring on this page
+    if (jobSpec.inst === inst && jobSpec.date === date && jobSpec.target === target && (jobSpec.run || '') === (runId || '')) {
+      if (s.log) {
+        logEl.textContent = s.log;
+        logEl.scrollTop = logEl.scrollHeight;
+        MuscatStorage.set(logKey(), s.log);
+      }
+      if (s.state === 'running' || s.state === 'cancelling' || s.state === 'finalizing') {
+        setRunning(true);
+        nextPollDelay = Math.min(nextPollDelay || 2000, 2000);
+      } else if (s.state === 'done') {
+        setRunning(false);
+        logEl.textContent = (s.log || '') + '\n\n✓ done (' + s.elapsed + 's) — reloading…';
+        MuscatStorage.set(logKey(), logEl.textContent);
+        if (typeof window.showLoading === 'function') {
+          window.showLoading('Reloading…');
+        }
+        var reloadDelay = (s.run_type === 'test') ? 400 : 1200;
+        setTimeout(function () {
+          var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
+          if (runId) qs += '&run=' + encodeURIComponent(runId);
+          if (siteSel && siteSel.value) qs += '&site=' + encodeURIComponent(siteSel.value);
+          if (telescopeSel && telescopeSel.value) qs += '&telescope=' + encodeURIComponent(telescopeSel.value);
+          if (modeSel && modeSel.value) qs += '&mode=' + encodeURIComponent(modeSel.value);
+          window.location.href = '/photometry?' + qs;
+          clearJob();
+        }, reloadDelay);
+      } else if (s.state === 'error') {
+        setRunning(false);
+        logEl.textContent = (s.log || '') + '\n\n✗ pipeline exited with code ' + s.returncode;
+        MuscatStorage.set(logKey(), logEl.textContent);
+        if (typeof window.showLoading === 'function') {
+          window.showLoading('Reloading…');
+        }
+        setTimeout(function () {
+          var qs = 'inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&target=' + encodeURIComponent(target);
+          if (runId) qs += '&run=' + encodeURIComponent(runId);
+          if (siteSel && siteSel.value) qs += '&site=' + encodeURIComponent(siteSel.value);
+          if (telescopeSel && telescopeSel.value) qs += '&telescope=' + encodeURIComponent(telescopeSel.value);
+          if (modeSel && modeSel.value) qs += '&mode=' + encodeURIComponent(modeSel.value);
+          window.location.href = '/photometry?' + qs;
+          clearJob();
+        }, 1200);
+      } else if (s.state === 'cancelled') {
+        setRunning(false); clearJob();
+        logEl.textContent = (s.log || '') + '\n\n■ cancelled';
+        MuscatStorage.set(logKey(), logEl.textContent);
+        if (typeof window.showLoading === 'function') {
+          window.showLoading('Reloading…');
+        }
+        setTimeout(function () { window.location.reload(); }, 1200);
+      } else if (s.state === 'pending') {
+        setRunning(true);
+        if (!s.log) {
+          logEl.style.display = 'block';
+          logEl.textContent = '⏳ Queued — waiting for the running full reduction to finish…';
+        }
+        nextPollDelay = Math.min(nextPollDelay || 7000, 7000);
+      } else if (s.state === 'none') {
+        var wasRunning = jobActive;
+        setRunning(false);
+        clearJob();
+        if (wasRunning) {
+          window.location.reload();
+        }
+      }
+    } else {
+      // This is a background job (different target) - update the banner
+      updateBannerFromStatus(jobSpec, s);
+    }
+  }
+
+  function updateBannerFromStatus(jobSpec, s) {
+    var banner = document.getElementById('job-banner');
+    var bannerMsg = document.getElementById('job-banner-msg');
+    var bannerLink = document.getElementById('job-banner-link');
+    if (!banner || !bannerMsg || !bannerLink) return;
+
+    if (s.state === 'none') {
+      clearJob();
+      banner.style.display = 'none';
+      return;
+    }
+
+    banner.style.display = '';
+    bannerMsg.textContent = '⚡ ' + jobSpec.target + ' @ ' + jobSpec.inst + '/' + jobSpec.date + ' — ' + s.state;
+    bannerLink.href = '/photometry?inst=' + encodeURIComponent(jobSpec.inst) + '&date=' + encodeURIComponent(jobSpec.date) + '&target=' + encodeURIComponent(jobSpec.target) + (jobSpec.run ? '&run=' + encodeURIComponent(jobSpec.run) : '');
+
+    if (s.state === 'running' || s.state === 'cancelling' || s.state === 'finalizing') {
+      nextPollDelay = Math.min(nextPollDelay || 2000, 2000);
+    } else if (s.state === 'pending') {
+      nextPollDelay = Math.min(nextPollDelay || 7000, 7000);
+    } else if (s.state === 'done' || s.state === 'error' || s.state === 'cancelled') {
+      clearJob();
+      setTimeout(function () { banner.style.display = 'none'; }, 15000);
+    }
+  }
+
+  function launch(testRun) {
+    // Unhide this job on the Jobs page
+    var h = MuscatStorage.getJSON('jobs:hidden', []);
+    var key = inst + '/' + date + '/' + target.replace(/ /g, '');
+    var jk = 'photometry:' + key;
+    var hi = h.indexOf(jk);
+    if (hi !== -1) {
+      h.splice(hi, 1);
+      MuscatStorage.setJSON('jobs:hidden', h);
+    }
+
+    stopPolling();
+    setRunning(true);
+    logEl.style.display = 'block';
+    logEl.textContent = 'Launching ' + (testRun ? 'test' : 'full') + ' reduction…';
+    MuscatStorage.remove(logKey());
+
+    saveOptions();  // Persist current form state before launching
+    var opts = collectOptions();
+    console.log('[photometry] launch: overwrite=' + opts.overwrite + ' test_run=' + testRun);
+
+    fetch('/api/photometry/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target, test_run: testRun, options: opts })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (!res.ok) {
+        clearJob();
+        setRunning(false);
+        logEl.style.display = 'block';
+        logEl.textContent = 'Error: ' + (res.error || 'failed to start');
+        MuscatStorage.set(logKey(), logEl.textContent);
+        return;
+      }
+      if (res.run_id !== undefined) {
+        runId = res.run_id || '';
+        saveJob();
+      }
+      if (res.queued) {
+        logEl.textContent = '⏳ Queued — waiting for the running full reduction to finish…';
+        MuscatStorage.set(logKey(), logEl.textContent);
+      }
+      stopPolling();
+      poll();
+      // Light up the site-wide loading indicator immediately for this run.
+      if (window.MuscatJobIndicator) window.MuscatJobIndicator.refresh();
+    }).catch(function (err) {
+      clearJob();
+      setRunning(false);
+      logEl.style.display = 'block';
+      logEl.textContent = 'Error: ' + err.message;
+      MuscatStorage.set(logKey(), logEl.textContent);
+    });
+  }
+
+  if (testBtn) testBtn.addEventListener('click', function () { launch(true); });
+  if (fullBtn) fullBtn.addEventListener('click', function () { launch(false); });
+  if (cancelBtn) cancelBtn.addEventListener('click', function () {
+    cancelBtn.disabled = true;
+    logEl.textContent += '\n\n■ cancelling…';
+    MuscatStorage.set(logKey(), logEl.textContent);
+    fetch('/api/photometry/cancel', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })
+    }).then(function (r) { return r.json(); }).then(function () {
+      cancelBtn.disabled = false;
+      stopPolling(); poll();
+    }).catch(function () { cancelBtn.disabled = false; });
+  });
+
+  var deleteOverlay = document.getElementById('delete-confirm-overlay');
+  var deleteConfirmBtn = document.getElementById('delete-confirm-btn');
+  if (deleteConfirmBtn) deleteConfirmBtn.addEventListener('click', function () {
+    deleteOverlay.classList.remove('visible');
+    deleteBtn.disabled = true;
+    deleteBtn.textContent = 'Deleting…';
+    fetch('/api/photometry/delete', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inst: inst, date: date, target: target, run_id: runId })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (res.ok) {
+        if (typeof window.showLoading === 'function') window.showLoading('Reloading…');
+        setTimeout(function () { window.location.reload(); }, 800);
+      } else {
+        window.showMessageModal('Error', 'Delete failed: ' + (res.error || 'unknown error'));
+        deleteBtn.disabled = false;
+        deleteBtn.textContent = '🗑 Delete Reduction';
+      }
+    }).catch(function (err) {
+      window.showMessageModal('Error', 'Delete failed: ' + err.message);
+      deleteBtn.disabled = false;
+      deleteBtn.textContent = '🗑 Delete Reduction';
+    });
+  });
+  var deleteCancelBtn = document.getElementById('delete-cancel-btn');
+  if (deleteCancelBtn) deleteCancelBtn.addEventListener('click', function () {
+    deleteOverlay.classList.remove('visible');
+  });
+  if (deleteBtn) deleteBtn.addEventListener('click', function () {
+    deleteOverlay.classList.add('visible');
+  });
+
+  // ----- download all CSV links -----
+  var dlAll = document.getElementById('dl-all-csv');
+  if (dlAll) {
+    dlAll.addEventListener('click', function (e) {
+      e.preventDefault();
+      document.querySelectorAll('a.csv-link').forEach(function (a) { a.click(); });
+    });
+  }
+
+  // initial command reflects default options
+  refreshCmd();
+
+  // Restore running-job state (cancel button, log polling) now that all the
+  // DOM refs and helpers above are defined.
+  checkSavedJob();
+
+  // The script above does not re-run when the page is restored from the
+  // back/forward cache, which can leave the run buttons frozen disabled after
+  // a failed run. Re-sync button state to the live job state on bfcache restore.
+  window.addEventListener('pageshow', function (e) {
+    if (e.persisted) { setRunning(false); checkSavedJob(); }
+  });
+})();
+</script>
+<div class="page-nav">
+  <a href="#" class="btn solid">Back to Top</a>
+  
+  <a href="../jobs/" class="btn solid">To Jobs</a>
+  
+</div>
+
+</body>
+</html>

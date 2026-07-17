@@ -1,0 +1,1759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FOV — MuSCAT-db</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230f1117' stroke='%2345d6b5' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='14' fill='none' stroke='%236c8cff' stroke-width='2.5'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%2345d6b5'/%3E%3Cg fill='%23e1e4ed'%3E%3Ccircle cx='12' cy='14' r='1.6'/%3E%3Ccircle cx='52' cy='18' r='1.2'/%3E%3Ccircle cx='50' cy='48' r='1.8'/%3E%3Ccircle cx='14' cy='50' r='1.4'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230f1117' stroke='%2345d6b5' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='14' fill='none' stroke='%236c8cff' stroke-width='2.5'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%2345d6b5'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../static/styles.css">
+<script src="../static/js/storage.js"></script>
+<script src="../static/js/format.js"></script>
+<script src="../static/js/jobPolling.js"></script>
+<script>
+  // Global fetch-activity tracker. Installed in <head> so it wraps window.fetch
+  // before any page script runs, giving every page a consistent loading
+  // indicator while it queries data (FOV → Gaia, ephemeris datasets, LCO
+  // schedule, …). It counts in-flight *same-origin* /api/ requests only, so the
+  // background job/status pollers (which hit /jobs/status, not /api/) never
+  // flash the bar. The loading-bar controller below subscribes via onChange.
+  (function () {
+    var origFetch = window.fetch ? window.fetch.bind(window) : null;
+    if (!origFetch) return;
+    var active = 0;
+    var tracker = { active: 0, onChange: null };
+    function notify() {
+      tracker.active = active;
+      if (typeof tracker.onChange === 'function') {
+        try { tracker.onChange(active); } catch (e) { /* never let UI break fetch */ }
+      }
+    }
+    function begin() { active++; notify(); }
+    function end() { active = Math.max(0, active - 1); notify(); }
+    function shouldTrack(input) {
+      try {
+        var urlStr = (typeof input === 'string') ? input
+                   : (input && input.url) ? input.url : String(input);
+        var u = new URL(urlStr, window.location.href);
+        var isStatus = u.pathname.endsWith('/status') || u.pathname.endsWith('/status-batch');
+        return u.origin === window.location.origin && u.pathname.indexOf('/api/') === 0 && !isStatus;
+      } catch (e) { return false; }
+    }
+    window.fetch = function (input, init) {
+      if (!shouldTrack(input)) return origFetch(input, init);
+      begin();
+      var p;
+      try {
+        p = origFetch(input, init);
+      } catch (e) {
+        end();
+        throw e;
+      }
+      p.then(end, end);
+      return p;
+    };
+    window.MuscatFetchTracker = tracker;
+  })();
+</script>
+</head>
+<body>
+<!--muscat-static-snapshot-banner-->
+<div id="snapshot-banner" role="note" style="display:flex;align-items:center;gap:.6rem;padding:.5rem .9rem;background:#3a2d00;color:#ffe9a8;font:500 .85rem/1.3 system-ui,sans-serif;border-bottom:1px solid #5a4700;"><span>&#128196; Static documentation snapshot of <strong>muscat-db</strong> &mdash; live data &amp; actions are disabled.</span><button type="button" aria-label="Dismiss" onclick="this.closest('#snapshot-banner').remove()" style="margin-left:auto;background:none;border:0;color:inherit;font-size:1.1rem;line-height:1;cursor:pointer;padding:0 .3rem;">&times;</button></div>
+<div id="loading-bar" role="progressbar" aria-label="Loading"></div>
+<nav>
+  <a class="brand" href="../" data-nav-section="home">MuSCAT-db</a>
+  <a href="../logs/" data-nav-section="obslog">ObsLog</a>
+  <a id="target-nav-link" href="../target/V1298_Tau/" data-nav-section="target">Target</a>
+  <a id="photometry-nav-link" href="../photometry/muscat/251119/V1298_Tau/" data-nav-section="photometry">Photometry</a>
+  <a id="transit-fit-nav-link" href="../transit-fit/muscat/260123/HAT-P-32b/" data-nav-section="transit-fit">Transit Fit</a>
+  <a id="ephemeris-nav-link" href="../ephemeris/" data-nav-section="ephemeris">Ephemeris</a>
+  <a id="ttv-fit-nav-link" href="../ephemeris/" style="display: none;">TTV Fit</a>
+  <a href="../jobs/" data-nav-section="jobs">Jobs</a>
+  <span class="spacer"></span>
+  <a href="../lco/schedule/" data-nav-section="lco">LCO</a>
+  <a href="../fov/" data-nav-section="fov">FOV</a>
+  <a href="../exposure/" data-nav-section="exposure">Exp Calc</a>
+  <a href="../toi/" data-nav-section="toi">TOI</a>
+  <a href="../nexsci/" data-nav-section="nexsci">NExScI</a>
+  <a href="../guide/" data-nav-section="guide" style="margin-right: 0.5rem;">Guide</a>
+  <a href="../settings/" data-nav-section="settings">Settings</a>
+  <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">
+    <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="4"/>
+      <line x1="12" y1="2"  x2="12" y2="5"/>
+      <line x1="12" y1="19" x2="12" y2="22"/>
+      <line x1="2"  y1="12" x2="5"  y2="12"/>
+      <line x1="19" y1="12" x2="22" y2="12"/>
+      <line x1="4.5"  y1="4.5"  x2="6.6"  y2="6.6"/>
+      <line x1="17.4" y1="17.4" x2="19.5" y2="19.5"/>
+      <line x1="4.5"  y1="19.5" x2="6.6"  y2="17.4"/>
+      <line x1="17.4" y1="6.6"  x2="19.5" y2="4.5"/>
+    </svg>
+    <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>
+    </svg>
+  </button>
+</nav>
+<script>
+  (function () {
+    var path = window.location.pathname.replace(/\/+$/, '') || '/';
+    var section = {
+      '/': 'home',
+      '/logs': 'obslog',
+      '/target': 'target',
+      '/photometry': 'photometry',
+      '/transit-fit': 'transit-fit',
+      '/ephemeris': 'ephemeris',
+      '/jobs': 'jobs',
+      '/fov': 'fov',
+      '/exposure': 'exposure',
+      '/toi': 'toi',
+      '/nexsci': 'nexsci',
+      '/guide': 'guide',
+      '/settings': 'settings'
+    }[path];
+
+    if (path.indexOf('/lco/') === 0) section = 'lco';
+    if (/^\/(?:muscat|muscat2|muscat3|muscat4|sinistro)(?:\/|$)/.test(path)) {
+      section = 'obslog';
+    }
+
+    document.querySelectorAll('nav a[data-nav-section]').forEach(function (link) {
+      if (link.dataset.navSection === section) {
+        link.setAttribute('aria-current', 'page');
+      }
+    });
+  })();
+</script>
+<div class="container">
+
+<link rel="stylesheet" href="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.css">
+<style>
+  .fov-layout { display: flex; gap: 1.5rem; align-items: flex-start; flex-wrap: wrap; }
+  .fov-panel { flex: 1; min-width: 360px; }
+  .fov-viewer { flex: 1.5; min-width: 480px; position: sticky; top: 1rem; }
+  @media (max-width: 1100px) { .fov-viewer { position: static; } }
+
+  .fov-section { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.1rem 1.25rem; margin-bottom: 1.1rem; }
+  .fov-section > h3 {
+    font-size: 0.7rem; color: var(--text-dim); margin-bottom: 0.85rem;
+    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
+    display: flex; align-items: center; gap: 0.45rem;
+  }
+  .fov-section > h3::before { content: ''; width: 3px; height: 0.85rem; background: var(--accent2); border-radius: 2px; }
+
+  .fov-grid { display: grid; gap: 0.85rem; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .fov-field { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
+  .fov-field label { font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+  .fov-field input, .fov-field select {
+    background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 0.45rem 0.6rem; font-size: 0.88rem; font-family: inherit; min-width: 0;
+  }
+  .fov-field input:focus, .fov-field select:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  .fov-actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-top: 0.9rem; }
+  button.fov-btn {
+    background: var(--accent); color: var(--bg); border: none; border-radius: 8px;
+    padding: 0.55rem 1.1rem; font-size: 0.9rem; font-weight: 600; cursor: pointer; font-family: inherit;
+  }
+  button.fov-btn[disabled] { opacity: 0.55; cursor: progress; }
+  button.fov-btn.ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
+  .fov-msg { font-size: 0.82rem; margin-top: 0.6rem; min-height: 1em; }
+  .fov-msg.err { color: var(--red); }
+  .fov-msg.ok { color: var(--green); }
+
+  .fov-summary { display: grid; gap: 0.6rem 1rem; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .fov-stat { display: flex; flex-direction: column; gap: 0.15rem; }
+  .fov-stat .k { font-size: 0.68rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
+  .fov-stat .v { font-size: 1.05rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  #aladin-lite-div { width: 100%; height: 560px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+
+  .fov-legend { display: flex; gap: 1.2rem; flex-wrap: wrap; font-size: 0.78rem; color: var(--text-dim); margin-top: 0.7rem; }
+  .fov-legend span { display: inline-flex; align-items: center; gap: 0.4rem; }
+  .fov-legend .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+
+  .fov-table-wrap { overflow-x: auto; max-height: 320px; overflow-y: auto; }
+  table.fov-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  table.fov-table th, table.fov-table td { padding: 0.35rem 0.55rem; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+  table.fov-table th:first-child, table.fov-table td:first-child { text-align: left; }
+  table.fov-table th { color: var(--text-dim); font-weight: 600; font-size: 0.7rem; text-transform: uppercase; position: sticky; top: 0; background: var(--surface); }
+  .fov-note { font-size: 0.78rem; color: var(--text-dim); margin-top: 0.5rem; line-height: 1.5; }
+
+  .fov-explain { margin-top: 1.1rem; }
+  .fov-explain > summary {
+    cursor: pointer; font-size: 0.7rem; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
+    display: flex; align-items: center; gap: 0.45rem; user-select: none;
+  }
+  .fov-explain > summary::before { content: ''; width: 3px; height: 0.85rem; background: var(--accent2); border-radius: 2px; }
+  .fov-explain-body { margin-top: 0.9rem; max-width: 78ch; }
+  .fov-explain-body h4 {
+    font-size: 0.82rem; margin: 1.1rem 0 0.4rem; color: var(--text);
+  }
+  .fov-explain-body h4:first-child { margin-top: 0; }
+  .fov-explain-body p, .fov-explain-body li { font-size: 0.82rem; color: var(--text-dim); line-height: 1.55; }
+  .fov-explain-body ul, .fov-explain-body ol { margin: 0.3rem 0 0.6rem 1.2rem; padding: 0; }
+  .fov-explain-body li { margin-bottom: 0.3rem; }
+  .fov-explain-body code { font-size: 0.8em; }
+</style>
+
+<h2 style="margin-bottom: 0.4rem;">Field-of-View Optimizer</h2>
+<p class="fov-note" style="margin-bottom: 1.1rem; max-width: 70ch;">
+  Choose a pointing and field orientation that keep the target inside the
+  instrument footprint while capturing the richest set of <em>useful</em>
+  comparison stars &mdash; similar brightness (a brighter comp would cap the
+  exposure to avoid saturation), similar color, and well isolated.
+</p>
+
+<div class="fov-layout">
+  <!-- ---- controls + results ---- -->
+  <div class="fov-panel">
+    <div class="fov-section">
+      <h3>Target &amp; Instrument</h3>
+      <div class="fov-grid">
+        <div class="fov-field" style="grid-column: span 1;">
+          <label for="fov-target">Target name <span class="help-tooltip" title="Name of the target star, resolved by Sesame.">?</span></label>
+          <input id="fov-target" type="text" placeholder="e.g. WASP-12" value="">
+        </div>
+        <div class="fov-field" style="display: flex; align-items: flex-end;">
+          <button id="fov-resolve" class="fov-btn ghost" type="button" title="Look up RA/Dec for the target name">Resolve</button>
+        </div>
+        <div class="fov-field">
+          <label for="fov-inst">Instrument <span class="help-tooltip" title="The instrument to use for the observation. The FOV size is determined by the instrument.">?</span></label>
+          <select id="fov-inst">
+            
+            <option value="muscat">muscat (6.0′)</option>
+            
+            <option value="muscat2">muscat2 (7.4′)</option>
+            
+            <option value="muscat3">muscat3 (9.1′)</option>
+            
+            <option value="muscat4">muscat4 (9.1′)</option>
+            
+            <option value="sinistro">sinistro (13.28′)</option>
+            
+          </select>
+        </div>
+        <div class="fov-field" id="fov-readout-mode-field">
+          <label for="fov-sinistro-mode">Readout mode <span class="help-tooltip" title="The readout mode of the instrument.">?</span></label>
+          <select id="fov-sinistro-mode">
+            
+            <option value="MUSCAT_FAST">MUSCAT_FAST</option>
+            
+          </select>
+        </div>
+        <div class="fov-field"><label for="fov-ra">RA (deg) <span class="help-tooltip" title="Right Ascension of the target in degrees. Can be looked up by resolving the target name.">?</span></label><input id="fov-ra" type="text" inputmode="decimal" placeholder="optional"></div>
+        <div class="fov-field"><label for="fov-dec">Dec (deg) <span class="help-tooltip" title="Declination of the target in degrees. Can be looked up by resolving the target name.">?</span></label><input id="fov-dec" type="text" inputmode="decimal" placeholder="optional"></div>
+        <div class="fov-field"><label for="fov-margin">Target margin (″) <span class="help-tooltip" title="Keep the target at least this far from any field edge.">?</span></label><input id="fov-margin" type="number" step="any" value="30"></div>
+        <div class="fov-field"><label for="fov-comp-margin">Comp margin (″) <span class="help-tooltip" title="Keep comparisons at least this far from any field edge. Leave empty to use target margin.">?</span></label><input id="fov-comp-margin" type="number" step="any" placeholder="(use target)"></div>
+        <div class="fov-field">
+          <label for="fov-mag-mode">Mag filter mode <span class="help-tooltip" title="Filter comparison candidates by magnitude, either with absolute limits or relative to the target's G-band magnitude.">?</span></label>
+          <select id="fov-mag-mode">
+            <option value="absolute">Absolute limits</option>
+            <option value="relative">Delta Gmag (relative)</option>
+          </select>
+        </div>
+        <div class="fov-field" id="fov-mag-range-field">
+          <label for="fov-mag-range">Gmag range (min, max) <span class="help-tooltip" title="Brighter and faint Gmag limits for comparison candidates, separated by a comma (min, max).">?</span></label>
+          <input id="fov-mag-range" type="text" placeholder="e.g. 10, 18" value="10, 18">
+        </div>
+        <div class="fov-field" id="fov-mag-delta-field" style="display: none;">
+          <label for="fov-mag-delta">Delta Gmag <span class="help-tooltip" title="Keep comps within this delta magnitude of the target (target G ± delta).">?</span></label>
+          <input id="fov-mag-delta" type="number" step="any" value="3">
+        </div>
+        <div class="fov-field">
+          <label for="fov-avoid-mag">Avoid brighter than (Gmag) <span class="help-tooltip" title="Reject any pointing whose footprint contains a star brighter than this Gmag (saturation, bleeding, scattered light). The science target is exempt. Leave empty to disable.">?</span></label>
+          <input id="fov-avoid-mag" type="number" step="any" placeholder="(off)">
+        </div>
+      </div>
+      <div style="margin-top: 0.7rem; display: flex; align-items: center; gap: 0.6rem;">
+        <input id="fov-allow-rotation" type="checkbox" checked style="width: 1.1rem; height: 1.1rem; cursor: pointer;">
+        <label for="fov-allow-rotation" style="cursor: pointer; font-size: 0.85rem; margin: 0;">Allow field rotation (optimize position angle)</label>
+      </div>
+      <div style="margin-top: 0.5rem; display: flex; align-items: center; gap: 0.6rem;">
+        <input id="fov-show-pm" type="checkbox" style="width: 1.1rem; height: 1.1rem; cursor: pointer;">
+        <label for="fov-show-pm" style="cursor: pointer; font-size: 0.85rem; margin: 0;" title="Draws each star's proper-motion direction as an arrow (length exaggerated for visibility). Arrows parallel to the target's, of similar length, suggest a common proper-motion (co-moving) companion.">Show proper motion arrows</label>
+      </div>
+      <div class="fov-actions">
+        <button id="fov-run" class="fov-btn" type="button">Optimize FOV</button>
+        <button id="fov-reset-view" class="fov-btn ghost" type="button">Recenter view</button>
+      </div>
+      <div id="fov-msg" class="fov-msg"></div>
+    </div>
+
+    <div class="fov-section" id="fov-results" style="display: none;">
+      <h3>Optimum Pointing</h3>
+      <div class="fov-summary">
+        <div class="fov-stat"><span class="k">Field center RA</span><span class="v" id="r-cra">—</span></div>
+        <div class="fov-stat"><span class="k">Field center Dec</span><span class="v" id="r-cdec">—</span></div>
+        <div class="fov-stat"><span class="k">Position angle</span><span class="v" id="r-pa">—</span></div>
+        <div class="fov-stat"><span class="k">Target offset</span><span class="v" id="r-off">—</span></div>
+        <div class="fov-stat"><span class="k">Useful comps</span><span class="v" id="r-n">—</span></div>
+        <div class="fov-stat"><span class="k">Target G</span><span class="v" id="r-tg">—</span></div>
+      </div>
+      <div class="fov-actions">
+        <button id="fov-copy-center" class="fov-btn ghost" type="button" title="Copy field center coordinates as RA, Dec">Copy FOV center</button>
+        <button id="fov-check-saturation" class="fov-btn ghost" type="button" style="display: none;" title="Send the target and brightest in-field stars to the Exposure Calculator to check whether any of them would saturate">Check saturation in Exp Calc &rarr;</button>
+      </div>
+      <div class="fov-note" id="r-note"></div>
+      <div class="fov-note" id="r-bright-note" style="display: none;"></div>
+    </div>
+
+  </div>
+
+  <!-- ---- Aladin viewer ---- -->
+  <div class="fov-viewer">
+    <div class="fov-section">
+      <h3>Sky View</h3>
+      <div id="aladin-lite-div"></div>
+      <div class="fov-legend">
+        <span><span class="swatch" style="background:#ff5470;"></span> Target</span>
+        <span><span class="swatch" style="background:#45d6b5;"></span> Comparison stars (size ∝ usefulness)</span>
+        <span><span class="swatch" style="background:#f5a623;"></span> Avoided stars (too bright)</span>
+        <span><span class="swatch" style="background:#6c8cff; border-radius:2px;"></span> Optimized footprint</span>
+        <span class="fov-pm-legend" style="display:none;"><span style="color:#ff5470; font-weight:bold; font-size:1.1rem; line-height:1; margin-right:0.15rem;">➔</span> Target proper motion</span>
+        <span class="fov-pm-legend" style="display:none;"><span style="color:#45d6b5; font-weight:bold; font-size:1.1rem; line-height:1; margin-right:0.15rem;">➔</span> Comparison proper motion</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="fov-section" id="fov-comps-section" style="display: none;">
+  <h3>Comparison Stars</h3>
+  <div class="fov-table-wrap">
+    <table class="fov-table">
+      <thead><tr><th>#</th><th>RA</th><th>Dec</th><th>G</th><th>ΔG</th><th>BP-RP</th><th>sep ″</th><th>weight</th></tr></thead>
+      <tbody id="fov-comps-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<details class="fov-section fov-explain">
+  <summary>How does "Optimize FOV" work?</summary>
+  <div class="fov-explain-body">
+    <h4>1. Resolve the target and check it's observable</h4>
+    <p>
+      A target name is resolved to RA/Dec (or you can type coordinates directly).
+      Before anything else, the target's declination is checked against the
+      chosen instrument's site latitude: if the target can never climb above
+      20&deg; altitude there, the run stops immediately with an error instead
+      of spending time on a catalog query for a field that can never be
+      observed.
+    </p>
+
+    <h4>2. Query Gaia DR3 around the target</h4>
+    <p>
+      All catalog stars within a circle around the target are pulled from
+      Gaia DR3 &mdash; wide enough to cover the instrument's footprint even
+      when the optimizer ends up pointing off-target. The official ESA
+      archive is tried first; if it's unavailable, a VizieR mirror
+      (<code>I/355/gaiadr3</code>) is used instead. Because Gaia photometry
+      at a given sky position doesn't change, successful lookups are cached,
+      so re-running the same target (after tweaking the margin or magnitude
+      filter, say) skips the network round trip.
+    </p>
+
+    <h4>3. Score every star as a comparison candidate</h4>
+    <p>Each catalog star (other than the target) gets a usefulness weight:</p>
+    <ul>
+      <li><strong>Magnitude:</strong> peaks for stars a touch fainter than the
+        target (&Delta;G &asymp; +0.3 mag is ideal) and falls off smoothly on
+        either side. Stars brighter than the target by more than 1 mag are
+        penalized hard, since a bright comparison caps the exposure time
+        needed to avoid saturating it &mdash; which shortens the target's own
+        exposure and hurts its SNR.</li>
+      <li><strong>Color:</strong> stars with a similar Gaia BP&minus;RP color
+        to the target get a bonus, since similar colors track atmospheric
+        extinction more alike and make for cleaner differential photometry.</li>
+      <li><strong>Crowding:</strong> a star with a comparably bright neighbor
+        within 12&Prime; is downweighted, since a close neighbor blends into
+        the same aperture.</li>
+      <li>Your <strong>Gmag range</strong> (or <strong>delta-Gmag</strong>) and
+        <strong>margin</strong> settings are then applied, and anything below a
+        minimum usefulness floor is dropped entirely.</li>
+    </ul>
+    <p>
+      If an <strong>"avoid brighter than"</strong> limit is set, any star
+      brighter than it (other than the target) becomes a hard constraint in
+      the next step: no pointing may place it inside the footprint.
+    </p>
+
+    <h4>4. Search for the best pointing and orientation</h4>
+    <p>
+      The field center doesn't have to sit exactly on the target. The
+      optimizer grid-searches candidate field-center offsets together with a
+      position angle (skipped if "allow field rotation" is unchecked, which
+      fixes the field at PA=0&deg;) &mdash; a square footprint repeats every
+      90&deg;, so only that range needs to be searched. For every candidate
+      pointing that still keeps the target inside the footprint (respecting
+      your target margin) and avoids any "too bright" star, the comparison
+      stars that land inside the footprint (respecting the comp margin) are
+      summed by weight. The pointing and position angle with the highest
+      total score wins.
+    </p>
+    <p>
+      If no candidate pointing can satisfy every constraint &mdash; usually
+      because a bright star can't be dodged anywhere in reach &mdash; the
+      optimizer reports that explicitly rather than silently returning a
+      compromised field.
+    </p>
+
+    <h4>5. Result</h4>
+    <p>
+      The winning field center, position angle, and offset from the target
+      are reported alongside the selected comparison stars (magnitude, color,
+      separation, and weight) and the footprint polygon, which is overlaid on
+      the Aladin sky view for a visual check before you commit to a pointing.
+    </p>
+    <p>
+      Footprint size is read from <code>data/FOV_*.vot.xml</code>; the polygon shown
+      reflects the optimized pointing and position angle. Pan/zoom freely &mdash;
+      “Recenter view” returns to the optimized field.
+    </p>
+    <p>
+      <strong>Proper motion arrows</strong> (when enabled) point in each
+      star's direction of motion, colored by category (target vs.
+      comparison). Arrow length is exaggerated and scaled relative to the
+      fastest-moving star shown &mdash; only useful for comparing direction
+      and relative speed between stars, not the true angular scale. A
+      comparison star with an arrow parallel to, and about as long as, the
+      target's suggests a common proper-motion (co-moving) companion.
+    </p>
+  </div>
+</details>
+
+<script type="text/javascript" src="https://aladin.cds.unistra.fr/AladinLite/api/v3/latest/aladin.js" charset="utf-8"></script>
+<script>
+(function () {
+  const FOV_ARCMIN = {"muscat": 6.0, "muscat2": 7.4, "muscat3": 9.1, "muscat4": 9.1, "sinistro": 13.28};
+  const READOUT_MODES = {"muscat": [{"label": "MUSCAT_FAST", "value": "MUSCAT_FAST"}], "muscat2": [{"label": "MUSCAT_FAST", "value": "MUSCAT_FAST"}], "muscat3": [{"label": "MUSCAT_FAST", "value": "MUSCAT_FAST"}], "muscat4": [{"label": "MUSCAT_FAST", "value": "MUSCAT_FAST"}], "sinistro": [{"label": "central_2k_2x2 (13.3\u2032)", "value": "central_2k_2x2"}, {"label": "full_frame (26.6\u2032)", "value": "full_frame"}]};
+  const $ = (id) => document.getElementById(id);
+  const msg = $('fov-msg');
+
+  let aladin = null;
+  let footprintOverlay = null;
+  let compCatalog = null;
+  let avoidCatalog = null;
+  let targetCatalog = null;
+  let lastResult = null;
+  let observableRanges = {};
+  let compSources = [];  // Track comparison star sources for hover highlighting
+  let highlightOverlay = null;  // Graphics overlay for highlighting selected star
+  let pmOverlay = null;  // Graphics overlay for proper-motion arrows
+
+  A.init.then(() => {
+    aladin = A.aladin('#aladin-lite-div', {
+      survey: 'P/DSS2/color',
+      fov: 0.2,
+      target: '00 00 00 +00 00 00',
+      showReticle: true,
+      showCooGrid: false,
+      cooFrame: 'ICRS',
+    });
+    footprintOverlay = A.graphicOverlay({ color: '#6c8cff', lineWidth: 2 });
+    aladin.addOverlay(footprintOverlay);
+    highlightOverlay = A.graphicOverlay({ color: '#ffff00', lineWidth: 3 });
+    aladin.addOverlay(highlightOverlay);
+    pmOverlay = A.graphicOverlay({ color: '#45d6b5', lineWidth: 2 });
+    aladin.addOverlay(pmOverlay);
+    targetCatalog = A.catalog({ name: 'Target', shape: 'cross', sourceSize: 18, color: '#ff5470' });
+    compCatalog = A.catalog({ name: 'Comparisons', shape: 'circle', sourceSize: 12, color: '#45d6b5' });
+    avoidCatalog = A.catalog({ name: 'Avoided (too bright)', shape: 'triangle', sourceSize: 16, color: '#f5a623' });
+    aladin.addCatalog(targetCatalog);
+    aladin.addCatalog(compCatalog);
+    aladin.addCatalog(avoidCatalog);
+  });
+
+  function setMsg(text, kind) {
+    msg.textContent = text || '';
+    msg.className = 'fov-msg' + (kind ? ' ' + kind : '');
+  }
+
+  function fmtDeg(d, dec) {
+    if (d === null || d === undefined || isNaN(d)) return '—';
+    return Number(d).toFixed(dec === undefined ? 5 : dec) + '°';
+  }
+
+  function render(result) {
+    lastResult = result;
+    // --- summary ---
+    $('r-cra').textContent = fmtDeg(result.center_ra);
+    $('r-cdec').textContent = fmtDeg(result.center_dec);
+    $('r-pa').textContent = (result.pa_deg ?? 0).toFixed(1) + '°';
+    const oe = result.offset_east_arcsec || 0, on = result.offset_north_arcsec || 0;
+    $('r-off').textContent = `E ${oe.toFixed(0)}″, N ${on.toFixed(0)}″`;
+    $('r-n').textContent = result.n_comps;
+    $('r-tg').textContent = (result.target_gmag === null || result.target_gmag === undefined)
+      ? '—' : result.target_gmag.toFixed(2);
+    let note =
+      `Field ${result.fov_arcsec ? (result.fov_arcsec/60).toFixed(1) : '?'}′ on a side · `
+      + `weighted comp signal ${result.total_weight} · catalog ${result.catalog}.`;
+    if (result.avoid_mag !== null && result.avoid_mag !== undefined) {
+      note += ` Steered around ${result.n_avoided} star(s) brighter than Gmag ${Number(result.avoid_mag).toFixed(1)}.`;
+    }
+    $('r-note').textContent = note;
+    $('fov-results').style.display = '';
+
+    // --- brightest in-field star advisory + Exp Calc handoff ---
+    const brightest = result.brightest_in_field || [];
+    const brightNote = $('r-bright-note');
+    const satBtn = $('fov-check-saturation');
+    if (brightest.length) {
+      const b0 = brightest[0];
+      brightNote.textContent = `Brightest in-field star: Gmag ${b0.gmag.toFixed(2)}, ${b0.sep_arcsec.toFixed(0)}″ away` +
+        (b0.dmag < 0 ? ` (${Math.abs(b0.dmag).toFixed(1)} mag brighter than the target — may cap the exposure).` : '.');
+      brightNote.style.display = '';
+      satBtn.style.display = '';
+    } else {
+      brightNote.style.display = 'none';
+      satBtn.style.display = 'none';
+    }
+
+    // --- comparison table ---
+    const body = $('fov-comps-body');
+    body.innerHTML = '';
+    (result.comps || []).forEach((c, i) => {
+      const tr = document.createElement('tr');
+      tr.dataset.compIndex = i;
+      tr.innerHTML =
+        `<td>${i + 1}</td><td>${c.ra.toFixed(5)}</td><td>${c.dec.toFixed(5)}</td>` +
+        `<td>${c.gmag.toFixed(2)}</td><td>${c.dmag > 0 ? '+' : ''}${c.dmag.toFixed(2)}</td>` +
+        `<td>${c.bp_rp === null ? '—' : c.bp_rp.toFixed(2)}</td>` +
+        `<td>${c.sep_arcsec.toFixed(0)}</td><td>${c.weight.toFixed(2)}</td>`;
+
+      // Add hover listeners for highlighting in Aladin
+      tr.addEventListener('mouseenter', () => {
+        tr.style.backgroundColor = 'rgba(255, 255, 0, 0.4)';
+        highlightCompStar(i);
+      });
+      tr.addEventListener('mouseleave', () => {
+        tr.style.backgroundColor = '';
+        clearHighlightCompStar();
+      });
+
+      body.appendChild(tr);
+    });
+    $('fov-comps-section').style.display = (result.comps && result.comps.length) ? '' : 'none';
+
+    overplot(result);
+    renderPmArrows(result);
+  }
+
+  function overplot(result) {
+    if (!aladin) return;
+    footprintOverlay.removeAll();
+    targetCatalog.removeAll();
+    compCatalog.removeAll();
+    if (avoidCatalog) avoidCatalog.removeAll();
+
+    // FOV polygon (closed) at optimized pointing + PA.
+    if (Array.isArray(result.footprint) && result.footprint.length) {
+      const poly = result.footprint.map((p) => [p[0], p[1]]);
+      poly.push(poly[0]);
+      footprintOverlay.add(A.polygon(poly));
+    }
+
+    // Target marker.
+    if (result.ra !== null && result.dec !== null) {
+      targetCatalog.addSources([
+        A.source(result.ra, result.dec, { name: result.target || 'target' }),
+      ]);
+    }
+
+    // Comparison stars, sized by usefulness weight.
+    compSources = (result.comps || []).map((c) =>
+      A.source(c.ra, c.dec, {
+        G: c.gmag.toFixed(2),
+        'ΔG': c.dmag,
+        weight: c.weight,
+        size: Math.max(6, 6 + 12 * c.weight),
+      })
+    );
+    if (compSources.length) compCatalog.addSources(compSources);
+
+    // Too-bright stars the field was steered around.
+    if (avoidCatalog) {
+      const avoidSources = (result.avoided || []).map((s) =>
+        A.source(s.ra, s.dec, { G: s.gmag.toFixed(2), 'sep ″': s.sep_arcsec })
+      );
+      if (avoidSources.length) avoidCatalog.addSources(avoidSources);
+    }
+
+    recenter(result);
+  }
+
+  // ---- Proper motion arrows (co-moving companion check) ----
+  // Real Gaia proper motions (mas/yr) are far too small to see at FOV scales,
+  // so every arrow is scaled by the same factor: the star with the largest
+  // total proper motion in the current result gets a fixed-length arrow, and
+  // every other arrow shrinks proportionally. That keeps direction AND
+  // relative magnitude meaningful for spotting a common-proper-motion
+  // companion (same direction, similar length as the target's arrow) without
+  // needing the true angular scale.
+  function offsetRaDec(ra, dec, eastArcsec, northArcsec) {
+    const cosDec = Math.cos(dec * Math.PI / 180) || 1e-6;
+    return [ra + (eastArcsec / 3600) / cosDec, dec + northArcsec / 3600];
+  }
+
+  function pmArrowShape(ra, dec, eastArcsec, northArcsec) {
+    const shaftLen = Math.hypot(eastArcsec, northArcsec);
+    if (!(shaftLen > 0)) return null;
+    const tip = offsetRaDec(ra, dec, eastArcsec, northArcsec);
+    const angle = Math.atan2(northArcsec, eastArcsec);
+    const headLen = Math.min(shaftLen * 0.35, 3.0);
+    const back = angle + Math.PI;
+    const head1 = offsetRaDec(tip[0], tip[1], headLen * Math.cos(back - 0.45), headLen * Math.sin(back - 0.45));
+    const head2 = offsetRaDec(tip[0], tip[1], headLen * Math.cos(back + 0.45), headLen * Math.sin(back + 0.45));
+    return { base: [ra, dec], tip, head1, head2 };
+  }
+
+  function syncPmLegend() {
+    const showPm = $('fov-show-pm').checked;
+    document.querySelectorAll('.fov-pm-legend').forEach((el) => {
+      el.style.display = showPm ? '' : 'none';
+    });
+  }
+
+  function renderPmArrows(result) {
+    if (!pmOverlay) return;
+    pmOverlay.removeAll();
+    syncPmLegend();
+    if (!result || !$('fov-show-pm').checked) return;
+
+    const points = [];
+    if (result.ra != null && result.dec != null && result.target_pmra != null && result.target_pmdec != null) {
+      points.push({ ra: result.ra, dec: result.dec, pmra: result.target_pmra, pmdec: result.target_pmdec, color: '#ff5470' });
+    }
+    (result.comps || []).forEach((c) => {
+      if (c.pmra != null && c.pmdec != null) {
+        points.push({ ra: c.ra, dec: c.dec, pmra: c.pmra, pmdec: c.pmdec, color: '#45d6b5' });
+      }
+    });
+    if (!points.length) return;
+
+    const maxPm = Math.max(...points.map((p) => Math.hypot(p.pmra, p.pmdec)));
+    if (!(maxPm > 0)) return;
+
+    const maxArrowArcsec = Math.max((result.fov_half_arcsec || 200) * 0.18, 3);
+    const scale = maxArrowArcsec / maxPm;
+
+    points.forEach((p) => {
+      const shape = pmArrowShape(p.ra, p.dec, p.pmra * scale, p.pmdec * scale);
+      if (!shape) return;
+      pmOverlay.add(A.polyline([shape.base, shape.tip], { color: p.color, lineWidth: 2 }));
+      pmOverlay.add(A.polyline([shape.head1, shape.tip, shape.head2], { color: p.color, lineWidth: 2 }));
+    });
+  }
+
+  function recenter(result) {
+    if (!aladin || !result) return;
+    if (result.center_ra !== null && result.center_dec !== null) {
+      aladin.gotoRaDec(result.center_ra, result.center_dec);
+    }
+    const arcmin = FOV_ARCMIN[$('fov-inst').value] || 8;
+    aladin.setFoV((arcmin / 60) * 1.6); // a touch wider than the footprint
+  }
+
+  function highlightCompStar(index) {
+    if (!highlightOverlay || !lastResult || !lastResult.comps || index >= lastResult.comps.length) return;
+
+    highlightOverlay.removeAll();
+    const comp = lastResult.comps[index];
+
+    if (comp && comp.ra !== undefined && comp.dec !== undefined) {
+      const shape = typeof A.circle === 'function'
+        ? A.circle(comp.ra, comp.dec, 0.003, { color: '#ffff00', lineWidth: 3, fill: false })
+        : A.polygon([
+            [comp.ra - 0.004, comp.dec],
+            [comp.ra + 0.004, comp.dec],
+            [comp.ra, comp.dec - 0.004],
+            [comp.ra, comp.dec + 0.004],
+          ], { color: '#ffff00', lineWidth: 2, fill: false });
+      highlightOverlay.add(shape);
+    }
+  }
+
+  function clearHighlightCompStar() {
+    if (!highlightOverlay) return;
+    highlightOverlay.removeAll();
+  }
+
+  function getParams() {
+    const rangeVal = $('fov-mag-range').value.trim();
+    let magMin = '10';
+    let magMax = '18';
+    if (rangeVal) {
+      const parts = rangeVal.split(',');
+      if (parts.length >= 1) magMin = parts[0].trim();
+      if (parts.length >= 2) magMax = parts[1].trim();
+    }
+    return {
+      inst: $('fov-inst').value,
+      readoutMode: $('fov-sinistro-mode').value,
+      target: $('fov-target').value.trim(),
+      ra: $('fov-ra').value.trim(),
+      dec: $('fov-dec').value.trim(),
+      margin: $('fov-margin').value,
+      compMargin: $('fov-comp-margin').value,
+      magMode: $('fov-mag-mode').value,
+      magRange: rangeVal,
+      magMin: magMin,
+      magMax: magMax,
+      magDelta: $('fov-mag-delta').value,
+      avoidMag: $('fov-avoid-mag').value.trim(),
+      allowRotation: $('fov-allow-rotation').checked,
+    };
+  }
+
+  function setParams(p) {
+    if (p.inst) $('fov-inst').value = p.inst;
+    updateReadoutModeOptions(p.inst || $('fov-inst').value, p.readoutMode);
+    if (p.target !== undefined) $('fov-target').value = p.target;
+    if (p.ra !== undefined) $('fov-ra').value = p.ra;
+    if (p.dec !== undefined) $('fov-dec').value = p.dec;
+    if (p.margin) $('fov-margin').value = p.margin;
+    if (p.compMargin !== undefined) $('fov-comp-margin').value = p.compMargin;
+    
+    if (p.magMode) {
+      $('fov-mag-mode').value = p.magMode;
+      // Trigger display toggle
+      const event = new Event('change');
+      $('fov-mag-mode').dispatchEvent(event);
+    }
+    if (p.magRange !== undefined) {
+      $('fov-mag-range').value = p.magRange;
+    } else if (p.magMin !== undefined && p.magMax !== undefined) {
+      $('fov-mag-range').value = p.magMin + ', ' + p.magMax;
+    }
+    if (p.magDelta !== undefined) $('fov-mag-delta').value = p.magDelta;
+    if (p.avoidMag !== undefined) $('fov-avoid-mag').value = p.avoidMag;
+
+    if (p.allowRotation !== undefined) $('fov-allow-rotation').checked = p.allowRotation;
+    updateReadoutModeOptions($('fov-inst').value, p.readoutMode);
+  }
+
+  async function loadObservableRanges() {
+    try {
+      const resp = await fetch('/api/fov/observable');
+      const data = await resp.json();
+      if (data.ok) {
+        observableRanges = data.observable;
+      }
+    } catch (e) {
+      console.warn('Could not load observable ranges:', e);
+    }
+  }
+
+  function updateInstrumentAvailability() {
+    const dec = $('fov-dec').value.trim();
+    if (!dec) {
+      // No declination, enable all
+      document.querySelectorAll('#fov-inst option').forEach(opt => {
+        opt.disabled = false;
+      });
+      return;
+    }
+    const decNum = parseFloat(dec);
+    if (isNaN(decNum)) return;
+
+    // Enable/disable instruments based on observable range
+    document.querySelectorAll('#fov-inst option').forEach(opt => {
+      const inst = opt.value;
+      if (inst === '') {
+        opt.disabled = false;
+        return;
+      }
+      const range = observableRanges[inst];
+      if (!range) {
+        opt.disabled = false;
+        return;
+      }
+      const canObserve = decNum >= range.min_dec && decNum <= range.max_dec;
+      opt.disabled = !canObserve;
+      if (!canObserve) {
+        opt.title = `Not observable at dec=${decNum}° (range: ${range.min_dec}° to ${range.max_dec}°)`;
+      } else {
+        opt.title = '';
+      }
+    });
+  }
+
+  function updateReadoutModeOptions(inst, preferred) {
+    const select = $('fov-sinistro-mode');
+    const modes = READOUT_MODES[inst] || [{ value: 'MUSCAT_FAST', label: 'MUSCAT_FAST' }];
+    const current = preferred || select.value || modes[0].value;
+    select.innerHTML = '';
+    modes.forEach((mode) => {
+      const opt = document.createElement('option');
+      opt.value = mode.value;
+      opt.textContent = mode.label;
+      select.appendChild(opt);
+    });
+    select.value = modes.some((mode) => mode.value === current) ? current : modes[0].value;
+  }
+
+  function updateUrl(p) {
+    const sp = new URLSearchParams();
+    if (p.inst) sp.set('inst', p.inst);
+    if (p.readoutMode) sp.set('smode', p.readoutMode);
+    if (p.target) sp.set('target', p.target);
+    if (p.ra) sp.set('ra', p.ra);
+    if (p.dec) sp.set('dec', p.dec);
+    if (p.margin && p.margin !== '30') sp.set('margin', p.margin);
+    if (p.compMargin) sp.set('cmarg', p.compMargin);
+    if (p.magMode) sp.set('magmode', p.magMode);
+    if (p.magRange && p.magRange !== '10, 18' && p.magRange !== '10,18') sp.set('magrange', p.magRange);
+    if (p.magDelta && p.magDelta !== '3') sp.set('magdelta', p.magDelta);
+    if (p.avoidMag) sp.set('avoidmag', p.avoidMag);
+    if (!p.allowRotation) sp.set('fixpa', '1');
+    const qs = sp.toString();
+    const url = qs ? '/fov?' + qs : '/fov';
+    window.history.replaceState(null, '', url);
+  }
+
+  function saveToStorage() {
+    const p = getParams();
+    localStorage.setItem('fov-state', JSON.stringify(p));
+  }
+
+  function loadFromStorage() {
+    try {
+      const stored = localStorage.getItem('fov-state');
+      return stored ? JSON.parse(stored) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function loadUrlParams() {
+    const sp = new URLSearchParams(window.location.search);
+    // URL params take precedence; fall back to localStorage.
+    const stored = loadFromStorage();
+    let magRange = sp.get('magrange') || stored?.magRange;
+    if (!magRange) {
+      const minVal = sp.get('magmin') || stored?.magMin || '10';
+      const maxVal = sp.get('magmax') || sp.get('maglim') || stored?.magMax || stored?.maglim || '18';
+      magRange = minVal + ', ' + maxVal;
+    }
+    const p = {
+      inst: sp.get('inst') || (stored?.inst || ''),
+      readoutMode: sp.get('smode') || (stored?.readoutMode || stored?.sinistroMode || 'MUSCAT_FAST'),
+      target: sp.get('target') || (stored?.target || ''),
+      ra: sp.get('ra') || (stored?.ra || ''),
+      dec: sp.get('dec') || (stored?.dec || ''),
+      margin: sp.get('margin') || (stored?.margin || '30'),
+      compMargin: sp.get('cmarg') || (stored?.compMargin || ''),
+      magMode: sp.get('magmode') || (stored?.magMode || 'absolute'),
+      magRange: magRange,
+      magDelta: sp.get('magdelta') || (stored?.magDelta || '3'),
+      avoidMag: sp.get('avoidmag') || (stored?.avoidMag || ''),
+      allowRotation: !sp.has('fixpa') && (stored?.allowRotation !== false),
+    };
+    setParams(p);
+  }
+
+  async function run() {
+    const params = getParams();
+    if (!params.target && !(params.ra && params.dec)) {
+      setMsg('Enter a target name or RA and Dec.', 'err');
+      return;
+    }
+    updateUrl(params);
+    saveToStorage();
+    const btn = $('fov-run');
+    btn.disabled = true;
+    setMsg('Resolving target and querying Gaia…');
+    try {
+      const resp = await fetch('/api/fov/optimize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          instrument: params.inst,
+          sinistro_mode: params.inst === 'sinistro' ? params.readoutMode : null,
+          target: params.target,
+          ra: params.ra || null,
+          dec: params.dec || null,
+          margin_arcsec: parseFloat(params.margin) || 30,
+          comp_margin_arcsec: params.compMargin ? parseFloat(params.compMargin) : null,
+          mag_limit: params.magMode === 'absolute' ? (parseFloat(params.magMax) || 18) : 18,
+          mag_min: params.magMode === 'absolute' ? (parseFloat(params.magMin) || 0) : null,
+          mag_max: params.magMode === 'absolute' ? (parseFloat(params.magMax) || 18) : null,
+          mag_delta: params.magMode === 'relative' ? (parseFloat(params.magDelta) || 3) : null,
+          avoid_mag: params.avoidMag !== '' ? parseFloat(params.avoidMag) : null,
+          allow_rotation: params.allowRotation,
+        }),
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        setMsg(data.error || 'Optimization failed.', 'err');
+        return;
+      }
+      setMsg(`Found ${data.n_comps} useful comparison stars.`, 'ok');
+      render(data);
+    } catch (e) {
+      setMsg('Request failed: ' + e, 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function resolveTarget() {
+    const target = $('fov-target').value.trim();
+    if (!target) {
+      setMsg('Enter a target name to resolve.', 'err');
+      return;
+    }
+    const btn = $('fov-resolve');
+    btn.disabled = true;
+    setMsg('Looking up coordinates…');
+    try {
+      const resp = await fetch('/api/fov/resolve-target', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: target }),
+      });
+      const data = await resp.json();
+      if (!data.ok) {
+        setMsg(data.error || 'Resolution failed.', 'err');
+        return;
+      }
+      $('fov-ra').value = data.ra;
+      $('fov-dec').value = data.dec;
+      updateInstrumentAvailability();
+      saveToStorage();
+      setMsg(`Resolved to RA ${data.ra}°, Dec ${data.dec}°`, 'ok');
+      setTimeout(() => setMsg(''), 3000);
+      if (aladin) aladin.gotoRaDec(parseFloat(data.ra), parseFloat(data.dec));
+    } catch (e) {
+      setMsg('Request failed: ' + e, 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function copyShareLink() {
+    const params = getParams();
+    if (!params.target && !(params.ra && params.dec)) {
+      setMsg('Run an optimization first to create a shareable link.', 'err');
+      return;
+    }
+    const sp = new URLSearchParams();
+    if (params.inst) sp.set('inst', params.inst);
+    if (params.target) sp.set('target', params.target);
+    if (params.ra) sp.set('ra', params.ra);
+    if (params.dec) sp.set('dec', params.dec);
+    if (params.margin && params.margin !== '30') sp.set('margin', params.margin);
+    if (params.compMargin) sp.set('cmarg', params.compMargin);
+    if (params.magMode) sp.set('magmode', params.magMode);
+    if (params.magRange && params.magRange !== '10, 18' && params.magRange !== '10,18') sp.set('magrange', params.magRange);
+    if (params.magDelta && params.magDelta !== '3') sp.set('magdelta', params.magDelta);
+    if (params.avoidMag) sp.set('avoidmag', params.avoidMag);
+    if (!params.allowRotation) sp.set('fixpa', '1');
+    const url = window.location.origin + '/fov' + (sp.toString() ? '?' + sp.toString() : '');
+    navigator.clipboard.writeText(url).then(() => {
+      setMsg('Link copied to clipboard.', 'ok');
+      setTimeout(() => setMsg(''), 2000);
+    }).catch(() => {
+      setMsg('Failed to copy link.', 'err');
+    });
+  }
+
+  // How many brightest in-field stars to hand off to the Exposure Calculator.
+  // The backend reports up to BRIGHTEST_IN_FIELD_N (5); we only send the
+  // top few so the Exp Calc page doesn't fire off a pile of catalog lookups
+  // for stars unlikely to matter.
+  const COMP_HANDOFF_N = 3;
+  const COMP_HANDOFF_KEY = 'fov.compHandoff.v1';
+
+  function checkSaturationInExpCalc() {
+    if (!lastResult) {
+      setMsg('Run an optimization first.', 'err');
+      return;
+    }
+    const inst = $('fov-inst').value;
+    const payload = {
+      target: lastResult.target || '',
+      ra: lastResult.ra,
+      dec: lastResult.dec,
+      instrument: inst,
+      sinistro_mode: inst === 'sinistro' ? $('fov-sinistro-mode').value : null,
+      comps: (lastResult.brightest_in_field || []).slice(0, COMP_HANDOFF_N),
+    };
+    try {
+      sessionStorage.setItem(COMP_HANDOFF_KEY, JSON.stringify(payload));
+    } catch (e) {
+      setMsg('Could not stash comparison stars for handoff: ' + e, 'err');
+      return;
+    }
+    const sp = new URLSearchParams();
+    if (inst) sp.set('inst', inst);
+    if (payload.target) sp.set('target', payload.target);
+    sp.set('fromFov', '1');
+    window.location.href = '/exposure?' + sp.toString();
+  }
+
+  function copyFovCenter() {
+    if (!lastResult) {
+      setMsg('Run an optimization first.', 'err');
+      return;
+    }
+    const ra = lastResult.center_ra;
+    const dec = lastResult.center_dec;
+    if (ra === null || ra === undefined || dec === null || dec === undefined) {
+      setMsg('Field center coordinates not available.', 'err');
+      return;
+    }
+    const coordStr = `${ra.toFixed(5)}, ${dec.toFixed(5)}`;
+    navigator.clipboard.writeText(coordStr).then(() => {
+      setMsg('Coordinates copied: ' + coordStr, 'ok');
+      setTimeout(() => setMsg(''), 2000);
+    }).catch(() => {
+      setMsg('Failed to copy coordinates.', 'err');
+    });
+  }
+
+  loadUrlParams();
+  $('fov-run').addEventListener('click', run);
+  $('fov-resolve').addEventListener('click', resolveTarget);
+  $('fov-reset-view').addEventListener('click', () => recenter(lastResult));
+  $('fov-copy-center').addEventListener('click', copyFovCenter);
+  $('fov-check-saturation').addEventListener('click', checkSaturationInExpCalc);
+  $('fov-inst').addEventListener('change', () => updateReadoutModeOptions($('fov-inst').value));
+  $('fov-dec').addEventListener('change', updateInstrumentAvailability);
+  $('fov-target').addEventListener('keydown', (e) => { if (e.key === 'Enter') resolveTarget(); });
+  $('fov-mag-mode').addEventListener('change', function () {
+    const mode = this.value;
+    if (mode === 'absolute') {
+      $('fov-mag-range-field').style.display = '';
+      $('fov-mag-delta-field').style.display = 'none';
+    } else {
+      $('fov-mag-range-field').style.display = 'none';
+      $('fov-mag-delta-field').style.display = '';
+    }
+  });
+
+  loadObservableRanges().then(() => updateInstrumentAvailability());
+
+  // Proper-motion arrows are a pure display toggle (they replot from the last
+  // result, no new query), so they're persisted independently of the rest of
+  // the form/URL state.
+  const PM_STORE_KEY = 'fov-show-pm';
+  try { $('fov-show-pm').checked = localStorage.getItem(PM_STORE_KEY) === '1'; } catch { /* ignore */ }
+  $('fov-show-pm').addEventListener('change', () => {
+    try { localStorage.setItem(PM_STORE_KEY, $('fov-show-pm').checked ? '1' : '0'); } catch { /* ignore */ }
+    renderPmArrows(lastResult);
+    syncPmLegend();
+  });
+  syncPmLegend();
+})();
+</script>
+
+</div>
+<div id="status-bar" role="status" aria-live="polite">
+  <span class="dot"></span>
+  <span id="status-text">Loading…</span>
+</div>
+
+<div id="message-modal" data-mode="message" data-kind="default" role="dialog" aria-modal="true" aria-labelledby="message-modal-title" aria-describedby="message-modal-text">
+  <div class="modal-box">
+    <p id="message-modal-title" class="modal-title"></p>
+    <p id="message-modal-text" class="modal-text"></p>
+    <div class="modal-actions">
+      <button class="btn" id="message-modal-cancel" type="button" hidden>Cancel</button>
+      <button class="btn" id="message-modal-ok" type="button">OK</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const root = document.documentElement;
+    const btn = document.getElementById('theme-toggle');
+    if (window.MuscatRouteState) window.MuscatRouteState.applyNavbar();
+    const stored = localStorage.getItem('muscat-theme');
+    apply(stored || 'light');
+    btn.addEventListener('click', function () {
+      const next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      apply(next);
+      localStorage.setItem('muscat-theme', next);
+    });
+    function apply(t) { root.setAttribute('data-theme', t); }
+  })();
+
+  (function () {
+    const bar    = document.getElementById('loading-bar');
+    const status = document.getElementById('status-bar');
+    const text   = document.getElementById('status-text');
+    const table  = document.getElementById('targets-table');
+
+    // The bar is visible while ANY of these is true: the page is still loading,
+    // a tracked background job is active, or a same-origin /api/ request is in
+    // flight. A running job keeps it up indefinitely (that label wins over the
+    // transient page-load / fetch labels). It only slides away once all three
+    // are false.
+    let pageLoading = true;
+    let pageLabel   = 'Loading…';
+    let jobRunning  = false;
+    let jobLabel    = '';
+    let fetchActive = false;
+    let fetchLabel  = 'Loading…';
+    let hideTimer   = null;
+
+    if (table) {
+      const rows = table.tBodies[0] ? table.tBodies[0].rows.length : 0;
+      pageLabel = 'Rendering ' + rows.toLocaleString() + ' targets…';
+    }
+
+    function render() {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      if (pageLoading || jobRunning || fetchActive) {
+        bar.classList.remove('done');
+        status.classList.add('visible');
+        text.textContent = jobRunning ? jobLabel : (pageLoading ? pageLabel : fetchLabel);
+      } else {
+        bar.classList.add('done');
+        if (status.classList.contains('visible')) {
+          text.textContent = 'Ready';
+          hideTimer = setTimeout(function () { status.classList.remove('visible'); }, 700);
+        }
+      }
+      // Keep the bar in the DOM so we can re-show it on the next navigation.
+    }
+
+    function showLoading(label) {
+      pageLabel = label || 'Loading…';
+      pageLoading = true;
+      render();
+    }
+    function done() {
+      pageLoading = false;
+      render();
+    }
+    // Called by the site-wide background-job watcher below.
+    function setJob(running, label) {
+      jobRunning = !!running;
+      jobLabel   = label || 'Running…';
+      render();
+    }
+    // Called by the global /api/ fetch tracker (installed in <head>). A generic
+    // label is used unless a page has set its own via showLoading.
+    function setFetch(active, label) {
+      fetchActive = !!active;
+      fetchLabel  = label || 'Loading…';
+      render();
+    }
+    window.showLoading = showLoading;
+    window.done = done;
+    window.MuscatLoadingBar = { showLoading: showLoading, done: done, setJob: setJob, setFetch: setFetch };
+
+    // Subscribe to in-flight /api/ requests so every page shows the same
+    // loading indicator while fetching data, with no per-page wiring.
+    if (window.MuscatFetchTracker) {
+      window.MuscatFetchTracker.onChange = function (n) { setFetch(n > 0); };
+      setFetch(window.MuscatFetchTracker.active > 0);
+    }
+
+    if (document.readyState === 'complete') {
+      done();
+    } else {
+      showLoading(pageLabel);
+      window.addEventListener('load', done);
+    }
+
+    // Re-show the bar when the user navigates away via a same-origin link.
+    document.addEventListener('click', function (e) {
+      const link = e.target.closest('a');
+      if (!link) return;
+      if (link.target && link.target !== '_self') return;
+      if (link.hasAttribute('download')) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+      const href = link.getAttribute('href');
+      if (!href || href.startsWith('#') || href.startsWith('javascript:') || href.startsWith('mailto:')) return;
+      const url = new URL(link.href, window.location.href);
+      if (url.origin !== window.location.origin) return;
+      // Skip pure in-page hash changes (same path, different fragment).
+      if (url.pathname === window.location.pathname && url.hash) return;
+      showLoading('Loading…');
+    }, true);
+
+    // Restore on bfcache restores (back/forward navigation).
+    window.addEventListener('pageshow', function (e) {
+      if (e.persisted) done();
+    });
+  })();
+
+  // Site-wide background-job watcher: keeps the loading bar up on ANY page for
+  // as long as a job the user launched (saved under `phot:job` / `fit:job`) is
+  // still active on the server, and takes it down once that job finishes.
+  (function () {
+    const st  = window.MuscatStorage;
+    const bar = window.MuscatLoadingBar;
+    if (!st || !bar) return;
+
+    const POLL_MS = 4000;
+    let timer = null;
+
+    // Reconstruct the canonical job key: "<type>:<inst>/<date>/<target>[/<run_id>]"
+    // (server strips spaces from the target — see photometry.job_key).
+    function jobKey(type, j) {
+      if (!j || !j.inst || !j.date || !j.target) return null;
+      let k = type + ':' + j.inst + '/' + j.date + '/' + String(j.target).replace(/ /g, '');
+      if (j.run_id) k += '/' + j.run_id;
+      return k;
+    }
+    // TTV runs are keyed on a slugged run name rather than a run_id — see
+    // ttv_fit.ttv_job_key() / jobs.slugify_run_name().
+    function ttvJobKey(j) {
+      if (!j || !j.target) return null;
+      const slug = String(j.run_name || '').trim().toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40)
+        .replace(/^_+|_+$/g, '') || 'default';
+      return 'ttv_fit:' + String(j.target).replace(/ /g, '') + '/' + slug;
+    }
+    function trackedKeys() {
+      const keys = [];
+      const p = jobKey('photometry', st.getJSON('phot:job', null));
+      if (p) keys.push(p);
+      const f = jobKey('transit_fit', st.getJSON('fit:job', null));
+      if (f) keys.push(f);
+      const t = ttvJobKey(st.getJSON('muscat-ttv-job', null));
+      if (t) keys.push(t);
+      return keys;
+    }
+    function stop() { if (timer) { clearTimeout(timer); timer = null; } }
+    function schedule() {
+      if (!timer) timer = setTimeout(function () { timer = null; tick(); }, POLL_MS);
+    }
+    function labelFor(states) {
+      if (states.length === 1) {
+        return states[0] === 'pending' ? 'Queued — waiting to start…' : 'Running job…';
+      }
+      return 'Running ' + states.length + ' jobs…';
+    }
+    function tick() {
+      const tracked = trackedKeys();
+      if (tracked.length === 0) { bar.setJob(false, ''); stop(); return; }
+      fetch('/api/jobs/status?active_only=1', { headers: { 'X-Requested-With': 'fetch' } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          const active = {};
+          (d.active || []).forEach(function (a) { active[a.key] = a.state; });
+          const mine = tracked.filter(function (k) { return active[k]; });
+          if (mine.length > 0) {
+            bar.setJob(true, labelFor(mine.map(function (k) { return active[k]; })));
+            schedule();
+          } else {
+            // Tracked job(s) are no longer active — finished, cancelled, or
+            // cleared. Take the bar down and stop polling until the next launch
+            // or navigation re-checks. (The launching page owns clearing the
+            // localStorage key on its own terminal-state handling.)
+            bar.setJob(false, '');
+            stop();
+          }
+        })
+        .catch(function () { schedule(); });
+    }
+
+    // Let a page trigger an immediate re-check right after it launches a job,
+    // instead of waiting up to POLL_MS for the next tick.
+    window.MuscatJobIndicator = { refresh: function () { stop(); tick(); } };
+
+    if (trackedKeys().length > 0) tick();
+  })();
+
+  // ----- resizable table columns ------------------------------------------
+  (function () {
+    function initTable(table) {
+      if (table.dataset.resizableInit === '1') return;
+      if (table.offsetParent === null) return; // Skip if table is currently hidden
+      table.dataset.resizableInit = '1';
+      const headRow = table.tHead && table.tHead.rows[0];
+      if (!headRow) return;
+      const ths = Array.from(headRow.cells);
+      const tableId = table.id || 'tbl-' + Math.random().toString(36).slice(2);
+      // Lock in current natural widths (measured under table-layout: auto) so
+      // dragging one column doesn't shove the others around.
+      const measured = ths.map(function (th, i) {
+        const stored = localStorage.getItem('colw:' + tableId + ':' + i);
+        if (stored) {
+          const w = parseFloat(stored);
+          if (w > 30) {
+            th.style.maxWidth = 'none';
+            return w;
+          }
+        }
+        return th.getBoundingClientRect().width;
+      });
+      let hasStored = false;
+      for (let i = 0; i < ths.length; i++) {
+        if (localStorage.getItem('colw:' + tableId + ':' + i)) {
+          hasStored = true;
+          break;
+        }
+      }
+      if (!hasStored) {
+        const containerW = table.parentElement.clientWidth;
+        let totalMeasured = 0;
+        measured.forEach(function (w) {
+          totalMeasured += w;
+        });
+        ths.forEach(function (th, i) {
+          const share = totalMeasured > 0 ? (measured[i] / totalMeasured) : (1 / ths.length);
+          th.style.width = (containerW * share) + 'px';
+          th.style.maxWidth = 'none';
+        });
+      } else {
+        ths.forEach(function (th, i) {
+          th.style.width = measured[i] + 'px';
+        });
+      }
+
+      // Now switch to fixed layout so column widths are honoured exactly.
+      table.classList.add('resizable-init');
+      ths.forEach(function (th, i) {
+        if (i === ths.length - 1) return;  // no handle on the last column
+        const handle = document.createElement('div');
+        handle.className = 'col-resizer';
+        handle.title = 'Drag to resize column';
+        th.appendChild(handle);
+        handle.addEventListener('mousedown', function (e) {
+          startResize(e, table, th, th.cellIndex, tableId);
+        });
+        handle.addEventListener('dblclick', function () {
+          // Double-click resets this column to auto-fit content.
+          th.style.width = '';
+          th.style.maxWidth = '';
+          const currentIdx = th.cellIndex;
+          localStorage.removeItem('colw:' + tableId + ':' + currentIdx);
+          th.style.width = th.getBoundingClientRect().width + 'px';
+          localStorage.setItem('colw:' + tableId + ':' + currentIdx,
+                               parseFloat(th.style.width));
+        });
+      });
+    }
+
+    function startResize(e, table, th, idx, tableId) {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = th.getBoundingClientRect().width;
+      const handle = e.currentTarget;
+      handle.classList.add('resizing');
+      th.classList.add('resizing');
+      th.style.maxWidth = 'none';
+      document.body.style.cursor = 'col-resize';
+      function onMove(ev) {
+        const minW = th.dataset.sortAttr === 'filters' ? 15 : 40;
+        const newW = Math.max(minW, startW + (ev.clientX - startX));
+        th.style.width = newW + 'px';
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        handle.classList.remove('resizing');
+        th.classList.remove('resizing');
+        document.body.style.cursor = '';
+        const finalW = parseFloat(th.style.width);
+        if (!isNaN(finalW)) {
+          localStorage.setItem('colw:' + tableId + ':' + idx, finalW);
+        }
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    }
+
+    function initAll() {
+      document.querySelectorAll('table').forEach(initTable);
+    }
+    window.initTable = initTable;
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAll);
+    } else {
+      initAll();
+    }
+
+    // Re-init tables inside <details> when expanded (their cells have no
+    // measured width while hidden).
+    // ----- click-to-sort columns ------------------------------------------
+    function raToHours(s) {
+      const m = (s || '').match(/^\s*(-?\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      return parseInt(m[1], 10) + parseInt(m[2], 10)/60 + (parseFloat(m[3]) || 0)/3600;
+    }
+    function decToDegrees(s) {
+      const m = (s || '').match(/^\s*([+-]?)(\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      const sign = m[1] === '-' ? -1 : 1;
+      return sign * (parseInt(m[2], 10) + parseInt(m[3], 10)/60 + (parseFloat(m[4]) || 0)/3600);
+    }
+
+    function detectKind(values) {
+      const non = values.filter(v => v && v.trim() !== '');
+      if (!non.length) return 'string';
+      if (non.every(v => /^[+-]\d{1,2}:\d{2}(:\d+(\.\d+)?)?$/.test(v.trim()))) return 'dec';
+      if (non.every(v => /^\d{1,2}:\d{2}(:\d+(\.\d+)?)?$/.test(v.trim()))) return 'ra';
+      if (non.every(v => !isNaN(parseFloat(v.replace(/[^\d.+\-eE]/g, ''))))) return 'number';
+      return 'string';
+    }
+    function keyFor(kind, raw) {
+      if (raw == null) return null;
+      if (kind === 'number') {
+        const n = parseFloat(raw.replace(/[^\d.+\-eE]/g, ''));
+        return isNaN(n) ? null : n;
+      }
+      if (kind === 'ra')  { const h = raToHours(raw);   return isNaN(h) ? null : h; }
+      if (kind === 'dec') { const d = decToDegrees(raw); return isNaN(d) ? null : d; }
+      return (raw || '').toString().toLowerCase();
+    }
+    function rowKey(row, colIdx, sortAttr, kind) {
+      if (sortAttr && row.dataset[sortAttr] !== undefined) {
+        const raw = row.dataset[sortAttr];
+        if (kind === 'number') {
+          const n = parseFloat(raw);
+          return isNaN(n) ? null : n;
+        }
+        if (kind === 'ra')  { const h = raToHours(raw);    return isNaN(h) ? null : h; }
+        if (kind === 'dec') { const d = decToDegrees(raw); return isNaN(d) ? null : d; }
+        return (raw || '').toString().toLowerCase();
+      }
+      const cell = row.cells[colIdx];
+      return keyFor(kind, cell ? cell.textContent.trim() : '');
+    }
+
+    function initSortable(table) {
+      if (table.dataset.sortableInit === '1') return;
+      table.dataset.sortableInit = '1';
+      const headerRow = table.tHead && table.tHead.rows[0];
+      const tbody = table.tBodies[0];
+      if (!headerRow || !tbody) return;
+      // Snapshot original row order so a third click can restore it.
+      // Pair detail rows (log-row) with their primary so restore keeps them together.
+      const allInitRows = Array.from(tbody.rows);
+      const initPairs = [];
+      for (let i = 0; i < allInitRows.length; i++) {
+        const primary = allInitRows[i];
+        const detail = (i + 1 < allInitRows.length && allInitRows[i + 1].classList.contains('log-row'))
+          ? allInitRows[++i] : null;
+        initPairs.push({ primary, detail });
+      }
+      initPairs.forEach((p, i) => { p.primary.dataset._origIdx = i; });
+      const originalOrder = initPairs;
+
+      Array.from(headerRow.cells).forEach((th, colIdx) => {
+        if (th.classList.contains('no-sort')) return;
+        th.classList.add('sortable');
+        th.addEventListener('click', function (e) {
+          if (e.target.closest('.col-resizer')) return;  // ignore handle clicks
+          const dir = th.dataset.sortDir;
+          const next = dir === 'asc' ? 'desc' : dir === 'desc' ? '' : 'asc';
+          Array.from(headerRow.cells).forEach(h => h.removeAttribute('data-sort-dir'));
+          if (next) th.dataset.sortDir = next;
+
+          if (!next) {
+            // Restore original order (pairs kept together).
+            originalOrder.forEach(p => {
+              tbody.appendChild(p.primary || p);
+              if (p.detail) tbody.appendChild(p.detail);
+            });
+            return;
+          }
+
+          // Decide sort kind: explicit hint or auto-detect from cell text.
+          let kind = th.dataset.sortType;
+          const currentIdx = th.cellIndex;
+          if (!kind) {
+            const samples = Array.from(tbody.rows).slice(0, 25)
+              .map(r => r.cells[currentIdx] ? r.cells[currentIdx].textContent.trim() : '');
+            kind = detectKind(samples);
+          }
+          const sortAttr = th.dataset.sortAttr;  // camelCase data-* key
+
+          const dirSign = next === 'asc' ? 1 : -1;
+          // Pair detail rows (e.g. .log-row) with their preceding primary row
+          // so sorting doesn't break the adjacency.
+          const allRows = Array.from(tbody.rows);
+          const pairs = [];
+          for (let i = 0; i < allRows.length; i++) {
+            const primary = allRows[i];
+            const detail = (i + 1 < allRows.length && allRows[i + 1].classList.contains('log-row'))
+              ? allRows[++i] : null;
+            pairs.push({ primary, detail });
+          }
+          const sorted = pairs.slice().sort((a, b) => {
+            if (sortAttr === 'startedAt') {
+              const statusA = a.primary.dataset.status;
+              const statusB = b.primary.dataset.status;
+              const isRunningA = (statusA === 'running' || statusA === 'cancelling');
+              const isRunningB = (statusB === 'running' || statusB === 'cancelling');
+              if (isRunningA && !isRunningB) return -1;
+              if (isRunningB && !isRunningA) return 1;
+            }
+            const ka = rowKey(a.primary, currentIdx, sortAttr, kind);
+            const kb = rowKey(b.primary, currentIdx, sortAttr, kind);
+            if (ka == null && kb == null) return 0;
+            if (ka == null) return 1;   // nulls always last
+            if (kb == null) return -1;
+            if (ka < kb) return -1 * dirSign;
+            if (ka > kb) return  1 * dirSign;
+            // stable tiebreak on original index
+            return (parseInt(a.primary.dataset._origIdx, 10) - parseInt(b.primary.dataset._origIdx, 10));
+          });
+          sorted.forEach(p => {
+            tbody.appendChild(p.primary);
+            if (p.detail) tbody.appendChild(p.detail);
+          });
+        });
+      });
+    }
+
+    function initAllSortable() {
+      document.querySelectorAll('table').forEach(initSortable);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAllSortable);
+    } else {
+      initAllSortable();
+    }
+
+    // ----- draggable columns ----------------------------------------------
+    function initDraggableColumns(table) {
+      if (table.dataset.draggableInit === '1') return;
+      table.dataset.draggableInit = '1';
+      const headerRow = table.tHead && table.tHead.rows[0];
+      if (!headerRow) return;
+      const ths = Array.from(headerRow.cells);
+      
+      ths.forEach(function (th) {
+        th.setAttribute('draggable', 'true');
+        
+        th.addEventListener('dragstart', function (e) {
+          if (e.target.closest('.col-resizer')) {
+            e.preventDefault();
+            return;
+          }
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', th.cellIndex);
+          th.classList.add('dragging');
+        });
+        
+        th.addEventListener('dragend', function () {
+          ths.forEach(function (t) {
+            t.classList.remove('dragging', 'drag-over-left', 'drag-over-right');
+          });
+        });
+        
+        th.addEventListener('dragover', function (e) {
+          e.preventDefault();
+          const rect = th.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          
+          ths.forEach(function (t) {
+            t.classList.remove('drag-over-left', 'drag-over-right');
+          });
+          
+          if (relX < rect.width / 2) {
+            th.classList.add('drag-over-left');
+          } else {
+            th.classList.add('drag-over-right');
+          }
+        });
+        
+        th.addEventListener('dragleave', function () {
+          th.classList.remove('drag-over-left', 'drag-over-right');
+        });
+        
+        th.addEventListener('drop', function (e) {
+          e.preventDefault();
+          th.classList.remove('drag-over-left', 'drag-over-right');
+          
+          const sourceIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
+          const targetIdx = th.cellIndex;
+          if (isNaN(sourceIdx) || sourceIdx === targetIdx) return;
+          
+          const rect = th.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          const insertBefore = relX < rect.width / 2;
+          
+          Array.from(table.rows).forEach(function (row) {
+            const cell = row.cells[sourceIdx];
+            const targetCell = row.cells[targetIdx];
+            if (!cell || !targetCell) return;
+            
+            if (insertBefore) {
+              row.insertBefore(cell, targetCell);
+            } else {
+              row.insertBefore(cell, targetCell.nextSibling);
+            }
+          });
+        });
+      });
+    }
+
+    function initAllDraggable() {
+      document.querySelectorAll('table').forEach(initDraggableColumns);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAllDraggable);
+    } else {
+      initAllDraggable();
+    }
+
+    // ----- inline notes editor (delegated) --------------------------------
+    document.addEventListener('click', function (e) {
+      const cell = e.target.closest('.note-cell');
+      if (!cell || cell.classList.contains('editing')) return;
+      if (e.target.closest('a, button')) return;
+      openEditor(cell);
+    });
+
+    function openEditor(cell) {
+      const obj = cell.dataset.object;
+      const current = cell.querySelector('.note-text').textContent;
+      cell.classList.add('editing');
+      cell.innerHTML = '';
+      const ta = document.createElement('textarea');
+      ta.value = current;
+      ta.rows = 2;
+      ta.placeholder = 'Type a note…';
+      const actions = document.createElement('div');
+      actions.className = 'note-actions';
+      const save = document.createElement('button');
+      save.className = 'save'; save.textContent = 'Save';
+      const cancel = document.createElement('button');
+      cancel.textContent = 'Cancel';
+      const del = document.createElement('button');
+      del.className = 'del'; del.textContent = 'Delete';
+      actions.append(save, cancel, del);
+      cell.append(ta, actions);
+      ta.focus(); ta.select();
+
+      function close(note) {
+        cell.classList.remove('editing');
+        cell.innerHTML =
+          '<span class="note-text">' + escapeHtml(note) + '</span>' +
+          '<span class="note-placeholder"' + (note ? ' style="display:none;"' : '') + '>+ add note</span>';
+      }
+      function escapeHtml(s) {
+        return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      }
+
+      async function commit() {
+        const value = ta.value.trim();
+        try {
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({note: value}),
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          close(value);
+        } catch (err) {
+          showMessageModal('Error', 'Save failed: ' + err.message);
+        }
+      }
+      async function destroy() {
+        try {
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {method: 'DELETE'});
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          close('');
+        } catch (err) {
+          showMessageModal('Error', 'Delete failed: ' + err.message);
+        }
+      }
+
+      save.addEventListener('click', commit);
+      del.addEventListener('click', destroy);
+      cancel.addEventListener('click', () => close(current));
+      ta.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); }
+        else if (e.key === 'Escape') { e.preventDefault(); close(current); }
+      });
+    }
+
+    document.addEventListener('toggle', function (e) {
+      if (e.target.tagName === 'DETAILS' && e.target.open) {
+        e.target.querySelectorAll('table').forEach(function (t) {
+          delete t.dataset.resizableInit;
+          t.classList.remove('resizable-init');
+          // Clear previously-set widths so we re-measure from real layout.
+          if (t.tHead && t.tHead.rows[0]) {
+            Array.from(t.tHead.rows[0].cells).forEach(function (th) {
+              th.querySelectorAll('.col-resizer').forEach(h => h.remove());
+              th.style.width = '';
+            });
+          }
+          initTable(t);
+        });
+      }
+    }, true);
+  })();
+
+  (function () {
+    var modal = document.getElementById('message-modal');
+    var titleEl = document.getElementById('message-modal-title');
+    var textEl = document.getElementById('message-modal-text');
+    var okBtn = document.getElementById('message-modal-ok');
+    var cancelBtn = document.getElementById('message-modal-cancel');
+    var pendingResolve = null;
+
+    function modalOptions(opts) {
+      if (typeof opts === 'string') return { kind: opts };
+      return opts || {};
+    }
+
+    function showModal(title, text, opts) {
+      opts = modalOptions(opts);
+      titleEl.textContent = title || '';
+      textEl.textContent = text || '';
+      modal.dataset.kind = opts.kind || 'default';
+      modal.classList.add('visible');
+      okBtn.focus();
+    }
+
+    window.showMessageModal = function(title, text, opts) {
+      opts = modalOptions(opts);
+      pendingResolve = null;
+      modal.dataset.mode = 'message';
+      okBtn.textContent = 'OK';
+      okBtn.className = 'btn';
+      cancelBtn.hidden = true;
+      showModal(title, text, opts);
+    };
+    window.closeMessageModal = function(result) {
+      modal.classList.remove('visible');
+      modal.dataset.mode = 'message';
+      modal.dataset.kind = 'default';
+      if (pendingResolve) {
+        var resolve = pendingResolve;
+        pendingResolve = null;
+        resolve(!!result);
+      }
+    };
+    window.showConfirmModal = function(title, text, opts) {
+      opts = opts || {};
+      return new Promise(function (resolve) {
+        pendingResolve = resolve;
+        modal.dataset.mode = 'confirm';
+        okBtn.textContent = opts.confirmLabel || 'Confirm';
+        okBtn.className = opts.confirmClass || 'btn primary';
+        cancelBtn.textContent = opts.cancelLabel || 'Cancel';
+        cancelBtn.hidden = false;
+        showModal(title, text, opts);
+      });
+    };
+    okBtn.addEventListener('click', function () {
+      window.closeMessageModal(pendingResolve ? true : false);
+    });
+    cancelBtn.addEventListener('click', function () {
+      window.closeMessageModal(false);
+    });
+  })();
+</script>
+
+</body>
+</html>

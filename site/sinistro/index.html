@@ -1,0 +1,3658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>sinistro — MuSCAT ObsLog</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230f1117' stroke='%2345d6b5' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='14' fill='none' stroke='%236c8cff' stroke-width='2.5'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%2345d6b5'/%3E%3Cg fill='%23e1e4ed'%3E%3Ccircle cx='12' cy='14' r='1.6'/%3E%3Ccircle cx='52' cy='18' r='1.2'/%3E%3Ccircle cx='50' cy='48' r='1.8'/%3E%3Ccircle cx='14' cy='50' r='1.4'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230f1117' stroke='%2345d6b5' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='14' fill='none' stroke='%236c8cff' stroke-width='2.5'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%2345d6b5'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../static/styles.css">
+<script src="../static/js/storage.js"></script>
+<script src="../static/js/format.js"></script>
+<script src="../static/js/jobPolling.js"></script>
+<script>
+  // Global fetch-activity tracker. Installed in <head> so it wraps window.fetch
+  // before any page script runs, giving every page a consistent loading
+  // indicator while it queries data (FOV → Gaia, ephemeris datasets, LCO
+  // schedule, …). It counts in-flight *same-origin* /api/ requests only, so the
+  // background job/status pollers (which hit /jobs/status, not /api/) never
+  // flash the bar. The loading-bar controller below subscribes via onChange.
+  (function () {
+    var origFetch = window.fetch ? window.fetch.bind(window) : null;
+    if (!origFetch) return;
+    var active = 0;
+    var tracker = { active: 0, onChange: null };
+    function notify() {
+      tracker.active = active;
+      if (typeof tracker.onChange === 'function') {
+        try { tracker.onChange(active); } catch (e) { /* never let UI break fetch */ }
+      }
+    }
+    function begin() { active++; notify(); }
+    function end() { active = Math.max(0, active - 1); notify(); }
+    function shouldTrack(input) {
+      try {
+        var urlStr = (typeof input === 'string') ? input
+                   : (input && input.url) ? input.url : String(input);
+        var u = new URL(urlStr, window.location.href);
+        var isStatus = u.pathname.endsWith('/status') || u.pathname.endsWith('/status-batch');
+        return u.origin === window.location.origin && u.pathname.indexOf('/api/') === 0 && !isStatus;
+      } catch (e) { return false; }
+    }
+    window.fetch = function (input, init) {
+      if (!shouldTrack(input)) return origFetch(input, init);
+      begin();
+      var p;
+      try {
+        p = origFetch(input, init);
+      } catch (e) {
+        end();
+        throw e;
+      }
+      p.then(end, end);
+      return p;
+    };
+    window.MuscatFetchTracker = tracker;
+  })();
+</script>
+</head>
+<body>
+<!--muscat-static-snapshot-banner-->
+<div id="snapshot-banner" role="note" style="display:flex;align-items:center;gap:.6rem;padding:.5rem .9rem;background:#3a2d00;color:#ffe9a8;font:500 .85rem/1.3 system-ui,sans-serif;border-bottom:1px solid #5a4700;"><span>&#128196; Static documentation snapshot of <strong>muscat-db</strong> &mdash; live data &amp; actions are disabled.</span><button type="button" aria-label="Dismiss" onclick="this.closest('#snapshot-banner').remove()" style="margin-left:auto;background:none;border:0;color:inherit;font-size:1.1rem;line-height:1;cursor:pointer;padding:0 .3rem;">&times;</button></div>
+<div id="loading-bar" role="progressbar" aria-label="Loading"></div>
+<nav>
+  <a class="brand" href="../" data-nav-section="home">MuSCAT-db</a>
+  <a href="../logs/" data-nav-section="obslog">ObsLog</a>
+  <a id="target-nav-link" href="../target/V1298_Tau/" data-nav-section="target">Target</a>
+  <a id="photometry-nav-link" href="../photometry/muscat/251119/V1298_Tau/" data-nav-section="photometry">Photometry</a>
+  <a id="transit-fit-nav-link" href="../transit-fit/muscat/260123/HAT-P-32b/" data-nav-section="transit-fit">Transit Fit</a>
+  <a id="ephemeris-nav-link" href="../ephemeris/" data-nav-section="ephemeris">Ephemeris</a>
+  <a id="ttv-fit-nav-link" href="../ephemeris/" style="display: none;">TTV Fit</a>
+  <a href="../jobs/" data-nav-section="jobs">Jobs</a>
+  <span class="spacer"></span>
+  <a href="../lco/schedule/" data-nav-section="lco">LCO</a>
+  <a href="../fov/" data-nav-section="fov">FOV</a>
+  <a href="../exposure/" data-nav-section="exposure">Exp Calc</a>
+  <a href="../toi/" data-nav-section="toi">TOI</a>
+  <a href="../nexsci/" data-nav-section="nexsci">NExScI</a>
+  <a href="../guide/" data-nav-section="guide" style="margin-right: 0.5rem;">Guide</a>
+  <a href="../settings/" data-nav-section="settings">Settings</a>
+  <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">
+    <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="4"/>
+      <line x1="12" y1="2"  x2="12" y2="5"/>
+      <line x1="12" y1="19" x2="12" y2="22"/>
+      <line x1="2"  y1="12" x2="5"  y2="12"/>
+      <line x1="19" y1="12" x2="22" y2="12"/>
+      <line x1="4.5"  y1="4.5"  x2="6.6"  y2="6.6"/>
+      <line x1="17.4" y1="17.4" x2="19.5" y2="19.5"/>
+      <line x1="4.5"  y1="19.5" x2="6.6"  y2="17.4"/>
+      <line x1="17.4" y1="6.6"  x2="19.5" y2="4.5"/>
+    </svg>
+    <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>
+    </svg>
+  </button>
+</nav>
+<script>
+  (function () {
+    var path = window.location.pathname.replace(/\/+$/, '') || '/';
+    var section = {
+      '/': 'home',
+      '/logs': 'obslog',
+      '/target': 'target',
+      '/photometry': 'photometry',
+      '/transit-fit': 'transit-fit',
+      '/ephemeris': 'ephemeris',
+      '/jobs': 'jobs',
+      '/fov': 'fov',
+      '/exposure': 'exposure',
+      '/toi': 'toi',
+      '/nexsci': 'nexsci',
+      '/guide': 'guide',
+      '/settings': 'settings'
+    }[path];
+
+    if (path.indexOf('/lco/') === 0) section = 'lco';
+    if (/^\/(?:muscat|muscat2|muscat3|muscat4|sinistro)(?:\/|$)/.test(path)) {
+      section = 'obslog';
+    }
+
+    document.querySelectorAll('nav a[data-nav-section]').forEach(function (link) {
+      if (link.dataset.navSection === section) {
+        link.setAttribute('aria-current', 'page');
+      }
+    });
+  })();
+</script>
+<div class="container">
+
+<h1><a href="../logs/" class="crumb">Instruments</a> / sinistro</h1>
+<table>
+<thead>
+  <tr><th>Date</th><th>CCDs</th><th>Frames</th></tr>
+</thead>
+<tbody>
+
+  <tr>
+    <td><a href="../sinistro/260704/">260704</a></td>
+    <td>1</td>
+    <td>472</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260624/">260624</a></td>
+    <td>1</td>
+    <td>618</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260616/">260616</a></td>
+    <td>1</td>
+    <td>31</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260615/">260615</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260611/">260611</a></td>
+    <td>1</td>
+    <td>20</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260610/">260610</a></td>
+    <td>1</td>
+    <td>60</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260609/">260609</a></td>
+    <td>1</td>
+    <td>40</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260607/">260607</a></td>
+    <td>1</td>
+    <td>1122</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260606/">260606</a></td>
+    <td>1</td>
+    <td>50</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260605/">260605</a></td>
+    <td>1</td>
+    <td>20</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260604/">260604</a></td>
+    <td>1</td>
+    <td>20</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260603/">260603</a></td>
+    <td>1</td>
+    <td>20</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260602/">260602</a></td>
+    <td>1</td>
+    <td>80</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260601/">260601</a></td>
+    <td>1</td>
+    <td>60</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260531/">260531</a></td>
+    <td>1</td>
+    <td>20</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260526/">260526</a></td>
+    <td>1</td>
+    <td>80</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260525/">260525</a></td>
+    <td>1</td>
+    <td>20</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260521/">260521</a></td>
+    <td>1</td>
+    <td>236</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260330/">260330</a></td>
+    <td>1</td>
+    <td>6</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260329/">260329</a></td>
+    <td>1</td>
+    <td>6</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260325/">260325</a></td>
+    <td>1</td>
+    <td>9</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260324/">260324</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260323/">260323</a></td>
+    <td>1</td>
+    <td>6</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260322/">260322</a></td>
+    <td>1</td>
+    <td>2233</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260321/">260321</a></td>
+    <td>1</td>
+    <td>6</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260320/">260320</a></td>
+    <td>1</td>
+    <td>959</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260319/">260319</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260318/">260318</a></td>
+    <td>1</td>
+    <td>6</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260317/">260317</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260316/">260316</a></td>
+    <td>1</td>
+    <td>6</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260314/">260314</a></td>
+    <td>1</td>
+    <td>31</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260313/">260313</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260312/">260312</a></td>
+    <td>1</td>
+    <td>27</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260311/">260311</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260310/">260310</a></td>
+    <td>1</td>
+    <td>33</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260309/">260309</a></td>
+    <td>1</td>
+    <td>24</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260308/">260308</a></td>
+    <td>1</td>
+    <td>32</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260307/">260307</a></td>
+    <td>1</td>
+    <td>6</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260306/">260306</a></td>
+    <td>1</td>
+    <td>365</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260305/">260305</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260304/">260304</a></td>
+    <td>1</td>
+    <td>6</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260303/">260303</a></td>
+    <td>1</td>
+    <td>36</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260302/">260302</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260301/">260301</a></td>
+    <td>1</td>
+    <td>654</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260228/">260228</a></td>
+    <td>1</td>
+    <td>24</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260227/">260227</a></td>
+    <td>1</td>
+    <td>24</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260226/">260226</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260221/">260221</a></td>
+    <td>1</td>
+    <td>72</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260220/">260220</a></td>
+    <td>1</td>
+    <td>72</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260219/">260219</a></td>
+    <td>1</td>
+    <td>81</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260218/">260218</a></td>
+    <td>1</td>
+    <td>790</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260217/">260217</a></td>
+    <td>1</td>
+    <td>507</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260216/">260216</a></td>
+    <td>1</td>
+    <td>57</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260215/">260215</a></td>
+    <td>1</td>
+    <td>81</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260214/">260214</a></td>
+    <td>1</td>
+    <td>42</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260213/">260213</a></td>
+    <td>1</td>
+    <td>48</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260212/">260212</a></td>
+    <td>1</td>
+    <td>39</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260211/">260211</a></td>
+    <td>1</td>
+    <td>24</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260210/">260210</a></td>
+    <td>1</td>
+    <td>164</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260209/">260209</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260208/">260208</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260207/">260207</a></td>
+    <td>1</td>
+    <td>39</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260206/">260206</a></td>
+    <td>1</td>
+    <td>72</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260205/">260205</a></td>
+    <td>1</td>
+    <td>63</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260204/">260204</a></td>
+    <td>1</td>
+    <td>54</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260203/">260203</a></td>
+    <td>1</td>
+    <td>24</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260202/">260202</a></td>
+    <td>1</td>
+    <td>77</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260201/">260201</a></td>
+    <td>1</td>
+    <td>49</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260131/">260131</a></td>
+    <td>1</td>
+    <td>162</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260130/">260130</a></td>
+    <td>1</td>
+    <td>234</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260129/">260129</a></td>
+    <td>1</td>
+    <td>99</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260128/">260128</a></td>
+    <td>1</td>
+    <td>40</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260125/">260125</a></td>
+    <td>1</td>
+    <td>66</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260124/">260124</a></td>
+    <td>1</td>
+    <td>80</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260123/">260123</a></td>
+    <td>1</td>
+    <td>45</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260122/">260122</a></td>
+    <td>1</td>
+    <td>372</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260121/">260121</a></td>
+    <td>1</td>
+    <td>44</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260120/">260120</a></td>
+    <td>1</td>
+    <td>108</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260119/">260119</a></td>
+    <td>1</td>
+    <td>45</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260118/">260118</a></td>
+    <td>1</td>
+    <td>63</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260117/">260117</a></td>
+    <td>1</td>
+    <td>293</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260116/">260116</a></td>
+    <td>1</td>
+    <td>69</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260115/">260115</a></td>
+    <td>1</td>
+    <td>63</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260114/">260114</a></td>
+    <td>1</td>
+    <td>72</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260113/">260113</a></td>
+    <td>1</td>
+    <td>54</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260112/">260112</a></td>
+    <td>1</td>
+    <td>218</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260111/">260111</a></td>
+    <td>1</td>
+    <td>57</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260110/">260110</a></td>
+    <td>1</td>
+    <td>72</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260109/">260109</a></td>
+    <td>1</td>
+    <td>72</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260108/">260108</a></td>
+    <td>1</td>
+    <td>128</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260107/">260107</a></td>
+    <td>1</td>
+    <td>873</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260106/">260106</a></td>
+    <td>1</td>
+    <td>45</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260105/">260105</a></td>
+    <td>1</td>
+    <td>56</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260104/">260104</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260103/">260103</a></td>
+    <td>1</td>
+    <td>55</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/260102/">260102</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251230/">251230</a></td>
+    <td>1</td>
+    <td>257</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251228/">251228</a></td>
+    <td>1</td>
+    <td>391</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251227/">251227</a></td>
+    <td>1</td>
+    <td>75</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251226/">251226</a></td>
+    <td>1</td>
+    <td>60</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251225/">251225</a></td>
+    <td>1</td>
+    <td>60</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251224/">251224</a></td>
+    <td>1</td>
+    <td>45</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251223/">251223</a></td>
+    <td>1</td>
+    <td>75</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251222/">251222</a></td>
+    <td>1</td>
+    <td>45</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251221/">251221</a></td>
+    <td>1</td>
+    <td>45</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251220/">251220</a></td>
+    <td>1</td>
+    <td>60</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251219/">251219</a></td>
+    <td>1</td>
+    <td>75</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251218/">251218</a></td>
+    <td>1</td>
+    <td>75</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251217/">251217</a></td>
+    <td>1</td>
+    <td>59</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251216/">251216</a></td>
+    <td>1</td>
+    <td>1638</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251215/">251215</a></td>
+    <td>1</td>
+    <td>60</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251214/">251214</a></td>
+    <td>1</td>
+    <td>60</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251213/">251213</a></td>
+    <td>1</td>
+    <td>45</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251212/">251212</a></td>
+    <td>1</td>
+    <td>75</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251211/">251211</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251210/">251210</a></td>
+    <td>1</td>
+    <td>60</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251209/">251209</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251208/">251208</a></td>
+    <td>1</td>
+    <td>60</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251207/">251207</a></td>
+    <td>1</td>
+    <td>44</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251206/">251206</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251201/">251201</a></td>
+    <td>1</td>
+    <td>60</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251130/">251130</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251129/">251129</a></td>
+    <td>1</td>
+    <td>45</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251128/">251128</a></td>
+    <td>1</td>
+    <td>60</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251127/">251127</a></td>
+    <td>1</td>
+    <td>36</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251126/">251126</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251125/">251125</a></td>
+    <td>1</td>
+    <td>45</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251124/">251124</a></td>
+    <td>1</td>
+    <td>357</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251123/">251123</a></td>
+    <td>1</td>
+    <td>347</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251122/">251122</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251121/">251121</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251120/">251120</a></td>
+    <td>1</td>
+    <td>45</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251119/">251119</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251118/">251118</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251117/">251117</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251116/">251116</a></td>
+    <td>1</td>
+    <td>60</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251111/">251111</a></td>
+    <td>1</td>
+    <td>394</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251110/">251110</a></td>
+    <td>1</td>
+    <td>787</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251109/">251109</a></td>
+    <td>1</td>
+    <td>105</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251103/">251103</a></td>
+    <td>1</td>
+    <td>296</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251028/">251028</a></td>
+    <td>1</td>
+    <td>251</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251020/">251020</a></td>
+    <td>1</td>
+    <td>13</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251019/">251019</a></td>
+    <td>1</td>
+    <td>159</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251015/">251015</a></td>
+    <td>1</td>
+    <td>313</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251005/">251005</a></td>
+    <td>1</td>
+    <td>567</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/251001/">251001</a></td>
+    <td>1</td>
+    <td>3</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250929/">250929</a></td>
+    <td>1</td>
+    <td>80</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250928/">250928</a></td>
+    <td>1</td>
+    <td>12</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250924/">250924</a></td>
+    <td>1</td>
+    <td>1306</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250911/">250911</a></td>
+    <td>1</td>
+    <td>326</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250910/">250910</a></td>
+    <td>1</td>
+    <td>186</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250908/">250908</a></td>
+    <td>1</td>
+    <td>217</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250906/">250906</a></td>
+    <td>1</td>
+    <td>327</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250806/">250806</a></td>
+    <td>1</td>
+    <td>1234</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250711/">250711</a></td>
+    <td>1</td>
+    <td>1253</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250710/">250710</a></td>
+    <td>1</td>
+    <td>2511</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250626/">250626</a></td>
+    <td>1</td>
+    <td>628</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250618/">250618</a></td>
+    <td>1</td>
+    <td>6</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250615/">250615</a></td>
+    <td>1</td>
+    <td>1819</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250614/">250614</a></td>
+    <td>1</td>
+    <td>12</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250613/">250613</a></td>
+    <td>1</td>
+    <td>12</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250612/">250612</a></td>
+    <td>1</td>
+    <td>6</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250611/">250611</a></td>
+    <td>1</td>
+    <td>6</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250523/">250523</a></td>
+    <td>1</td>
+    <td>1377</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250521/">250521</a></td>
+    <td>1</td>
+    <td>321</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250512/">250512</a></td>
+    <td>1</td>
+    <td>612</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250509/">250509</a></td>
+    <td>1</td>
+    <td>315</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250426/">250426</a></td>
+    <td>1</td>
+    <td>245</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250423/">250423</a></td>
+    <td>1</td>
+    <td>1034</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250407/">250407</a></td>
+    <td>1</td>
+    <td>9</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250406/">250406</a></td>
+    <td>1</td>
+    <td>9</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250405/">250405</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250404/">250404</a></td>
+    <td>1</td>
+    <td>39</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250403/">250403</a></td>
+    <td>1</td>
+    <td>6</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250402/">250402</a></td>
+    <td>1</td>
+    <td>3</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250401/">250401</a></td>
+    <td>1</td>
+    <td>9</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250331/">250331</a></td>
+    <td>1</td>
+    <td>7</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250330/">250330</a></td>
+    <td>1</td>
+    <td>3</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250329/">250329</a></td>
+    <td>1</td>
+    <td>3</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250328/">250328</a></td>
+    <td>1</td>
+    <td>9</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250319/">250319</a></td>
+    <td>1</td>
+    <td>597</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250316/">250316</a></td>
+    <td>1</td>
+    <td>110</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250315/">250315</a></td>
+    <td>1</td>
+    <td>470</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250313/">250313</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250308/">250308</a></td>
+    <td>1</td>
+    <td>315</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250307/">250307</a></td>
+    <td>1</td>
+    <td>937</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250306/">250306</a></td>
+    <td>1</td>
+    <td>386</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250224/">250224</a></td>
+    <td>1</td>
+    <td>12</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250222/">250222</a></td>
+    <td>1</td>
+    <td>325</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250221/">250221</a></td>
+    <td>1</td>
+    <td>148</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250219/">250219</a></td>
+    <td>1</td>
+    <td>790</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250218/">250218</a></td>
+    <td>1</td>
+    <td>942</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250217/">250217</a></td>
+    <td>1</td>
+    <td>4</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250216/">250216</a></td>
+    <td>1</td>
+    <td>935</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250205/">250205</a></td>
+    <td>1</td>
+    <td>202</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250131/">250131</a></td>
+    <td>1</td>
+    <td>11</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250130/">250130</a></td>
+    <td>1</td>
+    <td>619</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250129/">250129</a></td>
+    <td>1</td>
+    <td>123</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250128/">250128</a></td>
+    <td>1</td>
+    <td>1421</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250127/">250127</a></td>
+    <td>1</td>
+    <td>91</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250126/">250126</a></td>
+    <td>1</td>
+    <td>213</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250123/">250123</a></td>
+    <td>1</td>
+    <td>426</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250118/">250118</a></td>
+    <td>1</td>
+    <td>265</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250112/">250112</a></td>
+    <td>1</td>
+    <td>289</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250110/">250110</a></td>
+    <td>1</td>
+    <td>494</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250109/">250109</a></td>
+    <td>1</td>
+    <td>488</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250102/">250102</a></td>
+    <td>1</td>
+    <td>12</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/250101/">250101</a></td>
+    <td>1</td>
+    <td>12</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241228/">241228</a></td>
+    <td>1</td>
+    <td>491</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241225/">241225</a></td>
+    <td>1</td>
+    <td>190</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241221/">241221</a></td>
+    <td>1</td>
+    <td>479</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241219/">241219</a></td>
+    <td>1</td>
+    <td>225</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241218/">241218</a></td>
+    <td>1</td>
+    <td>168</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241216/">241216</a></td>
+    <td>1</td>
+    <td>142</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241129/">241129</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241128/">241128</a></td>
+    <td>1</td>
+    <td>34</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241126/">241126</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241124/">241124</a></td>
+    <td>1</td>
+    <td>532</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241123/">241123</a></td>
+    <td>1</td>
+    <td>913</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241122/">241122</a></td>
+    <td>1</td>
+    <td>27</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241120/">241120</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241115/">241115</a></td>
+    <td>1</td>
+    <td>433</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241113/">241113</a></td>
+    <td>1</td>
+    <td>45</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241111/">241111</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241110/">241110</a></td>
+    <td>1</td>
+    <td>32</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241104/">241104</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241103/">241103</a></td>
+    <td>1</td>
+    <td>29</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241102/">241102</a></td>
+    <td>1</td>
+    <td>44</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241101/">241101</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241031/">241031</a></td>
+    <td>1</td>
+    <td>594</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241030/">241030</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241029/">241029</a></td>
+    <td>1</td>
+    <td>40</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241017/">241017</a></td>
+    <td>1</td>
+    <td>578</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241016/">241016</a></td>
+    <td>1</td>
+    <td>3</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241010/">241010</a></td>
+    <td>1</td>
+    <td>282</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/241001/">241001</a></td>
+    <td>1</td>
+    <td>5</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240921/">240921</a></td>
+    <td>1</td>
+    <td>5</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240920/">240920</a></td>
+    <td>1</td>
+    <td>40</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240919/">240919</a></td>
+    <td>1</td>
+    <td>10</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240913/">240913</a></td>
+    <td>1</td>
+    <td>351</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240912/">240912</a></td>
+    <td>1</td>
+    <td>5</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240730/">240730</a></td>
+    <td>1</td>
+    <td>88</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240728/">240728</a></td>
+    <td>1</td>
+    <td>159</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240727/">240727</a></td>
+    <td>1</td>
+    <td>159</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240724/">240724</a></td>
+    <td>1</td>
+    <td>464</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240722/">240722</a></td>
+    <td>1</td>
+    <td>155</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240721/">240721</a></td>
+    <td>1</td>
+    <td>180</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240720/">240720</a></td>
+    <td>1</td>
+    <td>156</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240719/">240719</a></td>
+    <td>1</td>
+    <td>26</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240717/">240717</a></td>
+    <td>1</td>
+    <td>156</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240715/">240715</a></td>
+    <td>1</td>
+    <td>441</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240702/">240702</a></td>
+    <td>1</td>
+    <td>5</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240701/">240701</a></td>
+    <td>1</td>
+    <td>5</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240506/">240506</a></td>
+    <td>1</td>
+    <td>1009</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240501/">240501</a></td>
+    <td>1</td>
+    <td>334</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240430/">240430</a></td>
+    <td>1</td>
+    <td>23</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240429/">240429</a></td>
+    <td>1</td>
+    <td>484</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240426/">240426</a></td>
+    <td>1</td>
+    <td>354</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240423/">240423</a></td>
+    <td>1</td>
+    <td>91</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240422/">240422</a></td>
+    <td>1</td>
+    <td>42</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240421/">240421</a></td>
+    <td>1</td>
+    <td>35</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240419/">240419</a></td>
+    <td>1</td>
+    <td>13</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240418/">240418</a></td>
+    <td>1</td>
+    <td>40</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240417/">240417</a></td>
+    <td>1</td>
+    <td>25</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240416/">240416</a></td>
+    <td>1</td>
+    <td>36</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240415/">240415</a></td>
+    <td>1</td>
+    <td>35</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240414/">240414</a></td>
+    <td>1</td>
+    <td>10</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240413/">240413</a></td>
+    <td>1</td>
+    <td>20</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240412/">240412</a></td>
+    <td>1</td>
+    <td>25</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240411/">240411</a></td>
+    <td>1</td>
+    <td>123</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240410/">240410</a></td>
+    <td>1</td>
+    <td>581</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240409/">240409</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240408/">240408</a></td>
+    <td>1</td>
+    <td>50</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240407/">240407</a></td>
+    <td>1</td>
+    <td>40</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240406/">240406</a></td>
+    <td>1</td>
+    <td>288</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240405/">240405</a></td>
+    <td>1</td>
+    <td>25</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240404/">240404</a></td>
+    <td>1</td>
+    <td>50</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240403/">240403</a></td>
+    <td>1</td>
+    <td>50</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240402/">240402</a></td>
+    <td>1</td>
+    <td>537</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240401/">240401</a></td>
+    <td>1</td>
+    <td>708</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240331/">240331</a></td>
+    <td>1</td>
+    <td>5</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240330/">240330</a></td>
+    <td>1</td>
+    <td>10</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240329/">240329</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240328/">240328</a></td>
+    <td>1</td>
+    <td>25</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240327/">240327</a></td>
+    <td>1</td>
+    <td>380</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240326/">240326</a></td>
+    <td>1</td>
+    <td>20</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240325/">240325</a></td>
+    <td>1</td>
+    <td>45</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240322/">240322</a></td>
+    <td>1</td>
+    <td>10</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240321/">240321</a></td>
+    <td>1</td>
+    <td>29</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240320/">240320</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240319/">240319</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240318/">240318</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240317/">240317</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240316/">240316</a></td>
+    <td>1</td>
+    <td>5</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240314/">240314</a></td>
+    <td>1</td>
+    <td>25</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240313/">240313</a></td>
+    <td>1</td>
+    <td>5</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240312/">240312</a></td>
+    <td>1</td>
+    <td>370</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240311/">240311</a></td>
+    <td>1</td>
+    <td>40</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240310/">240310</a></td>
+    <td>1</td>
+    <td>40</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240309/">240309</a></td>
+    <td>1</td>
+    <td>35</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240308/">240308</a></td>
+    <td>1</td>
+    <td>25</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240307/">240307</a></td>
+    <td>1</td>
+    <td>200</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240306/">240306</a></td>
+    <td>1</td>
+    <td>25</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240305/">240305</a></td>
+    <td>1</td>
+    <td>25</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240304/">240304</a></td>
+    <td>1</td>
+    <td>219</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240303/">240303</a></td>
+    <td>1</td>
+    <td>35</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240302/">240302</a></td>
+    <td>1</td>
+    <td>344</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240301/">240301</a></td>
+    <td>1</td>
+    <td>20</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240229/">240229</a></td>
+    <td>1</td>
+    <td>25</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240228/">240228</a></td>
+    <td>1</td>
+    <td>25</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240227/">240227</a></td>
+    <td>1</td>
+    <td>25</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240226/">240226</a></td>
+    <td>1</td>
+    <td>518</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240225/">240225</a></td>
+    <td>1</td>
+    <td>558</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240224/">240224</a></td>
+    <td>1</td>
+    <td>35</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240223/">240223</a></td>
+    <td>1</td>
+    <td>40</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240222/">240222</a></td>
+    <td>1</td>
+    <td>30</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240221/">240221</a></td>
+    <td>1</td>
+    <td>366</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240220/">240220</a></td>
+    <td>1</td>
+    <td>553</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240219/">240219</a></td>
+    <td>1</td>
+    <td>40</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240218/">240218</a></td>
+    <td>1</td>
+    <td>25</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240217/">240217</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240216/">240216</a></td>
+    <td>1</td>
+    <td>310</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240215/">240215</a></td>
+    <td>1</td>
+    <td>20</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240214/">240214</a></td>
+    <td>1</td>
+    <td>207</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240213/">240213</a></td>
+    <td>1</td>
+    <td>305</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240212/">240212</a></td>
+    <td>1</td>
+    <td>20</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240211/">240211</a></td>
+    <td>1</td>
+    <td>20</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240210/">240210</a></td>
+    <td>1</td>
+    <td>10</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240208/">240208</a></td>
+    <td>1</td>
+    <td>10</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240207/">240207</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240206/">240206</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240205/">240205</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240204/">240204</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240203/">240203</a></td>
+    <td>1</td>
+    <td>10</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240202/">240202</a></td>
+    <td>1</td>
+    <td>15</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240201/">240201</a></td>
+    <td>1</td>
+    <td>10</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240131/">240131</a></td>
+    <td>1</td>
+    <td>43</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240130/">240130</a></td>
+    <td>1</td>
+    <td>241</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240129/">240129</a></td>
+    <td>1</td>
+    <td>750</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240128/">240128</a></td>
+    <td>1</td>
+    <td>105</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240127/">240127</a></td>
+    <td>1</td>
+    <td>63</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240126/">240126</a></td>
+    <td>1</td>
+    <td>121</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240125/">240125</a></td>
+    <td>1</td>
+    <td>521</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240124/">240124</a></td>
+    <td>1</td>
+    <td>10</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240123/">240123</a></td>
+    <td>1</td>
+    <td>115</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240122/">240122</a></td>
+    <td>1</td>
+    <td>10</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240121/">240121</a></td>
+    <td>1</td>
+    <td>10</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240120/">240120</a></td>
+    <td>1</td>
+    <td>95</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240119/">240119</a></td>
+    <td>1</td>
+    <td>10</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240118/">240118</a></td>
+    <td>1</td>
+    <td>10</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240115/">240115</a></td>
+    <td>1</td>
+    <td>3</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240112/">240112</a></td>
+    <td>1</td>
+    <td>407</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240106/">240106</a></td>
+    <td>1</td>
+    <td>10</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240105/">240105</a></td>
+    <td>1</td>
+    <td>10</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240104/">240104</a></td>
+    <td>1</td>
+    <td>293</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/240103/">240103</a></td>
+    <td>1</td>
+    <td>168</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231230/">231230</a></td>
+    <td>1</td>
+    <td>404</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231228/">231228</a></td>
+    <td>1</td>
+    <td>12</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231223/">231223</a></td>
+    <td>1</td>
+    <td>1340</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231217/">231217</a></td>
+    <td>1</td>
+    <td>356</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231210/">231210</a></td>
+    <td>1</td>
+    <td>312</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231206/">231206</a></td>
+    <td>1</td>
+    <td>12</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231130/">231130</a></td>
+    <td>1</td>
+    <td>86</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231111/">231111</a></td>
+    <td>1</td>
+    <td>586</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231110/">231110</a></td>
+    <td>1</td>
+    <td>221</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231109/">231109</a></td>
+    <td>1</td>
+    <td>1000</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231108/">231108</a></td>
+    <td>1</td>
+    <td>36</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231106/">231106</a></td>
+    <td>1</td>
+    <td>92</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231031/">231031</a></td>
+    <td>1</td>
+    <td>36</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231024/">231024</a></td>
+    <td>1</td>
+    <td>36</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231022/">231022</a></td>
+    <td>1</td>
+    <td>1000</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231021/">231021</a></td>
+    <td>1</td>
+    <td>56</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231018/">231018</a></td>
+    <td>1</td>
+    <td>12</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231017/">231017</a></td>
+    <td>1</td>
+    <td>812</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231014/">231014</a></td>
+    <td>1</td>
+    <td>518</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231009/">231009</a></td>
+    <td>1</td>
+    <td>48</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231008/">231008</a></td>
+    <td>1</td>
+    <td>1000</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231007/">231007</a></td>
+    <td>1</td>
+    <td>28</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/231006/">231006</a></td>
+    <td>1</td>
+    <td>906</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230924/">230924</a></td>
+    <td>1</td>
+    <td>438</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230921/">230921</a></td>
+    <td>1</td>
+    <td>230</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230910/">230910</a></td>
+    <td>1</td>
+    <td>197</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230903/">230903</a></td>
+    <td>1</td>
+    <td>12</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230824/">230824</a></td>
+    <td>1</td>
+    <td>560</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230816/">230816</a></td>
+    <td>1</td>
+    <td>503</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230731/">230731</a></td>
+    <td>1</td>
+    <td>372</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230722/">230722</a></td>
+    <td>1</td>
+    <td>346</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230716/">230716</a></td>
+    <td>1</td>
+    <td>336</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230715/">230715</a></td>
+    <td>1</td>
+    <td>5</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230714/">230714</a></td>
+    <td>1</td>
+    <td>3</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230713/">230713</a></td>
+    <td>1</td>
+    <td>5</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230519/">230519</a></td>
+    <td>1</td>
+    <td>453</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230518/">230518</a></td>
+    <td>1</td>
+    <td>78</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230514/">230514</a></td>
+    <td>1</td>
+    <td>278</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230509/">230509</a></td>
+    <td>1</td>
+    <td>4</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230418/">230418</a></td>
+    <td>1</td>
+    <td>178</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230415/">230415</a></td>
+    <td>1</td>
+    <td>162</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230413/">230413</a></td>
+    <td>1</td>
+    <td>105</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230320/">230320</a></td>
+    <td>1</td>
+    <td>239</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230313/">230313</a></td>
+    <td>1</td>
+    <td>199</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230302/">230302</a></td>
+    <td>1</td>
+    <td>799</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230219/">230219</a></td>
+    <td>1</td>
+    <td>630</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230211/">230211</a></td>
+    <td>1</td>
+    <td>1766</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230209/">230209</a></td>
+    <td>1</td>
+    <td>443</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230125/">230125</a></td>
+    <td>1</td>
+    <td>534</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230124/">230124</a></td>
+    <td>1</td>
+    <td>924</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230123/">230123</a></td>
+    <td>1</td>
+    <td>1157</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230115/">230115</a></td>
+    <td>1</td>
+    <td>1539</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230112/">230112</a></td>
+    <td>1</td>
+    <td>78</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230111/">230111</a></td>
+    <td>1</td>
+    <td>950</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/230105/">230105</a></td>
+    <td>1</td>
+    <td>1740</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/221231/">221231</a></td>
+    <td>1</td>
+    <td>900</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/221230/">221230</a></td>
+    <td>1</td>
+    <td>501</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/221227/">221227</a></td>
+    <td>1</td>
+    <td>416</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/221225/">221225</a></td>
+    <td>1</td>
+    <td>524</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/221217/">221217</a></td>
+    <td>1</td>
+    <td>518</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/221216/">221216</a></td>
+    <td>1</td>
+    <td>794</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/221213/">221213</a></td>
+    <td>1</td>
+    <td>96</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/221212/">221212</a></td>
+    <td>1</td>
+    <td>206</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/221210/">221210</a></td>
+    <td>1</td>
+    <td>88</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/221209/">221209</a></td>
+    <td>1</td>
+    <td>181</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/221201/">221201</a></td>
+    <td>1</td>
+    <td>1318</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/221129/">221129</a></td>
+    <td>1</td>
+    <td>214</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/221128/">221128</a></td>
+    <td>1</td>
+    <td>791</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/221104/">221104</a></td>
+    <td>1</td>
+    <td>1048</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/221103/">221103</a></td>
+    <td>1</td>
+    <td>277</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/221008/">221008</a></td>
+    <td>1</td>
+    <td>889</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/221004/">221004</a></td>
+    <td>1</td>
+    <td>6</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/220912/">220912</a></td>
+    <td>1</td>
+    <td>355</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/220905/">220905</a></td>
+    <td>1</td>
+    <td>275</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/220818/">220818</a></td>
+    <td>1</td>
+    <td>154</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/220606/">220606</a></td>
+    <td>1</td>
+    <td>554</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/220321/">220321</a></td>
+    <td>1</td>
+    <td>154</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/220309/">220309</a></td>
+    <td>1</td>
+    <td>513</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/220305/">220305</a></td>
+    <td>1</td>
+    <td>557</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/220226/">220226</a></td>
+    <td>1</td>
+    <td>824</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/220218/">220218</a></td>
+    <td>1</td>
+    <td>791</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/220215/">220215</a></td>
+    <td>1</td>
+    <td>233</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/220207/">220207</a></td>
+    <td>1</td>
+    <td>216</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/220131/">220131</a></td>
+    <td>1</td>
+    <td>430</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/220130/">220130</a></td>
+    <td>1</td>
+    <td>858</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/220129/">220129</a></td>
+    <td>1</td>
+    <td>835</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/220108/">220108</a></td>
+    <td>1</td>
+    <td>998</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/220106/">220106</a></td>
+    <td>1</td>
+    <td>502</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/211231/">211231</a></td>
+    <td>1</td>
+    <td>299</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/211225/">211225</a></td>
+    <td>1</td>
+    <td>661</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/211111/">211111</a></td>
+    <td>1</td>
+    <td>1071</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/211022/">211022</a></td>
+    <td>1</td>
+    <td>272</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/211018/">211018</a></td>
+    <td>1</td>
+    <td>12</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/211008/">211008</a></td>
+    <td>1</td>
+    <td>406</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/211004/">211004</a></td>
+    <td>1</td>
+    <td>3</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/211003/">211003</a></td>
+    <td>1</td>
+    <td>3</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/211002/">211002</a></td>
+    <td>1</td>
+    <td>3</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/210917/">210917</a></td>
+    <td>1</td>
+    <td>177</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/210615/">210615</a></td>
+    <td>1</td>
+    <td>176</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/210521/">210521</a></td>
+    <td>1</td>
+    <td>39</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/210520/">210520</a></td>
+    <td>1</td>
+    <td>275</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/210519/">210519</a></td>
+    <td>1</td>
+    <td>79</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/210511/">210511</a></td>
+    <td>1</td>
+    <td>181</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/210504/">210504</a></td>
+    <td>1</td>
+    <td>167</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/210427/">210427</a></td>
+    <td>1</td>
+    <td>196</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/210306/">210306</a></td>
+    <td>1</td>
+    <td>193</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/210220/">210220</a></td>
+    <td>1</td>
+    <td>203</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/210211/">210211</a></td>
+    <td>1</td>
+    <td>203</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/210126/">210126</a></td>
+    <td>1</td>
+    <td>785</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/201226/">201226</a></td>
+    <td>1</td>
+    <td>156</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/201127/">201127</a></td>
+    <td>1</td>
+    <td>292</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/201009/">201009</a></td>
+    <td>1</td>
+    <td>284</td>
+  </tr>
+
+  <tr>
+    <td><a href="../sinistro/200902/">200902</a></td>
+    <td>1</td>
+    <td>159</td>
+  </tr>
+
+</tbody>
+</table>
+
+</div>
+<div id="status-bar" role="status" aria-live="polite">
+  <span class="dot"></span>
+  <span id="status-text">Loading…</span>
+</div>
+
+<div id="message-modal" data-mode="message" data-kind="default" role="dialog" aria-modal="true" aria-labelledby="message-modal-title" aria-describedby="message-modal-text">
+  <div class="modal-box">
+    <p id="message-modal-title" class="modal-title"></p>
+    <p id="message-modal-text" class="modal-text"></p>
+    <div class="modal-actions">
+      <button class="btn" id="message-modal-cancel" type="button" hidden>Cancel</button>
+      <button class="btn" id="message-modal-ok" type="button">OK</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const root = document.documentElement;
+    const btn = document.getElementById('theme-toggle');
+    if (window.MuscatRouteState) window.MuscatRouteState.applyNavbar();
+    const stored = localStorage.getItem('muscat-theme');
+    apply(stored || 'light');
+    btn.addEventListener('click', function () {
+      const next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      apply(next);
+      localStorage.setItem('muscat-theme', next);
+    });
+    function apply(t) { root.setAttribute('data-theme', t); }
+  })();
+
+  (function () {
+    const bar    = document.getElementById('loading-bar');
+    const status = document.getElementById('status-bar');
+    const text   = document.getElementById('status-text');
+    const table  = document.getElementById('targets-table');
+
+    // The bar is visible while ANY of these is true: the page is still loading,
+    // a tracked background job is active, or a same-origin /api/ request is in
+    // flight. A running job keeps it up indefinitely (that label wins over the
+    // transient page-load / fetch labels). It only slides away once all three
+    // are false.
+    let pageLoading = true;
+    let pageLabel   = 'Loading…';
+    let jobRunning  = false;
+    let jobLabel    = '';
+    let fetchActive = false;
+    let fetchLabel  = 'Loading…';
+    let hideTimer   = null;
+
+    if (table) {
+      const rows = table.tBodies[0] ? table.tBodies[0].rows.length : 0;
+      pageLabel = 'Rendering ' + rows.toLocaleString() + ' targets…';
+    }
+
+    function render() {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      if (pageLoading || jobRunning || fetchActive) {
+        bar.classList.remove('done');
+        status.classList.add('visible');
+        text.textContent = jobRunning ? jobLabel : (pageLoading ? pageLabel : fetchLabel);
+      } else {
+        bar.classList.add('done');
+        if (status.classList.contains('visible')) {
+          text.textContent = 'Ready';
+          hideTimer = setTimeout(function () { status.classList.remove('visible'); }, 700);
+        }
+      }
+      // Keep the bar in the DOM so we can re-show it on the next navigation.
+    }
+
+    function showLoading(label) {
+      pageLabel = label || 'Loading…';
+      pageLoading = true;
+      render();
+    }
+    function done() {
+      pageLoading = false;
+      render();
+    }
+    // Called by the site-wide background-job watcher below.
+    function setJob(running, label) {
+      jobRunning = !!running;
+      jobLabel   = label || 'Running…';
+      render();
+    }
+    // Called by the global /api/ fetch tracker (installed in <head>). A generic
+    // label is used unless a page has set its own via showLoading.
+    function setFetch(active, label) {
+      fetchActive = !!active;
+      fetchLabel  = label || 'Loading…';
+      render();
+    }
+    window.showLoading = showLoading;
+    window.done = done;
+    window.MuscatLoadingBar = { showLoading: showLoading, done: done, setJob: setJob, setFetch: setFetch };
+
+    // Subscribe to in-flight /api/ requests so every page shows the same
+    // loading indicator while fetching data, with no per-page wiring.
+    if (window.MuscatFetchTracker) {
+      window.MuscatFetchTracker.onChange = function (n) { setFetch(n > 0); };
+      setFetch(window.MuscatFetchTracker.active > 0);
+    }
+
+    if (document.readyState === 'complete') {
+      done();
+    } else {
+      showLoading(pageLabel);
+      window.addEventListener('load', done);
+    }
+
+    // Re-show the bar when the user navigates away via a same-origin link.
+    document.addEventListener('click', function (e) {
+      const link = e.target.closest('a');
+      if (!link) return;
+      if (link.target && link.target !== '_self') return;
+      if (link.hasAttribute('download')) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+      const href = link.getAttribute('href');
+      if (!href || href.startsWith('#') || href.startsWith('javascript:') || href.startsWith('mailto:')) return;
+      const url = new URL(link.href, window.location.href);
+      if (url.origin !== window.location.origin) return;
+      // Skip pure in-page hash changes (same path, different fragment).
+      if (url.pathname === window.location.pathname && url.hash) return;
+      showLoading('Loading…');
+    }, true);
+
+    // Restore on bfcache restores (back/forward navigation).
+    window.addEventListener('pageshow', function (e) {
+      if (e.persisted) done();
+    });
+  })();
+
+  // Site-wide background-job watcher: keeps the loading bar up on ANY page for
+  // as long as a job the user launched (saved under `phot:job` / `fit:job`) is
+  // still active on the server, and takes it down once that job finishes.
+  (function () {
+    const st  = window.MuscatStorage;
+    const bar = window.MuscatLoadingBar;
+    if (!st || !bar) return;
+
+    const POLL_MS = 4000;
+    let timer = null;
+
+    // Reconstruct the canonical job key: "<type>:<inst>/<date>/<target>[/<run_id>]"
+    // (server strips spaces from the target — see photometry.job_key).
+    function jobKey(type, j) {
+      if (!j || !j.inst || !j.date || !j.target) return null;
+      let k = type + ':' + j.inst + '/' + j.date + '/' + String(j.target).replace(/ /g, '');
+      if (j.run_id) k += '/' + j.run_id;
+      return k;
+    }
+    // TTV runs are keyed on a slugged run name rather than a run_id — see
+    // ttv_fit.ttv_job_key() / jobs.slugify_run_name().
+    function ttvJobKey(j) {
+      if (!j || !j.target) return null;
+      const slug = String(j.run_name || '').trim().toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40)
+        .replace(/^_+|_+$/g, '') || 'default';
+      return 'ttv_fit:' + String(j.target).replace(/ /g, '') + '/' + slug;
+    }
+    function trackedKeys() {
+      const keys = [];
+      const p = jobKey('photometry', st.getJSON('phot:job', null));
+      if (p) keys.push(p);
+      const f = jobKey('transit_fit', st.getJSON('fit:job', null));
+      if (f) keys.push(f);
+      const t = ttvJobKey(st.getJSON('muscat-ttv-job', null));
+      if (t) keys.push(t);
+      return keys;
+    }
+    function stop() { if (timer) { clearTimeout(timer); timer = null; } }
+    function schedule() {
+      if (!timer) timer = setTimeout(function () { timer = null; tick(); }, POLL_MS);
+    }
+    function labelFor(states) {
+      if (states.length === 1) {
+        return states[0] === 'pending' ? 'Queued — waiting to start…' : 'Running job…';
+      }
+      return 'Running ' + states.length + ' jobs…';
+    }
+    function tick() {
+      const tracked = trackedKeys();
+      if (tracked.length === 0) { bar.setJob(false, ''); stop(); return; }
+      fetch('/api/jobs/status?active_only=1', { headers: { 'X-Requested-With': 'fetch' } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          const active = {};
+          (d.active || []).forEach(function (a) { active[a.key] = a.state; });
+          const mine = tracked.filter(function (k) { return active[k]; });
+          if (mine.length > 0) {
+            bar.setJob(true, labelFor(mine.map(function (k) { return active[k]; })));
+            schedule();
+          } else {
+            // Tracked job(s) are no longer active — finished, cancelled, or
+            // cleared. Take the bar down and stop polling until the next launch
+            // or navigation re-checks. (The launching page owns clearing the
+            // localStorage key on its own terminal-state handling.)
+            bar.setJob(false, '');
+            stop();
+          }
+        })
+        .catch(function () { schedule(); });
+    }
+
+    // Let a page trigger an immediate re-check right after it launches a job,
+    // instead of waiting up to POLL_MS for the next tick.
+    window.MuscatJobIndicator = { refresh: function () { stop(); tick(); } };
+
+    if (trackedKeys().length > 0) tick();
+  })();
+
+  // ----- resizable table columns ------------------------------------------
+  (function () {
+    function initTable(table) {
+      if (table.dataset.resizableInit === '1') return;
+      if (table.offsetParent === null) return; // Skip if table is currently hidden
+      table.dataset.resizableInit = '1';
+      const headRow = table.tHead && table.tHead.rows[0];
+      if (!headRow) return;
+      const ths = Array.from(headRow.cells);
+      const tableId = table.id || 'tbl-' + Math.random().toString(36).slice(2);
+      // Lock in current natural widths (measured under table-layout: auto) so
+      // dragging one column doesn't shove the others around.
+      const measured = ths.map(function (th, i) {
+        const stored = localStorage.getItem('colw:' + tableId + ':' + i);
+        if (stored) {
+          const w = parseFloat(stored);
+          if (w > 30) {
+            th.style.maxWidth = 'none';
+            return w;
+          }
+        }
+        return th.getBoundingClientRect().width;
+      });
+      let hasStored = false;
+      for (let i = 0; i < ths.length; i++) {
+        if (localStorage.getItem('colw:' + tableId + ':' + i)) {
+          hasStored = true;
+          break;
+        }
+      }
+      if (!hasStored) {
+        const containerW = table.parentElement.clientWidth;
+        let totalMeasured = 0;
+        measured.forEach(function (w) {
+          totalMeasured += w;
+        });
+        ths.forEach(function (th, i) {
+          const share = totalMeasured > 0 ? (measured[i] / totalMeasured) : (1 / ths.length);
+          th.style.width = (containerW * share) + 'px';
+          th.style.maxWidth = 'none';
+        });
+      } else {
+        ths.forEach(function (th, i) {
+          th.style.width = measured[i] + 'px';
+        });
+      }
+
+      // Now switch to fixed layout so column widths are honoured exactly.
+      table.classList.add('resizable-init');
+      ths.forEach(function (th, i) {
+        if (i === ths.length - 1) return;  // no handle on the last column
+        const handle = document.createElement('div');
+        handle.className = 'col-resizer';
+        handle.title = 'Drag to resize column';
+        th.appendChild(handle);
+        handle.addEventListener('mousedown', function (e) {
+          startResize(e, table, th, th.cellIndex, tableId);
+        });
+        handle.addEventListener('dblclick', function () {
+          // Double-click resets this column to auto-fit content.
+          th.style.width = '';
+          th.style.maxWidth = '';
+          const currentIdx = th.cellIndex;
+          localStorage.removeItem('colw:' + tableId + ':' + currentIdx);
+          th.style.width = th.getBoundingClientRect().width + 'px';
+          localStorage.setItem('colw:' + tableId + ':' + currentIdx,
+                               parseFloat(th.style.width));
+        });
+      });
+    }
+
+    function startResize(e, table, th, idx, tableId) {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = th.getBoundingClientRect().width;
+      const handle = e.currentTarget;
+      handle.classList.add('resizing');
+      th.classList.add('resizing');
+      th.style.maxWidth = 'none';
+      document.body.style.cursor = 'col-resize';
+      function onMove(ev) {
+        const minW = th.dataset.sortAttr === 'filters' ? 15 : 40;
+        const newW = Math.max(minW, startW + (ev.clientX - startX));
+        th.style.width = newW + 'px';
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        handle.classList.remove('resizing');
+        th.classList.remove('resizing');
+        document.body.style.cursor = '';
+        const finalW = parseFloat(th.style.width);
+        if (!isNaN(finalW)) {
+          localStorage.setItem('colw:' + tableId + ':' + idx, finalW);
+        }
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    }
+
+    function initAll() {
+      document.querySelectorAll('table').forEach(initTable);
+    }
+    window.initTable = initTable;
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAll);
+    } else {
+      initAll();
+    }
+
+    // Re-init tables inside <details> when expanded (their cells have no
+    // measured width while hidden).
+    // ----- click-to-sort columns ------------------------------------------
+    function raToHours(s) {
+      const m = (s || '').match(/^\s*(-?\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      return parseInt(m[1], 10) + parseInt(m[2], 10)/60 + (parseFloat(m[3]) || 0)/3600;
+    }
+    function decToDegrees(s) {
+      const m = (s || '').match(/^\s*([+-]?)(\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      const sign = m[1] === '-' ? -1 : 1;
+      return sign * (parseInt(m[2], 10) + parseInt(m[3], 10)/60 + (parseFloat(m[4]) || 0)/3600);
+    }
+
+    function detectKind(values) {
+      const non = values.filter(v => v && v.trim() !== '');
+      if (!non.length) return 'string';
+      if (non.every(v => /^[+-]\d{1,2}:\d{2}(:\d+(\.\d+)?)?$/.test(v.trim()))) return 'dec';
+      if (non.every(v => /^\d{1,2}:\d{2}(:\d+(\.\d+)?)?$/.test(v.trim()))) return 'ra';
+      if (non.every(v => !isNaN(parseFloat(v.replace(/[^\d.+\-eE]/g, ''))))) return 'number';
+      return 'string';
+    }
+    function keyFor(kind, raw) {
+      if (raw == null) return null;
+      if (kind === 'number') {
+        const n = parseFloat(raw.replace(/[^\d.+\-eE]/g, ''));
+        return isNaN(n) ? null : n;
+      }
+      if (kind === 'ra')  { const h = raToHours(raw);   return isNaN(h) ? null : h; }
+      if (kind === 'dec') { const d = decToDegrees(raw); return isNaN(d) ? null : d; }
+      return (raw || '').toString().toLowerCase();
+    }
+    function rowKey(row, colIdx, sortAttr, kind) {
+      if (sortAttr && row.dataset[sortAttr] !== undefined) {
+        const raw = row.dataset[sortAttr];
+        if (kind === 'number') {
+          const n = parseFloat(raw);
+          return isNaN(n) ? null : n;
+        }
+        if (kind === 'ra')  { const h = raToHours(raw);    return isNaN(h) ? null : h; }
+        if (kind === 'dec') { const d = decToDegrees(raw); return isNaN(d) ? null : d; }
+        return (raw || '').toString().toLowerCase();
+      }
+      const cell = row.cells[colIdx];
+      return keyFor(kind, cell ? cell.textContent.trim() : '');
+    }
+
+    function initSortable(table) {
+      if (table.dataset.sortableInit === '1') return;
+      table.dataset.sortableInit = '1';
+      const headerRow = table.tHead && table.tHead.rows[0];
+      const tbody = table.tBodies[0];
+      if (!headerRow || !tbody) return;
+      // Snapshot original row order so a third click can restore it.
+      // Pair detail rows (log-row) with their primary so restore keeps them together.
+      const allInitRows = Array.from(tbody.rows);
+      const initPairs = [];
+      for (let i = 0; i < allInitRows.length; i++) {
+        const primary = allInitRows[i];
+        const detail = (i + 1 < allInitRows.length && allInitRows[i + 1].classList.contains('log-row'))
+          ? allInitRows[++i] : null;
+        initPairs.push({ primary, detail });
+      }
+      initPairs.forEach((p, i) => { p.primary.dataset._origIdx = i; });
+      const originalOrder = initPairs;
+
+      Array.from(headerRow.cells).forEach((th, colIdx) => {
+        if (th.classList.contains('no-sort')) return;
+        th.classList.add('sortable');
+        th.addEventListener('click', function (e) {
+          if (e.target.closest('.col-resizer')) return;  // ignore handle clicks
+          const dir = th.dataset.sortDir;
+          const next = dir === 'asc' ? 'desc' : dir === 'desc' ? '' : 'asc';
+          Array.from(headerRow.cells).forEach(h => h.removeAttribute('data-sort-dir'));
+          if (next) th.dataset.sortDir = next;
+
+          if (!next) {
+            // Restore original order (pairs kept together).
+            originalOrder.forEach(p => {
+              tbody.appendChild(p.primary || p);
+              if (p.detail) tbody.appendChild(p.detail);
+            });
+            return;
+          }
+
+          // Decide sort kind: explicit hint or auto-detect from cell text.
+          let kind = th.dataset.sortType;
+          const currentIdx = th.cellIndex;
+          if (!kind) {
+            const samples = Array.from(tbody.rows).slice(0, 25)
+              .map(r => r.cells[currentIdx] ? r.cells[currentIdx].textContent.trim() : '');
+            kind = detectKind(samples);
+          }
+          const sortAttr = th.dataset.sortAttr;  // camelCase data-* key
+
+          const dirSign = next === 'asc' ? 1 : -1;
+          // Pair detail rows (e.g. .log-row) with their preceding primary row
+          // so sorting doesn't break the adjacency.
+          const allRows = Array.from(tbody.rows);
+          const pairs = [];
+          for (let i = 0; i < allRows.length; i++) {
+            const primary = allRows[i];
+            const detail = (i + 1 < allRows.length && allRows[i + 1].classList.contains('log-row'))
+              ? allRows[++i] : null;
+            pairs.push({ primary, detail });
+          }
+          const sorted = pairs.slice().sort((a, b) => {
+            if (sortAttr === 'startedAt') {
+              const statusA = a.primary.dataset.status;
+              const statusB = b.primary.dataset.status;
+              const isRunningA = (statusA === 'running' || statusA === 'cancelling');
+              const isRunningB = (statusB === 'running' || statusB === 'cancelling');
+              if (isRunningA && !isRunningB) return -1;
+              if (isRunningB && !isRunningA) return 1;
+            }
+            const ka = rowKey(a.primary, currentIdx, sortAttr, kind);
+            const kb = rowKey(b.primary, currentIdx, sortAttr, kind);
+            if (ka == null && kb == null) return 0;
+            if (ka == null) return 1;   // nulls always last
+            if (kb == null) return -1;
+            if (ka < kb) return -1 * dirSign;
+            if (ka > kb) return  1 * dirSign;
+            // stable tiebreak on original index
+            return (parseInt(a.primary.dataset._origIdx, 10) - parseInt(b.primary.dataset._origIdx, 10));
+          });
+          sorted.forEach(p => {
+            tbody.appendChild(p.primary);
+            if (p.detail) tbody.appendChild(p.detail);
+          });
+        });
+      });
+    }
+
+    function initAllSortable() {
+      document.querySelectorAll('table').forEach(initSortable);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAllSortable);
+    } else {
+      initAllSortable();
+    }
+
+    // ----- draggable columns ----------------------------------------------
+    function initDraggableColumns(table) {
+      if (table.dataset.draggableInit === '1') return;
+      table.dataset.draggableInit = '1';
+      const headerRow = table.tHead && table.tHead.rows[0];
+      if (!headerRow) return;
+      const ths = Array.from(headerRow.cells);
+      
+      ths.forEach(function (th) {
+        th.setAttribute('draggable', 'true');
+        
+        th.addEventListener('dragstart', function (e) {
+          if (e.target.closest('.col-resizer')) {
+            e.preventDefault();
+            return;
+          }
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', th.cellIndex);
+          th.classList.add('dragging');
+        });
+        
+        th.addEventListener('dragend', function () {
+          ths.forEach(function (t) {
+            t.classList.remove('dragging', 'drag-over-left', 'drag-over-right');
+          });
+        });
+        
+        th.addEventListener('dragover', function (e) {
+          e.preventDefault();
+          const rect = th.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          
+          ths.forEach(function (t) {
+            t.classList.remove('drag-over-left', 'drag-over-right');
+          });
+          
+          if (relX < rect.width / 2) {
+            th.classList.add('drag-over-left');
+          } else {
+            th.classList.add('drag-over-right');
+          }
+        });
+        
+        th.addEventListener('dragleave', function () {
+          th.classList.remove('drag-over-left', 'drag-over-right');
+        });
+        
+        th.addEventListener('drop', function (e) {
+          e.preventDefault();
+          th.classList.remove('drag-over-left', 'drag-over-right');
+          
+          const sourceIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
+          const targetIdx = th.cellIndex;
+          if (isNaN(sourceIdx) || sourceIdx === targetIdx) return;
+          
+          const rect = th.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          const insertBefore = relX < rect.width / 2;
+          
+          Array.from(table.rows).forEach(function (row) {
+            const cell = row.cells[sourceIdx];
+            const targetCell = row.cells[targetIdx];
+            if (!cell || !targetCell) return;
+            
+            if (insertBefore) {
+              row.insertBefore(cell, targetCell);
+            } else {
+              row.insertBefore(cell, targetCell.nextSibling);
+            }
+          });
+        });
+      });
+    }
+
+    function initAllDraggable() {
+      document.querySelectorAll('table').forEach(initDraggableColumns);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAllDraggable);
+    } else {
+      initAllDraggable();
+    }
+
+    // ----- inline notes editor (delegated) --------------------------------
+    document.addEventListener('click', function (e) {
+      const cell = e.target.closest('.note-cell');
+      if (!cell || cell.classList.contains('editing')) return;
+      if (e.target.closest('a, button')) return;
+      openEditor(cell);
+    });
+
+    function openEditor(cell) {
+      const obj = cell.dataset.object;
+      const current = cell.querySelector('.note-text').textContent;
+      cell.classList.add('editing');
+      cell.innerHTML = '';
+      const ta = document.createElement('textarea');
+      ta.value = current;
+      ta.rows = 2;
+      ta.placeholder = 'Type a note…';
+      const actions = document.createElement('div');
+      actions.className = 'note-actions';
+      const save = document.createElement('button');
+      save.className = 'save'; save.textContent = 'Save';
+      const cancel = document.createElement('button');
+      cancel.textContent = 'Cancel';
+      const del = document.createElement('button');
+      del.className = 'del'; del.textContent = 'Delete';
+      actions.append(save, cancel, del);
+      cell.append(ta, actions);
+      ta.focus(); ta.select();
+
+      function close(note) {
+        cell.classList.remove('editing');
+        cell.innerHTML =
+          '<span class="note-text">' + escapeHtml(note) + '</span>' +
+          '<span class="note-placeholder"' + (note ? ' style="display:none;"' : '') + '>+ add note</span>';
+      }
+      function escapeHtml(s) {
+        return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      }
+
+      async function commit() {
+        const value = ta.value.trim();
+        try {
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({note: value}),
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          close(value);
+        } catch (err) {
+          showMessageModal('Error', 'Save failed: ' + err.message);
+        }
+      }
+      async function destroy() {
+        try {
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {method: 'DELETE'});
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          close('');
+        } catch (err) {
+          showMessageModal('Error', 'Delete failed: ' + err.message);
+        }
+      }
+
+      save.addEventListener('click', commit);
+      del.addEventListener('click', destroy);
+      cancel.addEventListener('click', () => close(current));
+      ta.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); }
+        else if (e.key === 'Escape') { e.preventDefault(); close(current); }
+      });
+    }
+
+    document.addEventListener('toggle', function (e) {
+      if (e.target.tagName === 'DETAILS' && e.target.open) {
+        e.target.querySelectorAll('table').forEach(function (t) {
+          delete t.dataset.resizableInit;
+          t.classList.remove('resizable-init');
+          // Clear previously-set widths so we re-measure from real layout.
+          if (t.tHead && t.tHead.rows[0]) {
+            Array.from(t.tHead.rows[0].cells).forEach(function (th) {
+              th.querySelectorAll('.col-resizer').forEach(h => h.remove());
+              th.style.width = '';
+            });
+          }
+          initTable(t);
+        });
+      }
+    }, true);
+  })();
+
+  (function () {
+    var modal = document.getElementById('message-modal');
+    var titleEl = document.getElementById('message-modal-title');
+    var textEl = document.getElementById('message-modal-text');
+    var okBtn = document.getElementById('message-modal-ok');
+    var cancelBtn = document.getElementById('message-modal-cancel');
+    var pendingResolve = null;
+
+    function modalOptions(opts) {
+      if (typeof opts === 'string') return { kind: opts };
+      return opts || {};
+    }
+
+    function showModal(title, text, opts) {
+      opts = modalOptions(opts);
+      titleEl.textContent = title || '';
+      textEl.textContent = text || '';
+      modal.dataset.kind = opts.kind || 'default';
+      modal.classList.add('visible');
+      okBtn.focus();
+    }
+
+    window.showMessageModal = function(title, text, opts) {
+      opts = modalOptions(opts);
+      pendingResolve = null;
+      modal.dataset.mode = 'message';
+      okBtn.textContent = 'OK';
+      okBtn.className = 'btn';
+      cancelBtn.hidden = true;
+      showModal(title, text, opts);
+    };
+    window.closeMessageModal = function(result) {
+      modal.classList.remove('visible');
+      modal.dataset.mode = 'message';
+      modal.dataset.kind = 'default';
+      if (pendingResolve) {
+        var resolve = pendingResolve;
+        pendingResolve = null;
+        resolve(!!result);
+      }
+    };
+    window.showConfirmModal = function(title, text, opts) {
+      opts = opts || {};
+      return new Promise(function (resolve) {
+        pendingResolve = resolve;
+        modal.dataset.mode = 'confirm';
+        okBtn.textContent = opts.confirmLabel || 'Confirm';
+        okBtn.className = opts.confirmClass || 'btn primary';
+        cancelBtn.textContent = opts.cancelLabel || 'Cancel';
+        cancelBtn.hidden = false;
+        showModal(title, text, opts);
+      });
+    };
+    okBtn.addEventListener('click', function () {
+      window.closeMessageModal(pendingResolve ? true : false);
+    });
+    cancelBtn.addEventListener('click', function () {
+      window.closeMessageModal(false);
+    });
+  })();
+</script>
+
+</body>
+</html>
