@@ -17,7 +17,11 @@ import time
 import sqlite3
 import pathlib
 import logging
+import json
+import os
 import threading
+import uuid
+from collections.abc import Callable
 
 import numpy as np
 from astropy.io import fits
@@ -35,6 +39,9 @@ from muscat_db.instruments import INSTRUMENTS
 from muscat_db.database import db_path, SCHEMA
 
 logger = logging.getLogger(__name__)
+
+_CATALOG_CALL_LIMIT = max(1, int(os.environ.get("MUSCAT_CATALOG_GLOBAL_WORKERS", "8")))
+_CATALOG_CALL_SLOTS = threading.BoundedSemaphore(_CATALOG_CALL_LIMIT)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -258,6 +265,10 @@ CREATE TABLE IF NOT EXISTS exposure_jobs (
     started_at  REAL NOT NULL,
     updated_at  REAL NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_exposure_jobs_active_instrument
+ON exposure_jobs(instrument)
+WHERE state IN ('pending', 'running', 'cancelling');
 """
 
 # Ensure the exposure schema is included when creating the DB.
@@ -437,7 +448,11 @@ def lookup_magnitudes(
         col_map = entry["cols"]
         columns = ["_r", *col_map.keys()]
         for radius in radii:
-            cat = _query_vizier_catalog(coord, entry["name"], columns, radius)
+            # One process-wide gate covers single lookups, batch lookups, and
+            # calibration workers. Per-request executors can therefore never
+            # multiply outbound catalog concurrency beyond this ceiling.
+            with _CATALOG_CALL_SLOTS:
+                cat = _query_vizier_catalog(coord, entry["name"], columns, radius)
             if cat is None:
                 continue
             mags = _extract_mags(cat, col_map)
@@ -546,12 +561,21 @@ def resolve_target_coords(target_name: str) -> tuple[float, float] | None:
 # ---------------------------------------------------------------------------
 
 
+_EXPOSURE_SCHEMA_PATHS: set[str] = set()
+_EXPOSURE_SCHEMA_LOCK = threading.Lock()
+
+
 def _conn():
     """Get a connection to the main muscat DB."""
-    c = sqlite3.connect(db_path(), timeout=30)
+    path = db_path()
+    c = sqlite3.connect(path, timeout=30)
     c.execute("PRAGMA journal_mode=WAL")
-    c.executescript(SCHEMA)
-    c.executescript(SCHEMA_EXPOSURE)
+    if path not in _EXPOSURE_SCHEMA_PATHS:
+        with _EXPOSURE_SCHEMA_LOCK:
+            if path not in _EXPOSURE_SCHEMA_PATHS:
+                c.executescript(SCHEMA)
+                c.executescript(SCHEMA_EXPOSURE)
+                _EXPOSURE_SCHEMA_PATHS.add(path)
     return c
 
 
@@ -650,6 +674,142 @@ def calibration_status(instrument: str) -> dict:
     }
 
 
+_CALIBRATION_WORKERS = max(1, int(os.environ.get("MUSCAT_EXPOSURE_CALIBRATION_WORKERS", "2")))
+_CALIBRATION_STALE_S = max(300, int(os.environ.get("MUSCAT_EXPOSURE_CALIBRATION_STALE_S", "21600")))
+_CALIBRATION_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_CALIBRATION_WORKERS,
+    thread_name_prefix="exposure-calibration",
+)
+_CALIBRATION_LOCK = threading.Lock()
+_CALIBRATION_CANCEL: dict[str, threading.Event] = {}
+
+
+def _write_calibration_job(job_id: str, state: str, progress: dict) -> None:
+    now = time.time()
+    conn = _conn()
+    conn.execute(
+        "UPDATE exposure_jobs SET state = ?, progress = ?, updated_at = ? WHERE id = ?",
+        (state, json.dumps(progress, sort_keys=True), now, job_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _run_calibration_job(job_id: str, instrument: str, cancel_event: threading.Event) -> None:
+    def report(phase: str, completed: int, total: int) -> None:
+        _write_calibration_job(
+            job_id,
+            "cancelling" if cancel_event.is_set() else "running",
+            {"phase": phase, "completed": completed, "total": total},
+        )
+
+    try:
+        if cancel_event.is_set():
+            _write_calibration_job(job_id, "cancelled", {"phase": "cancelled"})
+            return
+        _write_calibration_job(job_id, "running", {"phase": "selecting", "completed": 0, "total": 0})
+        result = calibrate_instrument(
+            instrument,
+            cancel_event=cancel_event,
+            progress=report,
+        )
+        if result.get("cancelled"):
+            state = "cancelled"
+        else:
+            state = "done" if result.get("ok") else "error"
+        _write_calibration_job(job_id, state, {"phase": state, "result": result})
+    except Exception as exc:
+        logger.exception("Exposure calibration job %s failed", job_id)
+        _write_calibration_job(job_id, "error", {"phase": "error", "error": str(exc)})
+    finally:
+        with _CALIBRATION_LOCK:
+            _CALIBRATION_CANCEL.pop(job_id, None)
+
+
+def start_calibration(instrument: str) -> dict:
+    """Queue one tracked calibration, deduplicated per instrument."""
+    if instrument not in INSTRUMENTS:
+        raise ValueError("Invalid instrument")
+    now = time.time()
+    job_id = uuid.uuid4().hex[:16]
+    progress = {"phase": "pending", "completed": 0, "total": 0}
+    with _CALIBRATION_LOCK:
+        conn = _conn()
+        # A process crash cannot update its row. Expire only genuinely stale
+        # claims so a second live worker is not mistaken for an orphan.
+        conn.execute(
+            """UPDATE exposure_jobs
+               SET state = 'error', progress = ?, updated_at = ?
+               WHERE state IN ('pending', 'running', 'cancelling')
+                 AND updated_at < ?""",
+            (json.dumps({"phase": "error", "error": "stale job recovered after process exit"}), now, now - _CALIBRATION_STALE_S),
+        )
+        try:
+            conn.execute(
+                """INSERT INTO exposure_jobs(id, instrument, state, progress, started_at, updated_at)
+                   VALUES (?, ?, 'pending', ?, ?, ?)""",
+                (job_id, instrument, json.dumps(progress), now, now),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            conn.close()
+            raise RuntimeError(f"Calibration is already active for {instrument}") from exc
+        conn.close()
+        cancel_event = threading.Event()
+        _CALIBRATION_CANCEL[job_id] = cancel_event
+        try:
+            _CALIBRATION_EXECUTOR.submit(_run_calibration_job, job_id, instrument, cancel_event)
+        except Exception:
+            _CALIBRATION_CANCEL.pop(job_id, None)
+            _write_calibration_job(
+                job_id, "error", {"phase": "error", "error": "could not queue calibration"}
+            )
+            raise
+    return calibration_job(job_id)
+
+
+def calibration_job(job_id: str) -> dict:
+    conn = _conn()
+    row = conn.execute(
+        "SELECT id, instrument, state, progress, started_at, updated_at FROM exposure_jobs WHERE id = ?",
+        (job_id,),
+    ).fetchone()
+    conn.close()
+    if row is None:
+        raise KeyError(job_id)
+    try:
+        progress = json.loads(row[3] or "{}")
+    except json.JSONDecodeError:
+        progress = {}
+    return {
+        "job_id": row[0], "instrument": row[1], "state": row[2],
+        "progress": progress, "started_at": row[4], "updated_at": row[5],
+    }
+
+
+def calibration_jobs(limit: int = 20) -> list[dict]:
+    conn = _conn()
+    rows = conn.execute(
+        """SELECT id FROM exposure_jobs ORDER BY started_at DESC LIMIT ?""",
+        (max(1, min(int(limit), 100)),),
+    ).fetchall()
+    conn.close()
+    return [calibration_job(row[0]) for row in rows]
+
+
+def cancel_calibration(job_id: str) -> dict:
+    job = calibration_job(job_id)
+    if job["state"] not in {"pending", "running", "cancelling"}:
+        return job
+    with _CALIBRATION_LOCK:
+        event = _CALIBRATION_CANCEL.get(job_id)
+        if event is None:
+            raise RuntimeError("Calibration worker is not available in this process")
+        event.set()
+    _write_calibration_job(job_id, "cancelling", {"phase": "cancelling"})
+    return calibration_job(job_id)
+
+
 # ---------------------------------------------------------------------------
 # Calibration engine
 # ---------------------------------------------------------------------------
@@ -682,6 +842,8 @@ def calibrate_instrument(
     max_frames_per_bin: int = 50,
     max_workers: int = 4,
     force: bool = False,
+    cancel_event: threading.Event | None = None,
+    progress: Callable[[str, int, int], None] | None = None,
 ) -> dict:
     """Calibrate exposure coefficients for an instrument from observed FITS frames.
 
@@ -695,6 +857,9 @@ def calibrate_instrument(
     Returns {"ok": bool, "bands_calibrated": int, "total_frames": int, ...}
     """
     from muscat_db.database import _TARGET_EXCLUDE_EXACT
+
+    if cancel_event is not None and cancel_event.is_set():
+        return {"ok": False, "cancelled": True, "instrument": instrument}
 
     conn = _conn()
     exact_clause = ", ".join(f"'{s}'" for s in _TARGET_EXCLUDE_EXACT)
@@ -758,6 +923,8 @@ def calibrate_instrument(
     total_jobs = sum(len(v) for v in bins.values())
     logger.info("Calibrating %s: %d frames in %d band/focus bins",
                 instrument, total_jobs, len(bins))
+    if progress is not None:
+        progress("processing", 0, total_jobs)
 
     # Cache SIMBAD name → coordinate lookups (shared across threads)
     _simbad_cache: dict[str, tuple[float, float] | None] = {}
@@ -825,16 +992,26 @@ def calibrate_instrument(
     processed = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_process, item): item for item_list in bins.values() for item in item_list}
+        completed = 0
         for future in as_completed(futures):
+            if cancel_event is not None and cancel_event.is_set():
+                for pending in futures:
+                    pending.cancel()
+                return {"ok": False, "cancelled": True, "instrument": instrument}
             try:
                 result = future.result()
                 if result:
                     processed.append(result)
             except Exception as exc:
                 logger.debug("Frame processing failed: %s", exc)
+            completed += 1
+            if progress is not None:
+                progress("processing", completed, total_jobs)
 
     if not processed:
         return {"ok": False, "error": "No frames could be calibrated (check FITS paths and magnitude lookups)"}
+    if cancel_event is not None and cancel_event.is_set():
+        return {"ok": False, "cancelled": True, "instrument": instrument}
 
     # Aggregate by (band, focus_bin)
     agg: dict[tuple[str, float], list[float]] = defaultdict(list)
@@ -879,6 +1056,9 @@ def calibrate_instrument(
         save_coeff(instrument, band, focus_bin, coef_mean, avg_fwhm, n)
         bands_calibrated += 1
         total_calib_frames += n
+
+    if progress is not None:
+        progress("saving", len(agg), len(agg))
 
     return {
         "ok": True,

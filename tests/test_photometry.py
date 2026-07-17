@@ -1121,7 +1121,7 @@ class TestStartRun:
 
         assert phot._terminal_job_state(0, False, log) == "error"
 
-    def test_sync_jobs_repairs_persisted_done_partial_failure(
+    def test_sync_jobs_does_not_rescan_persisted_done_logs(
         self, monkeypatch, tmp_path
     ):
         with phot._LOCK:
@@ -1162,10 +1162,9 @@ class TestStartRun:
 
         phot.sync_jobs()
 
-        assert saved
-        assert saved[0]["state"] == "error"
-        assert saved[0]["returncode"] == 0
-        assert "PARTIAL FAILURE" in saved[0]["error_desc"]
+        # Terminal logs are classified when the tracked job transitions. A
+        # status reconciliation must not rescan every historical done row.
+        assert saved == []
 
     def test_sync_jobs_uses_target_specific_partial_failure_log(
         self, monkeypatch, tmp_path

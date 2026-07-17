@@ -1646,9 +1646,10 @@ def test_lco_archive_download_per_file_results(monkeypatch):
 
 
 def test_lco_archive_download_can_start_background_job(monkeypatch):
-    def fake_start(frames, overwrite=False, auto_ingest=False):
+    def fake_start(frames, overwrite=False, auto_ingest=False, user_name=None):
         assert overwrite is True
         assert auto_ingest is True
+        assert user_name is None
         assert frames[0]["filename"] == "ogg2m001-ep05-20260102-0001-e91.fits.fz"
         return {
             "job_id": "job123",
@@ -1662,6 +1663,7 @@ def test_lco_archive_download_can_start_background_job(monkeypatch):
         }
 
     monkeypatch.setattr("muscat_db.lco.start_archive_download", fake_start)
+    monkeypatch.setattr("muscat_db.web._persist_lco_archive_download_row", lambda _row: None)
     r = TestClient(app).post("/api/lco/archive/download", json={
         "background": True,
         "overwrite": True,

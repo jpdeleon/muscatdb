@@ -876,6 +876,9 @@ _ARCHIVE_DOWNLOAD_FRAME_WORKERS = max(1, int(os.environ.get("MUSCAT_LCO_ARCHIVE_
 _ARCHIVE_FUNPACK_WORKERS = max(1, int(os.environ.get("MUSCAT_LCO_ARCHIVE_FUNPACK_WORKERS", "2")))
 _ARCHIVE_DOWNLOAD_JOB_TTL_S = max(60, int(os.environ.get("MUSCAT_LCO_ARCHIVE_DOWNLOAD_JOB_TTL_S", "86400")))
 _ARCHIVE_DOWNLOAD_MAX_JOBS = max(10, int(os.environ.get("MUSCAT_LCO_ARCHIVE_DOWNLOAD_MAX_JOBS", "200")))
+_ARCHIVE_DOWNLOAD_MAX_FRAMES = max(1, int(os.environ.get("MUSCAT_LCO_ARCHIVE_MAX_FRAMES", "500")))
+_ARCHIVE_DOWNLOAD_MAX_PAYLOAD_BYTES = max(1024, int(os.environ.get("MUSCAT_LCO_ARCHIVE_MAX_PAYLOAD_BYTES", "2097152")))
+_ARCHIVE_DOWNLOAD_MAX_PER_USER = max(1, int(os.environ.get("MUSCAT_LCO_ARCHIVE_MAX_ACTIVE_PER_USER", "2")))
 _ARCHIVE_DOWNLOAD_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=_ARCHIVE_DOWNLOAD_WORKERS,
     thread_name_prefix="lco-archive-download",
@@ -935,6 +938,7 @@ def _archive_download_snapshot(job: dict) -> dict:
         "started_at": job["started_at"],
         "finished_at": job.get("finished_at"),
         "error": job.get("error"),
+        "user_name": job.get("user_name", ""),
     }
 
 
@@ -1120,19 +1124,46 @@ def _run_archive_download_job(job_id: str) -> None:
                 _prune_archive_download_jobs(current["finished_at"])
 
 
+def _compact_archive_frames(frames: list[dict]) -> list[dict]:
+    """Retain only metadata consumed by download, ingest, and status paths."""
+    keys = {
+        "filename", "basename", "SITEID", "site_id", "TELID", "telescope_id",
+        "INSTRUME", "instrument_id", "DATE_OBS", "observation_date", "DAY_OBS",
+        "OBJECT", "object", "target_name", "url",
+    }
+    return [{key: frame[key] for key in keys if key in frame} for frame in frames]
+
+
 def start_archive_download(
-    frames: list[dict], overwrite: bool = False, auto_ingest: bool = False
+    frames: list[dict], overwrite: bool = False, auto_ingest: bool = False,
+    user_name: str | None = None,
 ) -> dict:
     """Queue an LCO archive download in a dedicated worker and return its state."""
     if not isinstance(frames, list) or not frames:
         raise LcoError("no frames selected", status=400)
+    if len(frames) > _ARCHIVE_DOWNLOAD_MAX_FRAMES:
+        raise LcoError(
+            f"At most {_ARCHIVE_DOWNLOAD_MAX_FRAMES} frames are allowed per download",
+            status=413,
+        )
+    if any(not isinstance(frame, dict) for frame in frames):
+        raise LcoError("each frame must be an object", status=400)
+    compact_frames = _compact_archive_frames(frames)
+    payload_bytes = len(json.dumps(compact_frames, separators=(",", ":"), ensure_ascii=True).encode("utf-8"))
+    if payload_bytes > _ARCHIVE_DOWNLOAD_MAX_PAYLOAD_BYTES:
+        raise LcoError(
+            f"Frame payload exceeds {_ARCHIVE_DOWNLOAD_MAX_PAYLOAD_BYTES} bytes",
+            status=413,
+        )
+    user_key = (user_name or "anonymous").strip() or "anonymous"
     job_id = uuid.uuid4().hex[:16]
     now = time.time()
     job = {
         "job_id": job_id,
         "state": "pending",
-        "frames": [dict(frame) for frame in frames],
-        "frames_total": len(frames),
+        "frames": compact_frames,
+        "frames_total": len(compact_frames),
+        "user_name": user_key,
         "overwrite": overwrite,
         "results": [],
         "funpack_results": [],
@@ -1147,6 +1178,16 @@ def start_archive_download(
     }
     with _ARCHIVE_DOWNLOAD_LOCK:
         _prune_archive_download_jobs(now, reserve_slots=1)
+        active_for_user = sum(
+            1 for existing in _ARCHIVE_DOWNLOAD_JOBS.values()
+            if existing.get("state") in {"pending", "running"}
+            and existing.get("user_name", "anonymous") == user_key
+        )
+        if active_for_user >= _ARCHIVE_DOWNLOAD_MAX_PER_USER:
+            raise LcoError(
+                "Too many active LCO archive downloads for this user",
+                status=429,
+            )
         if len(_ARCHIVE_DOWNLOAD_JOBS) >= _ARCHIVE_DOWNLOAD_MAX_JOBS:
             raise LcoError(
                 "Too many LCO archive download jobs are queued",

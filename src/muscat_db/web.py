@@ -12,6 +12,7 @@ import re
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 _DB_LOCK = threading.Lock()
 
@@ -90,7 +91,7 @@ from muscat_db.catalog import (
     _toi_db_cache,  # noqa: F401 -- tests call web._toi_db_cache.clear()
 )
 from muscat_db.database import (
-    SCHEMA,
+    _apply_schema as _apply_database_schema,
     UserSettingsError,
     ensure_user,
     get_conn,
@@ -121,9 +122,49 @@ from muscat_db.instruments import INSTRUMENTS
 
 logger = logging.getLogger(__name__)
 
+_CATALOG_BATCH_MAX_ITEMS = max(1, int(os.environ.get("MUSCAT_CATALOG_BATCH_MAX_ITEMS", "200")))
+_CATALOG_BATCH_MAX_BYTES = max(1024, int(os.environ.get("MUSCAT_CATALOG_BATCH_MAX_BYTES", "262144")))
+_CATALOG_BATCH_MAX_ACTIVE = max(1, int(os.environ.get("MUSCAT_CATALOG_BATCH_MAX_ACTIVE", "4")))
+_CATALOG_BATCH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(1, int(os.environ.get("MUSCAT_CATALOG_GLOBAL_WORKERS", "8"))),
+    thread_name_prefix="catalog-lookup",
+)
+_CATALOG_BATCH_SLOTS = threading.BoundedSemaphore(_CATALOG_BATCH_MAX_ACTIVE)
+_CATALOG_BATCH_USERS: set[str] = set()
+_CATALOG_BATCH_USERS_LOCK = threading.Lock()
+
+_ZIP_MAX_FILES = max(1, int(os.environ.get("MUSCAT_ZIP_MAX_FILES", "10000")))
+_ZIP_MAX_INPUT_BYTES = max(1 << 20, int(os.environ.get("MUSCAT_ZIP_MAX_INPUT_BYTES", str(2 << 30))))
+_ZIP_FREE_RESERVE_BYTES = max(0, int(os.environ.get("MUSCAT_ZIP_FREE_RESERVE_BYTES", str(5 << 30))))
+_ZIP_CACHE_TTL_S = max(60, int(os.environ.get("MUSCAT_ZIP_CACHE_TTL_S", "900")))
+_ZIP_BUILD_SLOTS = threading.BoundedSemaphore(
+    max(1, int(os.environ.get("MUSCAT_ZIP_BUILD_WORKERS", "1")))
+)
+
 HERE = pathlib.Path(__file__).parent
 TEMPLATE_DIR = HERE / "templates"
 STATIC_DIR = HERE / "static"
+
+
+def _reconcile_all_jobs() -> None:
+    """Advance every in-process pipeline from one server-owned cadence."""
+    phot.sync_jobs()
+    fit.sync_jobs()
+    ttv.sync_jobs()
+    _lco_archive_download_rows()
+
+
+async def _job_reconciliation_loop() -> None:
+    interval = max(0.5, float(os.environ.get("MUSCAT_JOB_RECONCILE_INTERVAL_S", "2")))
+    while True:
+        try:
+            await asyncio.to_thread(_reconcile_all_jobs)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("background job reconciliation failed")
+        await asyncio.sleep(interval)
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
@@ -131,7 +172,7 @@ async def _lifespan(app: FastAPI):
     db = _db_path()
     with get_conn(db, timeout=10) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
-        conn.executescript(SCHEMA)
+        _apply_database_schema(conn)
     print(f"[startup] database ready at {db}")
 
     from muscat_db.config import config_status, missing_required_secret
@@ -149,6 +190,7 @@ async def _lifespan(app: FastAPI):
     from muscat_db import proxy, http_client
     await proxy.startup()
     await http_client.startup()
+    reconcile_task = asyncio.create_task(_job_reconciliation_loop())
     observation_monitor = None
     if os.environ.get("MUSCAT_LCO_MONITOR_ENABLED", "1") == "1":
         observation_monitor = lco_monitor.ObservationMonitor(db)
@@ -157,6 +199,11 @@ async def _lifespan(app: FastAPI):
     try:
         yield
     finally:
+        reconcile_task.cancel()
+        try:
+            await reconcile_task
+        except asyncio.CancelledError:
+            pass
         if observation_monitor is not None:
             observation_monitor.stop()
         await http_client.shutdown()
@@ -1895,39 +1942,83 @@ def transit_fit_file(inst: str, date: str, target: str, name: str):
 
 
 def _create_zip_response(files_to_zip: list[tuple[pathlib.Path, str]], archive_name: str) -> FileResponse:
-    import tempfile
+    import hashlib
+    import shutil
     import zipfile
-    from starlette.background import BackgroundTask
 
-    tmp_dir = phot.prose_tmpdir()
-    pathlib.Path(tmp_dir).mkdir(parents=True, exist_ok=True)
-    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix=".zip", dir=tmp_dir)
-    temp_zip_path = pathlib.Path(temp_zip.name)
-    temp_zip.close()
+    files = [(path, arcname) for path, arcname in files_to_zip if path.is_file()]
+    if not files:
+        raise HTTPException(404, "no output files found")
+    if len(files) > _ZIP_MAX_FILES:
+        raise HTTPException(413, f"archive contains more than {_ZIP_MAX_FILES} files")
+    if len({arcname for _path, arcname in files}) != len(files):
+        raise HTTPException(400, "archive contains duplicate output names")
+
+    manifest = []
+    total_bytes = 0
+    for path, arcname in files:
+        stat = path.stat()
+        total_bytes += stat.st_size
+        manifest.append((str(path.resolve()), arcname, stat.st_size, stat.st_mtime_ns))
+    if total_bytes > _ZIP_MAX_INPUT_BYTES:
+        raise HTTPException(
+            413,
+            f"archive input is {total_bytes} bytes; limit is {_ZIP_MAX_INPUT_BYTES} bytes",
+        )
+
+    tmp_dir = pathlib.Path(phot.prose_tmpdir())
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    for cached in tmp_dir.glob("muscat-archive-*.zip"):
+        try:
+            if now - cached.stat().st_mtime > _ZIP_CACHE_TTL_S:
+                cached.unlink()
+        except OSError:
+            logger.debug("failed to prune ZIP cache entry %s", cached, exc_info=True)
+
+    fingerprint = hashlib.sha256(
+        json.dumps(manifest, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+    cache_path = tmp_dir / f"muscat-archive-{fingerprint}.zip"
+    if cache_path.is_file():
+        return FileResponse(str(cache_path), media_type="application/zip", filename=archive_name)
+
+    if not _ZIP_BUILD_SLOTS.acquire(blocking=False):
+        raise HTTPException(429, "another archive is being generated; retry shortly")
 
     try:
-        with zipfile.ZipFile(temp_zip_path, "w", zipfile.ZIP_DEFLATED) as zip_file:
-            for filepath, arcname in files_to_zip:
-                if filepath.is_file():
+        if cache_path.is_file():
+            return FileResponse(str(cache_path), media_type="application/zip", filename=archive_name)
+        free_bytes = shutil.disk_usage(tmp_dir).free
+        zip_overhead = max(1 << 20, len(files) * 512)
+        required_bytes = total_bytes + zip_overhead + _ZIP_FREE_RESERVE_BYTES
+        if free_bytes < required_bytes:
+            raise HTTPException(
+                507,
+                f"insufficient temporary disk space: need {required_bytes} bytes, have {free_bytes}",
+            )
+        part_path = cache_path.with_suffix(".zip.part")
+        try:
+            # Most pipeline outputs are already compressed (NPZ, PNG, gzip).
+            # ZIP_STORED avoids spending CPU recompressing them and makes the
+            # free-space budget an exact upper bound.
+            with zipfile.ZipFile(part_path, "w", zipfile.ZIP_STORED, allowZip64=True) as zip_file:
+                for filepath, arcname in files:
                     zip_file.write(filepath, arcname)
+            part_path.replace(cache_path)
+        finally:
+            part_path.unlink(missing_ok=True)
+    except HTTPException:
+        raise
     except Exception as exc:
-        try:
-            temp_zip_path.unlink()
-        except OSError:
-            pass
         raise HTTPException(500, f"failed to create zip archive: {exc}")
-
-    def cleanup():
-        try:
-            temp_zip_path.unlink()
-        except OSError:
-            pass
+    finally:
+        _ZIP_BUILD_SLOTS.release()
 
     return FileResponse(
-        str(temp_zip_path),
+        str(cache_path),
         media_type="application/zip",
         filename=archive_name,
-        background=BackgroundTask(cleanup),
     )
 
 
@@ -2068,11 +2159,29 @@ def exposure_calibrate(payload: dict = Body(...)):
     inst = (payload.get("instrument") or "").strip()
     if inst not in INSTRUMENTS:
         return JSONResponse({"ok": False, "error": "Invalid instrument"}, status_code=400)
-    # Run in a thread to avoid blocking
-    import threading
-    result = {"ok": True, "message": f"Calibration started for {inst}"}
-    threading.Thread(target=exp_calc.calibrate_instrument, args=(inst,), daemon=True).start()
-    return JSONResponse(result)
+    try:
+        job = exp_calc.start_calibration(inst)
+    except RuntimeError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+    return JSONResponse({"ok": True, "message": f"Calibration queued for {inst}", **job})
+
+
+@exposure_router.get("/calibrate/{job_id}", response_class=JSONResponse)
+def exposure_calibration_job(job_id: str):
+    try:
+        return JSONResponse({"ok": True, **exp_calc.calibration_job(job_id)})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "Calibration job not found"}, status_code=404)
+
+
+@exposure_router.post("/calibrate/{job_id}/cancel", response_class=JSONResponse)
+def exposure_calibration_cancel(job_id: str):
+    try:
+        return JSONResponse({"ok": True, **exp_calc.cancel_calibration(job_id)})
+    except KeyError:
+        return JSONResponse({"ok": False, "error": "Calibration job not found"}, status_code=404)
+    except RuntimeError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
 
 
 @exposure_router.post("/lookup-mags", response_class=JSONResponse)
@@ -2107,7 +2216,7 @@ def exposure_lookup_mags(payload: dict = Body(...)):
 
 
 @exposure_router.post("/lookup-mags-batch", response_class=JSONResponse)
-def exposure_lookup_mags_batch(payload: dict = Body(...)):
+def exposure_lookup_mags_batch(request: Request, payload: dict = Body(...)):
     """Griz magnitudes for a batch of stars (e.g. FOV comparison stars).
 
     Each star tries the same Pan-STARRS/SkyMapper catalog lookup as the
@@ -2119,6 +2228,31 @@ def exposure_lookup_mags_batch(payload: dict = Body(...)):
     stars = payload.get("stars") or []
     if not isinstance(stars, list) or not stars:
         return JSONResponse({"ok": False, "error": "No stars provided"}, status_code=400)
+    if len(stars) > _CATALOG_BATCH_MAX_ITEMS:
+        return JSONResponse(
+            {"ok": False, "error": f"At most {_CATALOG_BATCH_MAX_ITEMS} stars are allowed per request"},
+            status_code=413,
+        )
+    serialized_bytes = len(json.dumps(stars, separators=(",", ":"), ensure_ascii=True).encode("utf-8"))
+    if serialized_bytes > _CATALOG_BATCH_MAX_BYTES:
+        return JSONResponse(
+            {"ok": False, "error": f"Star payload exceeds {_CATALOG_BATCH_MAX_BYTES} bytes"},
+            status_code=413,
+        )
+    if any(not isinstance(star, dict) for star in stars):
+        return JSONResponse({"ok": False, "error": "Each star must be an object"}, status_code=400)
+
+    user_key = request.state.user or f"peer:{request.client.host if request.client else 'unknown'}"
+    if not _CATALOG_BATCH_SLOTS.acquire(blocking=False):
+        return JSONResponse({"ok": False, "error": "Catalog lookup queue is busy"}, status_code=429)
+    with _CATALOG_BATCH_USERS_LOCK:
+        if user_key in _CATALOG_BATCH_USERS:
+            _CATALOG_BATCH_SLOTS.release()
+            return JSONResponse(
+                {"ok": False, "error": "A catalog batch is already running for this user"},
+                status_code=429,
+            )
+        _CATALOG_BATCH_USERS.add(user_key)
 
     def _lookup(star: dict) -> dict:
         try:
@@ -2126,19 +2260,25 @@ def exposure_lookup_mags_batch(payload: dict = Body(...)):
             dec = float(star.get("dec"))
         except (TypeError, ValueError):
             return {"mags": None, "source": None, "is_approx": False, "error": "Invalid ra/dec"}
+        if not math.isfinite(ra) or not math.isfinite(dec) or not (0 <= ra < 360) or not (-90 <= dec <= 90):
+            return {"mags": None, "source": None, "is_approx": False, "error": "Invalid ra/dec"}
         gmag = star.get("gmag")
         bp_rp = star.get("bp_rp")
-        gmag = float(gmag) if gmag not in (None, "") else None
-        bp_rp = float(bp_rp) if bp_rp not in (None, "") else None
+        try:
+            gmag = float(gmag) if gmag not in (None, "") else None
+            bp_rp = float(bp_rp) if bp_rp not in (None, "") else None
+        except (TypeError, ValueError):
+            return {"mags": None, "source": None, "is_approx": False, "error": "Invalid Gaia photometry"}
         mags, source, is_approx = exp_calc.lookup_magnitudes_with_fallback(ra, dec, gmag, bp_rp)
         return {"mags": mags, "source": source, "is_approx": is_approx}
 
-    from concurrent.futures import ThreadPoolExecutor
-
-    with ThreadPoolExecutor(max_workers=min(8, len(stars))) as executor:
-        results = list(executor.map(_lookup, stars))
-
-    return JSONResponse({"ok": True, "results": results})
+    try:
+        results = list(_CATALOG_BATCH_EXECUTOR.map(_lookup, stars))
+        return JSONResponse({"ok": True, "results": results})
+    finally:
+        with _CATALOG_BATCH_USERS_LOCK:
+            _CATALOG_BATCH_USERS.discard(user_key)
+        _CATALOG_BATCH_SLOTS.release()
 
 
 @exposure_router.get("/status", response_class=JSONResponse)
@@ -2146,7 +2286,7 @@ def exposure_status():
     calibrations = {}
     for name in INSTRUMENTS:
         calibrations[name] = exp_calc.calibration_status(name)
-    return JSONResponse({"calibrations": calibrations})
+    return JSONResponse({"calibrations": calibrations, "jobs": exp_calc.calibration_jobs()})
 
 
 @exposure_router.get("/coeffs/{instrument}", response_class=JSONResponse)
@@ -3051,18 +3191,37 @@ def api_lco_archive_frames(
 
 
 @lco_router.post("/archive/download", response_class=JSONResponse)
-def api_lco_archive_download(payload: dict = Body(...)):
+def api_lco_archive_download(request: Request, payload: dict = Body(...)):
     try:
         frames = payload.get("frames")
         if not isinstance(frames, list) or not frames:
             return JSONResponse({"ok": False, "error": "no frames selected"}, status_code=400)
+        if len(frames) > lco._ARCHIVE_DOWNLOAD_MAX_FRAMES:
+            return JSONResponse(
+                {"ok": False, "error": f"At most {lco._ARCHIVE_DOWNLOAD_MAX_FRAMES} frames are allowed per download"},
+                status_code=413,
+            )
+        payload_bytes = len(json.dumps(frames, separators=(",", ":"), ensure_ascii=True).encode("utf-8"))
+        if payload_bytes > lco._ARCHIVE_DOWNLOAD_MAX_PAYLOAD_BYTES:
+            return JSONResponse(
+                {"ok": False, "error": f"Frame payload exceeds {lco._ARCHIVE_DOWNLOAD_MAX_PAYLOAD_BYTES} bytes"},
+                status_code=413,
+            )
         if payload.get("background"):
             job = lco.start_archive_download(
                 frames,
                 overwrite=bool(payload.get("overwrite")),
                 auto_ingest=True,
+                user_name=request.state.user,
             )
+            _persist_lco_archive_download_row(_lco_archive_download_row(job))
             return JSONResponse({"ok": True, **job})
+        foreground_limit = max(1, int(os.environ.get("MUSCAT_LCO_ARCHIVE_FOREGROUND_MAX_FRAMES", "10")))
+        if len(frames) > foreground_limit:
+            return JSONResponse(
+                {"ok": False, "error": f"Foreground downloads are limited to {foreground_limit} frames; use background mode"},
+                status_code=413,
+            )
         results = lco.download_frames(frames, overwrite=bool(payload.get("overwrite")))
         return JSONResponse({"ok": True, "results": results})
     except lco.LcoError as e:
@@ -3856,7 +4015,7 @@ def _lco_archive_download_row(job: dict) -> dict:
         "run_type": "archive",
         "run_id": job_id,
         "run_name": run_name,
-        "user_name": "",
+        "user_name": str(job.get("user_name") or ""),
         "details": details,
         "action_inst": instruments[0] if len(instruments) == 1 else "",
         "action_date": obsdates[0] if len(obsdates) == 1 else "",
@@ -3866,9 +4025,11 @@ def _lco_archive_download_row(job: dict) -> dict:
     }
 
 
+_LCO_PERSIST_SIGNATURES: dict[tuple[str, str], tuple] = {}
+_LCO_PERSIST_LOCK = threading.Lock()
+
+
 def _persist_lco_archive_download_row(row: dict) -> None:
-    if row.get("state") not in {"done", "error", "cancelled"}:
-        return
     params = {
         "job_id": row.get("run_id") or "",
         "details": row.get("details") or "",
@@ -3878,6 +4039,15 @@ def _persist_lco_archive_download_row(row: dict) -> None:
         "obslog_url": row.get("obslog_url") or "",
         "photometry_url": row.get("photometry_url") or "",
     }
+    job_id = str(row.get("run_id") or "")
+    signature = (
+        row.get("state"), row.get("run_name"), row.get("details"),
+        row.get("error_desc"), row.get("photometry_url"),
+    )
+    signature_key = (str(_db_path()), job_id)
+    with _LCO_PERSIST_LOCK:
+        if _LCO_PERSIST_SIGNATURES.get(signature_key) == signature:
+            return
     try:
         get_job_store().save(
             type_="lco_archive_download",
@@ -3893,8 +4063,10 @@ def _persist_lco_archive_download_row(row: dict) -> None:
             params=json.dumps(params, sort_keys=True, separators=(",", ":")),
             run_id=row.get("run_id") or "",
             run_name=row.get("run_name") or "",
-            user_name="",
+            user_name=row.get("user_name") or "",
         )
+        with _LCO_PERSIST_LOCK:
+            _LCO_PERSIST_SIGNATURES[signature_key] = signature
     except Exception:
         logger.debug("failed to persist LCO archive download job %s", row.get("run_id"), exc_info=True)
 
@@ -3987,9 +4159,6 @@ def jobs_lco_archive_ingest_date(payload: dict = Body(...)):
 
 @app.get("/jobs", response_class=HTMLResponse)
 def jobs_page():
-    phot.sync_jobs()
-    fit.sync_jobs()
-    ttv.sync_jobs()
     all_jobs = _jobs_with_lco_archive_rows()
 
     # Discover fits completed on-disk outside the web UI.
@@ -4017,24 +4186,31 @@ _last_running: set[str] = set()
 
 @jobs_router.get("/status", response_class=JSONResponse)
 def jobs_status(active_only: bool = False):
-    phot.sync_jobs()
-    fit.sync_jobs()
-    ttv.sync_jobs()
-    all_jobs = _jobs_with_lco_archive_rows()
-
     if active_only:
         # Lightweight path for the site-wide loading indicator. Reports only
-        # which jobs are currently active (running/cancelling/pending) and
-        # deliberately does NOT touch the module-global `_last_running`
+        # indexed durable rows plus live archive jobs. It deliberately does not
+        # reconcile pipelines, load terminal history, or touch `_last_running`
         # baseline — that diff belongs to the full Jobs-page poll, and letting
         # a second site-wide poller mutate it would steal `finished`
         # transitions from the Jobs page.
-        active = [
+        active_by_key = {}
+        for persisted in get_job_store().active():
+            row = (
+                _adapt_persisted_lco_archive_row(persisted)
+                if persisted.get("type") == "lco_archive_download"
+                else persisted
+            )
+            active_by_key[row["key"]] = {"key": row["key"], "state": row["state"]}
+        archive_active = [
             {"key": j["key"], "state": j["state"]}
-            for j in all_jobs
+            for j in (_lco_archive_download_row(job) for job in lco.archive_download_jobs())
             if j["state"] in ("running", "cancelling", "pending")
         ]
-        return {"active": active}
+        for item in archive_active:
+            active_by_key[item["key"]] = item
+        return {"active": list(active_by_key.values())}
+
+    all_jobs = _jobs_with_lco_archive_rows()
 
     # Discover fits completed on-disk outside the web UI.
     existing_keys = {j["key"] for j in all_jobs if j["type"] == "transit_fit"}
