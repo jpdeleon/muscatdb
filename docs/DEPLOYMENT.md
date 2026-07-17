@@ -6,7 +6,7 @@
 
 ## Single-host deployment (nginx + tmux)
 
-muscat-db runs behind nginx (HTTP Basic Auth) reverse-proxying to uvicorn, inside the `muscatdb-gui` tmux session. The README "Multi-User Deployment" section has the full walkthrough; the essentials:
+muscat-db runs behind nginx (HTTP Basic Auth) reverse-proxying to uvicorn, inside the `muscatdbgui` tmux session. The README "Multi-User Deployment" section has the full walkthrough; the essentials:
 
 ```bash
 # First-time nginx setup (as root)
@@ -23,6 +23,50 @@ uv run muscat-db restart --nginx --reload
 
 Connect via SSH tunnel: `ssh -L 8000:localhost:8000 <user>@muscat-ut2` → http://localhost:8000.
 
+### Authentication boundary and deployment verification
+
+nginx authenticates browser users and forwards both `X-Forwarded-User` and a
+private `X-MuSCAT-Proxy-Secret` header to uvicorn. In `--nginx` mode, the
+application fails closed unless the request arrives from loopback with both
+values valid. This prevents another account on the shared host from bypassing
+HTTP Basic Auth by calling `127.0.0.1:8001` directly.
+
+`deploy/setup-nginx.sh` creates the shared secret and the nginx include that
+sets its header. The raw secret must be readable only by the account running
+muscat-db:
+
+```text
+/etc/muscat-db/proxy-secret              0600 jerome:root
+/etc/nginx/muscat-db-proxy-secret.conf   0600 root:root
+```
+
+Do not print, copy into documentation, or commit either secret value. Verify a
+deployment without exposing it:
+
+```bash
+# Required ownership and mode for the raw application secret
+stat -c '%A %a %U:%G %n' /etc/muscat-db/proxy-secret
+
+# Configuration is valid; this does not reload nginx
+sudo nginx -t
+
+# Expected: 401 (nginx requires HTTP Basic Auth)
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/
+
+# Expected: 200 (the deliberately public liveness probe)
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8001/healthz
+
+# Expected: 401 (direct uvicorn access fails closed)
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8001/
+```
+
+Changing the secret file's owner/mode and running `nginx -t` do not stop
+nginx, uvicorn, or science-pipeline processes, so they do not interrupt running
+jobs. A muscat-db restart is a separate operation. Restart only in the existing
+`muscatdbgui` tmux session, after checking for active photometry/transit jobs.
+Python changes are picked up by `--reload`; HTML and JavaScript changes require
+a restart before assuming they are deployed.
+
 ---
 
 ## Cluster inventory
@@ -31,7 +75,7 @@ Hosts derive from `/etc/hosts` on the gateway. Two subnets: `157.82.46.x` (West)
 
 | Host | IP | CPU Model | Phys / Log cores | RAM | OS / Python | Load @ probe | Status |
 |------|----|-----------|-----------------|----|-------------|--------------|--------|
-| **muscat-ut2** | 157.82.46.83 | Xeon Gold 5120 @2.2GHz (1 socket) | 14 / 28 | 44 GiB (+119 GiB swap) | Ubuntu 26.04 / 3.12.8 | low | **up** — NIS gateway, web GUI (tmux `muscatdb-gui`), NFS server, NTP |
+| **muscat-ut2** | 157.82.46.83 | Xeon Gold 5120 @2.2GHz (1 socket) | 14 / 28 | 44 GiB (+119 GiB swap) | Ubuntu 26.04 / 3.12.8 | low | **up** — NIS gateway, web GUI (tmux `muscatdbgui`), NFS server, NTP |
 | **muscat-ut3** | 157.82.46.17 | 2× EPYC 7542 32C | 64 / 128 | 125 GiB | Ubuntu 22.04.5 / 3.10.12 | 2.4 (idle-ish) | **up** — `/raid_ut3` exported |
 | **muscat-ut4** | 157.82.46.41 | Core i9-10940X @3.3GHz (1 socket) | 14 / 28 | 125 GiB (+127 GiB swap) | Ubuntu 22.04.5 / 3.10.12 | 0.12 | **up** — `/ut2` NFS, science envs, repo, DB, and NTP verified |
 | **muscat-ut5** | 157.82.29.73 | 2× Xeon Gold 6338 32C @2.0GHz | 64 / 128 | 251 GiB | Ubuntu 22.04.5 / 3.10.12 | **~215 (saturated)** | **up but heavily loaded** — `/raid_ut5` exported |
