@@ -1949,28 +1949,6 @@ def sync_jobs() -> None:
             _JOBS.pop(key, None)
 
         db_jobs = store.all()
-        for entry in db_jobs:
-            if entry["type"] != "photometry" or entry["state"] != "done":
-                continue
-            entry_run_id = entry.get("run_id") or ""
-            entry_log_path = log_path(entry["inst"], entry["date"], entry["target"], entry_run_id)
-            if not _log_has_partial_failure(entry_log_path):
-                continue
-            store.save(
-                type_="photometry",
-                inst=entry["inst"],
-                date=entry["date"],
-                target=entry["target"],
-                state="error",
-                returncode=entry.get("returncode"),
-                elapsed=entry.get("elapsed") or 0,
-                started_at=entry.get("started_at") or time.time(),
-                error_desc=_get_error_desc(entry_log_path) if entry_log_path else "Partial failure",
-                run_type=entry.get("run_type") or "",
-                params=entry.get("params") or "",
-                run_id=entry_run_id,
-            )
-
         running_keys = {j["key"] for j in db_jobs if j["state"] == "running" and j["type"] == "photometry"}
         db_by_key = {j["key"]: j for j in db_jobs}
 
@@ -2016,7 +1994,11 @@ def sync_jobs() -> None:
                 continue
 
             error_desc = ""
-            if persist_state == "error":
+            if persist_state == "done" and _log_has_partial_failure(job.log_path):
+                persist_state = "error"
+                job.state = "error"
+                error_desc = _get_error_desc(job.log_path)
+            elif persist_state == "error":
                 error_desc = _get_error_desc(job.log_path)
             elif persist_state == "cancelled":
                 error_desc = "Cancelled by user"

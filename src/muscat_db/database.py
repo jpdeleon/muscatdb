@@ -133,6 +133,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     user_name    TEXT NOT NULL DEFAULT ''
 );
 
+CREATE INDEX IF NOT EXISTS idx_jobs_state_started
+ON jobs(state, started_at DESC);
+
 CREATE TABLE IF NOT EXISTS users (
     username      TEXT PRIMARY KEY,
     password_hash TEXT NOT NULL DEFAULT '',
@@ -167,6 +170,10 @@ CREATE TABLE IF NOT EXISTS exposure_jobs (
     started_at  REAL NOT NULL,
     updated_at  REAL NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_exposure_jobs_active_instrument
+ON exposure_jobs(instrument)
+WHERE state IN ('pending', 'running', 'cancelling');
 
 -- App-owned closed-loop observation records are intentionally outside the
 -- frames/summaries/targets rebuild set and therefore survive daily rescans.
@@ -1019,7 +1026,6 @@ def _is_obsdate(token: str) -> bool:
 def get_targets(db_path: str) -> list[dict]:
     """Return the per-target summary materialized at build_db time."""
     with get_conn(db_path) as conn:
-        _apply_schema(conn)  # ensure target_notes exists on first read
         return _targets_from_conn(conn)
 
 
@@ -1466,6 +1472,32 @@ def get_persisted_jobs() -> list[dict]:
             if not str(d.get("run_name") or "").strip():
                 d["run_name"] = str(d.get("run_id") or "").strip()
             result.append(d)
+        return result
+
+
+def get_active_persisted_jobs() -> list[dict]:
+    """Return only live job rows using the active-state index.
+
+    This is the read path used by the site-wide progress poller; unlike
+    :func:`get_persisted_jobs`, its work does not grow with job history.
+    """
+    path = db_path()
+    with get_conn(path) as conn:
+        _ensure_jobs_migrated(conn, path)
+        cur = conn.execute(
+            """SELECT * FROM jobs
+               WHERE state IN ('running', 'cancelling', 'pending')
+               ORDER BY started_at DESC"""
+        )
+        columns = [d[0] for d in cur.description]
+        result = []
+        for row in cur.fetchall():
+            item = dict(zip(columns, row))
+            item["inst"] = item["instrument"]
+            item["date"] = item["obsdate"]
+            if not str(item.get("run_name") or "").strip():
+                item["run_name"] = str(item.get("run_id") or "").strip()
+            result.append(item)
         return result
 
 
