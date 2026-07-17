@@ -4,6 +4,7 @@
 <h1>Logs</h1>
 
 <h2>Instruments</h2>
+{% if instruments %}
 <div class="card-grid">
 {% for inst in instruments %}
   <div class="card">
@@ -12,14 +13,19 @@
       {% if inst.has_data %}
         <div class="meta">Click to view observation dates</div>
       {% else %}
-        <div class="meta" style="color: var(--text-dim);">No data yet — run <code>muscat-db scan-missing {{ inst.name }} &lt;yy&gt;</code></div>
+        <div class="meta">No data yet — run <code>muscat-db scan-missing {{ inst.name }} &lt;yy&gt;</code></div>
       {% endif %}
     </a>
   </div>
-{% else %}
-  <p>No instruments configured.</p>
 {% endfor %}
 </div>
+{% else %}
+  <div class="empty-state">
+    <div class="empty-icon">🛰️</div>
+    <h2>No instruments configured</h2>
+    <p>Define instruments in the database, then run <code>muscat-db scan-missing &lt;instrument&gt; &lt;yy&gt;</code> to populate observation dates.</p>
+  </div>
+{% endif %}
 
 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:2.5rem; margin-bottom:1rem; flex-wrap:wrap; gap:1rem;">
   <h2 style="margin:0;">Data Summary</h2>

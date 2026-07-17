@@ -222,7 +222,11 @@
         })();
       </script>
       {% else %}
-        <p>No datasets found for this target.</p>
+        <div class="empty-state">
+          <div class="empty-icon">📭</div>
+          <h2>No datasets found</h2>
+          <p>No photometric observations are recorded for this target yet.</p>
+        </div>
       {% endif %}
     </div>
   </details>
