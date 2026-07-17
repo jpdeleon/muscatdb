@@ -492,6 +492,40 @@ class TestDatabase:
         finally:
             os.unlink(db_path)
 
+    def test_summary_rows_group_muscat_frames_but_separate_sinistro_telescopes(self):
+        from muscat_db.coord import CoordRepr
+        from muscat_db.database import SCHEMA, _summary_rows
+
+        conn = sqlite3.connect(":memory:")
+        conn.create_aggregate("coord_repr", 2, CoordRepr)
+        conn.executescript(SCHEMA)
+        frame_rows = [
+            ("muscat", "260101", 0, "MSCT0_2601010001", "M67", 1.0),
+            ("muscat", "260101", 0, "MSCT0_2601010002", "M67", 2.0),
+            ("sinistro", "260101", 0, "lsc1m005-fa15-20260101-0001-e91", "TOI-1", 3.0),
+            ("sinistro", "260101", 0, "lsc1m005-fa15-20260101-0002-e91", "TOI-1", 4.0),
+            ("sinistro", "260101", 0, "lsc1m009-fa15-20260101-0003-e91", "TOI-1", 5.0),
+        ]
+        conn.executemany(
+            """INSERT INTO frames
+               (instrument, obsdate, ccd, filename, object, jd_start, ut_start,
+                exptime, read_mode, filter, ra, declination, airmass, focus, pa)
+               VALUES (?, ?, ?, ?, ?, ?, '00:00:00', 10, 'fast', 'gp', '', '', 1, 0, 0)""",
+            frame_rows,
+        )
+
+        rows = _summary_rows(conn)
+        conn.close()
+
+        muscat = [row for row in rows if row[0] == "muscat"]
+        assert len(muscat) == 1
+        assert muscat[0][6] == ""
+        assert muscat[0][7:9] == ("MSCT0_2601010001", "MSCT0_2601010002")
+        assert muscat[0][11] == 2
+
+        sinistro = sorted((row[6], row[11]) for row in rows if row[0] == "sinistro")
+        assert sinistro == [("lsc1m005", 2), ("lsc1m009", 1)]
+
     def test_remove_sqlite_tmp_clears_wal_sidecars(self):
         # A failed WAL-mode build must not leak <tmp>-wal / -shm sidecars.
         from muscat_db.database import _remove_sqlite_tmp
