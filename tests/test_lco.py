@@ -461,14 +461,44 @@ class FrameDestSecurityTest(unittest.TestCase):
 
     def test_url_must_be_https_lco_or_s3(self):
         for bad in ("http://archive-api.lco.global/x", "https://evil.example.com/x",
+                    "https://other-bucket.s3.amazonaws.com/x",
+                    "https://archive-api.lco.global:444/x",
+                    "https://user@archive-api.lco.global/x",
                     "file:///etc/passwd", "", None):
             with self.assertRaises(lco.LcoError):
                 lco._validate_download_url(bad)
 
     def test_url_allows_archive_and_s3(self):
-        for ok in ("https://archive-api.lco.global/frames/1/",
-                   "https://archive-lco-global.s3.amazonaws.com/x?sig=1"):
-            self.assertEqual(lco._validate_download_url(ok), ok)
+        public_dns = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]
+        with patch("muscat_db.lco.socket.getaddrinfo", return_value=public_dns):
+            for ok in ("https://archive-api.lco.global/frames/1/",
+                       "https://archive-lco-global.s3.amazonaws.com/x?sig=1"):
+                self.assertEqual(lco._validate_download_url(ok), ok)
+
+    def test_url_rejects_allowed_hostname_resolving_to_non_public_address(self):
+        mixed_dns = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443)),
+        ]
+        with patch("muscat_db.lco.socket.getaddrinfo", return_value=mixed_dns):
+            with self.assertRaisesRegex(lco.LcoError, "non-public address"):
+                lco._validate_download_url(
+                    "https://archive-api.lco.global/frames/1/"
+                )
+
+    def test_redirect_handler_revalidates_destination(self):
+        handler = lco._ValidatedArchiveRedirectHandler()
+        with self.assertRaisesRegex(lco.LcoError, "untrusted URL"):
+            handler.redirect_request(
+                lco.urllib.request.Request(
+                    "https://archive-api.lco.global/frames/1/"
+                ),
+                None,
+                302,
+                "Found",
+                {},
+                "https://169.254.169.254/latest/meta-data/",
+            )
 
 
 class _StallingResponse:
@@ -497,17 +527,33 @@ class DownloadToFileTest(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
 
+    def test_opener_installs_validated_redirect_handler(self):
+        public_dns = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]
+        opener = MagicMock()
+        with patch("muscat_db.lco.socket.getaddrinfo", return_value=public_dns), \
+                patch("muscat_db.lco.urllib.request.build_opener", return_value=opener) as build:
+            lco._open_download_url(
+                "https://archive-api.lco.global/frames/1/", timeout=12
+            )
+
+        self.assertIsInstance(
+            build.call_args.args[0], lco._ValidatedArchiveRedirectHandler
+        )
+        opener.open.assert_called_once_with(
+            "https://archive-api.lco.global/frames/1/", timeout=12
+        )
+
     def test_streams_atomically_and_leaves_no_part_file(self):
         dest = Path(self.dir) / "frame.fits.fz"
         payload = b"BINARYFITS" * 1000
-        with patch("muscat_db.lco.urllib.request.urlopen", return_value=io.BytesIO(payload)):
+        with patch("muscat_db.lco._open_download_url", return_value=io.BytesIO(payload)):
             lco._download_to_file("https://archive-api.lco.global/frames/1/", dest)
         self.assertEqual(dest.read_bytes(), payload)
         self.assertFalse(dest.with_name(dest.name + ".part").exists())
 
     def test_stall_raises_and_cleans_partial(self):
         dest = Path(self.dir) / "frame.fits.fz"
-        with patch("muscat_db.lco.urllib.request.urlopen", return_value=_StallingResponse()):
+        with patch("muscat_db.lco._open_download_url", return_value=_StallingResponse()):
             with self.assertRaises(socket.timeout):
                 lco._download_to_file("https://archive-api.lco.global/frames/1/", dest, timeout=0.01)
         # No truncated frame and no leftover .part after the stall.

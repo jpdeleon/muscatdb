@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime
 import concurrent.futures
 import hashlib
+import ipaddress
 import json
 import logging
 import math
@@ -52,6 +53,10 @@ _DOWNLOAD_INSTRUMENT_DIRS = {
     "muscat3": "MuSCAT3",
     "muscat4": "MuSCAT4",
 }
+_DOWNLOAD_HOSTS = frozenset({
+    "archive-api.lco.global",
+    "archive-lco-global.s3.amazonaws.com",
+})
 
 # Secondary-mirror defocus offset limits (mm), from LCO's live instrument
 # capabilities schema (observe.lco.global/api/instruments/): the InstrumentConfig
@@ -658,21 +663,63 @@ def frame_destination(frame: dict) -> tuple[str, str, Path]:
 
 
 def _validate_download_url(url: str) -> str:
-    """Only allow fetching over https from the LCO archive or its S3 backing.
+    """Allow only public HTTPS endpoints used by the LCO frame archive.
 
-    The download endpoint hands the frame's ``url`` straight to ``urlretrieve``;
-    without this an arbitrary URL (or a ``file://`` path) turns the endpoint into
-    an SSRF / local-file-read primitive.
+    Hostname allowlisting prevents arbitrary destinations, while resolving and
+    checking every address prevents an allowed hostname from reaching a local or
+    private service.  Redirects pass through the same function via
+    :class:`_ValidatedArchiveRedirectHandler`.
     """
     parsed = urllib.parse.urlparse(url or "")
     host = (parsed.hostname or "").lower()
-    if parsed.scheme != "https" or not (
-        host == "archive-api.lco.global"
-        or host.endswith(".lco.global")
-        or host.endswith(".amazonaws.com")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise LcoError(
+            "refusing to download from untrusted URL", status=400, detail=url
+        ) from exc
+    if (
+        parsed.scheme != "https"
+        or host not in _DOWNLOAD_HOSTS
+        or port not in (None, 443)
+        or parsed.username is not None
+        or parsed.password is not None
     ):
         raise LcoError("refusing to download from untrusted URL", status=400, detail=url)
+
+    try:
+        addresses = {
+            ipaddress.ip_address(sockaddr[0])
+            for _family, _type, _proto, _canonname, sockaddr in socket.getaddrinfo(
+                host, port or 443, type=socket.SOCK_STREAM
+            )
+        }
+    except (OSError, ValueError) as exc:
+        raise LcoError(
+            "could not resolve archive download host", status=502, detail=host
+        ) from exc
+    if not addresses or any(not address.is_global for address in addresses):
+        raise LcoError(
+            "refusing archive download host with non-public address",
+            status=400,
+            detail=host,
+        )
     return url
+
+
+class _ValidatedArchiveRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reapply the archive URL policy before urllib follows each redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _validate_download_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open_download_url(url: str, timeout: float):
+    """Open an archive URL with redirect validation enabled for every hop."""
+    _validate_download_url(url)
+    opener = urllib.request.build_opener(_ValidatedArchiveRedirectHandler())
+    return opener.open(url, timeout=timeout)
 
 
 # Per-frame download timeout (seconds), applied to each socket read. A stalled
@@ -695,7 +742,7 @@ def _download_to_file(url: str, dest: Path, timeout: float = _DOWNLOAD_TIMEOUT_S
     """
     tmp = dest.with_name(dest.name + ".part")
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        with _open_download_url(url, timeout=timeout) as response:
             with open(tmp, "wb") as fh:
                 shutil.copyfileobj(response, fh, _DOWNLOAD_CHUNK)
         tmp.replace(dest)

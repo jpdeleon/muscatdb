@@ -175,9 +175,15 @@ Recommendation:
 
 ### P3. Redirects can bypass the archive-download URL allowlist
 
-[`_validate_download_url`](../src/muscat_db/lco.py#L660) validates only the
-initial URL. [`urllib.request.urlopen`](../src/muscat_db/lco.py#L698) follows HTTP
-redirects without applying that validation to each destination.
+**Remediated 2026-07-17:** archive downloads now validate the initial URL and
+every redirect hop, require HTTPS on port 443, use an exact archive-host
+allowlist, and reject any hostname resolving to a non-public address. Regression
+tests cover unapproved S3 buckets, unsafe ports and credentials, mixed
+public/private DNS results, and redirects to link-local services.
+
+At audit time, `_validate_download_url` validated only the initial URL and
+urllib followed HTTP redirects without applying that validation to each
+destination.
 
 An allowed LCO or S3 URL that redirects elsewhere could reach an unapproved
 host, including internal services, while the response is written into the data
