@@ -124,6 +124,20 @@
     background: transparent; color: var(--text-dim);
     font-weight: 500; opacity: 0.5;
   }
+
+  @media (max-width: 800px) {
+    .transit-option-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    }
+    .fit-option-row { flex-wrap: wrap !important; }
+    .archive-query-row { min-width: 0 !important; }
+  }
+  @media (max-width: 560px) {
+    .transit-option-grid {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
+    .lightcurve-card { min-width: 100%; }
+  }
 </style>
 
 <h1>Transit Fit</h1>
@@ -324,6 +338,7 @@
             {% endfor %}
           </tbody>
         </table>
+      </div>
     </div>
     {% endif %}
 
@@ -349,7 +364,7 @@
     <details class="adv" id="opt-panel">
       <summary>Fitting Configurations &amp; Parameters</summary>
       <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; gap: 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.75rem;">
-        <div style="display: flex; align-items: center; gap: 0.5rem; flex-grow: 1; min-width: 280px;">
+        <div class="archive-query-row" style="display: flex; align-items: center; gap: 0.5rem; flex-grow: 1; min-width: 280px; flex-wrap: wrap;">
           <label for="archive-target-input" style="font-size: 0.85rem; font-weight: 500; color: var(--text); display: flex; align-items: center; gap: 0.35rem; white-space: nowrap;">
             🔍 Query Target:
           </label>
@@ -370,7 +385,7 @@
         <div class="opt-section-title" style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
           <span>Stellar Parameters <span id="stellar-ref-container" style="font-size: 0.75rem; font-weight: normal; color: var(--text-dim); text-transform: none;"></span><span class="ephem-src none" id="src-stellar">—</span></span>
         </div>
-        <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem;">
+        <div class="transit-option-grid" style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem;">
           <div class="opt">
             <label for="opt-teff">Teff (K) <span class="help-tooltip" title="Stellar effective temperature.">?</span></label>
             <div style="display: flex; gap: 0.5rem; align-items: center;">
@@ -408,7 +423,7 @@
 
         <details class="opt-collapse">
         <summary>Sampler Options <span class="help-tooltip" title="NUTS sampler settings passed to PyMC. Larger values give more reliable posteriors but slower runs.">?</span></summary>
-        <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem;">
+        <div class="transit-option-grid" style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem;">
           <div class="opt">
             <label for="opt-tune">tune <span class="help-tooltip" title="Tuning (warm-up) steps per chain, discarded after step-size adaptation. Default 2000.">?</span></label>
             <input type="number" id="opt-tune" value="2000" min="1" step="100" style="width: 100%;">
@@ -459,7 +474,7 @@
             <label for="opt-chunk_offset">Chunk offset <span class="help-tooltip" title="Fit a separate flux offset per time chunk (split at gaps larger than Chunk thresh). Default off.">?</span></label>
           </div>
         </div>
-        <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(5, 1fr); gap: 1rem;">
+        <div class="transit-option-grid" style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(5, 1fr); gap: 1rem;">
           <div class="opt">
             <label for="opt-spline_knots">Spline knots <span class="help-tooltip" title="Number of knots in the spline basis (used only when Spline is on). Default 5.">?</span></label>
             <input type="number" id="opt-spline_knots" value="5" min="1" step="1" style="width: 100%;" disabled>
@@ -498,7 +513,7 @@
             <label for="opt-gp_per_dataset_log_scale">Per-dataset scale <span class="help-tooltip" title="Fit an independent log_scale for each light curve instead of one value shared across all datasets.">?</span></label>
           </div>
         </div>
-        <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.25rem;">
+        <div class="transit-option-grid" style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.25rem;">
           <div class="opt">
             <label for="opt-gp_log_amp">log_amp prior <span class="help-tooltip" title="Prior on log10 of the GP amplitude sigma (flux units). Gaussian: enter mean,uncertainty. Uniform: enter low,high bounds. Default -3,2 Gaussian.">?</span></label>
             <div style="display: flex; gap: 0.5rem; align-items: center;">
@@ -534,7 +549,7 @@
             <label for="opt-chromatic_bump">Chromatic Bump <span class="help-tooltip" title="Fit chromatic bump amplitude.">?</span></label>
           </div>
         </div>
-        <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem;">
+        <div class="transit-option-grid" style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem;">
           <div class="opt">
             <label for="opt-bump_tcenter">tcenter prior <span class="help-tooltip" title="Prior on center time of the bump (BJD_TDB). Gaussian: enter value,unc. Uniform: enter low,high bounds. Use ; to separate multiple bumps.">?</span></label>
             <div style="display: flex; gap: 0.5rem; align-items: center;">
@@ -580,7 +595,7 @@
             <label for="opt-chromatic_flare">Chromatic Flare <span class="help-tooltip" title="Fit chromatic flare amplitude.">?</span></label>
           </div>
         </div>
-        <div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem;">
+        <div class="transit-option-grid" style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem;">
           <div class="opt">
             <label for="opt-flare_tpeak">tpeak prior <span class="help-tooltip" title="Prior on peak time of the flare (BJD_TDB). Gaussian: enter value,unc. Uniform: enter low,high bounds. Use ; to separate multiple flares.">?</span></label>
             <div style="display: flex; gap: 0.5rem; align-items: center;">
@@ -631,7 +646,7 @@
 
         <div class="opt-section-title">Fitting Pipeline Options</div>
 
-        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: nowrap; align-items: flex-end; padding-bottom: 0.45rem;">
+        <div class="fit-option-row" style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: nowrap; align-items: flex-end; padding-bottom: 0.45rem;">
           <div class="opt check" style="margin-top: 0; white-space: nowrap;">
             <input type="checkbox" id="opt-chromatic" checked>
             <label for="opt-chromatic">Chromatic fit <span class="help-tooltip" title="Flag indicating if parameters (like Rp/R*) are chromatic (band-dependent).">?</span></label>
@@ -666,7 +681,7 @@
           </div>
         </div>
 
-        <div style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: nowrap; align-items: flex-end; padding-bottom: 0.45rem;">
+        <div class="fit-option-row" style="grid-column: 1 / -1; display: flex; gap: 1.25rem; flex-wrap: nowrap; align-items: flex-end; padding-bottom: 0.45rem;">
           <div class="opt check" style="margin-top: 0; white-space: nowrap;">
             <input type="checkbox" id="opt-plot_midtransit" checked>
             <label for="opt-plot_midtransit">Plot midtransit <span class="help-tooltip" title="Plot a solid vertical line at the nearest midtransit time on data.png.">?</span></label>
@@ -1120,7 +1135,8 @@
       setPlanetCardError(el.closest('.opt'), msg || 'Required');
     }
 
-    // tc_pred is always centre ± width (two fields, no prior selector).
+    // tc_pred is always the centre plus the *full* Uniform-prior width (two
+    // fields, no prior selector). timer converts that width to centre ± width/2.
     [
       { selector: '.planet-tc_pred', min: 0, inclusive: false, msg: 'Must be > 0' },
       { selector: '.planet-tc_pred-unc', min: 0, inclusive: true, msg: 'Must be ≥ 0' }
@@ -1390,7 +1406,7 @@
 
     var bodyHtml =
       '<div class="opt-grid">' +
-        '<div style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem;">' +
+        '<div class="transit-option-grid" style="grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem;">' +
         '<div class="opt">' +
           '<label for="planet-period-' + uid + '">Period (days) <span class="help-tooltip" title="Orbital period entered as mean,uncertainty (days) for a Gaussian prior, or low,high bounds for a Uniform prior (see the prior-shape selector).">?</span></label>' +
           priorField('planet-period', cmb_period, val_period_prior) +
@@ -1413,12 +1429,13 @@
           priorField('planet-ror', cmb_ror, val_ror_prior) +
         '</div>' +
         '<div class="opt">' +
-          '<label for="planet-tc_pred-' + uid + '">tc_pred (BJD) <span class="help-tooltip" title="Predicted transit center epoch (BJD) for this planet on this night. Seeds the t0 prior. If tc_pred is not provided, it defaults to the mean time of the dataset; If not provided, it defaults to a very narrow window of 0.04 days (about 57.6 minutes).">?</span></label>' +
+          '<label for="planet-tc_pred-' + uid + '">Transit-center prior <span class="help-tooltip" tabindex="0" title="timer samples t0 from a Uniform prior. The first value is its predicted center (BJD); the second is its full width in days, not a Gaussian uncertainty. The bounds are center minus/plus half the full width.">?</span></label>' +
           '<div style="display: flex; gap: 0.5rem; align-items: center;">' +
-            '<input id="planet-tc_pred-' + uid + '" type="number" class="planet-tc_pred" value="' + val_tc_pred + '" placeholder="auto" step="0.00001" style="flex: 3; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
-            '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' +
-            '<input type="number" class="planet-tc_pred-unc" value="' + val_tc_pred_unc + '" placeholder="unc" step="0.001" style="flex: 2; width: 100%; min-width: 0; background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 0.35rem 0.5rem; font-size: 0.85rem;">' +
+            '<input id="planet-tc_pred-' + uid + '" type="number" class="planet-tc_pred" value="' + val_tc_pred + '" aria-label="Predicted transit center in BJD" placeholder="center / auto" step="0.00001" style="flex: 3; width: 100%; min-width: 0;">' +
+            '<span class="hint" aria-hidden="true" style="white-space: nowrap;">full width</span>' +
+            '<input id="planet-tc_pred-width-' + uid + '" type="number" class="planet-tc_pred-unc" value="' + val_tc_pred_unc + '" aria-label="Uniform prior full width in days" placeholder="0.04 d" step="0.001" style="flex: 2; width: 100%; min-width: 0;">' +
           '</div>' +
+          '<span class="hint">Uniform prior: center, full width (days); blank values use dataset mean and 0.04 d.</span>' +
         '</div>' +
       '</div>';
 

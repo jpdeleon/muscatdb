@@ -481,6 +481,39 @@ def test_transit_fit_archive_query_modal_uses_shared_style_variants():
     assert "', 'success')" in html
 
 
+def test_transit_center_prior_displays_timer_uniform_width_semantics():
+    """The UI must not present timer's full-width field as a +/- uncertainty."""
+    html = _read_template("transit_fit.html")
+    add_card = _function_body(html, "addPlanetCard")
+
+    assert "Transit-center prior" in add_card
+    assert "not a Gaussian uncertainty" in add_card
+    assert "Uniform prior: center, full width (days)" in add_card
+    assert 'aria-label="Predicted transit center in BJD"' in add_card
+    assert 'aria-label="Uniform prior full width in days"' in add_card
+    assert 'class="planet-tc-prior-bounds"' not in add_card
+    assert '<span style="color: var(--text-dim); font-size: 0.8rem;">±</span>' not in add_card
+
+
+def test_transit_fit_results_summary_closes_its_layout_wrappers():
+    """The downloads row must not be swallowed by an unclosed summary div."""
+    html = _read_template("transit_fit.html")
+    start = html.index("{% if outputs.summary %}")
+    end = html.index("{% endif %}", start)
+    summary_block = html[start:end]
+
+    assert summary_block.count("<div") == summary_block.count("</div>")
+    assert "</table>\n      </div>\n    </div>" in summary_block
+
+
+def test_transit_fit_dense_option_rows_have_mobile_layout_hooks():
+    html = _read_template("transit_fit.html")
+
+    assert html.count('class="transit-option-grid"') >= 6
+    assert html.count('class="fit-option-row"') == 2
+    assert "@media (max-width: 560px)" in html
+
+
 def test_ephemeris_disclosure_triangles_use_standard_size():
     html = _read_template("ephemeris.html")
     css = STYLES_CSS.read_text()
