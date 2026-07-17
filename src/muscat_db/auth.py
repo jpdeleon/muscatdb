@@ -2,15 +2,12 @@
 
 nginx performs HTTP Basic Auth and forwards the authenticated username in an
 ``X-Forwarded-User`` header. Trusting that header is ONLY safe for connections
-that actually arrived from nginx's own loopback socket: uvicorn's default bind
-is ``0.0.0.0``, so without this check any network client could set the header
-itself and impersonate a user. We therefore verify the immediate TCP peer is
-loopback before honoring it, rather than relying on the operator having
-remembered ``--nginx`` at start time.
+that actually arrived from nginx's own loopback socket. We verify the immediate
+TCP peer and the proxy's private shared-secret header before honoring it.
 
-This does not defend against another local account on the same host connecting
-straight to uvicorn's loopback port; that would require a shared secret between
-nginx and uvicorn, which is not implemented yet.
+Production nginx mode also requires a shared secret header.  This prevents
+another account on the same host from connecting straight to uvicorn's loopback
+port and impersonating nginx.
 
 The rule lives here (not inline in the HTTP middleware) because both the
 middleware and the companion-app gateway (:mod:`muscat_db.proxy`) must apply it
@@ -20,6 +17,9 @@ entirely, so it has to recompute the trusted user from the handshake itself.
 
 from __future__ import annotations
 
+import hmac
+import os
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from fastapi import Request
@@ -27,10 +27,31 @@ from fastapi.responses import JSONResponse
 
 # Hosts whose X-Forwarded-User we trust: nginx's own loopback socket.
 TRUSTED_PROXY_HOSTS = frozenset({"127.0.0.1", "::1"})
+PROXY_SECRET_HEADER = "X-MuSCAT-Proxy-Secret"
+DEFAULT_PROXY_SECRET_FILE = Path("/etc/muscat-db/proxy-secret")
+
+
+def authentication_required() -> bool:
+    """Whether the application must reject requests that bypass nginx auth."""
+    return os.environ.get("MUSCAT_REQUIRE_AUTH", "0") == "1"
+
+
+def configured_proxy_secret() -> str | None:
+    """Read the nginx-to-application secret without caching secret material."""
+    value = os.environ.get("MUSCAT_PROXY_SECRET", "").strip()
+    if value:
+        return value
+    path = Path(os.environ.get("MUSCAT_PROXY_SECRET_FILE", DEFAULT_PROXY_SECRET_FILE))
+    try:
+        return path.read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
 
 
 def trusted_forwarded_user(
-    forwarded_user: str | None, client_host: str | None
+    forwarded_user: str | None,
+    client_host: str | None,
+    presented_proxy_secret: str | None = None,
 ) -> str | None:
     """Return the authenticated username, or ``None`` if it cannot be trusted.
 
@@ -40,6 +61,13 @@ def trusted_forwarded_user(
     """
     user = forwarded_user or None
     if user is not None and client_host not in TRUSTED_PROXY_HOSTS:
+        return None
+    expected = configured_proxy_secret()
+    if user is not None and authentication_required() and expected is None:
+        return None
+    if expected is not None and not hmac.compare_digest(
+        presented_proxy_secret or "", expected
+    ):
         return None
     return user
 

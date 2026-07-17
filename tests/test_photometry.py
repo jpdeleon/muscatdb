@@ -2240,7 +2240,8 @@ class TestRoutes:
         assert "Jobs" in r.text
         assert 'data-type="photometry"' in r.text
         assert 'data-type="transit_fit"' in r.text
-        assert "cancelJob(this)" in r.text
+        assert 'data-job-action="cancel"' in r.text
+        assert 'onclick="cancelJob(this)"' not in r.text
         assert 'data-target="TOI-5684.01"' in r.text
         assert "TOI-5684.02" in r.text
 
