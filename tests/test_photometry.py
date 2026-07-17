@@ -2161,8 +2161,10 @@ class TestRoutes:
             f"Should have queried with space-normalized target, got: {seen_urls}"
 
     def test_transit_fit_query_archive_local_csv(self, client, catalog):
-        # 1. Test local NASA Exoplanet Archive CSV query
-        r = client.get("/api/transit-fit/query-archive?target=HIP67522")
+        # 1. Test an exact local NASA Exoplanet Archive planet query.  The
+        # archive's default planet for a multi-planet host can change as the
+        # catalog is refreshed, so do not query the ambiguous host name here.
+        r = client.get("/api/transit-fit/query-archive?target=HIP67522b")
         assert r.status_code == 200
         data = r.json()
         assert data["ok"] is True
