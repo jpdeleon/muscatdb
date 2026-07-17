@@ -8,7 +8,7 @@ For both systems, the stellar color index variable is defined as:
 \end{equation}
 
 \subsection*{1. Gaia DR2 to Pan-STARRS1 (PS1)}
-The definitive coefficients for Gaia DR2 are published in \textbf{Evans et al. (2018), Table 5} (\textit{Astronomy \& Astrophysics}, 616, A4). 
+The definitive coefficients for Gaia DR2 are published in \textbf{Evans et al. (2018), Table 5} (\textit{Astronomy \& Astrophysics}, 616, A4).
 
 \subsubsection*{Mathematical Framework}
 For the $g_{\text{P1}}$, $r_{\text{P1}}$, and $i_{\text{P1}}$ bands, the transformation is anchored to the integrated $G$ magnitude:
