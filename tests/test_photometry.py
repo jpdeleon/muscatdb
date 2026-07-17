@@ -2160,11 +2160,40 @@ class TestRoutes:
         assert len(norm_queries) >= 1, \
             f"Should have queried with space-normalized target, got: {seen_urls}"
 
-    def test_transit_fit_query_archive_local_csv(self, client, catalog):
-        # 1. Test an exact local NASA Exoplanet Archive planet query.  The
-        # archive's default planet for a multi-planet host can change as the
-        # catalog is refreshed, so do not query the ambiguous host name here.
-        r = client.get("/api/transit-fit/query-archive?target=HIP67522b")
+    def test_transit_fit_query_archive_local_csv(
+        self, client, monkeypatch, tmp_path,
+    ):
+        from muscat_db import web
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        (data_dir / "nexsci_ps.csv").write_text(
+            "pl_name,pl_letter,hostname,hd_name,hip_name,tic_id,gaia_id,"
+            "gaia_dr3_id,default_flag,st_teff,st_tefferr1,st_tefferr2,"
+            "st_logg,st_loggerr1,st_loggerr2,st_met,st_meterr1,st_meterr2,"
+            "pl_orbper,pl_orbpererr1,pl_orbpererr2,pl_tranmid,"
+            "pl_tranmiderr1,pl_tranmiderr2,pl_trandur,pl_trandurerr1,"
+            "pl_trandurerr2,pl_ratror,pl_ratrorerr1,pl_ratrorerr2,"
+            "pl_imppar,pl_impparerr1,pl_impparerr2,st_refname,pl_refname\n"
+            "HIP 67522 b,b,HIP 67522,HD 120411,HIP 67522,TIC 166527623,"
+            "Gaia 1,Gaia 1,1,5675,75,-75,4.0,,,0.0,,,6.9594731,"
+            "0.0000022,-0.0000022,2458604.02376,0.00033,-0.00032,4.85,"
+            "1.13,-0.36,0.06644,0.0015,-0.0014,0.03,0.19,-0.22,"
+            "Stellar reference,Planet reference\n",
+        )
+        (data_dir / "TOIs.csv").write_text(
+            "TOI,Planet Name,TIC ID,Stellar Eff Temp (K),"
+            "Stellar Eff Temp (K) err,Stellar Log(g) (cm/s^2),"
+            "Stellar Log(g) (cm/s^2) err,Period (days),Period (days) err,"
+            "Epoch (BJD),Epoch (BJD) err,Duration (hours),"
+            "Duration (hours) err\n"
+            "101.01,TOI-101.01,123456789,5600,50,4.2,0.1,"
+            "1.43036994965074,0.00001,2459000.5,0.001,2.5,0.1\n",
+        )
+        monkeypatch.setattr(web, "HERE", tmp_path / "src" / "muscat_db")
+
+        # 1. Test local NASA Exoplanet Archive CSV query.
+        r = client.get("/api/transit-fit/query-archive?target=HIP67522")
         assert r.status_code == 200
         data = r.json()
         assert data["ok"] is True
