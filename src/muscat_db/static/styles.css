@@ -674,12 +674,14 @@ details.adv[open] > summary { color: var(--text); margin-bottom: 0.5rem; }
   width: 13px; height: 13px; font-size: 0.65rem; font-weight: bold;
   border-radius: 50%; background: var(--border); color: var(--text-dim);
   cursor: help; margin-left: 4px; vertical-align: middle; border: 1px solid var(--border);
+  text-transform: none; letter-spacing: normal;
 }
 .help-tooltip:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
 /* Instant, styled tooltip bubble. Reads text from the element's title
    attribute via attr(); white-space: pre-line honors &#10; line breaks. */
 .help-tooltip::after {
   content: attr(title);
+  text-transform: none; letter-spacing: normal;
   position: absolute;
   bottom: calc(100% + 8px);
   left: 50%;
