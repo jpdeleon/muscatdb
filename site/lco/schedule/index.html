@@ -285,10 +285,10 @@
       </select></div>
     <div class="lco-field"><label for="sch-obs-airmass">Max airmass <span class="help-tooltip" title="Maximum airmass for a transit to count as observable. Lower values mean better image quality. 2.0 is typical; 1.5 for high-precision work.">?</span></label><input id="sch-obs-airmass" type="number" step="any" value="2"></div>
     <div class="lco-field"><label for="sch-moon-sep">Min lunar (deg) <span class="help-tooltip" title="Minimum angular distance from the Moon (degrees) for a transit to count as observable. Higher values avoid moonlight contamination.">?</span></label><input id="sch-moon-sep" type="number" step="any" value="30"></div>
-    <button class="btn" type="button" id="btn-fov" title="Optimize field-of-view pointing for this target">Show FOV</button>
   </div>
   <div class="lco-actions">
     <button class="btn" type="button" id="btn-fetch-ephem">Fetch ephemeris</button>
+    <button class="btn" type="button" id="btn-fov" title="Optimize field-of-view pointing for this target">Show FOV</button>
     <button class="btn primary" type="button" id="btn-gen-windows">Generate windows</button>
     <label class="lco-field" style="flex-direction: row; align-items: center; gap: 0.4rem;">
       <span style="font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase;">Show</span>
@@ -2980,7 +2980,9 @@
         if (!d.ok) throw new Error(d.error || 'Could not generate test plan');
         currentTestRecord = d.record; currentTestHash = null;
         el('btn-test-submit').disabled = true;
-        el('test-observation-summary').textContent = JSON.stringify(d.record.plan, null, 2);
+        var _INTERNAL_PLAN_KEYS = ['fov_candidates', 'removed_combinations', 'provenance', 'capabilities', 'version'];
+        var displayPlan = Object.fromEntries(Object.entries(d.record.plan).filter(function (kv) { return !_INTERNAL_PLAN_KEYS.includes(kv[0]); }));
+        el('test-observation-summary').textContent = JSON.stringify(displayPlan, null, 2);
         msg('msg-test-observation', 'Draft generated. Review before checking settings.');
         el('test-observation-dialog').showModal();
       }).catch(function (e) { showMessageModal('Test plan failed', String(e)); });
