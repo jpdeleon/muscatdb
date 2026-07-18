@@ -565,6 +565,10 @@ def api_target_harps_rv(name: str = ""):
 _ESO_TOKEN_URL = "https://www.eso.org/sso/oidc/token"
 _ESO_TAP_URL = "https://archive.eso.org/tap_obs/sync"
 
+# LAMOST DR11 TAP constants
+_LAMOST_TAP_URL = "https://www.lamost.org/dr11/v2.0/voservice/tap"
+_LAMOST_ARCHIVE_TABLE = "public.med_combined"
+
 
 @target_router.get("/eso-archive", response_class=JSONResponse)
 async def api_target_eso_archive(name: str = "", request: Request = None):
@@ -733,6 +737,93 @@ async def api_target_eso_archive(name: str = "", request: Request = None):
         "target": norm_name,
         "authenticated": auth_used,
         "query_method": query_method,
+        "total": len(rows),
+        "columns": columns,
+        "rows": rows,
+    })
+
+
+# ── LAMOST DR11 TAP helper ──────────────────────────────────────────────
+
+
+def _parse_votable(xml_text: str) -> tuple[list[str], list[dict]]:
+    """Parse a VOTable XML response into (column_names, list_of_row_dicts)."""
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(xml_text)
+    ns = {"v": "http://www.ivoa.net/xml/VOTable/v1.3"}
+    fields = root.findall(".//v:FIELD", ns)
+    cols = [f.get("name") for f in fields]
+    data_rows = root.findall(".//v:TABLEDATA/v:TR", ns)
+    rows = []
+    for tr in data_rows:
+        vals = [td.text or "" for td in tr.findall("v:TD", ns)]
+        if len(vals) == len(cols):
+            rows.append(dict(zip(cols, vals)))
+    return cols, rows
+
+
+@target_router.get("/lamost-archive", response_class=JSONResponse)
+async def api_target_lamost_archive(name: str = "", request: Request = None):
+    """Query LAMOST DR11 MRS TAP for observations near the given target.
+
+    Uses coordinate-based cone search only (LAMOST does not support
+    name-resolution in TAP).  Falls back to the local catalog resolution.
+    """
+    norm_name = _normalize_target_name(name)
+    if not norm_name:
+        return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
+
+    # Resolve RA/Dec from local catalogs
+    try:
+        import asyncio as _asyncio
+        from muscat_db.catalog import _resolve_archive_coords
+        resolved = await _asyncio.to_thread(_resolve_archive_coords, norm_name)
+    except Exception as exc:
+        logger.debug("LAMOST coordinate resolution failed for %s: %s", norm_name, exc)
+        resolved = None
+
+    if not resolved:
+        return JSONResponse({
+            "ok": False,
+            "error": f"Could not resolve coordinates for '{norm_name}'",
+        }, status_code=404)
+
+    ra_deg, dec_deg, coord_source = resolved
+    radius_deg = 1.0 / 60.0  # 1 arcmin
+
+    adql = (
+        "SELECT TOP 200 "
+        "obsid, ra, dec, obsdate, band, snr, designation, planid, spid, fiberid, spec "
+        f"FROM {_LAMOST_ARCHIVE_TABLE} "
+        "WHERE CONTAINS("
+        f"POINT(ra, dec), "
+        f"CIRCLE({ra_deg}, {dec_deg}, {radius_deg})"
+        ") = 1 "
+        "ORDER BY obsdate DESC"
+    )
+
+    try:
+        resp = await http_client.get_async_client().get(
+            _LAMOST_TAP_URL + "/sync",
+            params={
+                "REQUEST": "doQuery",
+                "LANG": "ADQL",
+                "QUERY": adql,
+            },
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        columns, rows = _parse_votable(resp.text)
+    except Exception as exc:
+        return JSONResponse({
+            "ok": False,
+            "error": f"LAMOST TAP query failed: {exc}",
+        }, status_code=502)
+
+    return JSONResponse({
+        "ok": True,
+        "target": norm_name,
+        "query_method": f"cone ({coord_source}, 1 arcmin)",
         "total": len(rows),
         "columns": columns,
         "rows": rows,
