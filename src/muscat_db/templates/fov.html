@@ -114,7 +114,7 @@
         </div>
         <div class="fov-field"><label for="fov-ra">RA (deg) <span class="help-tooltip" title="Right Ascension of the target in degrees. Can be looked up by resolving the target name.">?</span></label><input id="fov-ra" type="text" inputmode="decimal" placeholder="optional"></div>
         <div class="fov-field"><label for="fov-dec">Dec (deg) <span class="help-tooltip" title="Declination of the target in degrees. Can be looked up by resolving the target name.">?</span></label><input id="fov-dec" type="text" inputmode="decimal" placeholder="optional"></div>
-        <div class="fov-field"><label for="fov-margin">Target margin (″) <span class="help-tooltip" title="Keep the target at least this far from any field edge.">?</span></label><input id="fov-margin" type="number" step="any" value="30"></div>
+        <div class="fov-field"><label for="fov-margin">Target margin (″) <span class="help-tooltip" title="Keep the target at least this far from any field edge.">?</span></label><input id="fov-margin" type="number" step="any" value="60"></div>
         <div class="fov-field"><label for="fov-comp-margin">Comp margin (″) <span class="help-tooltip" title="Keep comparisons at least this far from any field edge. Leave empty to use target margin.">?</span></label><input id="fov-comp-margin" type="number" step="any" placeholder="(use target)"></div>
         <div class="fov-field">
           <label for="fov-mag-mode">Mag filter mode <span class="help-tooltip" title="Filter comparison candidates by magnitude, either with absolute limits or relative to the target's G-band magnitude.">?</span></label>
@@ -137,8 +137,11 @@
         </div>
       </div>
       <div style="margin-top: 0.7rem; display: flex; align-items: center; gap: 0.6rem;">
-        <input id="fov-allow-rotation" type="checkbox" checked style="width: 1.1rem; height: 1.1rem; cursor: pointer;">
+        <input id="fov-allow-rotation" type="checkbox" style="width: 1.1rem; height: 1.1rem; cursor: pointer;">
         <label for="fov-allow-rotation" style="cursor: pointer; font-size: 0.85rem; margin: 0;">Allow field rotation (optimize position angle)</label>
+      </div>
+      <div style="font-size: 0.77rem; color: var(--text-dim); margin-top: 0.25rem; margin-left: 1.75rem; line-height: 1.45;">
+        Only <strong>MuSCAT2</strong> supports field rotation. LCO instruments currently do not allow it.
       </div>
       <div style="margin-top: 0.5rem; display: flex; align-items: center; gap: 0.6rem;">
         <input id="fov-show-pm" type="checkbox" style="width: 1.1rem; height: 1.1rem; cursor: pointer;">
@@ -669,7 +672,7 @@
     if (p.target) sp.set('target', p.target);
     if (p.ra) sp.set('ra', p.ra);
     if (p.dec) sp.set('dec', p.dec);
-    if (p.margin && p.margin !== '30') sp.set('margin', p.margin);
+    if (p.margin && p.margin !== '60') sp.set('margin', p.margin);
     if (p.compMargin) sp.set('cmarg', p.compMargin);
     if (p.magMode) sp.set('magmode', p.magMode);
     if (p.magRange && p.magRange !== '10, 18' && p.magRange !== '10,18') sp.set('magrange', p.magRange);
@@ -711,13 +714,13 @@
       target: sp.get('target') || (stored?.target || ''),
       ra: sp.get('ra') || (stored?.ra || ''),
       dec: sp.get('dec') || (stored?.dec || ''),
-      margin: sp.get('margin') || (stored?.margin || '30'),
+      margin: sp.get('margin') || (stored?.margin || '60'),
       compMargin: sp.get('cmarg') || (stored?.compMargin || ''),
       magMode: sp.get('magmode') || (stored?.magMode || 'absolute'),
       magRange: magRange,
       magDelta: sp.get('magdelta') || (stored?.magDelta || '3'),
       avoidMag: sp.get('avoidmag') || (stored?.avoidMag || ''),
-      allowRotation: !sp.has('fixpa') && (stored?.allowRotation !== false),
+      allowRotation: !sp.has('fixpa') && (stored?.allowRotation === true),
     };
     setParams(p);
   }
@@ -743,7 +746,7 @@
           target: params.target,
           ra: params.ra || null,
           dec: params.dec || null,
-          margin_arcsec: parseFloat(params.margin) || 30,
+          margin_arcsec: parseFloat(params.margin) || 60,
           comp_margin_arcsec: params.compMargin ? parseFloat(params.compMargin) : null,
           mag_limit: params.magMode === 'absolute' ? (parseFloat(params.magMax) || 18) : 18,
           mag_min: params.magMode === 'absolute' ? (parseFloat(params.magMin) || 0) : null,
@@ -812,7 +815,7 @@
     if (params.target) sp.set('target', params.target);
     if (params.ra) sp.set('ra', params.ra);
     if (params.dec) sp.set('dec', params.dec);
-    if (params.margin && params.margin !== '30') sp.set('margin', params.margin);
+    if (params.margin && params.margin !== '60') sp.set('margin', params.margin);
     if (params.compMargin) sp.set('cmarg', params.compMargin);
     if (params.magMode) sp.set('magmode', params.magMode);
     if (params.magRange && params.magRange !== '10, 18' && params.magRange !== '10,18') sp.set('magrange', params.magRange);
