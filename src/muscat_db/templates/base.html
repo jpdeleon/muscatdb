@@ -74,7 +74,7 @@
   <a href="/toi" data-nav-section="toi">TOI</a>
   <a href="/nexsci" data-nav-section="nexsci">NExScI</a>
   <a href="/guide" data-nav-section="guide" style="margin-right: 0.5rem;">Guide</a>
-  <a href="/settings" data-nav-section="settings">Settings{% if current_user %} <span class="badge">{{ current_user }}</span>{% endif %}</a>
+  <a href="/settings" data-nav-section="settings">Settings <span class="badge" id="current-user-badge"{% if not current_user %} hidden{% endif %}>{{ current_user or '' }}</span></a>
   <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">
     <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
       <circle cx="12" cy="12" r="4"/>
@@ -119,6 +119,29 @@
     document.querySelectorAll('nav a[data-nav-section]').forEach(function (link) {
       if (link.dataset.navSection === section) {
         link.setAttribute('aria-current', 'page');
+      }
+    });
+  })();
+
+  // Resolve the current nginx-authenticated user once, per request and uncached
+  // (see /whoami in web.py). The result is shared via a promise so the navbar
+  // badge and the chat widget reuse a single request instead of each firing
+  // their own. This is required because the targets/target pages are served
+  // from a globally-cached HTML blob that must NOT embed a per-user identity;
+  // the name is filled in client-side instead. Empty string means no user.
+  (function () {
+    window.MuscatWhoami = fetch('/whoami', { headers: { 'X-Requested-With': 'fetch' } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        return (d && typeof d.user === 'string' && d.user.trim()) ? d.user.trim() : '';
+      })
+      .catch(function () { return ''; });
+    window.MuscatWhoami.then(function (user) {
+      if (!user) return;
+      var badge = document.getElementById('current-user-badge');
+      if (badge && !badge.textContent.trim()) {
+        badge.textContent = user;
+        badge.hidden = false;
       }
     });
   })();
@@ -828,5 +851,31 @@
   })();
 </script>
 {% block scripts %}{% endblock %}
+<div id="chat-window" class="hidden" data-current-user="{{ current_user or '' }}">
+    <div id="chat-header">
+        <div class="chat-title">
+            <span id="chat-status-dot" class="chat-status-dot" title="Connecting…"></span>
+            <span>Chat</span>
+            <span id="chat-online" class="chat-online">…</span>
+        </div>
+        <div class="chat-header-actions">
+            <span id="chat-unread" class="chat-unread hidden" aria-label="Unread messages">0</span>
+            <button id="minimize-chat" type="button" aria-label="Minimize chat">–</button>
+        </div>
+    </div>
+    <div id="chat-messages">
+        <div id="chat-empty" class="chat-empty">No messages yet — say hello. Type <code>@here</code> to share this page, <code>@name</code> to notify someone, or <code>@test</code> for a message that isn't saved.</div>
+    </div>
+    <div id="chat-typing" class="chat-typing" aria-live="polite"></div>
+    <div id="chat-input">
+        <div class="chat-input-wrap">
+            <input type="text" id="message-input" placeholder="Message… (@here, @name, @test)" autocomplete="off">
+            <div id="chat-autocomplete" class="chat-autocomplete hidden"></div>
+        </div>
+        <button id="send-button" type="button">Send</button>
+    </div>
+</div>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="{{ static_url('js/chat.js') }}"></script>
 </body>
 </html>

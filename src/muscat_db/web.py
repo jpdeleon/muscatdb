@@ -14,6 +14,10 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import socketio
+
+sio = socketio.AsyncServer(async_mode="asgi")
+
 _DB_LOCK = threading.Lock()
 
 import csv
@@ -50,6 +54,7 @@ from muscat_db import ephemeris_import
 from muscat_db import test_observations
 from muscat_db import lco_monitor
 from muscat_db import http_client
+from muscat_db import chat
 from muscat_db.catalog import (
     _adql_literal,
     _ads_token_for_request,
@@ -195,6 +200,9 @@ async def _lifespan(app: FastAPI):
     from muscat_db import proxy, http_client
     await proxy.startup()
     await http_client.startup()
+    # Let the chat's job-finished hook (which runs in the sync job-poll thread)
+    # schedule broadcasts back onto this event loop.
+    chat.set_event_loop(asyncio.get_running_loop())
     reconcile_task = asyncio.create_task(_job_reconciliation_loop())
     observation_monitor = None
     if os.environ.get("MUSCAT_LCO_MONITOR_ENABLED", "1") == "1":
@@ -216,6 +224,7 @@ async def _lifespan(app: FastAPI):
 
 
 app = FastAPI(title="MuSCAT Observation Log", lifespan=_lifespan)
+sio_app = socketio.ASGIApp(sio, app)
 # The targets page is ~2.8 MB of highly repetitive HTML; gzip shrinks it ~16x,
 # which is the dominant cost when serving over an SSH port-forward tunnel.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -938,6 +947,36 @@ def toi_page():
         n_nasa_confirmed=n_nasa_confirmed,
         toi_updated=cat["updated"],
     )
+
+
+@app.get("/whoami", response_class=JSONResponse)
+def whoami(request: Request):
+    """Return the current nginx-authenticated user for this request.
+
+    The chat widget calls this to label messages. It cannot rely on the
+    server-rendered ``current_user`` on every page: the index and target pages
+    are served from a globally-cached HTML blob (keyed on DB mtime), so a
+    per-user identity must never be baked into their markup. This endpoint is
+    per-request and uncached, so it is correct on every page and never leaks one
+    user's name into another's cached page. Not placed under ``/api/`` so it
+    doesn't trip the global fetch/loading-bar tracker on every navigation.
+    """
+    return JSONResponse({"user": getattr(request.state, "user", None)})
+
+
+@app.get("/chat/users", response_class=JSONResponse)
+def chat_users(request: Request):
+    """Known usernames for chat @-mention autocomplete. Requires an
+    authenticated request; returns only usernames (no other user data). Not
+    under /api/ so it doesn't trip the global loading-bar fetch tracker."""
+    if not _request_user(request):
+        return JSONResponse({"users": []})
+    try:
+        from muscat_db.database import get_known_chat_usernames
+        return JSONResponse({"users": get_known_chat_usernames()})
+    except Exception:
+        logger.exception("failed to list chat users")
+        return JSONResponse({"users": []})
 
 
 @app.get("/api/exofop/check_confirmed")

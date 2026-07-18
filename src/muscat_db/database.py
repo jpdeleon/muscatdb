@@ -10,6 +10,7 @@ import re
 import datetime
 import sqlite3
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -278,6 +279,30 @@ CREATE TABLE IF NOT EXISTS job_concurrency_slots (
     holder_key  TEXT NOT NULL,
     claimed_at  REAL NOT NULL,
     PRIMARY KEY (pipeline, holder_key)
+);
+
+-- App-owned team chat. Kept outside the daily frames/summaries/targets rebuild
+-- set (see _APP_OWNED_TABLES) so conversation history survives daily rescans.
+-- `mentions` is a JSON array of @-mentioned usernames so recipients can be
+-- re-highlighted when history is backfilled. Ephemeral (@test) messages are
+-- never written here.
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id          INTEGER PRIMARY KEY,
+    user_name   TEXT NOT NULL DEFAULT '',
+    text        TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT 'user',
+    created_at  REAL NOT NULL,
+    edited_at   REAL,
+    mentions    TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_created ON chat_messages(created_at);
+
+CREATE TABLE IF NOT EXISTS chat_reactions (
+    message_id  INTEGER NOT NULL,
+    user_name   TEXT NOT NULL,
+    emoji       TEXT NOT NULL,
+    created_at  REAL NOT NULL,
+    PRIMARY KEY (message_id, user_name, emoji)
 );
 """
 
@@ -656,6 +681,8 @@ _APP_OWNED_TABLES = (
     "test_observations",
     "lco_observation_requests",
     "lco_observation_frames",
+    "chat_messages",
+    "chat_reactions",
 )
 
 
@@ -1465,9 +1492,14 @@ def save_job(
     run_name: str = "",
     user_name: str | None = None,
 ) -> None:
-    import getpass
+    # The "user" is the nginx-authenticated account (X-Forwarded-User), set at
+    # job creation from request.state.user. State-transition callers (sync_jobs,
+    # watchdog, cancel, queue-drain) legitimately omit it, so default to "" and
+    # let the ON CONFLICT clause below preserve the existing user_name instead
+    # of clobbering it with the OS account (getpass.getuser()), which is never
+    # who launched the job through the web UI.
     if user_name is None:
-        user_name = getpass.getuser()
+        user_name = ""
     path = db_path()
     # Run-scoped key so distinct runs of the same target are separate job rows;
     # an empty run_id reproduces the legacy key.
@@ -1632,3 +1664,209 @@ def refresh_target_status(obj: str) -> None:
         clear_all_caches()
     except sqlite3.Error:
         logger.debug("failed to refresh target status for %s", obj, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Team chat persistence
+#
+# Chat rows are app-owned (see _APP_OWNED_TABLES) so they survive the daily
+# frames/summaries rebuild. Message rendering/escaping happens client-side
+# (DOM text nodes), so text is stored verbatim. Ephemeral @test messages are
+# never persisted and never reach these functions.
+# ---------------------------------------------------------------------------
+
+# Backfill window (days) for the initial history load. Kept configurable so a
+# busy room can be tuned without a code change.
+CHAT_BACKFILL_DAYS = int(os.environ.get("MUSCAT_CHAT_BACKFILL_DAYS", "7"))
+
+_chat_migrated_paths: set[str] = set()
+
+
+def _ensure_chat_schema(conn: sqlite3.Connection, path: str) -> None:
+    """Create the chat tables once per (process, db path). ``_apply_schema``
+    runs every ``CREATE TABLE IF NOT EXISTS`` in SCHEMA, which includes the chat
+    tables, so this doubles as the migration for pre-existing databases."""
+    if path in _chat_migrated_paths:
+        return
+    with _migrate_lock:
+        if path in _chat_migrated_paths:
+            return
+        _apply_schema(conn)
+        _chat_migrated_paths.add(path)
+
+
+def _reactions_by_message(conn: sqlite3.Connection, message_ids: list[int]) -> dict[int, list[dict]]:
+    """Return ``{message_id: [{emoji, count, users:[...]}, ...]}`` for the given ids."""
+    if not message_ids:
+        return {}
+    placeholders = ",".join("?" for _ in message_ids)
+    rows = conn.execute(
+        f"SELECT message_id, emoji, user_name FROM chat_reactions "
+        f"WHERE message_id IN ({placeholders}) ORDER BY created_at",
+        tuple(message_ids),
+    ).fetchall()
+    grouped: dict[int, dict[str, list[str]]] = {}
+    for mid, emoji, user in rows:
+        grouped.setdefault(mid, {}).setdefault(emoji, []).append(user)
+    result: dict[int, list[dict]] = {}
+    for mid, emojis in grouped.items():
+        result[mid] = [
+            {"emoji": e, "count": len(users), "users": users}
+            for e, users in emojis.items()
+        ]
+    return result
+
+
+def _chat_row_to_dict(row: sqlite3.Row, reactions: dict[int, list[dict]]) -> dict:
+    try:
+        mentions = json.loads(row["mentions"] or "[]")
+    except (TypeError, json.JSONDecodeError):
+        mentions = []
+    return {
+        "id": row["id"],
+        "user": row["user_name"],
+        "text": row["text"],
+        "kind": row["kind"],
+        "ts": row["created_at"],
+        "edited": row["edited_at"] is not None,
+        "edited_at": row["edited_at"],
+        "mentions": mentions if isinstance(mentions, list) else [],
+        "reactions": reactions.get(row["id"], []),
+    }
+
+
+def save_chat_message(
+    user_name: str,
+    text: str,
+    mentions: list[str] | None = None,
+    kind: str = "user",
+    created_at: float | None = None,
+) -> dict:
+    """Persist a chat message and return its stored representation (incl. id)."""
+    path = db_path()
+    ts = time.time() if created_at is None else created_at
+    mentions_json = json.dumps(sorted(set(mentions or [])), ensure_ascii=True)
+    with get_conn(path, row_factory=sqlite3.Row) as conn:
+        _ensure_chat_schema(conn, path)
+        cur = conn.execute(
+            "INSERT INTO chat_messages(user_name, text, kind, created_at, mentions) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (user_name, text, kind, ts, mentions_json),
+        )
+        conn.commit()
+        msg_id = cur.lastrowid
+    return {
+        "id": msg_id,
+        "user": user_name,
+        "text": text,
+        "kind": kind,
+        "ts": ts,
+        "edited": False,
+        "edited_at": None,
+        "mentions": sorted(set(mentions or [])),
+        "reactions": [],
+    }
+
+
+def get_recent_chat_messages(days: int | None = None, limit: int = 500) -> list[dict]:
+    """Return persisted messages from the last ``days`` (oldest first), with
+    reactions attached. ``limit`` caps the payload for a very busy window."""
+    path = db_path()
+    window_days = CHAT_BACKFILL_DAYS if days is None else days
+    since = time.time() - window_days * 86400
+    with get_conn(path, row_factory=sqlite3.Row) as conn:
+        _ensure_chat_schema(conn, path)
+        rows = conn.execute(
+            "SELECT * FROM chat_messages WHERE created_at >= ? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (since, limit),
+        ).fetchall()
+        rows = list(reversed(rows))
+        reactions = _reactions_by_message(conn, [r["id"] for r in rows])
+        return [_chat_row_to_dict(r, reactions) for r in rows]
+
+
+def edit_chat_message(msg_id: int, user_name: str, new_text: str) -> dict | None:
+    """Edit a message in place. Author-only: returns the updated message, or
+    ``None`` if the message does not exist or ``user_name`` is not its author."""
+    path = db_path()
+    edited_at = time.time()
+    with get_conn(path, row_factory=sqlite3.Row) as conn:
+        _ensure_chat_schema(conn, path)
+        cur = conn.execute(
+            "UPDATE chat_messages SET text = ?, edited_at = ? "
+            "WHERE id = ? AND user_name = ? AND kind = 'user'",
+            (new_text, edited_at, msg_id, user_name),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return None
+        row = conn.execute("SELECT * FROM chat_messages WHERE id = ?", (msg_id,)).fetchone()
+        reactions = _reactions_by_message(conn, [msg_id])
+        return _chat_row_to_dict(row, reactions) if row else None
+
+
+def delete_chat_message(msg_id: int, user_name: str) -> bool:
+    """Hard-delete a message and its reactions. Author-only: returns True on
+    success, False if the message is missing or not owned by ``user_name``."""
+    path = db_path()
+    with get_conn(path) as conn:
+        _ensure_chat_schema(conn, path)
+        cur = conn.execute(
+            "DELETE FROM chat_messages WHERE id = ? AND user_name = ? AND kind = 'user'",
+            (msg_id, user_name),
+        )
+        if cur.rowcount:
+            conn.execute("DELETE FROM chat_reactions WHERE message_id = ?", (msg_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def toggle_chat_reaction(msg_id: int, user_name: str, emoji: str) -> dict | None:
+    """Toggle a user's emoji reaction on a message. Returns the message id with
+    its refreshed reaction summary, or ``None`` if the message no longer exists."""
+    path = db_path()
+    with get_conn(path, row_factory=sqlite3.Row) as conn:
+        _ensure_chat_schema(conn, path)
+        exists = conn.execute("SELECT 1 FROM chat_messages WHERE id = ?", (msg_id,)).fetchone()
+        if not exists:
+            return None
+        present = conn.execute(
+            "SELECT 1 FROM chat_reactions WHERE message_id = ? AND user_name = ? AND emoji = ?",
+            (msg_id, user_name, emoji),
+        ).fetchone()
+        if present:
+            conn.execute(
+                "DELETE FROM chat_reactions WHERE message_id = ? AND user_name = ? AND emoji = ?",
+                (msg_id, user_name, emoji),
+            )
+        else:
+            conn.execute(
+                "INSERT OR IGNORE INTO chat_reactions(message_id, user_name, emoji, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (msg_id, user_name, emoji, time.time()),
+            )
+        conn.commit()
+        reactions = _reactions_by_message(conn, [msg_id])
+        return {"id": msg_id, "reactions": reactions.get(msg_id, [])}
+
+
+def get_known_chat_usernames(limit: int = 200) -> list[str]:
+    """Usernames for @-mention autocomplete: everyone who has authenticated
+    (users table) plus any historical chat authors, de-duplicated and sorted."""
+    path = db_path()
+    with get_conn(path) as conn:
+        _ensure_chat_schema(conn, path)
+        names: set[str] = set()
+        try:
+            for (u,) in conn.execute("SELECT username FROM users"):
+                if u and u.strip():
+                    names.add(u.strip())
+        except sqlite3.OperationalError:
+            pass
+        for (u,) in conn.execute(
+            "SELECT DISTINCT user_name FROM chat_messages WHERE kind = 'user'"
+        ):
+            if u and u.strip():
+                names.add(u.strip())
+    return sorted(names, key=str.lower)[:limit]

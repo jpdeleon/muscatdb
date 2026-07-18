@@ -4,7 +4,6 @@ import os
 import json
 import sqlite3
 import tempfile
-import getpass
 import zipfile
 import pytest
 from fastapi.testclient import TestClient
@@ -64,7 +63,7 @@ def test_jobs_status_response_counts_and_started_at(mock_db, monkeypatch):
         elapsed=20,
         started_at=1700000100.0,
         run_name="Run2"
-        # defaults to getpass.getuser()
+        # user_name omitted: stays "" (no nginx user), never the OS account
     )
     save_job(
         type_="photometry",
@@ -96,17 +95,54 @@ def test_jobs_status_response_counts_and_started_at(mock_db, monkeypatch):
     assert len(running_jobs) == 2
     
     user1_found = False
-    default_user_found = False
+    empty_user_found = False
     for job in running_jobs:
         assert "started_at" in job
         assert "user_name" in job
         if job["user_name"] == "test_user1":
             user1_found = True
-        elif job["user_name"] == getpass.getuser():
-            default_user_found = True
-            
+        elif job["user_name"] == "":
+            empty_user_found = True
+
     assert user1_found
-    assert default_user_found
+    # A job saved without a user_name keeps an empty attribution (rendered as
+    # "—"), never the OS account that runs the server process.
+    assert empty_user_found
+
+
+def test_state_update_preserves_nginx_user(mock_db):
+    """A job created by an nginx-authenticated user must keep that attribution
+    when later state transitions (sync_jobs/watchdog/cancel) re-save the row
+    without a user_name. Regression: the OS account used to overwrite it."""
+    common = dict(
+        type_="photometry",
+        inst="muscat3",
+        date="260101",
+        target="WASP-33b",
+        run_name="Run1",
+    )
+    # 1. Creation carries the nginx user.
+    save_job(
+        **common,
+        state="running",
+        returncode=None,
+        elapsed=0,
+        started_at=1700000000.0,
+        user_name="alice",
+    )
+    # 2. Terminal transition omits user_name, as sync_jobs does.
+    save_job(
+        **common,
+        state="done",
+        returncode=0,
+        elapsed=42,
+        started_at=1700000000.0,
+    )
+
+    rows = [j for j in get_persisted_jobs() if j["target"] == "WASP-33b"]
+    assert len(rows) == 1
+    assert rows[0]["state"] == "done"
+    assert rows[0]["user_name"] == "alice"
 
 
 def test_ttv_output_file_rejects_paths_outside_run(tmp_path, monkeypatch):
@@ -1266,6 +1302,33 @@ def test_lco_settings_save_and_status_are_per_nginx_user(mock_db, monkeypatch):
     assert config["token_configured"] is True
     assert config["token_source"] == "user"
     assert "alice-token" not in str(config)
+
+
+def test_whoami_returns_nginx_authenticated_user():
+    # Loopback peer + X-Forwarded-User simulates an nginx-authenticated request.
+    # The chat widget uses /whoami to label messages on every page (including the
+    # globally-cached index/target pages that cannot embed a per-user identity).
+    client = TestClient(app, client=("127.0.0.1", 12345))
+    r = client.get("/whoami", headers={"X-Forwarded-User": "alice"})
+    assert r.status_code == 200
+    assert r.json() == {"user": "alice"}
+
+
+def test_whoami_is_null_without_trusted_user():
+    # No trusted forwarded user → whoami reports no user, so the chat falls back
+    # to "Anonymous" client-side rather than mislabeling messages.
+    client = TestClient(app)
+    r = client.get("/whoami")
+    assert r.status_code == 200
+    assert r.json() == {"user": None}
+
+
+def test_whoami_ignores_untrusted_forwarded_user():
+    # A non-loopback peer must not be able to impersonate a user via the header.
+    client = TestClient(app)  # default peer is ("testclient", 50000)
+    r = client.get("/whoami", headers={"X-Forwarded-User": "mallory"})
+    assert r.status_code == 200
+    assert r.json() == {"user": None}
 
 
 def test_ads_settings_save_status_and_config_are_per_nginx_user(mock_db, monkeypatch):

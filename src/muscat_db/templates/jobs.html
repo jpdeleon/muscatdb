@@ -62,7 +62,6 @@
         {% endif %}
       </td>
       {% endif %}
-      <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">{{ j.user_name or '—' }}</td>
       <td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">
         {% if j.started_at %}
           {{ j.started_at | int | datetime_from_timestamp }}
@@ -132,6 +131,7 @@
         <button class="btn sm hide-btn" data-job-action="hide" data-key="{{ j.key }}" title="Hide this row" style="margin-left:0.25rem;">✕</button>
       </td>
       {% endif %}
+      <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">{{ j.user_name or '—' }}</td>
     </tr>
     <tr class="log-row" style="display:none;">
       <td colspan="{% if j.type == 'ttv_fit' %}8{% else %}10{% endif %}">
@@ -170,12 +170,12 @@
         <th data-sort-attr="run_name" class="sortable">Run Name</th>
         <th data-sort-attr="instrument" class="sortable">Instrument</th>
         <th data-sort-attr="obsdate" class="sortable">Date Obs</th>
-        <th data-sort-attr="userName" class="sortable">User</th>
         <th data-sort-attr="startedAt" data-sort-type="number" class="sortable">Date Run</th>
         <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
         <th data-sort-attr="state" class="sortable">Status</th>
         <th>Details</th>
         <th>Actions</th>
+        <th data-sort-attr="userName" class="sortable">User</th>
       </tr>
     </thead>
     <tbody>
@@ -195,12 +195,12 @@
         <th data-sort-attr="run_name" class="sortable">Run Name</th>
         <th data-sort-attr="instrument" class="sortable">Instrument</th>
         <th data-sort-attr="obsdate" class="sortable">Date Obs</th>
-        <th data-sort-attr="userName" class="sortable">User</th>
         <th data-sort-attr="startedAt" data-sort-type="number" class="sortable">Date Run</th>
         <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
         <th data-sort-attr="state" class="sortable">Status</th>
         <th>Details</th>
         <th>Actions</th>
+        <th data-sort-attr="userName" class="sortable">User</th>
       </tr>
     </thead>
     <tbody>
@@ -218,12 +218,12 @@
       <tr>
         <th data-sort-attr="target" class="sortable">Target</th>
         <th data-sort-attr="run_name" class="sortable">Run Name</th>
-        <th data-sort-attr="userName" class="sortable">User</th>
         <th data-sort-attr="startedAt" data-sort-type="number" class="sortable">Date Run</th>
         <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
         <th data-sort-attr="state" class="sortable">Status</th>
         <th>Details</th>
         <th>Actions</th>
+        <th data-sort-attr="userName" class="sortable">User</th>
       </tr>
     </thead>
     <tbody>
@@ -245,11 +245,11 @@
         <th data-sort-attr="run_name" class="sortable">Progress</th>
         <th data-sort-attr="instrument" class="sortable">Instrument</th>
         <th data-sort-attr="obsdate" class="sortable">Date Obs</th>
-        <th data-sort-attr="userName" class="sortable">User</th>
         <th data-sort-attr="startedAt" data-sort-type="number" class="sortable">Date Run</th>
         <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
         <th data-sort-attr="state" class="sortable">Status</th>
         <th>Details</th>
+        <th data-sort-attr="userName" class="sortable">User</th>
       </tr>
     </thead>
     <tbody>
@@ -341,7 +341,7 @@
     document.querySelectorAll('#time-summary .job-count').forEach(function(e) { e.classList.remove('active'); });
     if (activeRecent === 'recent') { activeRecent = ''; }
     else { activeRecent = 'recent'; el.classList.add('active'); }
-    applyFilters(); saveFilters();
+    applyFilters(); reconcileSectionsForFilter(); saveFilters();
   };
 
   // ── Type filter (badges) ──────────────────────────────────────────────────
@@ -349,7 +349,7 @@
     document.querySelectorAll('#type-summary .job-count').forEach(function(e) { e.classList.remove('active'); });
     if (activeType === type) { activeType = ''; }
     else { activeType = type; el.classList.add('active'); }
-    applyFilters(); saveFilters();
+    applyFilters(); reconcileSectionsForFilter(); saveFilters();
   };
 
   // ── Instrument filter (badges) ────────────────────────────────────────────
@@ -357,7 +357,7 @@
     document.querySelectorAll('#inst-summary .job-count').forEach(function(e) { e.classList.remove('active'); });
     if (activeInst === inst) { activeInst = ''; }
     else { activeInst = inst; el.classList.add('active'); }
-    applyFilters(); saveFilters();
+    applyFilters(); reconcileSectionsForFilter(); saveFilters();
   };
 
   // Populate instrument badges from rows
@@ -434,11 +434,11 @@
       '<td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></td>' +
       '<td class="inst-cell"><span class="badge badge-blue">' + escapeHtml(job.inst || 'lco') + '</span></td>' +
       '<td class="mono obsdate-cell">' + escapeHtml(job.date || 'mixed') + '</td>' +
-      '<td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">' + escapeHtml(job.user_name || '—') + '</td>' +
       '<td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">' + escapeHtml(job.started_at_str || '—') + '</td>' +
       '<td class="mono elapsed-cell" data-elapsed="' + escapeHtml(job.elapsed || 0) + '">' + escapeHtml(job.state === 'pending' ? '—' : formatElapsed(job.elapsed || 0)) + '</td>' +
       '<td class="status-cell"></td>' +
-      '<td class="details-cell" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;"><span class="badge badge-blue">archive</span></td>';
+      '<td class="details-cell" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;"><span class="badge badge-blue">archive</span></td>' +
+      '<td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">' + escapeHtml(job.user_name || '—') + '</td>';
 
     var empty = tbody.querySelector('tr.empty-job-row');
     tbody.insertBefore(row, empty || null);
@@ -471,6 +471,42 @@
         return;
       }
       section.style.display = (anyVisible || alwaysVisible) ? '' : 'none';
+    });
+  }
+
+  function anyFilterActive() {
+    var q = searchInput ? searchInput.value.trim() : '';
+    return !!(activeStatus || activeType || activeInst || activeRecent || q);
+  }
+
+  // Open/close a section without persisting the change, so a temporary
+  // filter-driven expand never overwrites the user's saved collapse preference.
+  // The '_suppressPersist' flag is cleared by the section's own 'toggle' listener
+  // when the (asynchronous) toggle event fires.
+  function setSectionOpen(section, open) {
+    if (!section || section.open === open) return;
+    section._suppressPersist = true;
+    section.open = open;
+  }
+
+  // When a filter is active, expand any visible section that still has matching
+  // rows so results are never hidden behind a collapsed <details>. When no filter
+  // is active, restore each section to its saved open/closed preference. Call
+  // this only on user-driven filter changes (chip clicks, search, clear) — never
+  // from the live poll, so a manual collapse while filtering is respected.
+  function reconcileSectionsForFilter() {
+    var filtering = anyFilterActive();
+    allSections.forEach(function(section) {
+      if (filtering) {
+        if (section.style.display === 'none') return;
+        var anyVisible = Array.from(section.querySelectorAll('tbody tr.job-row'))
+          .some(function(r) { return r.style.display !== 'none'; });
+        if (anyVisible) setSectionOpen(section, true);
+      } else {
+        var saved = null;
+        try { saved = localStorage.getItem('jobs:details:' + section.id); } catch (_) {}
+        setSectionOpen(section, saved !== 'closed');
+      }
     });
   }
 
@@ -603,7 +639,7 @@
       document.querySelectorAll('.job-count').forEach(function(e) { e.classList.remove('active'); });
       el.classList.add('active');
     }
-    applyFilters(); showClearFilter(); saveFilters();
+    applyFilters(); reconcileSectionsForFilter(); showClearFilter(); saveFilters();
   };
 
   window.clearFilter = function() {
@@ -612,7 +648,7 @@
     activeInst = '';
     activeRecent = '';
     document.querySelectorAll('.job-count').forEach(function(e) { e.classList.remove('active'); });
-    applyFilters(); showClearFilter(); saveFilters();
+    applyFilters(); reconcileSectionsForFilter(); showClearFilter(); saveFilters();
   };
 
   function showClearFilter() {
@@ -694,7 +730,7 @@
     updateSectionVisibility();
   }
 
-  if (searchInput) searchInput.addEventListener('input', function() { applyFilters(); saveFilters(); });
+  if (searchInput) searchInput.addEventListener('input', function() { applyFilters(); reconcileSectionsForFilter(); saveFilters(); });
 
   // ── Hide row (with confirmation) ─────────────────────────────────────────
   var pendingHideKey = null;
@@ -1102,9 +1138,17 @@
       else if (saved === 'open') el.setAttribute('open', '');
     } catch (_) {}
     el.addEventListener('toggle', function() {
+      // Skip persistence for programmatic (filter-driven) open/close so a
+      // temporary expand does not clobber the user's saved preference.
+      if (el._suppressPersist) { el._suppressPersist = false; return; }
       try { localStorage.setItem(key, el.open ? 'open' : 'closed'); } catch (_) {}
     });
   });
+
+  // Collapse state has now been restored; if a saved filter is already active,
+  // expand any collapsed section that has matching rows so results are visible
+  // on load (mirrors the on-click behaviour).
+  reconcileSectionsForFilter();
 
   // Poll while the Jobs page is open so archive downloads submitted from other
   // pages can appear here even if no active row existed at initial page load.
