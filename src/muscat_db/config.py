@@ -149,6 +149,21 @@ ENV_VARS: tuple[EnvVar, ...] = (
         "NASA ADS API Token (used to query published papers about the target)",
         secret=True,
     ),
+    EnvVar(
+        "ESO_USERNAME",
+        None,
+        "ESO archive username — global server-side fallback for ESO TAP queries. "
+        "Per-user credentials (saved in Settings) take precedence. "
+        "Anonymous queries are used when neither is set.",
+        secret=False,
+    ),
+    EnvVar(
+        "ESO_PASSWORD",
+        None,
+        "ESO archive password — global server-side fallback for ESO TAP queries. "
+        "Keep paired with ESO_USERNAME.",
+        secret=True,
+    ),
 )
 
 

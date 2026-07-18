@@ -791,6 +791,145 @@
     })();
   </script>
 
+  <details class="adv" id="eso-archive-details" style="margin-top: 1rem;">
+    <summary><span id="eso-archive-summary">ESO Archive Data</span></summary>
+    <div style="margin-top: 0.5rem;">
+      <div class="lco-banner" id="eso-config-banner" style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 1.25rem; font-size: 0.85rem;">
+        <span class="pill" style="display: inline-flex; align-items: center; gap: 0.35rem;">
+          <span class="dot" id="eso-cfg-cred" style="width: 9px; height: 9px; border-radius: 50%; background: var(--text-dim); display: inline-block;"></span> ESO credentials
+        </span>
+        <span class="lco-note" style="margin: 0; font-size: 0.78rem; color: var(--text-dim);">Configure ESO username/password in <a href="/settings">Settings</a> to include proprietary data. Anonymous queries return public observations only.</span>
+      </div>
+      <p class="hint" id="eso-archive-status" style="margin-top: 0;">Open this section to search the ESO Science Archive for observations of this target.</p>
+      <div id="eso-archive-content"></div>
+    </div>
+  </details>
+
+  <script>
+    (function() {
+      const details = document.getElementById('eso-archive-details');
+      if (!details) return;
+      const summary = document.getElementById('eso-archive-summary');
+      const status = document.getElementById('eso-archive-status');
+      const content = document.getElementById('eso-archive-content');
+      const targetName = {{ target_name | tojson }};
+      let loaded = false;
+      let loading = false;
+
+      function clearNode(node) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+      }
+
+      function mjdToDate(mjd) {
+        if (mjd == null || mjd === '') return '';
+        const d = new Date((Number(mjd) - 40587) * 86400000);
+        return d.toISOString().split('T')[0];
+      }
+
+      function renderTable(data) {
+        const columns = data.columns || [];
+        const rows = data.rows || [];
+        const wrap = document.createElement('div');
+        wrap.className = 'csv-wrap';
+        const table = document.createElement('table');
+        table.id = 'eso-archive-table';
+        const thead = document.createElement('thead');
+        const headRow = document.createElement('tr');
+        columns.forEach(col => {
+          const th = document.createElement('th');
+          th.textContent = col;
+          headRow.appendChild(th);
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = document.createElement('tbody');
+        rows.forEach(row => {
+          const tr = document.createElement('tr');
+          columns.forEach(col => {
+            const td = document.createElement('td');
+            const value = row[col] !== null && row[col] !== undefined ? row[col] : '';
+            if (col === 'access_url' && value) {
+              const a = document.createElement('a');
+              a.href = String(value);
+              a.target = '_blank';
+              a.rel = 'noopener';
+              a.textContent = 'Download';
+              td.appendChild(a);
+            } else if ((col === 't_min' || col === 't_max') && value) {
+              td.textContent = mjdToDate(value);
+              td.className = 'mono';
+            } else {
+              if (/^-?\d/.test(value)) td.className = 'mono';
+              td.textContent = value;
+            }
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        content.appendChild(wrap);
+      }
+
+      function loadEsoArchive() {
+        if (loaded || loading) return;
+        loading = true;
+        status.textContent = 'Querying ESO Science Archive...';
+        status.style.color = 'var(--text-dim)';
+        fetch('/api/targets/eso-archive?name=' + encodeURIComponent(targetName))
+          .then(res => res.json().then(data => ({ ok: res.ok, data: data })))
+          .then(result => {
+            if (!result.ok || !result.data.ok) {
+              var errMsg = result.data.error || 'Request failed';
+              if (result.data.detail) {
+                errMsg += ' — ' + result.data.detail;
+              }
+              throw new Error(errMsg);
+            }
+            const data = result.data;
+            const total = data.total || 0;
+            clearNode(content);
+            if (!total) {
+              summary.textContent = 'ESO Archive Data';
+              status.textContent = 'No ESO archive data found for this target.';
+              status.style.color = 'var(--text-dim)';
+              return;
+            }
+            summary.textContent = 'ESO Archive Data (' + total.toLocaleString() + ' observations)';
+            status.textContent = '';
+            renderTable(data);
+            loaded = true;
+          })
+          .catch(err => {
+            status.textContent = 'ESO archive lookup failed: ' + err.message;
+            status.style.color = 'var(--red)';
+          })
+          .finally(() => {
+            loading = false;
+          });
+      }
+
+      function updateConfigBanner() {
+        fetch('/api/settings/eso-credentials-status')
+          .then(r => r.json())
+          .then(d => {
+            if (d.ok) {
+              const dot = document.getElementById('eso-cfg-cred');
+              if (dot) {
+                dot.style.background = d.user_credentials_configured || d.global_credentials_configured ? '#2ecc71' : '#e07b53';
+              }
+            }
+          })
+          .catch(() => {});
+      }
+      updateConfigBanner();
+
+      details.addEventListener('toggle', function() {
+        if (details.open) loadEsoArchive();
+      });
+    })();
+  </script>
+
   <div class="page-nav">
     <a href="/ephemeris?targets={{ target_name | urlencode }}" class="btn solid">📈 To ephemeris</a>
     <a href="/lco/schedule?target={{ target_name | urlencode }}" class="btn solid">🔭 Schedule LCO</a>
