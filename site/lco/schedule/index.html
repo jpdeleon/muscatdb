@@ -78,19 +78,19 @@
   <a href="../../guide/" data-nav-section="guide" style="margin-right: 0.5rem;">Guide</a>
   <a href="../../settings/" data-nav-section="settings">Settings</a>
   <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">
-    <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="12" cy="12" r="4"/>
-      <line x1="12" y1="2"  x2="12" y2="5"/>
-      <line x1="12" y1="19" x2="12" y2="22"/>
-      <line x1="2"  y1="12" x2="5"  y2="12"/>
-      <line x1="19" y1="12" x2="22" y2="12"/>
-      <line x1="4.5"  y1="4.5"  x2="6.6"  y2="6.6"/>
-      <line x1="17.4" y1="17.4" x2="19.5" y2="19.5"/>
-      <line x1="4.5"  y1="19.5" x2="6.6"  y2="17.4"/>
-      <line x1="17.4" y1="6.6"  x2="19.5" y2="4.5"/>
+    <svg class="icon-sun" viewbox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="4"></circle>
+      <line x1="12" y1="2" x2="12" y2="5"></line>
+      <line x1="12" y1="19" x2="12" y2="22"></line>
+      <line x1="2" y1="12" x2="5" y2="12"></line>
+      <line x1="19" y1="12" x2="22" y2="12"></line>
+      <line x1="4.5" y1="4.5" x2="6.6" y2="6.6"></line>
+      <line x1="17.4" y1="17.4" x2="19.5" y2="19.5"></line>
+      <line x1="4.5" y1="19.5" x2="6.6" y2="17.4"></line>
+      <line x1="17.4" y1="6.6" x2="19.5" y2="4.5"></line>
     </svg>
-    <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>
+    <svg class="icon-moon" viewbox="0 0 24 24" aria-hidden="true">
+      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"></path>
     </svg>
   </button>
 </nav>
@@ -489,16 +489,13 @@
     </div>
   </div>
   <div class="lco-actions" style="margin-top: 0.6rem;">
-    <button class="btn" type="button" id="btn-submit-leg-a" disabled
-      title="Enabled once leg A passes its own dry-run. Requires MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
+    <button class="btn" type="button" id="btn-submit-leg-a" disabled title="Enabled once leg A passes its own dry-run. Requires MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
       Submit Leg A only
     </button>
-    <button class="btn" type="button" id="btn-submit-leg-b" disabled
-      title="Enabled once leg B passes its own dry-run. Requires MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
+    <button class="btn" type="button" id="btn-submit-leg-b" disabled title="Enabled once leg B passes its own dry-run. Requires MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
       Submit Leg B only
     </button>
-    <button class="btn primary" type="button" id="btn-split-submit" disabled
-      title="Enabled after both legs pass dry-run. Requires MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
+    <button class="btn primary" type="button" id="btn-split-submit" disabled title="Enabled after both legs pass dry-run. Requires MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
       Submit both
     </button>
   </div>
@@ -514,8 +511,7 @@
   <summary><h3>Single site request</h3></summary>
   <div class="lco-actions">
     <button class="btn primary" type="button" id="btn-dry-run">Check settings</button>
-    <button class="btn" type="button" id="btn-submit" disabled
-      title="Enabled after a successful dry-run. Requires MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
+    <button class="btn" type="button" id="btn-submit" disabled title="Enabled after a successful dry-run. Requires MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
       Submit
     </button>
     <span class="lco-msg" id="msg-ipp" style="margin: 0;"></span>

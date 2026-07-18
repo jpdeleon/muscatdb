@@ -78,19 +78,19 @@
   <a href="../guide/" data-nav-section="guide" style="margin-right: 0.5rem;">Guide</a>
   <a href="../settings/" data-nav-section="settings">Settings</a>
   <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">
-    <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="12" cy="12" r="4"/>
-      <line x1="12" y1="2"  x2="12" y2="5"/>
-      <line x1="12" y1="19" x2="12" y2="22"/>
-      <line x1="2"  y1="12" x2="5"  y2="12"/>
-      <line x1="19" y1="12" x2="22" y2="12"/>
-      <line x1="4.5"  y1="4.5"  x2="6.6"  y2="6.6"/>
-      <line x1="17.4" y1="17.4" x2="19.5" y2="19.5"/>
-      <line x1="4.5"  y1="19.5" x2="6.6"  y2="17.4"/>
-      <line x1="17.4" y1="6.6"  x2="19.5" y2="4.5"/>
+    <svg class="icon-sun" viewbox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="4"></circle>
+      <line x1="12" y1="2" x2="12" y2="5"></line>
+      <line x1="12" y1="19" x2="12" y2="22"></line>
+      <line x1="2" y1="12" x2="5" y2="12"></line>
+      <line x1="19" y1="12" x2="22" y2="12"></line>
+      <line x1="4.5" y1="4.5" x2="6.6" y2="6.6"></line>
+      <line x1="17.4" y1="17.4" x2="19.5" y2="19.5"></line>
+      <line x1="4.5" y1="19.5" x2="6.6" y2="17.4"></line>
+      <line x1="17.4" y1="6.6" x2="19.5" y2="4.5"></line>
     </svg>
-    <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>
+    <svg class="icon-moon" viewbox="0 0 24 24" aria-hidden="true">
+      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"></path>
     </svg>
   </button>
 </nav>
@@ -157,8 +157,7 @@
   <details class="adv ephemeris-fold" id="planet-cards-section" style="display: none; margin-bottom: 1.5rem;" open>
     <summary>Planetary Reference Ephemerides</summary>
     <div style="display: flex; justify-content: flex-end; margin-top: 1rem;">
-      <button class="btn sm primary" id="add-planet-btn" type="button" onclick="addManualPlanet()"
-              title="Add an ephemeris for a planet that is not listed in the catalogs or fitted datasets">
+      <button class="btn sm primary" id="add-planet-btn" type="button" onclick="addManualPlanet()" title="Add an ephemeris for a planet that is not listed in the catalogs or fitted datasets">
         + Add planet
       </button>
     </div>
@@ -195,11 +194,8 @@
     </div>
     <div style="display: flex; justify-content: flex-end; margin-top: 0.75rem;">
       <input id="transit-csv-input" type="file" accept=".csv,.txt,text/csv,text/plain" hidden>
-      <button class="btn sm" type="button" onclick="chooseTransitCSV()"
-              title="Import planet, epoch, transit center, and uncertainty columns from a CSV file"
-              style="margin-right: 0.5rem;">Import CSV</button>
-      <button class="btn sm primary" type="button" onclick="addManualPoint()"
-              title="Add a transit center by hand (e.g. a literature value) to combine with the fitted datasets">
+      <button class="btn sm" type="button" onclick="chooseTransitCSV()" title="Import planet, epoch, transit center, and uncertainty columns from a CSV file" style="margin-right: 0.5rem;">Import CSV</button>
+      <button class="btn sm primary" type="button" onclick="addManualPoint()" title="Add a transit center by hand (e.g. a literature value) to combine with the fitted datasets">
         + Add transit center
       </button>
     </div>
@@ -211,8 +207,7 @@
       <div id="transit-csv-summary" class="csv-import-summary"></div>
       <div class="csv-import-instrument">
         <label for="transit-csv-instrument">Instrument name</label>
-        <input id="transit-csv-instrument" type="text" value="csv" maxlength="64"
-               placeholder="e.g. tess" required>
+        <input id="transit-csv-instrument" type="text" value="csv" maxlength="64" placeholder="e.g. tess" required>
         <span>Applied to every imported transit center.</span>
       </div>
       <div class="csv-wrap csv-import-preview-wrap">
@@ -456,8 +451,7 @@
       <label for="opt-run_name" style="font-size:0.9rem; font-weight:600; color:var(--text); white-space:nowrap;">Run name
         <span class="help-tooltip" title="Label for this isolated TTV fit run. Blank becomes default.">?</span>
       </label>
-      <input type="text" id="opt-run_name" placeholder="default" value=""
-             style="background: var(--input-bg); color: var(--text); border: 1.5px solid var(--border); border-radius: 6px; padding: 0.4rem 0.7rem; font-size: 0.9rem; min-width: 140px;">
+      <input type="text" id="opt-run_name" placeholder="default" value="" style="background: var(--input-bg); color: var(--text); border: 1.5px solid var(--border); border-radius: 6px; padding: 0.4rem 0.7rem; font-size: 0.9rem; min-width: 140px;">
     </div>
     <button class="btn primary" type="button" id="run-ttv-btn">▶ Run TTV Fit</button>
     <button class="btn" type="button" id="cancel-btn" style="display:none;border-color:var(--red);color:var(--red);">■ Cancel</button>
@@ -490,9 +484,7 @@
   <a class="btn solid" id="target-page-link" href="#" style="display: none;">To Target</a>
   <a href="../jobs/" class="btn solid">To Jobs</a>
   
-  <a class="btn solid" id="lco-schedule-link" href="#"
-     title="Open this saved view on the LCO scheduling &amp; download page"
-     style="display: none;">🔭 Schedule on LCO</a>
+  <a class="btn solid" id="lco-schedule-link" href="#" title="Open this saved view on the LCO scheduling & download page" style="display: none;">🔭 Schedule on LCO</a>
 </div>
 
 <style>

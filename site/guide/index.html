@@ -78,19 +78,19 @@
   <a href="../guide/" data-nav-section="guide" style="margin-right: 0.5rem;">Guide</a>
   <a href="../settings/" data-nav-section="settings">Settings</a>
   <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">
-    <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="12" cy="12" r="4"/>
-      <line x1="12" y1="2"  x2="12" y2="5"/>
-      <line x1="12" y1="19" x2="12" y2="22"/>
-      <line x1="2"  y1="12" x2="5"  y2="12"/>
-      <line x1="19" y1="12" x2="22" y2="12"/>
-      <line x1="4.5"  y1="4.5"  x2="6.6"  y2="6.6"/>
-      <line x1="17.4" y1="17.4" x2="19.5" y2="19.5"/>
-      <line x1="4.5"  y1="19.5" x2="6.6"  y2="17.4"/>
-      <line x1="17.4" y1="6.6"  x2="19.5" y2="4.5"/>
+    <svg class="icon-sun" viewbox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="4"></circle>
+      <line x1="12" y1="2" x2="12" y2="5"></line>
+      <line x1="12" y1="19" x2="12" y2="22"></line>
+      <line x1="2" y1="12" x2="5" y2="12"></line>
+      <line x1="19" y1="12" x2="22" y2="12"></line>
+      <line x1="4.5" y1="4.5" x2="6.6" y2="6.6"></line>
+      <line x1="17.4" y1="17.4" x2="19.5" y2="19.5"></line>
+      <line x1="4.5" y1="19.5" x2="6.6" y2="17.4"></line>
+      <line x1="17.4" y1="6.6" x2="19.5" y2="4.5"></line>
     </svg>
-    <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>
+    <svg class="icon-moon" viewbox="0 0 24 24" aria-hidden="true">
+      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"></path>
     </svg>
   </button>
 </nav>
@@ -1251,42 +1251,14 @@ erDiagram
                   <td style="padding: 0.5rem 0.75rem;">Exposure calculator job tracking: state, progress, timestamps</td>
                   <td style="padding: 0.5rem 0.75rem;">One per exposure calc run</td>
                 </tr>
-                <tr style="border-bottom: 1px solid var(--border);">
-                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">ephemeris_views</td>
-                  <td style="padding: 0.5rem 0.75rem;">Saved interactive O-C plot views: persisted filter state, target list, and plot configuration</td>
-                  <td style="padding: 0.5rem 0.75rem;">One per saved view</td>
-                </tr>
-                <tr style="border-bottom: 1px solid var(--border);">
-                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">test_observations</td>
-                  <td style="padding: 0.5rem 0.75rem;">Guarded closed-loop test plans, validation provenance, submissions, and results</td>
-                  <td style="padding: 0.5rem 0.75rem;">One per test plan</td>
-                </tr>
-                <tr style="border-bottom: 1px solid var(--border);">
-                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">lco_observation_requests</td>
-                  <td style="padding: 0.5rem 0.75rem;">Submitted LCO child requests and restart-safe monitoring/ingestion state</td>
-                  <td style="padding: 0.5rem 0.75rem;">One per LCO child Request ID</td>
-                </tr>
-                <tr style="border-bottom: 1px solid var(--border);">
-                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">lco_observation_frames</td>
-                  <td style="padding: 0.5rem 0.75rem;">Raw and BANZAI frame inventory, archive metadata, and download status for monitored requests</td>
-                  <td style="padding: 0.5rem 0.75rem;">One per request/frame pair</td>
-                </tr>
-                <tr style="border-bottom: 1px solid var(--border);">
-                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">lco_monitor_leases</td>
-                  <td style="padding: 0.5rem 0.75rem;">Short-lived cross-worker leases that prevent duplicate LCO monitoring work</td>
-                  <td style="padding: 0.5rem 0.75rem;">One per active monitor lease</td>
-                </tr>
-                <tr style="border-bottom: 1px solid var(--border);">
-                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">exofop_cache</td>
-                  <td style="padding: 0.5rem 0.75rem;">Cached ExoFOP confirmed-planet lookups used by the TOI catalog</td>
-                  <td style="padding: 0.5rem 0.75rem;">One per cached TIC</td>
-                </tr>
-                <tr style="border-bottom: 1px solid var(--border);">
-                  <td style="padding: 0.5rem 0.75rem; font-family: monospace; white-space: nowrap;">job_concurrency_slots</td>
-                  <td style="padding: 0.5rem 0.75rem;">Cross-process claims enforcing safe full-pipeline concurrency limits</td>
-                  <td style="padding: 0.5rem 0.75rem;">One per claimed pipeline slot</td>
-                </tr>
-              </tbody>
+                
+                
+                
+                
+                
+                
+                
+              <tr class="static-truncated-note"><td colspan="99" style="text-align:center;opacity:.55;font-size:.8rem;padding:.35rem;">…7 more rows not shown in static snapshot</td></tr></tbody>
             </table>
           </div>
         </div>
