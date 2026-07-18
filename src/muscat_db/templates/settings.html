@@ -62,6 +62,27 @@
   <p class="settings-note" id="ads-token-status">Checking token status...</p>
 </div>
 
+<div class="settings-section">
+  <h3>ESO Archive Credentials</h3>
+  <div class="opt-grid">
+    <div class="opt">
+      <label for="eso-username">ESO Username</label>
+      <input id="eso-username" type="text" autocomplete="off" spellcheck="false" placeholder="Your ESO portal username">
+    </div>
+    <div class="opt">
+      <label for="eso-password">ESO Password</label>
+      <input id="eso-password" type="password" autocomplete="off" spellcheck="false" placeholder="Your ESO portal password">
+      <span class="hint">Credentials are encrypted and stored server-side. Used to authenticate ESO TAP queries (includes proprietary data). Anonymous queries work without credentials. <a href="https://www.eso.org/sso/login" target="_blank" rel="noopener">Go to ESO login page</a>.</span>
+    </div>
+  </div>
+  <div class="settings-actions">
+    <button class="btn" type="button" id="test-eso-credentials">Test &amp; Save</button>
+    <button class="btn" type="button" id="clear-eso-credentials">Clear credentials</button>
+    <span class="lco-msg" id="eso-credentials-msg"></span>
+  </div>
+  <p class="settings-note" id="eso-credentials-status">Checking credentials status...</p>
+</div>
+
 <script>
 (function () {
   function setupTokenSettings(prefix, label) {
@@ -132,6 +153,113 @@
 
   setupTokenSettings('lco', 'LCO');
   setupTokenSettings('ads', 'ADS');
+
+  function setupCredentialsSettings() {
+    var usernameInput = document.getElementById('eso-username');
+    var passwordInput = document.getElementById('eso-password');
+    var testBtn = document.getElementById('test-eso-credentials');
+    var clearBtn = document.getElementById('clear-eso-credentials');
+    var msg = document.getElementById('eso-credentials-msg');
+    var status = document.getElementById('eso-credentials-status');
+    var statusUrl = '/api/settings/eso-credentials-status';
+    var testUrl = '/api/settings/eso-credentials-test';
+    var saveUrl = '/api/settings/eso-credentials';
+
+    function setMsg(text, kind) {
+      msg.textContent = text || '';
+      msg.className = 'lco-msg' + (kind ? ' ' + kind : '');
+    }
+
+    function loadStatus() {
+      fetch(statusUrl)
+        .then(function (r) { return r.json().then(function (d) { d._status = r.status; return d; }); })
+        .then(function (d) {
+          if (!d.ok) {
+            status.textContent = d.detail || d.error || 'Credentials status unavailable.';
+            return;
+          }
+          var parts = [];
+          parts.push('User: ' + d.user);
+          parts.push('user credentials: ' + (d.user_credentials_configured ? 'saved' : 'not saved'));
+          parts.push('global fallback: ' + (d.global_credentials_configured ? 'available' : 'unset'));
+          parts.push('encryption secret: ' + (d.secret_configured ? 'set' : 'unset'));
+          status.textContent = parts.join(' | ');
+        })
+        .catch(function (err) {
+          status.textContent = 'Credentials status unavailable: ' + err;
+        });
+    }
+
+    function testAndSave(username, password) {
+      setMsg('Testing credentials with ESO...', '');
+      testBtn.disabled = true;
+      fetch(testUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: username, password: password })
+      })
+        .then(function (r) { return r.json().then(function (d) { d._status = r.status; return d; }); })
+        .then(function (d) {
+          if (!d.ok || !d.authenticated) {
+            throw new Error(d.error || 'Authentication test failed');
+          }
+          setMsg('Credentials accepted by ESO. Saving...', 'ok');
+          return fetch(saveUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: username, password: password })
+          })
+            .then(function (r) { return r.json().then(function (d2) { d2._status = r.status; return d2; }); })
+            .then(function (d2) {
+              if (!d2.ok) throw new Error(d2.detail || d2.error || 'save failed');
+              usernameInput.value = '';
+              passwordInput.value = '';
+              setMsg('Credentials verified and saved.', 'ok');
+              loadStatus();
+            });
+        })
+        .catch(function (err) {
+          setMsg(String(err.message || err), 'err');
+          loadStatus();
+        })
+        .finally(function () {
+          testBtn.disabled = false;
+        });
+    }
+
+    testBtn.addEventListener('click', function () {
+      var username = usernameInput.value.trim();
+      var password = passwordInput.value.trim();
+      if (!username || !password) {
+        setMsg('Enter both username and password.', 'err');
+        return;
+      }
+      testAndSave(username, password);
+    });
+    clearBtn.addEventListener('click', function () {
+      setMsg('Clearing...', '');
+      fetch(saveUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: '', password: '' })
+      })
+        .then(function (r) { return r.json().then(function (d) { d._status = r.status; return d; }); })
+        .then(function (d) {
+          if (!d.ok) throw new Error(d.detail || d.error || 'clear failed');
+          usernameInput.value = '';
+          passwordInput.value = '';
+          setMsg('Cleared.', 'ok');
+          loadStatus();
+        })
+        .catch(function (err) {
+          setMsg(String(err.message || err), 'err');
+          loadStatus();
+        });
+    });
+    loadStatus();
+  }
+
+  setupCredentialsSettings();
 })();
 </script>
 {% endblock %}

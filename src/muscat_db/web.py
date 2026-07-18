@@ -111,8 +111,10 @@ from muscat_db.database import (
     get_ephemeris_view,
     get_last_build_date,
     get_user_ads_token,
+    get_user_eso_credentials,
     get_user_lco_token,
     set_user_ads_token,
+    set_user_eso_credentials,
     set_user_lco_token,
     _normalize_filters,
 )
@@ -556,6 +558,184 @@ def api_target_harps_rv(name: str = ""):
         "match_arcsec": _HARPS_MATCH_ARCSEC,
         "has_data": bool(harps_rv.get("total_rows")),
         "harps_rv": harps_rv,
+    })
+
+
+# ESO Science Archive TAP constants
+_ESO_TOKEN_URL = "https://www.eso.org/sso/oidc/token"
+_ESO_TAP_URL = "https://archive.eso.org/tap_obs/sync"
+
+
+@target_router.get("/eso-archive", response_class=JSONResponse)
+async def api_target_eso_archive(name: str = "", request: Request = None):
+    """Query ESO Science Archive TAP for observations of the given target.
+
+    Strategy:
+    1. Try name-based ADQL (LIKE match on target_name).
+    2. If zero rows: resolve RA/Dec via _resolve_archive_coords() and retry with
+       a 1-arcmin cone-search.
+    Auth: obtain a short-lived Bearer token from ESO OIDC if credentials are
+    configured (user > global env), otherwise query anonymously (public data).
+    """
+    norm_name = _normalize_target_name(name)
+    if not norm_name:
+        return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
+
+    # Resolve credentials: per-user > global env fallback > anonymous
+    user = _request_user(request) if request else None
+    eso_username: str | None = None
+    eso_password: str | None = None
+    if user:
+        try:
+            eso_username, eso_password = get_user_eso_credentials(user)
+        except UserSettingsError:
+            pass
+    if not (eso_username and eso_password):
+        eso_username = os.environ.get("ESO_USERNAME") or None
+        eso_password = os.environ.get("ESO_PASSWORD") or None
+
+    # Obtain a Bearer token if credentials are available
+    headers: dict[str, str] = {}
+    auth_used = False
+    if eso_username and eso_password:
+        try:
+            tok_resp = await http_client.get_async_client().get(
+                _ESO_TOKEN_URL,
+                params={
+                    "response_type": "id_token token",
+                    "grant_type": "password",
+                    "client_id": "clientid",
+                    "username": eso_username,
+                    "password": eso_password,
+                },
+                timeout=15.0,
+            )
+            if tok_resp.status_code == 200:
+                tok_data = tok_resp.json()
+                id_token = tok_data.get("id_token", "")
+                if id_token:
+                    # ESO id_token is base64url-encoded; append == for padding
+                    headers["Authorization"] = f"Bearer {id_token}=="
+                    auth_used = True
+                else:
+                    logger.warning("ESO token response missing id_token field: %s", list(tok_data.keys()))
+            else:
+                logger.warning(
+                    "ESO token request returned %s: %s",
+                    tok_resp.status_code,
+                    tok_resp.text[:300],
+                )
+        except Exception as exc:  # network error, timeout, parse failure
+            logger.warning("ESO token acquisition failed: %s", exc)
+
+    # Helper: run a single TAP ADQL query and return raw JSON
+    async def _tap_query(adql: str, timeout: float = 30.0) -> dict:
+        resp = await http_client.get_async_client().get(
+            _ESO_TAP_URL,
+            params={
+                "REQUEST": "doQuery",
+                "LANG": "ADQL",
+                "FORMAT": "json",
+                "QUERY": adql.strip(),
+            },
+            headers=headers,
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # Helper: parse ESO TAP JSON → (column_names, list_of_row_dicts)
+    def _parse_tap(raw: dict) -> tuple[list[str], list[dict]]:
+        cols = [col["name"] for col in raw.get("metadata", [])]
+        rows = [dict(zip(cols, r)) for r in raw.get("data", [])]
+        return cols, rows
+
+    # --- Step 1: Name-based query (fast path) ---
+    safe_name = norm_name.replace("'", "''")
+
+    # Also try known aliases (TIC, 2MASS, etc.) resolved from local catalogs
+    name_conditions = [f"target_name LIKE '%{safe_name}%'"]
+    try:
+        import asyncio as _asyncio
+        from muscat_db.catalog import _resolve_all_aliases
+        for alias in await _asyncio.to_thread(_resolve_all_aliases, norm_name):
+            if alias.upper() != norm_name.upper() and alias.strip():
+                safe_alias = alias.replace("'", "''")
+                name_conditions.append(f"target_name LIKE '%{safe_alias}%'")
+    except Exception:
+        pass
+
+    name_where = " OR ".join(name_conditions)
+    adql_name = (
+        "SELECT TOP 200 "
+        "target_name, instrument_name, obs_collection, dataproduct_type, "
+        "t_min, t_max, s_fov, proposal_id, obs_release_date, obs_id, "
+        "access_url, s_ra, s_dec "
+        "FROM ivoa.ObsCore "
+        f"WHERE ({name_where}) "
+        "ORDER BY t_min DESC"
+    )
+
+    query_method = "name"
+    try:
+        data = await _tap_query(adql_name, timeout=30.0)
+    except httpx.HTTPStatusError as exc:
+        eso_msg = ""
+        try:
+            eso_msg = exc.response.text[:500]
+        except Exception:
+            pass
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": f"ESO TAP returned HTTP {exc.response.status_code}",
+                "detail": eso_msg,
+            },
+            status_code=502,
+        )
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"ESO TAP query failed: {exc}"}, status_code=502)
+
+    columns, rows = _parse_tap(data)
+
+    # --- Step 2: Coordinate cone-search fallback if name returned zero rows ---
+    if not rows:
+        try:
+            import asyncio as _asyncio
+            resolved = await _asyncio.to_thread(_resolve_archive_coords, norm_name)
+        except Exception as exc:
+            logger.debug("ESO coordinate resolution failed for %s: %s", norm_name, exc)
+            resolved = None
+        if resolved:
+            ra_deg, dec_deg, coord_source = resolved
+            radius_deg = 1.0 / 60.0  # 1 arcmin
+            adql_cone = (
+                "SELECT TOP 200 "
+                "target_name, instrument_name, obs_collection, dataproduct_type, "
+                "t_min, t_max, s_fov, proposal_id, obs_release_date, obs_id, "
+                "access_url, s_ra, s_dec "
+                "FROM ivoa.ObsCore "
+                "WHERE CONTAINS("
+                f"POINT('ICRS', s_ra, s_dec), "
+                f"CIRCLE('ICRS', {ra_deg}, {dec_deg}, {radius_deg})"
+                ") = 1 "
+                "ORDER BY t_min DESC"
+            )
+            try:
+                data2 = await _tap_query(adql_cone, timeout=120.0)
+                columns, rows = _parse_tap(data2)
+                query_method = f"cone ({coord_source}, 1 arcmin)"
+            except Exception as exc2:
+                logger.warning("ESO cone-search fallback failed for %s: %s", norm_name, exc2)
+
+    return JSONResponse({
+        "ok": True,
+        "target": norm_name,
+        "authenticated": auth_used,
+        "query_method": query_method,
+        "total": len(rows),
+        "columns": columns,
+        "rows": rows,
     })
 
 
@@ -2659,6 +2839,104 @@ def api_settings_ads_token(request: Request, payload: dict = Body(...)):
             status_code=503,
         )
     return JSONResponse({"ok": True, "user_token_configured": bool(token)})
+
+
+@settings_router.get("/eso-credentials-status", response_class=JSONResponse)
+def api_settings_eso_credentials_status(request: Request):
+    user = _request_user(request)
+    if not user:
+        return _settings_auth_error()
+    try:
+        eso_u, eso_p = get_user_eso_credentials(user)
+        user_credentials_configured = eso_u is not None and eso_p is not None
+    except UserSettingsError as exc:
+        return JSONResponse(
+            {"ok": False, "error": "stored ESO credentials cannot be read", "detail": str(exc)},
+            status_code=503,
+        )
+    global_configured = bool(os.environ.get("ESO_USERNAME") and os.environ.get("ESO_PASSWORD"))
+    return JSONResponse(
+        {
+            "ok": True,
+            "user": user,
+            "user_credentials_configured": user_credentials_configured,
+            "global_credentials_configured": global_configured,
+            "secret_configured": bool(os.environ.get("MUSCAT_DB_SECRET")),
+        }
+    )
+
+
+@settings_router.post("/eso-credentials-test", response_class=JSONResponse)
+async def api_settings_eso_credentials_test(payload: dict = Body(...)):
+    """Test ESO credentials against the OIDC token endpoint. Does not save."""
+    eso_u = str(payload.get("username") or "").strip()
+    eso_p = str(payload.get("password") or "").strip()
+    if not eso_u or not eso_p:
+        return JSONResponse({"ok": False, "error": "Username and password are required."}, status_code=400)
+    try:
+        tok_resp = await http_client.get_async_client().get(
+            _ESO_TOKEN_URL,
+            params={
+                "response_type": "id_token token",
+                "grant_type": "password",
+                "client_id": "clientid",
+                "username": eso_u,
+                "password": eso_p,
+            },
+            timeout=15.0,
+        )
+        if tok_resp.status_code == 200:
+            tok_data = tok_resp.json()
+            if tok_data.get("id_token"):
+                return JSONResponse({"ok": True, "authenticated": True})
+            else:
+                return JSONResponse(
+                    {"ok": False, "error": "ESO returned an unexpected response (missing id_token)."},
+                    status_code=502,
+                )
+        elif tok_resp.status_code == 400:
+            return JSONResponse(
+                {"ok": False, "error": "ESO rejected the credentials. Check your username and password."},
+                status_code=401,
+            )
+        else:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": f"ESO authentication failed (HTTP {tok_resp.status_code}).",
+                },
+                status_code=502,
+            )
+    except httpx.TimeoutException:
+        return JSONResponse(
+            {"ok": False, "error": "ESO authentication timed out. Try again later."},
+            status_code=504,
+        )
+    except Exception as exc:
+        return JSONResponse(
+            {"ok": False, "error": f"ESO authentication error: {exc}"},
+            status_code=502,
+        )
+
+
+@settings_router.post("/eso-credentials", response_class=JSONResponse)
+def api_settings_eso_credentials(request: Request, payload: dict = Body(...)):
+    if not _is_same_origin(request):
+        return _csrf_error()
+    user = _request_user(request)
+    if not user:
+        return _settings_auth_error()
+    eso_u = str(payload.get("username") or "").strip()
+    eso_p = str(payload.get("password") or "").strip()
+    try:
+        set_user_eso_credentials(user, eso_u or None, eso_p or None)
+    except UserSettingsError as exc:
+        return JSONResponse(
+            {"ok": False, "error": "could not save ESO credentials", "detail": str(exc)},
+            status_code=503,
+        )
+    configured = bool(eso_u and eso_p)
+    return JSONResponse({"ok": True, "user_credentials_configured": configured})
 
 
 @app.get("/lco")

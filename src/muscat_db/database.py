@@ -1341,6 +1341,48 @@ def user_ads_token_configured(username: str | None) -> bool:
         return False
 
 
+def set_user_eso_credentials(
+    username: str | None,
+    eso_username: str | None,
+    eso_password: str | None,
+) -> None:
+    """Store ESO archive username and password (each encrypted separately)."""
+    eso_username = (eso_username or "").strip()
+    eso_password = (eso_password or "").strip()
+    updates: dict = {}
+    removes: list[str] = []
+    if eso_username:
+        updates["eso_username_enc"] = _encrypt_token(eso_username)
+    else:
+        removes.append("eso_username_enc")
+    if eso_password:
+        updates["eso_password_enc"] = _encrypt_token(eso_password)
+    else:
+        removes.append("eso_password_enc")
+    update_user_settings(username, updates, remove=removes if removes else None)
+
+
+def get_user_eso_credentials(username: str | None) -> tuple[str | None, str | None]:
+    """Return (eso_username, eso_password) or (None, None) if not configured."""
+    if not (username or "").strip():
+        return None, None
+    settings = get_user_settings(username)
+    eso_u_enc = settings.get("eso_username_enc")
+    eso_p_enc = settings.get("eso_password_enc")
+    eso_u = _decrypt_token(str(eso_u_enc)) if eso_u_enc else None
+    eso_p = _decrypt_token(str(eso_p_enc)) if eso_p_enc else None
+    return eso_u, eso_p
+
+
+def user_eso_credentials_configured(username: str | None) -> bool:
+    """Return True if both ESO username and password are stored for this user."""
+    try:
+        eso_u, eso_p = get_user_eso_credentials(username)
+        return eso_u is not None and eso_p is not None
+    except UserSettingsError:
+        return False
+
+
 def _ensure_jobs_schema(conn: sqlite3.Connection) -> None:
     _apply_schema(conn)
     # Migrations for databases created before these columns existed.
