@@ -59,6 +59,9 @@ from muscat_db.catalog import (
     _harps_coord_membership,
     _harps_data_for_target,
     _HARPS_MATCH_ARCSEC,
+    _lamost_coord_membership,
+    _lamost_rv_data_for_target,
+    _LAMOST_MATCH_ARCSEC,
     _load_jwst_targets,
     _load_jwst_targets_aliases,
     _load_nexsci_catalog,
@@ -510,7 +513,7 @@ def target_page(name: str = ""):
     else:
         # Single target view - normalize the input name
         norm_name = _normalize_target_name(name)
-        key = (tpl_mtime, _db_mtime(db), _catalog_source_cache_key(), _HARPS_MATCH_ARCSEC, norm_name)
+        key = (tpl_mtime, _db_mtime(db), _catalog_source_cache_key(), _HARPS_MATCH_ARCSEC, _LAMOST_MATCH_ARCSEC, norm_name)
         cache_key = f"target:{norm_name}"
         cached = _index_cache.get(cache_key)
         if cached is not None and cached[0] == key:
@@ -535,6 +538,7 @@ def target_page(name: str = ""):
             datasets=datasets,
             last_updated=last_updated,
             harps_match_arcsec=_HARPS_MATCH_ARCSEC,
+            lamost_match_arcsec=_LAMOST_MATCH_ARCSEC,
             target_tic_id=target_tic_id,
             exofop_target_id=target_tic_id or norm_name,
             has_jwst_data=has_jwst_data,
@@ -551,13 +555,28 @@ def api_target_harps_rv(name: str = ""):
     if not norm_name:
         return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
     datasets, _last_updated = _get_datasets_for_normalized_target(_db_path(), norm_name)
-    harps_rv = _harps_data_for_target(datasets, norm_name)
+    harps_rv = _harps_data_for_target(norm_name, datasets)
     return JSONResponse({
         "ok": True,
         "target": norm_name,
         "match_arcsec": _HARPS_MATCH_ARCSEC,
         "has_data": bool(harps_rv.get("total_rows")),
         "harps_rv": harps_rv,
+    })
+
+
+@target_router.get("/lamost-rv", response_class=JSONResponse)
+def api_target_lamost_rv(name: str = ""):
+    """Return LAMA_stars.csv (Li+2024) rows matched to the target's coordinates."""
+    norm_name = _normalize_target_name(name)
+    if not norm_name:
+        return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
+    datasets, _last_updated = _get_datasets_for_normalized_target(_db_path(), norm_name)
+    rv_data = _lamost_rv_data_for_target(norm_name, datasets)
+    return JSONResponse({
+        "ok": True,
+        "target": norm_name,
+        "lamost_rv": rv_data,
     })
 
 
@@ -654,13 +673,12 @@ async def api_target_eso_archive(name: str = "", request: Request = None):
         rows = [dict(zip(cols, r)) for r in raw.get("data", [])]
         return cols, rows
 
-    # --- Step 1: Name-based query (fast path) ---
-    safe_name = norm_name.replace("'", "''")
+    import asyncio as _asyncio
 
-    # Also try known aliases (TIC, 2MASS, etc.) resolved from local catalogs
+    # --- Build name query ADQL (fast: local alias lookup) ---
+    safe_name = norm_name.replace("'", "''")
     name_conditions = [f"target_name LIKE '%{safe_name}%'"]
     try:
-        import asyncio as _asyncio
         from muscat_db.catalog import _resolve_all_aliases
         for alias in await _asyncio.to_thread(_resolve_all_aliases, norm_name):
             if alias.upper() != norm_name.upper() and alias.strip():
@@ -669,20 +687,22 @@ async def api_target_eso_archive(name: str = "", request: Request = None):
     except Exception:
         pass
 
-    name_where = " OR ".join(name_conditions)
-    adql_name = (
+    _SELECT = (
         "SELECT TOP 200 "
         "target_name, instrument_name, obs_collection, dataproduct_type, "
         "t_min, t_max, s_fov, proposal_id, obs_release_date, obs_id, "
         "access_url, s_ra, s_dec "
         "FROM ivoa.ObsCore "
-        f"WHERE ({name_where}) "
-        "ORDER BY t_min DESC"
     )
+    adql_name = _SELECT + f"WHERE ({' OR '.join(name_conditions)}) ORDER BY t_min DESC"
 
+    # --- Step 1: name-based query (fast path) ---
+    columns: list = []
+    rows: list = []
     query_method = "name"
     try:
-        data = await _tap_query(adql_name, timeout=30.0)
+        name_data = await _tap_query(adql_name, timeout=30.0)
+        columns, rows = _parse_tap(name_data)
     except httpx.HTTPStatusError as exc:
         eso_msg = ""
         try:
@@ -698,14 +718,19 @@ async def api_target_eso_archive(name: str = "", request: Request = None):
             status_code=502,
         )
     except Exception as exc:
-        return JSONResponse({"ok": False, "error": f"ESO TAP query failed: {exc}"}, status_code=502)
+        return JSONResponse(
+            {"ok": False, "error": f"ESO TAP query failed: {type(exc).__name__}: {exc}".rstrip(": ")},
+            status_code=502,
+        )
 
-    columns, rows = _parse_tap(data)
-
-    # --- Step 2: Coordinate cone-search fallback if name returned zero rows ---
+    # --- Step 2: coordinate cone-search, only when the name query found nothing ---
+    # Lazy on purpose: the spatial CONTAINS() query is far more expensive on ESO's
+    # side than the name query, so we do not issue it on every page load (AGENTS.md:
+    # do not overload external databases). Retry once on timeout with a generous
+    # timeout, and surface a warning instead of silently implying "no observations".
+    cone_warning = ""
     if not rows:
         try:
-            import asyncio as _asyncio
             resolved = await _asyncio.to_thread(_resolve_archive_coords, norm_name)
         except Exception as exc:
             logger.debug("ESO coordinate resolution failed for %s: %s", norm_name, exc)
@@ -714,25 +739,29 @@ async def api_target_eso_archive(name: str = "", request: Request = None):
             ra_deg, dec_deg, coord_source = resolved
             radius_deg = 1.0 / 60.0  # 1 arcmin
             adql_cone = (
-                "SELECT TOP 200 "
-                "target_name, instrument_name, obs_collection, dataproduct_type, "
-                "t_min, t_max, s_fov, proposal_id, obs_release_date, obs_id, "
-                "access_url, s_ra, s_dec "
-                "FROM ivoa.ObsCore "
-                "WHERE CONTAINS("
-                f"POINT('ICRS', s_ra, s_dec), "
-                f"CIRCLE('ICRS', {ra_deg}, {dec_deg}, {radius_deg})"
-                ") = 1 "
-                "ORDER BY t_min DESC"
+                _SELECT
+                + "WHERE CONTAINS("
+                + "POINT('ICRS', s_ra, s_dec), "
+                + f"CIRCLE('ICRS', {ra_deg}, {dec_deg}, {radius_deg})"
+                + ") = 1 ORDER BY t_min DESC"
             )
-            try:
-                data2 = await _tap_query(adql_cone, timeout=120.0)
-                columns, rows = _parse_tap(data2)
-                query_method = f"cone ({coord_source}, 1 arcmin)"
-            except Exception as exc2:
-                logger.warning("ESO cone-search fallback failed for %s: %s", norm_name, exc2)
+            for attempt in range(2):
+                try:
+                    cone_data = await _tap_query(adql_cone, timeout=120.0)
+                    columns, rows = _parse_tap(cone_data)
+                    if rows:
+                        query_method = f"cone ({coord_source}, 1 arcmin)"
+                    cone_warning = ""
+                    break
+                except httpx.TimeoutException:
+                    cone_warning = "ESO cone-search timed out (service slow); results may be incomplete."
+                    logger.warning("ESO cone-search timeout for %s (attempt %d/2)", norm_name, attempt + 1)
+                except Exception as exc2:
+                    cone_warning = f"ESO cone-search failed: {type(exc2).__name__}"
+                    logger.warning("ESO cone-search fallback failed for %s: %s", norm_name, repr(exc2))
+                    break
 
-    return JSONResponse({
+    payload = {
         "ok": True,
         "target": norm_name,
         "authenticated": auth_used,
@@ -740,7 +769,10 @@ async def api_target_eso_archive(name: str = "", request: Request = None):
         "total": len(rows),
         "columns": columns,
         "rows": rows,
-    })
+    }
+    if cone_warning and not rows:
+        payload["warning"] = cone_warning
+    return JSONResponse(payload)
 
 
 # ── LAMOST DR11 TAP helper ──────────────────────────────────────────────
@@ -802,23 +834,43 @@ async def api_target_lamost_archive(name: str = "", request: Request = None):
         "ORDER BY obsdate DESC"
     )
 
-    try:
-        resp = await http_client.get_async_client().get(
-            _LAMOST_TAP_URL + "/sync",
-            params={
-                "REQUEST": "doQuery",
-                "LANG": "ADQL",
-                "QUERY": adql,
-            },
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        columns, rows = _parse_votable(resp.text)
-    except Exception as exc:
+    # LAMOST TAP is normally sub-second, but the long-lived server occasionally
+    # sees a transient timeout (service blip or connection-pool contention while a
+    # concurrent slow query holds connections). Retry once — a fresh request gets a
+    # new connection. Bounded to a single retry so we never hammer the service.
+    columns: list = []
+    rows: list = []
+    timeout_exc: httpx.TimeoutException | None = None
+    for attempt in range(2):
+        try:
+            resp = await http_client.get_async_client().get(
+                _LAMOST_TAP_URL + "/sync",
+                params={"REQUEST": "doQuery", "LANG": "ADQL", "QUERY": adql},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            columns, rows = _parse_votable(resp.text)
+            timeout_exc = None
+            break
+        except httpx.TimeoutException as exc:
+            timeout_exc = exc
+            logger.warning("LAMOST TAP timeout for %s (attempt %d/2)", norm_name, attempt + 1)
+        except httpx.HTTPStatusError as exc:
+            return JSONResponse({
+                "ok": False,
+                "error": f"LAMOST TAP returned HTTP {exc.response.status_code}",
+            }, status_code=502)
+        except Exception as exc:
+            # Non-empty message even for exceptions that stringify to "" (timeouts).
+            return JSONResponse({
+                "ok": False,
+                "error": f"LAMOST TAP query failed: {type(exc).__name__}: {exc}".rstrip(": "),
+            }, status_code=502)
+    if timeout_exc is not None:
         return JSONResponse({
             "ok": False,
-            "error": f"LAMOST TAP query failed: {exc}",
-        }, status_code=502)
+            "error": "LAMOST TAP query timed out after two attempts (service slow or unreachable); please retry.",
+        }, status_code=504)
 
     return JSONResponse({
         "ok": True,
@@ -865,12 +917,14 @@ def toi_page():
     indb, tname = _toi_db_membership(cat["data"], _db_path())
     boyle, n_boyle = _merge_boyle_columns(cat["data"])
     harps, n_harps = _harps_coord_membership(cat["data"])
+    lamost, n_lamost = _lamost_coord_membership(cat["data"])
     nasa_confirmed, nasa_planet_name, n_nasa_confirmed = _nasa_confirmed_toi_membership(cat["data"])
     payload = dict(cat["data"])
     payload.update(boyle)
     payload["indb"] = indb
     payload["tname"] = tname
     payload["has_harps_rv"] = harps
+    payload["has_lamost_rv"] = lamost
     payload["nasa_confirmed"] = nasa_confirmed
     payload["nasa_planet_name"] = nasa_planet_name
     return _render(
@@ -880,6 +934,7 @@ def toi_page():
         n_indb=sum(indb),
         n_boyle=n_boyle,
         n_harps=n_harps,
+        n_lamost=n_lamost,
         n_nasa_confirmed=n_nasa_confirmed,
         toi_updated=cat["updated"],
     )
@@ -1129,6 +1184,7 @@ def nexsci_page():
     cat = _load_nexsci_catalog()
     indb, tname = _nexsci_db_membership(cat["data"], _db_path())
     harps, n_harps = _harps_coord_membership(cat["data"])
+    lamost, n_lamost = _lamost_coord_membership(cat["data"])
     jwst_targets = _load_jwst_targets()
     jwst = [1 if p in jwst_targets else 0 for p in cat["data"]["name"]]
     spectra_targets = _load_spectra_targets()
@@ -1138,6 +1194,7 @@ def nexsci_page():
     payload["indb"] = indb
     payload["tname"] = tname
     payload["has_harps_rv"] = harps
+    payload["has_lamost_rv"] = lamost
     payload["has_jwst"] = jwst
     payload["has_spectra"] = spectra
     return _render(
@@ -1146,6 +1203,7 @@ def nexsci_page():
         n_rows=cat["n"],
         n_indb=sum(indb),
         n_harps=n_harps,
+        n_lamost=n_lamost,
         n_jwst=sum(jwst),
         n_spectra=sum(spectra),
         nexsci_updated=cat["updated"],

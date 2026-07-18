@@ -530,7 +530,7 @@ def test_target_detail_harps_panel_is_lazy_loaded(mock_db, monkeypatch):
         ], "2026-07-01"),
     )
 
-    def fail_if_called(datasets, target_name=None):
+    def fail_if_called(target_name=None, datasets=None):
         raise AssertionError("HARPS rows should not be loaded during target page render")
 
     monkeypatch.setattr(web, "_harps_data_for_target", fail_if_called)
@@ -571,7 +571,7 @@ def test_target_harps_rv_api_returns_table_payload(mock_db, monkeypatch):
     monkeypatch.setattr(
         web,
         "_harps_data_for_target",
-        lambda datasets, target_name=None: {
+        lambda target_name=None, datasets=None: {
             "columns": ["target", "BJD", "RV_mlc_nzp"],
             "rows": [{"target": "HD209458", "BJD": "2451000.123456", "RV_mlc_nzp": "-2.5"}],
             "total_rows": 1,
@@ -594,6 +594,125 @@ def test_target_harps_rv_api_returns_table_payload(mock_db, monkeypatch):
     assert data["harps_rv"]["total_rows"] == 1
     assert data["harps_rv"]["rows"][0]["BJD"] == "2451000.123456"
     assert data["harps_rv"]["source"] == "data/HARPS_RVBank_ver02.csv.zip"
+
+
+_LAMOST_VOTABLE_ONE_ROW = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<VOTABLE xmlns="http://www.ivoa.net/xml/VOTable/v1.3" version="1.3">'
+    '<RESOURCE type="results"><TABLE>'
+    '<FIELD name="obsid" datatype="long"/>'
+    '<FIELD name="ra" datatype="double"/>'
+    '<DATA><TABLEDATA>'
+    '<TR><TD>123</TD><TD>197.1</TD></TR>'
+    '</TABLEDATA></DATA>'
+    '</TABLE></RESOURCE></VOTABLE>'
+)
+
+
+class _FakeAsyncClient:
+    """Async client double whose ``get`` replays a scripted list of behaviours
+    (an ``httpx.Response`` to return, or an ``Exception`` to raise) per call."""
+
+    def __init__(self, behaviours):
+        self._behaviours = list(behaviours)
+        self.calls = 0
+
+    async def get(self, url, **kwargs):
+        b = self._behaviours[min(self.calls, len(self._behaviours) - 1)]
+        self.calls += 1
+        if isinstance(b, Exception):
+            raise b
+        return b
+
+
+def test_lamost_archive_retries_once_on_timeout(monkeypatch):
+    import httpx
+    from muscat_db import catalog, http_client
+
+    monkeypatch.setattr(catalog, "_resolve_archive_coords", lambda name: (197.1, 55.0, "toi"))
+    resp = httpx.Response(200, text=_LAMOST_VOTABLE_ONE_ROW, request=httpx.Request("GET", "https://lamost.invalid"))
+    fake = _FakeAsyncClient([httpx.ReadTimeout(""), resp])  # timeout, then success
+    monkeypatch.setattr(http_client, "get_async_client", lambda: fake)
+
+    r = TestClient(app).get("/api/targets/lamost-archive?name=TOI3891")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["total"] == 1
+    assert fake.calls == 2  # first attempt timed out, retry succeeded
+
+
+def test_lamost_archive_timeout_returns_clear_error(monkeypatch):
+    import httpx
+    from muscat_db import catalog, http_client
+
+    monkeypatch.setattr(catalog, "_resolve_archive_coords", lambda name: (197.1, 55.0, "toi"))
+    fake = _FakeAsyncClient([httpx.ReadTimeout(""), httpx.ReadTimeout("")])  # both attempts time out
+    monkeypatch.setattr(http_client, "get_async_client", lambda: fake)
+
+    r = TestClient(app).get("/api/targets/lamost-archive?name=TOI3891")
+
+    assert r.status_code == 504
+    body = r.json()
+    assert body["ok"] is False
+    # Error must be non-empty and describe the timeout (the old code leaked "").
+    assert "timed out" in body["error"].lower()
+    assert fake.calls == 2
+
+
+def _eso_tap_json(target_names):
+    """Minimal ESO TAP JSON envelope with one 'target_name' column."""
+    return {"metadata": [{"name": "target_name"}], "data": [[n] for n in target_names]}
+
+
+def test_eso_archive_name_hit_skips_cone(monkeypatch):
+    import httpx
+    from muscat_db import http_client, web
+
+    resp = httpx.Response(200, json=_eso_tap_json(["WASP-12"]), request=httpx.Request("GET", "https://eso.invalid"))
+    fake = _FakeAsyncClient([resp])
+    monkeypatch.setattr(http_client, "get_async_client", lambda: fake)
+
+    # The cone-search is lazy: it must not resolve coords or query when the name hits.
+    cone = {"resolved": False}
+
+    def _resolve(name):
+        cone["resolved"] = True
+        return (197.1, 55.0, "toi")
+
+    monkeypatch.setattr(web, "_resolve_archive_coords", _resolve)
+
+    r = TestClient(app).get("/api/targets/eso-archive?name=WASP-12")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["query_method"] == "name"
+    assert body["total"] == 1
+    assert cone["resolved"] is False  # cone path never entered
+    assert fake.calls == 1  # only the name query
+
+
+def test_eso_archive_cone_retries_on_timeout(monkeypatch):
+    import httpx
+    from muscat_db import http_client, web
+
+    name_empty = httpx.Response(200, json=_eso_tap_json([]), request=httpx.Request("GET", "https://eso.invalid"))
+    cone_ok = httpx.Response(200, json=_eso_tap_json(["NearbyStar"]), request=httpx.Request("GET", "https://eso.invalid"))
+    # name(empty) -> cone(timeout) -> cone(success)
+    fake = _FakeAsyncClient([name_empty, httpx.ReadTimeout(""), cone_ok])
+    monkeypatch.setattr(http_client, "get_async_client", lambda: fake)
+    monkeypatch.setattr(web, "_resolve_archive_coords", lambda name: (197.1, 55.0, "toi"))
+
+    r = TestClient(app).get("/api/targets/eso-archive?name=NONAME999")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["total"] == 1
+    assert "cone" in body["query_method"]
+    assert fake.calls == 3  # name + timed-out cone + retried cone
 
 
 def test_ephemeris_targets_are_normalized_unique_names(mock_db):
@@ -1997,7 +2116,7 @@ def test_harps_rvbank_rows_fall_back_to_online_stream(monkeypatch, tmp_path):
     assert res["rows"][0]["RV_mlc_nzp"] == "-3.25"
 
 
-def test_harps_target_lookup_uses_toi_catalog_coords_after_db_miss(monkeypatch):
+def test_harps_target_lookup_uses_toi_catalog_coords(monkeypatch):
     from muscat_db import catalog, web
 
     monkeypatch.setattr(catalog, "_HARPS_MATCH_ARCSEC", 5.0)
@@ -2045,14 +2164,62 @@ def test_harps_target_lookup_uses_toi_catalog_coords_after_db_miss(monkeypatch):
 
     monkeypatch.setattr(catalog, "_query_harps_rvbank_rows", fake_query)
 
+    # Header pointing centre (8:03:21 = 120.8375 deg) is supplied but should be
+    # ignored: the catalog coord is a higher-priority tier and resolves the match.
     result = web._harps_data_for_target(
-        [{"ra": "8:03:21", "dec": "+3:20:46"}],
         "TOI00488",
+        [{"ra": "8:03:21", "dec": "+3:20:46"}],
     )
 
     assert result["total_rows"] == 1
     assert captured["matches"][0]["target"] == "GJ3473"
     assert (120.593607, 3.337163) in captured["coords"]
+    # Header centre is a last resort, so it is not consulted once the catalog hits.
+    assert all(abs(ra - 120.8375) > 1e-6 for ra, _ in captured["coords"])
+
+
+def test_harps_target_lookup_falls_back_to_header_center(monkeypatch):
+    """Catalog miss + SIMBAD miss → the header pointing centre is used."""
+    from muscat_db import catalog, web
+
+    monkeypatch.setattr(catalog, "_HARPS_MATCH_ARCSEC", 5.0)
+    monkeypatch.setattr(
+        catalog,
+        "_load_harps_targets",
+        lambda: ([{"target": "GJ3473", "ra": 120.592808, "dec": 3.33695, "n_rv": 32}], "2026-07-08"),
+    )
+    # Target resolves in neither catalog nor SIMBAD.
+    monkeypatch.setattr(catalog, "_target_catalog_coord_candidates", lambda name: [])
+    monkeypatch.setattr(catalog, "_resolve_archive_coords", lambda name: None)
+
+    captured = {}
+
+    def fake_query(coords, matches, max_rows=None):
+        captured["coords"] = coords
+        captured["matches"] = matches
+        return {
+            "columns": ["target"],
+            "rows": [{"target": "GJ3473"}],
+            "total_rows": 1,
+            "display_rows": 1,
+            "truncated": False,
+            "matched_targets": matches,
+            "source_kind": "local",
+            "source": "fake",
+            "error": "",
+        }
+
+    monkeypatch.setattr(catalog, "_query_harps_rvbank_rows", fake_query)
+
+    # Header centre sits on GJ3473 → matched only because it is the last resort.
+    result = web._harps_data_for_target(
+        "GJ3473",
+        [{"ra": 120.592808, "dec": 3.33695}],
+    )
+
+    assert result["total_rows"] == 1
+    assert captured["matches"][0]["target"] == "GJ3473"
+    assert (120.592808, 3.33695) in captured["coords"]
 
 
 def test_nasa_confirmed_toi_membership_matches_tic_and_period(monkeypatch):

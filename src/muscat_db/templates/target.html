@@ -941,7 +941,7 @@
   </script>
 
   <details class="adv" id="lamost-archive-details" style="margin-top: 1rem;">
-    <summary><span id="lamost-archive-summary">LAMOST Archive Data</span></summary>
+    <summary><span id="lamost-archive-summary">LAMOST Archive Spectra</span></summary>
     <div style="margin-top: 0.5rem;">
       <p class="hint" id="lamost-archive-status" style="margin-top: 0;">Open this section to search the LAMOST DR11 Medium-Resolution Survey for spectra of this target. <a href="https://www.lamost.org/dr11/v2.0/medcas/search" target="_blank" rel="noopener">Open LAMOST search portal</a>.</p>
       <div id="lamost-archive-content"></div>
@@ -1043,12 +1043,12 @@
             const total = data.total || 0;
             clearNode(content);
             if (!total) {
-              summary.textContent = 'LAMOST Archive Data';
+              summary.textContent = 'LAMOST Archive Spectra';
               status.textContent = 'No LAMOST data found for this target.';
               status.style.color = 'var(--text-dim)';
               return;
             }
-            summary.textContent = 'LAMOST Archive Data (' + total.toLocaleString() + ' spectra)';
+            summary.textContent = 'LAMOST Archive Spectra (' + total.toLocaleString() + ')';
             status.textContent = '';
             renderTable(data);
             loaded = true;
@@ -1064,6 +1064,114 @@
 
       details.addEventListener('toggle', function() {
         if (details.open) loadLamostArchive();
+      });
+    })();
+  </script>
+
+  <details class="adv" id="lamost-rv-details" style="margin-top: 1rem;">
+    <summary><span id="lamost-rv-summary">LAMOST RV data</span></summary>
+    <div style="margin-top: 0.5rem;">
+      <p class="hint" id="lamost-rv-status" style="margin-top: 0;">Open this section to load coordinate-matched LAMOST RV data from Li et al. (2024) / LAMA. Match tolerance: {{ '%.6g'|format(lamost_match_arcsec) }} arcsec.</p>
+      <p class="hint" style="margin-top: 0.25rem;">Data source: <a href="https://zenodo.org/records/11160083" target="_blank" rel="noopener noreferrer">LAMA catalog on Zenodo (Li et al. 2024)</a>.</p>
+      <div id="lamost-rv-content"></div>
+    </div>
+  </details>
+
+  <script>
+    (function() {
+      const details = document.getElementById('lamost-rv-details');
+      if (!details) return;
+      const summary = document.getElementById('lamost-rv-summary');
+      const status  = document.getElementById('lamost-rv-status');
+      const content = document.getElementById('lamost-rv-content');
+      const targetName = {{ target_name | tojson }};
+      let loaded = false;
+      let loading = false;
+
+      function clearNode(node) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+      }
+
+      function renderTable(rv) {
+        const columns = rv.columns || [];
+        const rows    = rv.rows    || [];
+        const wrap  = document.createElement('div');
+        wrap.className = 'csv-wrap';
+        const table = document.createElement('table');
+        table.id = 'lamost-rv-table';
+        const thead   = document.createElement('thead');
+        const headRow = document.createElement('tr');
+        columns.forEach(col => {
+          const th = document.createElement('th');
+          th.textContent = col;
+          headRow.appendChild(th);
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = document.createElement('tbody');
+        rows.forEach(row => {
+          const tr = document.createElement('tr');
+          columns.forEach(col => {
+            const td = document.createElement('td');
+            const value = row[col] !== null && row[col] !== undefined ? row[col] : '';
+            if (/^-?\d/.test(String(value))) td.className = 'mono';
+            td.textContent = value;
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        content.appendChild(wrap);
+      }
+
+      function loadLamostRV() {
+        if (loaded || loading) return;
+        loading = true;
+        status.textContent = 'Loading LAMOST RV data...';
+        status.style.color = 'var(--text-dim)';
+        fetch('/api/targets/lamost-rv?name=' + encodeURIComponent(targetName))
+          .then(res => res.json().then(data => ({ ok: res.ok, data: data })))
+          .then(result => {
+            if (!result.ok || !result.data.ok) {
+              throw new Error(result.data.error || 'Request failed');
+            }
+            const rv = result.data.lamost_rv || {};
+            const total = rv.total_rows || 0;
+            clearNode(content);
+            if (rv.error) {
+              summary.textContent = 'LAMOST RV data';
+              status.textContent = 'Error: ' + rv.error;
+              status.style.color = 'var(--red)';
+              return;
+            }
+            if (!total) {
+              summary.textContent = 'LAMOST RV data';
+              status.textContent = 'No LAMA RV match found for this target within ' + rv.match_arcsec + ' arcsec.';
+              status.style.color = 'var(--text-dim)';
+              return;
+            }
+            summary.textContent = 'LAMOST RV data (N=' + total.toLocaleString() + ' obs)';
+            let hint = 'Matched within ' + rv.match_arcsec + ' arcsec';
+            if (rv.sep_arcsec !== null && rv.sep_arcsec !== undefined) {
+              hint += ' (closest: ' + rv.sep_arcsec + '″)';
+            }
+            hint += '. Source: LAMA_stars.csv (Li et al. 2024).';
+            status.textContent = hint;
+            status.style.color = 'var(--text-dim)';
+            renderTable(rv);
+            loaded = true;
+          })
+          .catch(err => {
+            summary.textContent = 'LAMOST RV data';
+            status.textContent = 'LAMOST RV lookup failed: ' + err.message;
+            status.style.color = 'var(--red)';
+          })
+          .finally(() => { loading = false; });
+      }
+
+      details.addEventListener('toggle', function() {
+        if (details.open) loadLamostRV();
       });
     })();
   </script>
