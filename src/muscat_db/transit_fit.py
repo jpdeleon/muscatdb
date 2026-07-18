@@ -2081,6 +2081,12 @@ def sync_jobs() -> None:
             # on the next refresh instead of waiting for the daily build_db cron.
             if persist_state in ("done", "error", "cancelled"):
                 database.refresh_target_status(job.target)
+                # Notify chat once per job (dedup handled in jobs.fire_job_finished).
+                jobs.fire_job_finished(
+                    job_key=db_key, type_="transit_fit", target=job.target,
+                    inst=job.inst, date=job.date, state=persist_state,
+                    run_id=job.run_id,
+                )
 
         for db_key in running_keys:
             # Read identity from the DB row's columns (robust to run_id in the key).
