@@ -41,6 +41,11 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 # ── constants ────────────────────────────────────────────────────────────────
 
+# Maximum number of <tbody> data rows published in the static snapshot for any
+# table.  Keeps large listing pages (targets, obslog, TOI) small and fast while
+# still illustrating every table's structure and column layout.
+_TABLE_ROW_LIMIT = 10
+
 # Pages captured with no query parameters. Order controls nothing here; the
 # navbar defines the visible order. The three parametric parents
 # (``/photometry``, ``/transit-fit``, ``/target``) are captured as empty-shell
@@ -507,6 +512,115 @@ def _rewrite_link(
     return prefix + trimmed
 
 
+def _truncate_tables(html: str, limit: int = _TABLE_ROW_LIMIT) -> str:
+    """Trim every ``<tbody>`` in *html* to at most *limit* ``<tr>`` rows.
+
+    Uses ``html.parser`` (stdlib) so nested tags inside cells are handled
+    correctly.  A dim "note" row is appended when rows are dropped so readers
+    know the table was truncated.  ``<thead>`` / ``<tfoot>`` rows are never
+    touched.
+    """
+    from html.parser import HTMLParser
+
+    class _TruncatingParser(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=False)
+            self._out: list[str] = []
+            self._in_tbody: int = 0      # nesting depth (tables can nest)
+            self._tbody_tr_count: int = 0
+            self._skip_depth: int | None = None  # tag depth when we started skipping
+            self._depth: int = 0         # total open-tag depth
+            self._tbody_dropped: list[int] = []   # dropped counts per tbody
+
+        # -- HTMLParser callbacks ------------------------------------------
+
+        def handle_starttag(self, tag: str, attrs: list) -> None:
+            self._depth += 1
+            raw = self._raw_tag(tag, attrs)
+            if tag == "tbody":
+                self._in_tbody += 1
+                self._tbody_tr_count = 0
+                self._tbody_dropped.append(0)
+                self._out.append(raw)
+            elif tag == "tr" and self._in_tbody and self._skip_depth is None:
+                if self._tbody_tr_count < limit:
+                    self._tbody_tr_count += 1
+                    self._out.append(raw)
+                else:
+                    # Start skipping this <tr> and everything inside it.
+                    self._skip_depth = self._depth
+                    if self._tbody_dropped:
+                        self._tbody_dropped[-1] += 1
+            elif self._skip_depth is None:
+                self._out.append(raw)
+
+        def handle_endtag(self, tag: str) -> None:
+            if self._skip_depth is not None:
+                if self._depth == self._skip_depth:
+                    # The skipped <tr> is now fully closed.
+                    self._skip_depth = None
+                self._depth -= 1
+                return
+            self._depth -= 1
+            if tag == "tbody" and self._in_tbody:
+                self._in_tbody -= 1
+                dropped = self._tbody_dropped.pop() if self._tbody_dropped else 0
+                if dropped:
+                    self._out.append(
+                        f'<tr class="static-truncated-note">'
+                        f'<td colspan="99" style="text-align:center;opacity:.55;'
+                        f'font-size:.8rem;padding:.35rem;">'
+                        f"\u2026{dropped:,} more row{'s' if dropped != 1 else ''} "
+                        f"not shown in static snapshot"
+                        f"</td></tr>"
+                    )
+            self._out.append(f"</{tag}>")
+
+        def handle_data(self, data: str) -> None:
+            if self._skip_depth is None:
+                self._out.append(data)
+
+        def handle_entityref(self, name: str) -> None:
+            if self._skip_depth is None:
+                self._out.append(f"&{name};")
+
+        def handle_charref(self, name: str) -> None:
+            if self._skip_depth is None:
+                self._out.append(f"&#{name};")
+
+        def handle_comment(self, data: str) -> None:
+            if self._skip_depth is None:
+                self._out.append(f"<!--{data}-->")
+
+        def handle_decl(self, decl: str) -> None:
+            self._out.append(f"<!{decl}>")
+
+        def unknown_decl(self, data: str) -> None:
+            self._out.append(f"<![{data}]>")
+
+        # -- helpers -------------------------------------------------------
+
+        @staticmethod
+        def _raw_tag(tag: str, attrs: list) -> str:
+            parts = [tag]
+            for name, value in attrs:
+                if value is None:
+                    parts.append(name)
+                else:
+                    # Preserve original quoting style isn't available from
+                    # html.parser; double-quotes are always safe.
+                    escaped = value.replace('"', "&quot;")
+                    parts.append(f'{name}="{escaped}"')
+            return "<" + " ".join(parts) + ">"
+
+        def result(self) -> str:
+            return "".join(self._out)
+
+    parser = _TruncatingParser()
+    parser.feed(html)
+    return parser.result()
+
+
 def _rewrite_html(
     html: str,
     sitedir: str,
@@ -514,8 +628,9 @@ def _rewrite_html(
     base_path: str,
     figures: dict[str, str],
 ) -> str:
-    """Rewrite all internal ``href``/``src``/``action`` links in a page and
-    inject the snapshot banner."""
+    """Rewrite all internal ``href``/``src``/``action`` links in a page,
+    truncate tables to ``_TABLE_ROW_LIMIT`` rows, and inject the snapshot banner.
+    """
     prefix = _prefix_for(sitedir, base_path)
 
     def repl(m: re.Match) -> str:
@@ -527,6 +642,7 @@ def _rewrite_html(
         r'(?P<attr>href|src|action)=(?P<q>["\'])(?P<v>[^"\']*)(?P=q)', re.I
     )
     html = pattern.sub(repl, html)
+    html = _truncate_tables(html)
     return _inject_banner(html)
 
 
