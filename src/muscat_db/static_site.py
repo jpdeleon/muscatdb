@@ -199,6 +199,10 @@ _SCRUB_TARGETS: tuple[str, ...] = (
     "_jobs_with_lco_archive_rows",
 )
 
+# Keep the published Jobs snapshot compact while still illustrating each job
+# category represented in the source data.
+_STATIC_JOB_EXAMPLES_PER_TYPE = 2
+
 
 def _pristine(web) -> dict:
     """The unpatched originals, captured the first time we touch ``web``."""
@@ -211,6 +215,9 @@ def _restore(web) -> None:
     """Reset the overridden helpers to their pristine originals."""
     for name, func in _pristine(web).items():
         setattr(web, name, func)
+    orphan_fits = getattr(web, "_static_site_pristine_orphan_fits", None)
+    if orphan_fits is not None:
+        web.fit._discover_orphan_fits = orphan_fits
 
 
 def _install_scrub(web) -> None:
@@ -221,6 +228,8 @@ def _install_scrub(web) -> None:
     HTML (including the ``data-note`` / ``data-search`` attributes built from it).
     """
     orig = _pristine(web)
+    if not hasattr(web, "_static_site_pristine_orphan_fits"):
+        web._static_site_pristine_orphan_fits = web.fit._discover_orphan_fits
 
     def targets_scrubbed(db):
         return [{**r, "note": ""} for r in orig["_get_targets"](db)]
@@ -230,11 +239,22 @@ def _install_scrub(web) -> None:
         return [{**d, "note": ""} for d in datasets], last
 
     def jobs_scrubbed():
-        return [{**j, "user_name": ""} for j in orig["_jobs_with_lco_archive_rows"]()]
+        selected: list[dict] = []
+        counts: dict[str, int] = {}
+        for job in orig["_jobs_with_lco_archive_rows"]():
+            job_type = job.get("type", "photometry")
+            if counts.get(job_type, 0) >= _STATIC_JOB_EXAMPLES_PER_TYPE:
+                continue
+            counts[job_type] = counts.get(job_type, 0) + 1
+            selected.append({**job, "user_name": ""})
+        return selected
 
     web._get_targets = targets_scrubbed
     web._get_datasets_for_normalized_target = datasets_scrubbed
     web._jobs_with_lco_archive_rows = jobs_scrubbed
+    # Orphan discovery scans the live fit-output tree and can add a large,
+    # non-reproducible history after the compact DB rows above are selected.
+    web.fit._discover_orphan_fits = lambda _existing: []
 
 
 def _scrub_host_paths(html: str) -> str:
