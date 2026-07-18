@@ -28,8 +28,15 @@
   · <strong>{{ '{:,}'.format(n_indb) }}</strong> in muscat-db (★ markers, click a point to open its target page)
   · <strong>{{ '{:,}'.format(n_boyle) }}</strong> with Boyle2026 rotation data (RUWE, P<sub>rot</sub>, binarity flags)
   · <strong>{{ '{:,}'.format(n_harps) }}</strong> with HARPS RVBank data
+  · <strong>{{ '{:,}'.format(n_lamost) }}</strong> with LAMOST RV data
   · <strong>{{ '{:,}'.format(n_nasa_confirmed) }}</strong> confirmed in NASA PSCompPars
   {% if toi_updated %}· catalog last updated {{ toi_updated }}{% endif %}.
+  <br>
+  <span style="font-size:0.85em;color:var(--muted);">
+    P<sub>rot</sub>: <a href="https://arxiv.org/abs/2603.05586" target="_blank" rel="noopener">Boyle&nbsp;+2026</a>
+    · HARPS RV: <a href="https://arxiv.org/pdf/2001.05942" target="_blank" rel="noopener">Trifonov&nbsp;+2020</a>
+    · LAMOST RV: <a href="https://arxiv.org/abs/2407.13134" target="_blank" rel="noopener">Li&nbsp;+2024</a>
+  </span>
 </p>
 
 <div class="search-bar">
@@ -95,6 +102,7 @@
 <div class="chip-bar">
   <span class="chip-label">RV data <span class="logic-indicator" title="Matching checked flag (AND)">AND</span>:</span>
   <span class="badge instrument-badge toi-chip" data-group="harps" data-key="1" title="Only TOIs coordinate-matched to the public HARPS RVBank catalog">has HARPS RV</span>
+  <span class="badge instrument-badge toi-chip" data-group="lamost" data-key="1" title="Only TOIs coordinate-matched to LAMOST stars with LAMA RVs">has LAMOST RV</span>
 </div>
 
 <details id="toi-table-section" class="toi-section" open style="margin-top:1rem;">
@@ -375,6 +383,7 @@
   const selectedRot = new Set();           // 'fast' = P_rot < 10 d (Boyle+2026)
   const selectedIndb = new Set();          // '1' = only targets present in muscat-db
   const selectedHarps = new Set();         // '1' = coordinate match in HARPS RVBank
+  const selectedLamost = new Set();        // '1' = coordinate match in LAMOST LAMA catalog
   const selectedNasa = new Set();          // '1' = matched to NASA confirmed-planet catalog, '0' = not matched
   const selectedObservability = new Set(); // 'north' = declination > 0 degrees
   let sortState = { key: null, dir: 0 };   // dir: 1 asc, -1 desc
@@ -425,6 +434,7 @@
     const useRot = selectedRot.size > 0;
     const useIndb = selectedIndb.size > 0;
     const useHarps = selectedHarps.size > 0;
+    const useLamost = selectedLamost.size > 0;
     const useNasa = selectedNasa.size > 0;
     const hemisphereFilters = ['north', 'south'].filter(k => selectedObservability.has(k));
     const out = [];
@@ -474,6 +484,7 @@
       }
       if (useIndb && !TOI.indb[i]) continue;
       if (useHarps && !TOI.has_harps_rv[i]) continue;
+      if (useLamost && !TOI.has_lamost_rv[i]) continue;
       if (useNasa) {
         if (selectedNasa.has('1') && !TOI.nasa_confirmed[i]) continue;
         if (selectedNasa.has('0') && TOI.nasa_confirmed[i]) continue;
@@ -696,6 +707,7 @@
     if (showHarpsCount && yk === 'radius') {
       hovertmpl += '%{customdata[1]}';
     }
+    hovertmpl += '%{customdata[2]}';
     hovertmpl += '<extra></extra>';
 
     function usable(i) {
@@ -719,7 +731,9 @@
       a.sym.push(symOf(i)); a.sz.push(sizeOf(i));
       const harpsCount = TOI.has_harps_rv[i] || 0;
       const harpsStr = (showHarpsCount && harpsCount > 0) ? ('<br>HARPS RV: ' + harpsCount + ' datapoints') : '';
-      a.cd.push([linkOf(i), harpsStr]);
+      const lamostCount = TOI.has_lamost_rv[i] || 0;
+      const lamostStr = (lamostCount > 0) ? ('<br>LAMOST RV: ' + lamostCount + ' datapoints') : '';
+      a.cd.push([linkOf(i), harpsStr, lamostStr]);
       if (showErrX) a.ex.push(errX(i));
       if (showErrY) a.ey.push(errY(i));
     }
@@ -1030,6 +1044,7 @@
     if (state.rot && state.rot.length) parts.push('rot=' + state.rot.join(','));
     if (state.indb && state.indb.length) parts.push('indb=' + state.indb.join(','));
     if (state.harps && state.harps.length) parts.push('harps=' + state.harps.join(','));
+    if (state.lamost && state.lamost.length) parts.push('lamost=' + state.lamost.join(','));
     if (state.nasa && state.nasa.length) parts.push('nasa=' + state.nasa.join(','));
     if (state.obs && state.obs.length) parts.push('obs=' + state.obs.join(','));
     if (state.sort && state.sort.key) parts.push('sort=' + state.sort.key + ':' + state.sort.dir);
@@ -1060,7 +1075,7 @@
     const state = {};
     const params = new URLSearchParams(hash);
     if (params.has('q')) searchEl.value = decodeURIComponent(params.get('q'));
-    ['planet', 'star', 'disp', 'multi', 'rot', 'indb', 'harps', 'nasa', 'obs'].forEach(k => {
+    ['planet', 'star', 'disp', 'multi', 'rot', 'indb', 'harps', 'lamost', 'nasa', 'obs'].forEach(k => {
       if (params.has(k)) state[k] = params.get(k).split(',');
     });
     if (params.has('sort')) {
@@ -1099,6 +1114,7 @@
       rot: Array.from(selectedRot),
       indb: Array.from(selectedIndb),
       harps: Array.from(selectedHarps),
+      lamost: Array.from(selectedLamost),
       nasa: Array.from(selectedNasa),
       obs: Array.from(selectedObservability),
       sort: sortState,
@@ -1137,6 +1153,7 @@
     (s.rot || []).forEach(k => selectedRot.add(k));
     (s.indb || []).forEach(k => selectedIndb.add(k));
     (s.harps || []).forEach(k => selectedHarps.add(k));
+    (s.lamost || []).forEach(k => selectedLamost.add(k));
     (s.nasa || []).forEach(k => selectedNasa.add(k));
     const restoredObservability = (s.obs || []).filter(k => k === 'north' || k === 'south');
     // North wins if a legacy URL or saved setting selected both hemispheres.
@@ -1193,7 +1210,7 @@
     if (!clearEl) return;
     const hasSearch = !!searchEl.value.trim();
     const hasColFilters = colInputs.some(inp => !!inp.value.trim());
-    const hasChips = selectedPlanet.size > 0 || selectedStar.size > 0 || selectedDisp.size > 0 || selectedMulti.size > 0 || selectedRot.size > 0 || selectedIndb.size > 0 || selectedHarps.size > 0 || selectedNasa.size > 0 || selectedObservability.size > 0;
+    const hasChips = selectedPlanet.size > 0 || selectedStar.size > 0 || selectedDisp.size > 0 || selectedMulti.size > 0 || selectedRot.size > 0 || selectedIndb.size > 0 || selectedHarps.size > 0 || selectedLamost.size > 0 || selectedNasa.size > 0 || selectedObservability.size > 0;
     clearEl.style.display = (hasSearch || hasColFilters || hasChips) ? 'inline-flex' : 'none';
   }
 
@@ -1208,6 +1225,7 @@
       selectedRot.clear();
       selectedIndb.clear();
       selectedHarps.clear();
+      selectedLamost.clear();
       selectedNasa.clear();
       selectedObservability.clear();
       chips.forEach(ch => ch.classList.remove('active'));
@@ -1220,14 +1238,7 @@
     const idx = computeFiltered();
     lastIdx = idx;
     countEl.textContent = idx.length.toLocaleString() + ' / ' + N.toLocaleString() + ' objects';
-    if (rotNoteEl) {
-      let nRot = 0;
-      for (let k = 0; k < idx.length; k++) { if (TOI.adopted_period[idx[k]] != null) nRot++; }
-      rotNoteEl.innerHTML =
-        'P<sub>rot</sub> data from <a href="https://arxiv.org/abs/2603.05586" target="_blank" rel="noopener">Boyle+2026</a>' +
-        ' (rotation periods measured from TESS light curves) — only <strong>' + nRot.toLocaleString() +
-        '</strong> of ' + idx.length.toLocaleString() + ' filtered targets have P<sub>rot</sub> data.';
-    }
+
     updateSortIndicators();
     renderTable(idx);
     refreshCsv(idx);
@@ -1243,7 +1254,7 @@
   searchEl.addEventListener('input', applySoon);
   colInputs.forEach(inp => inp.addEventListener('input', applySoon));
   function setForGroup(group) {
-    return group === 'planet' ? selectedPlanet : group === 'star' ? selectedStar : group === 'multi' ? selectedMulti : group === 'rot' ? selectedRot : group === 'indb' ? selectedIndb : group === 'harps' ? selectedHarps : group === 'nasa' ? selectedNasa : group === 'obs' ? selectedObservability : selectedDisp;
+    return group === 'planet' ? selectedPlanet : group === 'star' ? selectedStar : group === 'multi' ? selectedMulti : group === 'rot' ? selectedRot : group === 'indb' ? selectedIndb : group === 'harps' ? selectedHarps : group === 'lamost' ? selectedLamost : group === 'nasa' ? selectedNasa : group === 'obs' ? selectedObservability : selectedDisp;
   }
   function keyForChip(ch) {
     // The "Unset" disposition chip uses a sentinel so the attribute is non-empty.

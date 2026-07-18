@@ -15,6 +15,8 @@
 * for BANZAI-reduced fits data, saturation unit is e- when gain is 1 in header
 * muscat.db is updated daily via a cronjob
 * do not modify fits files directly, store metadata if needed
+* the target page should cross-match using catalog CSV coordinates. If the target is in neither catalog, resolve via SIMBAD. As a last resort (not in any catalog and unresolved by SIMBAD), use the header pointing centre (the per-target coord_repr median RA/Dec).
+* do not send requests that overload external database when querying data
 
 ## paths 
 * use uv run for muscat-db
