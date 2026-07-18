@@ -64,7 +64,7 @@
     display: flex; align-items: center; gap: 0.45rem; user-select: none;
   }
   .fov-explain > summary::before { content: ''; width: 3px; height: 0.85rem; background: var(--accent2); border-radius: 2px; }
-  .fov-explain-body { margin-top: 0.9rem; max-width: 78ch; }
+  .fov-explain-body { margin-top: 0.9rem; }
   .fov-explain-body h4 {
     font-size: 0.82rem; margin: 1.1rem 0 0.4rem; color: var(--text);
   }
@@ -76,7 +76,7 @@
 </style>
 
 <h2 style="margin-bottom: 0.4rem;">Field-of-View Optimizer</h2>
-<p class="fov-note" style="margin-bottom: 1.1rem; max-width: 70ch;">
+<p class="fov-note" style="margin-bottom: 1.1rem;">
   Choose a pointing and field orientation that keep the target inside the
   instrument footprint while capturing the richest set of <em>useful</em>
   comparison stars &mdash; similar brightness (a brighter comp would cap the
@@ -205,14 +205,7 @@
   <summary>How does "Optimize FOV" work?</summary>
   <div class="fov-explain-body">
     <h4>1. Resolve the target and check it's observable</h4>
-    <p>
-      A target name is resolved to RA/Dec (or you can type coordinates directly).
-      Before anything else, the target's declination is checked against the
-      chosen instrument's site latitude: if the target can never climb above
-      20&deg; altitude there, the run stops immediately with an error instead
-      of spending time on a catalog query for a field that can never be
-      observed.
-    </p>
+    <p>A target name is resolved to RA/Dec (or you can type coordinates directly). Before anything else, the target's declination is checked against the chosen instrument's site latitude: if the target can never climb above 20&deg; altitude there, the run stops immediately with an error instead of spending time on a catalog query for a field that can never be observed.</p>
 
     <h4>2. Query Gaia DR3 around the target</h4>
     <p>
