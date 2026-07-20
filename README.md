@@ -401,19 +401,29 @@ muscat-db serve              # http://0.0.0.0:8000
 muscat-db serve --port 8080  # custom port
 ```
 
-### Build the static documentation site (GitHub Pages)
+### Build & publish the static documentation site (GitHub Pages)
 
 Capture a static, navigable snapshot of the web UI (nav pages + representative
-example detail pages, with real figures) for publishing as a GitHub Page. Run on
-the host, where the real `muscat.db` and figure trees live:
+example detail pages, with real figures) and publish it to GitHub Pages. Build
+on the host, where the real `muscat.db` and figure trees live:
 
 ```bash
-muscat-db build-static-site --out site          # scrubs notes/usernames by default
-cd site && python -m http.server 8080           # preview exactly as Pages serves it
+# Preview locally, exactly as Pages serves it:
+muscat-db build-static-site --out /tmp/site      # scrubs notes/usernames by default
+cd /tmp/site && python -m http.server 8080
+
+# Build and publish in one step:
+scripts/deploy_static_site.sh
 ```
 
-Commit the generated `site/` tree; `.github/workflows/pages.yml` publishes it.
-See [docs/gh-page.md](docs/gh-page.md) for the design, privacy notes, and options.
+The snapshot is **not** committed to `main`/`test` (it is gitignored) so that
+regenerated binary figures never accumulate in the repository history.
+`scripts/deploy_static_site.sh` builds the populated site on the host and
+force-pushes it as a single orphan commit to the `pages` branch;
+`.github/workflows/pages.yml` then deploys that branch (Pages source: GitHub
+Actions). The script refuses to publish a data-less build whose navbar would
+404. See [docs/gh-page.md](docs/gh-page.md) for the design, privacy notes, and
+options.
 
 ## Web Frontend
 
