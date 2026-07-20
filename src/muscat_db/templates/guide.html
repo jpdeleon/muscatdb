@@ -227,6 +227,7 @@
         <li><a href="#exposure-calc-card" class="toc-link">Exposure Calculator</a></li>
         <li><a href="#catalog-browsers-card" class="toc-link">Catalog Browsers</a></li>
         <li><a href="#auth-card" class="toc-link">Multi-User Auth</a></li>
+        <li><a href="#chat-card" class="toc-link">Chat Assistant (@bot)</a></li>
         <li><a href="#schema-card" class="toc-link">Database Schema</a></li>
         <li><a href="#execution-details" class="toc-link">Pipeline Features</a></li>
         <li><a href="/docs" target="_blank" class="toc-link">API &amp; Documentation</a></li>
@@ -861,6 +862,60 @@ graph TD
             <li><strong>htpasswd management:</strong> <code>muscat-db htpasswd add/delete/list</code> is the only supported way to edit the auth file. Passwords are piped over stdin to <code>openssl passwd -apr1</code> (never as a CLI argument, which would leak via <code>ps</code>/<code>/proc</code>), and the file is written <code>0640 root:&lt;nginx group&gt;</code> so other local accounts on the shared server cannot read and offline-crack the hashes.</li>
             <li><strong>Per-user job attribution:</strong> the authenticated username is threaded through <code>phot.start_run()</code>, <code>fit.start_fit()</code>, and the job store, so the Jobs page's <code>User</code> column shows who launched each photometry or transit-fit run.</li>
             <li><strong>Per-user LCO tokens:</strong> each user can save their own LCO API token on <code>/settings</code>. Tokens are encrypted at rest with Fernet symmetric encryption keyed from <code>MUSCAT_DB_SECRET</code>, stored in a <code>users</code> table, and override the server-wide <code>LCO_API_TOKEN</code> fallback when present. All unsafe HTTP methods centrally check Origin/Referer against the request host as a CSRF defense, since FastAPI can parse JSON from a browser simple request without a CORS preflight.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="workflow-card collapsible collapsed" id="chat-card">
+      <div class="card-header-toggle" onclick="toggleCard('chat-card')">
+        <div class="header-text-wrap">
+          <h2 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text); margin-top: 0;">
+            Codebase Chat Assistant (@bot)
+          </h2>
+          <p style="color: var(--text-dim); font-size: 0.95rem; margin-bottom: 0;">
+            A read-only Gemma assistant embedded in team chat that answers questions about this codebase, grounded in the project docs and the relevant pipeline repositories.
+          </p>
+        </div>
+        <span class="toggle-icon">▼</span>
+      </div>
+
+      <div class="card-body">
+        <div class="workflow-diagram-wrap">
+          <pre class="mermaid" style="width: 100%; text-align: center;">
+graph TD
+    %% Trigger & routing
+    A["Team Chat Message\n(@bot your question)"]:::default --> B["Mention Parser\n(addressed / extract_question)"]:::pipeline
+    B -->|"@bot /reset or /clear"| RS["Post Reset Divider\n(system message = hard context cutoff)"]:::db
+    B -->|question| C["Concurrency Guard\n(MUSCAT_OLLAMA_MAX_CONCURRENT, default 2)"]:::default
+    C -->|at capacity| BUSY["Ephemeral busy note\n(ask again shortly)"]:::default
+
+    %% Context assembly (read-only grounding)
+    C -->|slot reserved| D["Assemble Context"]:::pipeline
+    D --> E["System Prompt\n(CLAUDE.md + module map, read-only rules)"]:::default
+    D --> F["Topic-Gated Grounding\nphotometry to prose2, transit to timer, TTV to harmonic\n(README + CLAUDE.md; EN + Japanese keywords)"]:::default
+    D --> G["Shared Room History\n(last 8 turns; TTL auto-clear + reset cutoff)"]:::db
+
+    %% Model call over the tunnel
+    E --> H["POST /api/chat\n(non-streaming, no tools, num_ctx = MUSCAT_OLLAMA_NUM_CTX)"]:::pipeline
+    F --> H
+    G --> H
+    H --> I["SSH Tunnel\nlocalhost:11434 to muscat-ut4 (scripts/ollama_tunnel.sh)"]:::pipeline
+    I --> J["ollama / gemma4\n(replies in the asker's language)"]:::default
+    J --> K["Post Reply to Chat\n(persisted agent message)"]:::default
+          </pre>
+        </div>
+        <div style="margin-top: 1.5rem;">
+          <p>
+            Address the assistant in team chat with <code>@bot &lt;question&gt;</code> (the name is configurable via <code>MUSCAT_CHAT_AGENT_NAME</code>). It is a grounding-only advisor &mdash; it is never given tools or file access, and its reply is inert chat text that is never executed.
+          </p>
+          <ul>
+            <li><strong>Read-only by design:</strong> the request carries no <code>tools</code>/<code>functions</code> field, so the model cannot act on the system. It can explain what a human would change and where, but cannot edit files, run jobs, or touch the database.</li>
+            <li><strong>Topic-gated grounding:</strong> beyond the base context (<code>CLAUDE.md</code> + module map), a photometry question folds in <code>prose2</code>'s docs, a transit-fit question <code>timer</code>'s, and a TTV question <code>harmonic</code>'s (each repo's <code>README</code> + <code>CLAUDE.md</code>). Routing keywords cover both English and Japanese phrasing. Repo paths resolve from <code>MUSCAT_PROSE_PROJECT</code> / <code>MUSCAT_TIMER_PROJECT</code> / <code>MUSCAT_HARMONIC_PROJECT</code>.</li>
+            <li><strong>Concurrency:</strong> up to <code>MUSCAT_OLLAMA_MAX_CONCURRENT</code> (default 2) questions run at once on the single-worker server; a further concurrent request receives an ephemeral &ldquo;busy&rdquo; note rather than queueing.</li>
+            <li><strong>Shared context &amp; auto-clear:</strong> team chat is one shared room, so the assistant sees the last 8 turns of the <em>shared</em> conversation (each turn prefixed with the speaker's name), not a private per-user session. Context clears itself after an idle gap of <code>MUSCAT_AGENT_HISTORY_TTL_S</code> (default 900&nbsp;s); posting <code>@bot /reset</code> (or <code>/clear</code>) drops it immediately via a persisted system divider.</li>
+            <li><strong>Context window:</strong> ollama otherwise defaults to a ~4096-token window regardless of the model's capacity, silently truncating the prompt; the assistant requests an explicit <code>MUSCAT_OLLAMA_NUM_CTX</code> (default 8192).</li>
+            <li><strong>Connectivity:</strong> ollama on <code>muscat-ut4</code> binds <code>127.0.0.1</code> (no auth), so <code>scripts/ollama_tunnel.sh</code> forwards it over SSH to a local port; set <code>MUSCAT_OLLAMA_URL</code> to the local tunnel end (<code>http://127.0.0.1:11434</code>). The model tag is <code>MUSCAT_OLLAMA_MODEL</code> (default <code>gemma4:latest</code>).</li>
           </ul>
         </div>
       </div>
