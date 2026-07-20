@@ -116,6 +116,20 @@ def test_snapshot_banner_injected(tiny_db, tmp_path):
     assert "snapshot-banner" in _read(out / "index.html")
 
 
+def test_no_live_data_notice_only_on_live_api_pages(tiny_db, tmp_path):
+    out = tmp_path / "site"
+    build_site(out, db_path=tiny_db, n_examples=1, include_figures=False, log=lambda _m: None)
+    notice = "No live data in this static snapshot"
+    # Live-API shells get the content-area notice + empty-box labeller script.
+    ephemeris = _read(out / "ephemeris" / "index.html")
+    assert notice in ephemeris
+    assert "static-nodata-note" in ephemeris
+    assert "muscat-static-nolivedata" in ephemeris
+    # Ordinary server-rendered pages must NOT get it (they show real content).
+    assert notice not in _read(out / "index.html")
+    assert notice not in _read(out / "logs" / "index.html")
+
+
 def test_scrub_notes_removes_note_text(tiny_db, tmp_path):
     out = tmp_path / "site"
     build_site(
