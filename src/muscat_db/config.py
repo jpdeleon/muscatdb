@@ -164,6 +164,25 @@ ENV_VARS: tuple[EnvVar, ...] = (
         "Keep paired with ESO_USERNAME.",
         secret=True,
     ),
+    EnvVar(
+        "MUSCAT_CHAT_AGENT_NAME",
+        "bot",
+        "The @name that invokes the codebase assistant in team chat (e.g. @bot).",
+    ),
+    EnvVar(
+        "MUSCAT_OLLAMA_URL",
+        "http://muscat-ut4.c.u-tokyo.ac.jp:11434",
+        "Base URL of the ollama server backing the chat assistant (its /api/chat "
+        "endpoint). Requires ollama bound to 0.0.0.0 and the port reachable from "
+        "this host.",
+    ),
+    EnvVar(
+        "MUSCAT_OLLAMA_MODEL",
+        "gemma4:latest",
+        "Ollama model tag the chat assistant runs.",
+    ),
+    EnvVar("MUSCAT_OLLAMA_TIMEOUT_S", "120", "Per-request generation timeout for the chat assistant (seconds)"),
+    EnvVar("MUSCAT_OLLAMA_MAX_CONCURRENT", "2", "Concurrent chat-assistant requests before callers get a 'busy' note"),
 )
 
 

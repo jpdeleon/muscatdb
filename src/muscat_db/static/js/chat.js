@@ -250,6 +250,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const el = document.createElement("div");
         el.className = "message " + (isMine(data) ? "me" : "them");
         if (data.ephemeral) el.classList.add("ephemeral");
+        if (data.kind === "agent") el.classList.add("agent");
         if (data.mentions && currentUser &&
             data.mentions.some((n) => n.toLowerCase() === currentUser.toLowerCase())) {
             el.classList.add("mention-me");
@@ -265,9 +266,15 @@ document.addEventListener("DOMContentLoaded", () => {
         time.className = "time";
         time.textContent = formatTime(data.ts);
         meta.append(user, time);
-        if (data.ephemeral) {
+        if (data.ephemeral && data.kind !== "agent") {
             const tag = document.createElement("span");
             tag.className = "tag"; tag.textContent = "test";
+            meta.appendChild(tag);
+        }
+        if (data.kind === "agent") {
+            // Name-agnostic badge (the author span already shows the @name).
+            const tag = document.createElement("span");
+            tag.className = "tag agent-tag"; tag.textContent = "AI";
             meta.appendChild(tag);
         }
         const editedTag = document.createElement("span");
