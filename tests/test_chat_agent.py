@@ -54,6 +54,127 @@ def test_system_prompt_includes_claude_md_and_module_map():
 
 
 # --------------------------------------------------------------------------
+# Topic-gated external-repo grounding
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "question,expected",
+    [
+        ("how does aperture photometry work?", ["photometry"]),
+        ("what comparison stars does prose pick?", ["photometry"]),
+        ("explain the transit fit and limb darkening", ["transit"]),
+        ("how does the timer package model a light curve?", ["transit"]),
+        ("how is the TTV fit done?", ["ttv"]),
+        ("what does harmonic use for transit timing?", ["ttv"]),
+        ("how do photometry jobs and the transit fit interact?", ["photometry", "transit"]),
+        ("how do jobs work?", []),
+        ("what instruments are supported?", []),
+        ("", []),
+    ],
+)
+def test_detect_topics(question, expected):
+    # Order follows _REPO_TOPICS (photometry, transit, ttv), independent of the
+    # order keywords appear in the question.
+    assert chat_agent.detect_topics(question) == expected
+
+
+def _write_repo(tmp_path, name, readme, claude=None):
+    d = tmp_path / name
+    d.mkdir()
+    (d / "README.md").write_text(readme, encoding="utf-8")
+    if claude is not None:
+        (d / "CLAUDE.md").write_text(claude, encoding="utf-8")
+    return d
+
+
+def test_repo_grounding_injects_matched_repo_docs(monkeypatch, tmp_path):
+    chat_agent._read_repo_docs.cache_clear()
+    repo = _write_repo(
+        tmp_path, "prose2",
+        readme="PROSE2 README: aperture photometry entry point.",
+        claude="PROSE2 CLAUDE: run_photometry.py options.",
+    )
+    monkeypatch.setenv("MUSCAT_PROSE_PROJECT", str(repo))
+
+    grounding = chat_agent._repo_grounding("how does aperture photometry work?")
+
+    assert "prose2 — photometry pipeline" in grounding
+    assert "PROSE2 README" in grounding          # README folded in
+    assert "PROSE2 CLAUDE" in grounding          # CLAUDE.md folded in
+    assert "read-only" in grounding.lower()
+
+
+def test_repo_grounding_empty_for_offtopic_or_missing(monkeypatch, tmp_path):
+    chat_agent._read_repo_docs.cache_clear()
+    # Off-topic question -> no grounding at all.
+    assert chat_agent._repo_grounding("how do jobs work?") == ""
+    # On-topic but the repo checkout is absent -> skipped, not an error.
+    monkeypatch.setenv("MUSCAT_TIMER_PROJECT", str(tmp_path / "nonexistent"))
+    assert chat_agent._repo_grounding("explain the transit fit") == ""
+
+
+def test_read_repo_docs_truncates(monkeypatch, tmp_path):
+    chat_agent._read_repo_docs.cache_clear()
+    repo = _write_repo(tmp_path, "harmonic", readme="x" * (chat_agent._MAX_REPO_DOC_CHARS + 500))
+    doc = chat_agent._read_repo_docs(str(repo), "harmonic — TTV")
+    assert "…(truncated)…" in doc
+    assert len(doc) <= chat_agent._MAX_REPO_DOC_CHARS + 200  # header + marker slack
+
+
+def test_answer_injects_repo_grounding_as_second_system_message(monkeypatch, tmp_path):
+    chat_agent._read_repo_docs.cache_clear()
+    repo = _write_repo(tmp_path, "timer", readme="TIMER README: transit light-curve fitting API.")
+    monkeypatch.setenv("MUSCAT_TIMER_PROJECT", str(repo))
+
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": "ok"}})
+
+    client = _mock_client(handler)
+    monkeypatch.setattr(http_client, "get_async_client", lambda: client)
+
+    async def run():
+        try:
+            await chat_agent.answer("how does the transit fit and limb darkening work?")
+        finally:
+            await client.aclose()
+
+    asyncio.run(run())
+    messages = captured["body"]["messages"]
+    # [0] base system prompt, [1] injected repo grounding, [-1] the user question.
+    assert messages[0]["role"] == "system"
+    assert messages[1]["role"] == "system"
+    assert "timer — transit light-curve fitting" in messages[1]["content"]
+    assert "TIMER README" in messages[1]["content"]
+    assert messages[-1] == {"role": "user", "content": "how does the transit fit and limb darkening work?"}
+    # Still strictly grounding — no tools/functions granted.
+    assert "tools" not in captured["body"]
+    assert "functions" not in captured["body"]
+
+
+def test_answer_offtopic_has_single_system_message(monkeypatch):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": "ok"}})
+
+    client = _mock_client(handler)
+    monkeypatch.setattr(http_client, "get_async_client", lambda: client)
+
+    async def run():
+        try:
+            await chat_agent.answer("how do jobs work?")
+        finally:
+            await client.aclose()
+
+    asyncio.run(run())
+    roles = [m["role"] for m in captured["body"]["messages"]]
+    assert roles.count("system") == 1   # no grounding injected for off-topic
+
+
+# --------------------------------------------------------------------------
 # Concurrency guard
 # --------------------------------------------------------------------------
 def test_reserve_and_release_respects_cap(monkeypatch):

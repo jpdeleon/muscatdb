@@ -62,9 +62,19 @@ ENV_VARS: tuple[EnvVar, ...] = (
         "timer package output directory",
     ),
     EnvVar(
+        "MUSCAT_TIMER_PROJECT",
+        "<repo>/../ext_tools/timer",
+        "timer repository path (transit-fit source; read by the @bot chat assistant for grounding)",
+    ),
+    EnvVar(
         "MUSCAT_TTV_DIR",
         str(Path.home() / "ql" / "harmonic"),
         "harmonic package output directory (TTV fits, keyed on target)",
+    ),
+    EnvVar(
+        "MUSCAT_HARMONIC_PROJECT",
+        "<repo>/../ext_tools/harmonic",
+        "harmonic repository path (TTV-fit source; read by the @bot chat assistant for grounding)",
     ),
     EnvVar(
         "MUSCAT_QUICKLOOK_URL",

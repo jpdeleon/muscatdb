@@ -18,15 +18,25 @@ and ``.env.example``):
 - ``MUSCAT_OLLAMA_MAX_CONCURRENT``in-flight requests before callers get "busy"
                                   (default ``2``)
 
+When a question is about a specific pipeline stage, the matching external repo's
+own docs (README + CLAUDE.md) are folded in as *extra read-only grounding* — the
+agent gains no tools or file access, we just widen the static context the same
+way ``CLAUDE.md`` is injected:
+
+- photometry  -> prose2   (``MUSCAT_PROSE_PROJECT``,   default ``../ext_tools/prose2``)
+- transit fit -> timer    (``MUSCAT_TIMER_PROJECT``,   default ``../ext_tools/timer``)
+- TTV fit     -> harmonic (``MUSCAT_HARMONIC_PROJECT``, default ``../ext_tools/harmonic``)
+
 The name is read once at import (it must line up with the frontend + reserved
-mentions); URL/model/timeout are read per call so an ``.env`` change or a test
-override takes effect without re-importing.
+mentions); URL/model/timeout and the repo paths are read per call so an ``.env``
+change or a test override takes effect without re-importing.
 """
 from __future__ import annotations
 
 import logging
 import os
 import re
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -178,6 +188,120 @@ def _system_prompt() -> str:
     return "".join(parts)
 
 
+# ----- external repo grounding (topic-gated) -------------------------------
+# The pipeline's heavy lifting lives in three sibling repos under ``ext_tools/``.
+# When a question is about one of those stages we fold that repo's own docs into
+# the model's context so it can answer with real API detail. This is grounding
+# only: no tools, no query-time file access, and the doc set is a fixed
+# allow-list (README.md + CLAUDE.md), never a path derived from user input.
+_MAX_REPO_DOC_CHARS = 6000
+_REPO_DOC_FILES = ("README.md", "CLAUDE.md")
+
+
+@dataclass(frozen=True)
+class _RepoTopic:
+    """A question topic and the external repo whose docs ground it."""
+
+    name: str
+    env_var: str        # override for the repo path (mirrors config.ENV_VARS)
+    subdir: str         # default location: <project>/ext_tools/<subdir>
+    label: str          # human heading shown to the model
+    keywords: tuple[str, ...]  # lower-cased substrings that select this topic
+
+    def directory(self) -> Path:
+        default = _repo_root().parent / "ext_tools" / self.subdir
+        return Path(os.environ.get(self.env_var) or str(default))
+
+
+# Order is stable/deterministic; a question may match more than one topic (e.g.
+# a transit-fit + TTV question pulls in both timer and harmonic).
+_REPO_TOPICS: tuple[_RepoTopic, ...] = (
+    _RepoTopic(
+        name="photometry",
+        env_var="MUSCAT_PROSE_PROJECT",
+        subdir="prose2",
+        label="prose2 — photometry pipeline",
+        keywords=(
+            "photometr", "aperture", "prose", "comparison star", "differential",
+            "flat field", "flatfield", "bias frame", "dark frame", "centroid",
+            "fwhm", "flux extraction", "detrend", "calibrat",
+        ),
+    ),
+    _RepoTopic(
+        name="transit",
+        env_var="MUSCAT_TIMER_PROJECT",
+        subdir="timer",
+        label="timer — transit light-curve fitting",
+        keywords=(
+            "transit fit", "transit model", "transit depth", "transit light curve",
+            "limb darken", "mid-transit", "timer", "rp/rs", "a/rs",
+            "impact parameter", "light curve fit", "lightcurve fit",
+        ),
+    ),
+    _RepoTopic(
+        name="ttv",
+        env_var="MUSCAT_HARMONIC_PROJECT",
+        subdir="harmonic",
+        label="harmonic — transit timing variation (TTV) fitting",
+        keywords=(
+            "ttv", "transit timing", "timing variation", "o-c", "o minus c",
+            "harmonic", "period variation", "mid-time", "mid-times",
+        ),
+    ),
+)
+
+
+def detect_topics(question: str) -> list[str]:
+    """Names of the repo topics whose keywords appear in ``question``."""
+    q = (question or "").lower()
+    return [t.name for t in _REPO_TOPICS if any(k in q for k in t.keywords)]
+
+
+@lru_cache(maxsize=8)
+def _read_repo_docs(directory: str, label: str) -> str:
+    """Read a repo's allow-listed docs into one bounded, headed block.
+
+    Cached per resolved path (edits need a restart, like the templates). Missing
+    repo/files yield ``""`` so an absent ext_tools checkout simply adds no
+    grounding instead of erroring the whole reply.
+    """
+    base = Path(directory)
+    chunks: list[str] = []
+    for fname in _REPO_DOC_FILES:
+        try:
+            text = (base / fname).read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue  # file absent/unreadable — skip, not fatal
+        if text:
+            chunks.append(f"### {fname}\n{text}")
+    if not chunks:
+        logger.debug("chat agent: no docs for %s at %s", label, directory)
+        return ""
+    doc = "\n\n".join(chunks)
+    if len(doc) > _MAX_REPO_DOC_CHARS:
+        doc = doc[:_MAX_REPO_DOC_CHARS] + "\n…(truncated)…"
+    return f"## {label}\n{doc}"
+
+
+def _repo_grounding(question: str) -> str:
+    """Extra grounding block for the repos this question touches (or ``""``)."""
+    by_name = {t.name: t for t in _REPO_TOPICS}
+    parts = []
+    for name in detect_topics(question):
+        topic = by_name[name]
+        doc = _read_repo_docs(str(topic.directory()), topic.label)
+        if doc:
+            parts.append(doc)
+    if not parts:
+        return ""
+    header = (
+        "The question relates to the external pipeline component(s) below. Use "
+        "their docs as additional grounding — they are read-only reference "
+        "material and the same capabilities/limits above still apply.\n\n"
+    )
+    return header + "\n\n".join(parts)
+
+
 # ----- ollama call ---------------------------------------------------------
 async def answer(question: str, history: list[dict] | None = None) -> str:
     """Ask the model ``question`` (with optional prior turns) and return its reply.
@@ -190,6 +314,9 @@ async def answer(question: str, history: list[dict] | None = None) -> str:
         raise ValueError("empty question")
 
     messages: list[dict] = [{"role": "system", "content": _system_prompt()}]
+    grounding = _repo_grounding(question)
+    if grounding:
+        messages.append({"role": "system", "content": grounding})
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": question})
