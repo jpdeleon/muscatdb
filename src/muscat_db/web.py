@@ -385,6 +385,27 @@ def _render(name: str, **kwargs) -> str:
     return HTMLResponse(tpl.render(**kwargs))
 
 
+def _script_json(obj) -> str:
+    """Serialize ``obj`` for safe embedding inside an inline ``<script>`` block.
+
+    ``json.dumps`` does not escape ``<``, ``>`` or ``&``, so a value containing
+    ``</script>`` (or ``<!--``) would break out of the script element and allow
+    HTML/JS injection (XSS) when the result is emitted via ``{{ ... | safe }}``.
+    Escape those, plus the U+2028/U+2029 JS line separators, to their ``\\uXXXX``
+    forms — which parse back to the identical characters. This mirrors Jinja's
+    ``|tojson`` filter (used by every other template); the TOI/NExSci pages
+    pre-serialize server-side, so they need the same protection applied here.
+    """
+    text = json.dumps(obj, separators=(",", ":"), allow_nan=False)
+    return (
+        text.replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 # Rendering the ~2.85 MB targets page costs ~1.3s. Cache the rendered HTML
 # keyed on the DB mtime so repeat loads are instant until the data changes.
 # Each entry is a multi-MB HTML blob, so the cache is bounded (LRU) to keep
@@ -920,8 +941,6 @@ def workflow_redirect():
 
 @app.get("/toi", response_class=HTMLResponse)
 def toi_page():
-    import json
-
     cat = _load_toi_catalog()
     indb, tname = _toi_db_membership(cat["data"], _db_path())
     boyle, n_boyle = _merge_boyle_columns(cat["data"])
@@ -938,7 +957,7 @@ def toi_page():
     payload["nasa_planet_name"] = nasa_planet_name
     return _render(
         "toi.html",
-        toi_json=json.dumps(payload, separators=(",", ":"), allow_nan=False),
+        toi_json=_script_json(payload),
         n_rows=cat["n"],
         n_indb=sum(indb),
         n_boyle=n_boyle,
@@ -1238,7 +1257,7 @@ def nexsci_page():
     payload["has_spectra"] = spectra
     return _render(
         "nexsci.html",
-        nexsci_json=json.dumps(payload, separators=(",", ":"), allow_nan=False),
+        nexsci_json=_script_json(payload),
         n_rows=cat["n"],
         n_indb=sum(indb),
         n_harps=n_harps,

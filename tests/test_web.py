@@ -10,7 +10,43 @@ from fastapi.testclient import TestClient
 from starlette.responses import Response
 
 from muscat_db.database import save_job, get_persisted_jobs
-from muscat_db.web import app, _annotate_lco_archive_results
+from muscat_db.web import app, _annotate_lco_archive_results, _script_json
+
+
+# --------------------------------------------------------------------------
+# XSS: JSON embedded in inline <script> (toi.html / nexsci.html use | safe)
+# --------------------------------------------------------------------------
+def test_script_json_neutralizes_script_breakout():
+    evil = {"comment": "</script><img src=x onerror=alert(1)>", "amp": "a & b"}
+    out = _script_json(evil)
+    # No character that could close the <script> element or start a tag/comment.
+    assert "<" not in out and ">" not in out and "&" not in out
+    assert "</script>" not in out
+    assert "\\u003c" in out and "\\u003e" in out and "\\u0026" in out
+
+
+def test_script_json_escapes_js_line_separators():
+    # U+2028/U+2029 are valid in JSON strings but are line terminators in JS
+    # source, which would break the `const X = {...}` literal. Build them with
+    # chr() so this test file stays pure ASCII.
+    ls, ps = chr(0x2028), chr(0x2029)
+    out = _script_json({"u": f"a{ls}b{ps}c"})
+    assert ls not in out and ps not in out
+    assert "\\u2028" in out and "\\u2029" in out
+
+
+def test_script_json_round_trips_to_original_values():
+    ls, ps = chr(0x2028), chr(0x2029)
+    original = {"name": "TOI-1234 </script>", "amp": "x & y", "sep": f"a{ls}b{ps}c"}
+    out = _script_json(original)
+    # A JS engine parses \\uXXXX escapes back to the identical characters, so the
+    # data the page sees is unchanged - only the transport is made safe.
+    decoded = (
+        out.replace("\\u003c", "<").replace("\\u003e", ">")
+        .replace("\\u0026", "&").replace("\\u2028", ls).replace("\\u2029", ps)
+    )
+    assert json.loads(decoded) == original
+
 
 @pytest.fixture
 def mock_db(monkeypatch):
