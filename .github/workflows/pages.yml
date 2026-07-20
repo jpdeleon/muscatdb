@@ -1,17 +1,16 @@
 name: Pages
 
-# Publishes the pre-built static documentation snapshot under site/ to GitHub
-# Pages. The snapshot is generated on the production host (it needs the real
-# muscat.db, data/ CSVs, and the ~/ql figure trees that CI runners do not have)
-# with `uv run muscat-db build-static-site --out site/` and committed. This
-# workflow only uploads and deploys that committed tree — it never builds.
+# Deploys the pre-built static documentation snapshot to GitHub Pages. The
+# snapshot is generated on the production host (it needs the real muscat.db and
+# the ~/ql figure trees that CI runners do not have) and force-pushed to the
+# orphan `pages` branch by scripts/deploy_static_site.sh. Because that branch is
+# always force-pushed as a single orphan commit, regenerated figures never
+# accumulate in the repository history and are never tracked on main/test. This
+# workflow only uploads and deploys the `pages` branch — it never builds.
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "site/**"
-      - ".github/workflows/pages.yml"
+    branches: [pages]
   workflow_dispatch:
 
 # Allow one concurrent deployment; let an in-progress run finish.
@@ -33,11 +32,13 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: pages
 
-      - name: Guard — site/ must exist
+      - name: Guard — site/ must exist on the pages branch
         run: |
           if [ ! -d site ] || [ -z "$(ls -A site 2>/dev/null)" ]; then
-            echo "::error::site/ is missing or empty. Build it on the host with 'uv run muscat-db build-static-site --out site/' and commit."
+            echo "::error::the 'pages' branch has no site/ tree. Publish it from the host with 'scripts/deploy_static_site.sh'."
             exit 1
           fi
 

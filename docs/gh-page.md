@@ -68,7 +68,7 @@ uv run muscat-db build-static-site --out site
 #   --figures/--no-figures       copy referenced figures (default: copy)
 ```
 
-Preview exactly as Pages serves it, then commit:
+Preview exactly as Pages serves it:
 
 ```bash
 cd site && python -m http.server 8080   # browse http://localhost:8080/
@@ -76,12 +76,32 @@ cd site && python -m http.server 8080   # browse http://localhost:8080/
 
 ## Deployment
 
-`.github/workflows/pages.yml` publishes the committed `site/` tree via
-`actions/upload-pages-artifact` + `actions/deploy-pages` on push to `main` (paths
-`site/**`) or manual `workflow_dispatch`. It **does not build** (runners lack the
-DB) and uses **no `gh-pages` branch** (respecting the "only `main` and `test`
-branches" policy). The committed tree is force-tracked via `!site/**` in
-`.gitignore`.
+The snapshot is **not** tracked on `main`/`test` (`.gitignore` ignores `/site/`),
+so regenerated binary figures never accumulate in the repository history.
+Instead, `scripts/deploy_static_site.sh` builds the populated site on the host
+and force-pushes it as a single **orphan commit** onto the `pages` branch:
+
+```bash
+scripts/deploy_static_site.sh          # build + guard + force-push origin/pages
+scripts/deploy_static_site.sh --no-push   # build + guard only (prints the path)
+```
+
+Because `pages` is always force-pushed (never appended), only the latest
+snapshot is reachable — history does not grow with each publish. The script
+refuses to publish a data-less build (whose Photometry/Transit-fit navbar links
+would 404).
+
+`.github/workflows/pages.yml` then deploys the `pages` branch via
+`actions/upload-pages-artifact` + `actions/deploy-pages` (on push to `pages` or
+manual `workflow_dispatch`). It **does not build** (runners lack the DB and
+figures). The deploy script carries a copy of this workflow onto the `pages`
+branch so the force-push self-triggers it (GitHub reads workflows from the
+pushed ref).
+
+> **Branch policy note:** `pages` is an orphan *deploy-artifact* branch, not a
+> development branch — the "only `main` and `test`" policy applies to dev
+> branches. The alternative that needs no extra branch is a self-hosted Actions
+> runner on the host (which has the data), building and deploying in-workflow.
 
 **One-time setup:** in the repo settings, set Pages → Source → *GitHub Actions*.
 
@@ -91,14 +111,15 @@ branches" policy). The committed tree is force-tracked via `!site/**` in
   optimize) is non-functional by design — shells + banner.
 - Detail pages outside the representative subset are inert links (resolve within
   the site tree, may 404 locally) rather than fully navigable.
-- The snapshot is regenerated manually on the host; it could later become a cron
-  target alongside the daily `build-db`.
+- The snapshot is regenerated on the host via `scripts/deploy_static_site.sh`; it
+  could later become a cron target alongside the daily `build-db`.
 
 ## Key files
 
 - `src/muscat_db/static_site.py` — the builder.
 - `src/muscat_db/cli.py` — `build-static-site` command.
-- `.github/workflows/pages.yml` — the Pages deploy workflow.
+- `.github/workflows/pages.yml` — the Pages deploy workflow (deploys the `pages` branch).
+- `scripts/deploy_static_site.sh` — host-side build + force-push to the orphan `pages` branch.
 - `tests/test_static_site.py` — build against a tiny temp DB; asserts scaffolding,
   link relativization, cache-buster stripping, banner, and note scrubbing.
-- `site/**` — the committed, published snapshot.
+- `pages` branch (`site/**`) — the published snapshot, force-pushed, never tracked on main/test.
