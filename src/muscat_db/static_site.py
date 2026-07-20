@@ -22,8 +22,10 @@ Design notes
   under a project site (``user.github.io/repo/``), a user site, or a custom
   domain with no hard-coded base path. ``--base-path`` can force root-absolute
   links instead.
-* **Live-API pages** (ephemeris, fov, exposure, lco) render as static shells; a
-  banner is injected explaining that live data and actions are disabled.
+* **Live-API pages** (ephemeris, fov, exposure, lco) render as static shells:
+  the top banner marks the whole snapshot, and a per-page "no live data" notice
+  is injected into these pages' content (labelling the big empty plot/viewer
+  boxes) so they read as intentional rather than broken.
 * **Privacy.** ``scrub_notes`` (default on) blanks user-authored target notes and
   job usernames at the data layer before capture, so private text is never
   written to the published site.
@@ -93,6 +95,20 @@ _FIGURE_SUFFIXES: frozenset[str] = frozenset({".gif", ".png"})
 _EXTERNAL_RE = re.compile(r"^(?:[a-z]+:|//|#|data:|mailto:|tel:|javascript:)", re.I)
 
 _BANNER_MARKER = "<!--muscat-static-snapshot-banner-->"
+_NODATA_MARKER = "<!--muscat-static-nolivedata-->"
+
+# Sitedirs whose pages are live-API shells: their plots, tables, and actions are
+# drawn client-side from ``/api/*`` that a static host does not serve, so they
+# render as blank regions. We stamp an explicit "no live data" notice so the
+# snapshot reads as intentional rather than a broken/failed page.
+_LIVE_API_SITEDIRS: frozenset[str] = frozenset(
+    {"ephemeris", "fov", "exposure", "lco/schedule", "lco/archive"}
+)
+
+# Big empty "viewer" boxes (plot / sky viewer) worth labelling in place so they
+# don't look like a failed load. Tolerant: an id that is absent (or already
+# populated) is simply skipped.
+_LIVE_API_EMPTY_BOXES: tuple[str, ...] = ("oc-plot", "aladin-lite-div")
 
 
 @dataclass
@@ -152,6 +168,48 @@ def _inject_banner(html: str) -> str:
         return html
     idx = m.end()
     return html[:idx] + "\n" + _banner_html() + html[idx:]
+
+
+def _no_live_data_html() -> str:
+    """A self-contained "no live data" notice for a live-API shell, plus a small
+    script that labels the big empty viewer boxes so they read as intentional.
+
+    Styles use the page's own CSS variables (with fallbacks) so the notice
+    adapts to the active light/dark theme.
+    """
+    boxes = ",".join(f'"{b}"' for b in _LIVE_API_EMPTY_BOXES)
+    return (
+        f"{_NODATA_MARKER}\n"
+        '<div role="note" class="static-nodata-note" style="margin:1rem 0;'
+        "padding:.8rem 1rem;border:1px dashed var(--border,#8a7a3a);border-radius:8px;"
+        "background:var(--surface,#2a2410);color:var(--text-dim,#c9b98a);"
+        'font:500 .9rem/1.45 system-ui,sans-serif;">'
+        "&#128268; <strong>No live data in this static snapshot.</strong> "
+        "This page is interactive — its plots, tables, and actions load data from "
+        "the live muscat-db server, which is not available here."
+        "</div>\n"
+        "<script>document.addEventListener('DOMContentLoaded',function(){"
+        f"[{boxes}].forEach(function(id){{"
+        "var el=document.getElementById(id);"
+        "if(!el||(el.textContent||'').trim()!=='')return;"
+        "el.style.cssText+=';display:flex;align-items:center;justify-content:center;"
+        "min-height:220px;border:1px dashed var(--border,#8a7a3a);border-radius:8px;"
+        "color:var(--text-dim,#c9b98a);font:500 .95rem system-ui,sans-serif;';"
+        "el.textContent='No live data in static snapshot';"
+        "});});</script>"
+    )
+
+
+def _inject_no_live_data(html: str, sitedir: str) -> str:
+    """On live-API shell pages, insert the "no live data" notice at the top of the
+    main content wrapper (``<div class="container">``)."""
+    if sitedir not in _LIVE_API_SITEDIRS or _NODATA_MARKER in html:
+        return html
+    m = re.search(r'<div class="container"[^>]*>', html, re.I)
+    if not m:
+        return html
+    idx = m.end()
+    return html[:idx] + "\n" + _no_live_data_html() + html[idx:]
 
 
 def _url_to_sitedir(path: str, query: str = "") -> str:
@@ -643,7 +701,8 @@ def _rewrite_html(
     )
     html = pattern.sub(repl, html)
     html = _truncate_tables(html)
-    return _inject_banner(html)
+    html = _inject_banner(html)
+    return _inject_no_live_data(html, sitedir)
 
 
 # ── orchestration ────────────────────────────────────────────────────────────
