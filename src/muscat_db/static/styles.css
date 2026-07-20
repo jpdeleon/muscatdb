@@ -1304,6 +1304,18 @@ dialog h3 {
     box-shadow: inset 3px 0 0 var(--accent2);
 }
 
+/* Codebase assistant (@bot) replies: accent the surface so they read as a
+   distinct participant rather than a teammate. */
+.message.agent .message-body {
+    border-left: 2px solid var(--accent);
+    background: var(--surface2);
+}
+
+.message-meta .tag.agent-tag {
+    background: var(--accent);
+    color: #fff;
+}
+
 .message.system {
     align-self: center;
     max-width: 95%;

@@ -992,7 +992,13 @@ def chat_users(request: Request):
         return JSONResponse({"users": []})
     try:
         from muscat_db.database import get_known_chat_usernames
-        return JSONResponse({"users": get_known_chat_usernames()})
+        from muscat_db import chat_agent
+        users = get_known_chat_usernames()
+        # Surface the codebase assistant so @bot autocompletes, even though it is
+        # never a real (notifiable) chat user.
+        if chat_agent.DISPLAY_NAME not in {u.lower() for u in users}:
+            users = [chat_agent.DISPLAY_NAME, *users]
+        return JSONResponse({"users": users})
     except Exception:
         logger.exception("failed to list chat users")
         return JSONResponse({"users": []})
