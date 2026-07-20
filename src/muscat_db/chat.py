@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 from collections import deque
@@ -276,6 +277,12 @@ async def typing(sid, data):
 # ----- codebase assistant (@bot) -------------------------------------------
 # Recent turns handed to the model for follow-up context.
 _AGENT_HISTORY_TURNS = 8
+# Auto-clear: history older than this (seconds) is dropped, so an idle gap resets
+# @bot's context on its own. 0/negative disables the time cutoff.
+_DEFAULT_HISTORY_TTL_S = 900.0
+# Persisted system divider posted by "@bot /reset"; _agent_history treats the
+# most recent one as a hard cutoff so the next question starts fresh.
+_RESET_MARKER = "🧹 @bot conversation context cleared"
 # Re-emit the "typing" indicator this often while the model works, so it does
 # not hit the client's ~4s auto-clear during a long (multi-second) generation.
 _AGENT_TYPING_HEARTBEAT_S = 2.0
@@ -303,15 +310,42 @@ def _ephemeral_agent_payload(text: str) -> dict:
     }
 
 
+def _history_ttl_s() -> float:
+    try:
+        return float(os.environ.get("MUSCAT_AGENT_HISTORY_TTL_S", _DEFAULT_HISTORY_TTL_S))
+    except (TypeError, ValueError):
+        return _DEFAULT_HISTORY_TTL_S
+
+
 def _agent_history(exclude_id: int | None) -> list[dict]:
     """Recent chat mapped to chat-model roles: the agent's own replies become
     ``assistant`` turns, everyone else becomes ``user`` turns prefixed with the
-    speaker's name. Skips system rows and the just-posted question."""
+    speaker's name. Skips system rows and the just-posted question.
+
+    Context is auto-cleared two ways: turns older than ``MUSCAT_AGENT_HISTORY_TTL_S``
+    are dropped (idle-gap reset), and everything up to the most recent ``@bot``
+    reset marker is discarded (explicit ``@bot /reset``)."""
     try:
         recent = db.get_recent_chat_messages()
     except Exception:
         logger.debug("agent history load failed", exc_info=True)
         return []
+
+    # Idle-gap auto-clear: keep only turns newer than the TTL.
+    ttl = _history_ttl_s()
+    if ttl > 0:
+        cutoff_ts = time.time() - ttl
+        recent = [m for m in recent if (m.get("ts") or 0) >= cutoff_ts]
+
+    # Explicit clear: discard everything up to and including the last reset marker.
+    last_reset = max(
+        (i for i, m in enumerate(recent)
+         if m.get("kind") == "system" and (m.get("text") or "") == _RESET_MARKER),
+        default=-1,
+    )
+    if last_reset >= 0:
+        recent = recent[last_reset + 1:]
+
     turns: list[dict] = []
     for m in recent:
         if m.get("id") == exclude_id:
@@ -326,6 +360,21 @@ def _agent_history(exclude_id: int | None) -> list[dict]:
         else:
             turns.append({"role": "user", "content": f"{author}: {body}"})
     return turns[-_AGENT_HISTORY_TURNS:]
+
+
+async def _reset_agent_context() -> None:
+    """Persist + broadcast the reset divider so _agent_history cuts off here and
+    the next @bot question starts with a clean context (shared across the room)."""
+    try:
+        msg = db.save_chat_message("system", _RESET_MARKER, kind="system")
+    except Exception:
+        logger.exception("failed to persist @bot reset marker")
+        await sio.emit(
+            "message",
+            _ephemeral_agent_payload("Couldn't clear my context just now — please try again."),
+        )
+        return
+    await sio.emit("message", {**msg, "sid": None})
 
 
 async def _typing_heartbeat() -> None:
@@ -346,6 +395,9 @@ async def _run_agent(sid: str, question: str, exclude_id: int | None) -> None:
             "job lifecycle work?\""
         )
         await sio.emit("message", _ephemeral_agent_payload(intro), to=sid)
+        return
+    if chat_agent.is_reset_command(question):  # "@bot /reset": clear context, no model call
+        await _reset_agent_context()
         return
     if not chat_agent.reserve():  # model already at capacity
         await sio.emit(

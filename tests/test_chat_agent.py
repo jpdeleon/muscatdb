@@ -200,10 +200,61 @@ def test_reserve_and_release_respects_cap(monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# Context window (num_ctx) and reset command
+# --------------------------------------------------------------------------
+def test_num_ctx_default_override_and_floor(monkeypatch):
+    monkeypatch.delenv("MUSCAT_OLLAMA_NUM_CTX", raising=False)
+    assert chat_agent.num_ctx() == chat_agent._DEFAULT_NUM_CTX
+    monkeypatch.setenv("MUSCAT_OLLAMA_NUM_CTX", "16384")
+    assert chat_agent.num_ctx() == 16384
+    monkeypatch.setenv("MUSCAT_OLLAMA_NUM_CTX", "not-an-int")
+    assert chat_agent.num_ctx() == chat_agent._DEFAULT_NUM_CTX
+    monkeypatch.setenv("MUSCAT_OLLAMA_NUM_CTX", "10")   # floored to a sane minimum
+    assert chat_agent.num_ctx() == 512
+
+
+@pytest.mark.parametrize(
+    "q,expected",
+    [
+        ("/reset", True), ("/clear", True), ("reset", True), ("clear", True),
+        ("  /RESET ", True), ("Clear", True),
+        ("how do I clear the cache?", False),   # not an exact command
+        ("reset the database please", False),
+        ("photometry", False), ("", False),
+    ],
+)
+def test_is_reset_command(q, expected):
+    assert chat_agent.is_reset_command(q) is expected
+
+
+# --------------------------------------------------------------------------
 # Ollama call
 # --------------------------------------------------------------------------
 def _mock_client(handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def test_answer_requests_explicit_num_ctx(monkeypatch):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": "ok"}})
+
+    monkeypatch.setenv("MUSCAT_OLLAMA_NUM_CTX", "12288")
+    client = _mock_client(handler)
+    monkeypatch.setattr(http_client, "get_async_client", lambda: client)
+
+    async def run():
+        try:
+            await chat_agent.answer("anything")
+        finally:
+            await client.aclose()
+
+    asyncio.run(run())
+    opts = captured["body"]["options"]
+    assert opts["num_ctx"] == 12288       # ollama would otherwise default to ~4096
+    assert opts["temperature"] == 0.2
 
 
 def test_answer_success_builds_expected_request(monkeypatch):

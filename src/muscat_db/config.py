@@ -183,8 +183,9 @@ ENV_VARS: tuple[EnvVar, ...] = (
         "MUSCAT_OLLAMA_URL",
         "http://muscat-ut4.c.u-tokyo.ac.jp:11434",
         "Base URL of the ollama server backing the chat assistant (its /api/chat "
-        "endpoint). Requires ollama bound to 0.0.0.0 and the port reachable from "
-        "this host.",
+        "endpoint), reachable over HTTP from this host. ollama on muscat-ut4 binds "
+        "127.0.0.1; scripts/ollama_tunnel.sh forwards it, so set this to the local "
+        "tunnel end (http://127.0.0.1:11434).",
     ),
     EnvVar(
         "MUSCAT_OLLAMA_MODEL",
@@ -193,6 +194,8 @@ ENV_VARS: tuple[EnvVar, ...] = (
     ),
     EnvVar("MUSCAT_OLLAMA_TIMEOUT_S", "120", "Per-request generation timeout for the chat assistant (seconds)"),
     EnvVar("MUSCAT_OLLAMA_MAX_CONCURRENT", "2", "Concurrent chat-assistant requests before callers get a 'busy' note"),
+    EnvVar("MUSCAT_OLLAMA_NUM_CTX", "8192", "Context window (tokens) requested from ollama; caps prompt+history+reply"),
+    EnvVar("MUSCAT_AGENT_HISTORY_TTL_S", "900", "Idle-gap auto-clear: drop @bot history older than this (seconds; 0 disables)"),
 )
 
 

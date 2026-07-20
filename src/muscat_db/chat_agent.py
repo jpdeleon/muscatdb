@@ -69,6 +69,10 @@ _DEFAULT_URL = "http://muscat-ut4.c.u-tokyo.ac.jp:11434"
 _DEFAULT_MODEL = "gemma4:latest"
 _DEFAULT_TIMEOUT_S = 120.0
 _DEFAULT_MAX_CONCURRENT = 2
+# ollama defaults num_ctx to ~4096 regardless of the model's real window; the
+# system prompt + repo grounding + history can exceed that and get silently
+# truncated, so we request an explicit, larger window (gemma4 supports 128k).
+_DEFAULT_NUM_CTX = 8192
 
 # In-flight request accounting. Single-worker deployment on one event loop, so a
 # plain counter is race-free without locking (see chat.py's presence dicts).
@@ -98,6 +102,13 @@ def max_concurrent() -> int:
         return _DEFAULT_MAX_CONCURRENT
 
 
+def num_ctx() -> int:
+    try:
+        return max(512, int(os.environ.get("MUSCAT_OLLAMA_NUM_CTX", _DEFAULT_NUM_CTX)))
+    except (TypeError, ValueError):
+        return _DEFAULT_NUM_CTX
+
+
 # ----- mention handling ----------------------------------------------------
 def addressed(text: str) -> bool:
     """True if ``text`` contains a standalone ``@<agent>`` token."""
@@ -109,6 +120,16 @@ def extract_question(text: str) -> str:
     actual question."""
     stripped = _MENTION_RE.sub(" ", text or "", count=1)
     return re.sub(r"\s+", " ", stripped).strip()[:_MAX_QUESTION_LEN]
+
+
+# A short allow-list of exact reset commands (matched against the whole extracted
+# question, so "how do I clear the cache?" does NOT trip it).
+_RESET_COMMANDS = frozenset({"/reset", "/clear", "reset", "clear"})
+
+
+def is_reset_command(question: str) -> bool:
+    """True when ``question`` is *just* a context-reset command (e.g. ``@bot /reset``)."""
+    return (question or "").strip().lower() in _RESET_COMMANDS
 
 
 # ----- concurrency guard ---------------------------------------------------
@@ -336,7 +357,7 @@ async def answer(question: str, history: list[dict] | None = None) -> str:
         "model": model_name(),
         "messages": messages,
         "stream": False,
-        "options": {"temperature": 0.2},
+        "options": {"temperature": 0.2, "num_ctx": num_ctx()},
     }
 
     client = http_client.get_async_client()
