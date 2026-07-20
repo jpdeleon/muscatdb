@@ -225,6 +225,8 @@ _REPO_TOPICS: tuple[_RepoTopic, ...] = (
             "photometr", "aperture", "prose", "comparison star", "differential",
             "flat field", "flatfield", "bias frame", "dark frame", "centroid",
             "fwhm", "flux extraction", "detrend", "calibrat",
+            # Japanese
+            "測光", "アパーチャー", "比較星", "相対測光", "較正", "キャリブレーション",
         ),
     ),
     _RepoTopic(
@@ -236,6 +238,9 @@ _REPO_TOPICS: tuple[_RepoTopic, ...] = (
             "transit fit", "transit model", "transit depth", "transit light curve",
             "limb darken", "mid-transit", "timer", "rp/rs", "a/rs",
             "impact parameter", "light curve fit", "lightcurve fit",
+            # Japanese (kept specific so a TTV question doesn't also match here)
+            "トランジットフィット", "トランジット解析", "周縁減光", "トランジット深",
+            "ライトカーブフィット",
         ),
     ),
     _RepoTopic(
@@ -246,6 +251,8 @@ _REPO_TOPICS: tuple[_RepoTopic, ...] = (
         keywords=(
             "ttv", "transit timing", "timing variation", "o-c", "o minus c",
             "harmonic", "period variation", "mid-time", "mid-times",
+            # Japanese
+            "トランジット時刻", "タイミング変動", "周期変動", "通過時刻",
         ),
     ),
 )

@@ -69,6 +69,13 @@ def test_system_prompt_includes_claude_md_and_module_map():
         ("how do jobs work?", []),
         ("what instruments are supported?", []),
         ("", []),
+        # Japanese phrasing routes the same way (u-tokyo team asks in JP too).
+        ("アパーチャー測光はどのように行われますか？", ["photometry"]),
+        ("比較星はどう選ばれますか？", ["photometry"]),
+        ("トランジットフィットの周縁減光について教えて", ["transit"]),
+        ("TTVフィットはどうやりますか？", ["ttv"]),
+        ("トランジット時刻変動（TTV）の解析方法は？", ["ttv"]),
+        ("ジョブはどう動きますか？", []),
     ],
 )
 def test_detect_topics(question, expected):
