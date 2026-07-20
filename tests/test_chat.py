@@ -165,3 +165,57 @@ def test_on_job_finished_persists_system_message(chat_db, monkeypatch):
     assert msgs[0]["kind"] == "system"
     assert "TOI-1234" in msgs[0]["text"]
     assert "finished" in msgs[0]["text"]
+
+
+# --------------------------------------------------------------------------
+# @bot context auto-clear: TTL window + reset marker cutoff
+# --------------------------------------------------------------------------
+def test_agent_history_drops_turns_older_than_ttl(chat_db, monkeypatch):
+    monkeypatch.setenv("MUSCAT_AGENT_HISTORY_TTL_S", "600")
+    now = time.time()
+    save_chat_message("alice", "old question", kind="user", created_at=now - 1000)
+    save_chat_message("bob", "recent question", kind="user", created_at=now - 60)
+
+    contents = [t["content"] for t in chat._agent_history(exclude_id=None)]
+
+    assert any("recent question" in c for c in contents)
+    assert all("old question" not in c for c in contents)   # aged out of the window
+
+
+def test_agent_history_reset_marker_cuts_off_prior_turns(chat_db, monkeypatch):
+    monkeypatch.setenv("MUSCAT_AGENT_HISTORY_TTL_S", "0")   # isolate the reset behavior
+    now = time.time()
+    save_chat_message("alice", "before reset", kind="user", created_at=now - 30)
+    save_chat_message("system", chat._RESET_MARKER, kind="system", created_at=now - 20)
+    save_chat_message("bob", "after reset", kind="user", created_at=now - 10)
+
+    contents = [t["content"] for t in chat._agent_history(exclude_id=None)]
+
+    assert any("after reset" in c for c in contents)
+    assert all("before reset" not in c for c in contents)
+
+
+def test_agent_history_ignores_non_reset_system_messages(chat_db, monkeypatch):
+    monkeypatch.setenv("MUSCAT_AGENT_HISTORY_TTL_S", "0")
+    now = time.time()
+    save_chat_message("alice", "before job note", kind="user", created_at=now - 30)
+    save_chat_message("system", "Photometry for TOI-1234 (muscat3) finished", kind="system", created_at=now - 20)
+    save_chat_message("bob", "after job note", kind="user", created_at=now - 10)
+
+    contents = [t["content"] for t in chat._agent_history(exclude_id=None)]
+
+    # A job-finished system message is not a reset marker; nothing is cut off.
+    assert any("before job note" in c for c in contents)
+    assert any("after job note" in c for c in contents)
+
+
+def test_agent_history_maps_agent_replies_to_assistant_role(chat_db, monkeypatch):
+    monkeypatch.setenv("MUSCAT_AGENT_HISTORY_TTL_S", "0")
+    now = time.time()
+    save_chat_message("alice", "hi bot", kind="user", created_at=now - 30)
+    save_chat_message(chat.chat_agent.AGENT_NAME, "hello there", kind="agent", created_at=now - 20)
+
+    turns = chat._agent_history(exclude_id=None)
+
+    assert turns[0] == {"role": "user", "content": "alice: hi bot"}
+    assert {"role": "assistant", "content": "hello there"} in turns
