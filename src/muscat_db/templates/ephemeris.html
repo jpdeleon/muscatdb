@@ -3389,6 +3389,10 @@
           showMessageModal('No Transit Time Data', 'No transit time data. Please check at least one dataset to fit.');
           return;
         }
+        // Snapshot the full ephemeris-page UI state (checked datasets, manual
+        // points incl. CSV imports, planet options, ...) alongside the run so
+        // switching back to this run later can restore exactly what fed it.
+        options.input_snapshot = collectEphemerisViewState();
 
         const runNameVal = (document.getElementById('opt-run_name')?.value || '').trim();
         const outputQs = 'target=' + encodeURIComponent(target) +
@@ -3670,6 +3674,10 @@
           if (deleteBtn) deleteBtn.style.display = 'inline-block';
           logEl.textContent += '\n\n✓ done — reloading…';
           if (typeof window.showLoading === 'function') window.showLoading('Reloading…');
+          // Point the URL at the run that just finished before reloading, so the
+          // reload lands on its results instead of whatever ?run= was already
+          // in the address bar (e.g. an older run viewed before this fit started).
+          updateTTVRunUrl(runName, 'replace');
           setTimeout(() => { window.location.reload(); }, 1200);
         } else if (s.state === 'error') {
           poller.stop();
@@ -3800,6 +3808,23 @@
       });
   }
 
+  // Restore the ephemeris-page UI (checked datasets, manual points incl. CSV
+  // imports, planet options, TTV knobs, ...) to whatever produced the run
+  // currently on screen. Runs created before this snapshot existed have none
+  // -- leave the live selection untouched rather than clearing it.
+  function applyTTVRunSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return;
+    const combinedKey = getCombinedStorageKey();
+    applyViewStateToStorage(snapshot, combinedKey);
+    loadManualPlanets();
+    renderPlanetCards(combinedPlanets, combinedRefEphem);
+    renderDatasetsTable(combinedDatasets);
+    renderPlanetPlotSettings();
+    refreshTTVCmd();
+    scheduleComputeFit(0);
+    scheduleSaveView();
+  }
+
   function loadTTVRunOutputs(target, runName, runs, historyMode = 'replace') {
     const qs = `target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}`;
     const deleteBtn = document.getElementById('delete-btn');
@@ -3812,6 +3837,7 @@
           updateTTVRunUrl(runName, historyMode);
           if (deleteBtn) deleteBtn.style.display = 'inline-block';
           renderTTVOutputs(target, runName, res.outputs, runs);
+          applyTTVRunSnapshot(res.outputs.input_snapshot);
         } else {
           if (deleteBtn) deleteBtn.style.display = 'none';
           hideTTVOutputs();
