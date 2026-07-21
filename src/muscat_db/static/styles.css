@@ -1036,7 +1036,11 @@ dialog h3 {
     bottom: 20px;
     right: 20px;
     width: 320px;
-    max-width: calc(100vw - 40px);
+    height: 400px;
+    min-width: 280px;
+    min-height: 280px;
+    max-width: min(640px, calc(100vw - 40px));
+    max-height: min(720px, calc(100vh - 40px));
     border: 1px solid var(--border);
     border-radius: 12px;
     background-color: var(--surface);
@@ -1048,6 +1052,65 @@ dialog h3 {
 }
 
 #chat-window.hidden { display: none; }
+
+/* Drag handle: box is anchored bottom/right, so it grows toward the top-left,
+   which is where the grip lives. */
+#chat-resize-handle {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 16px;
+    height: 16px;
+    cursor: nwse-resize;
+    z-index: 5;
+}
+
+#chat-resize-handle::before {
+    content: "";
+    position: absolute;
+    top: 5px;
+    left: 5px;
+    width: 7px;
+    height: 7px;
+    border-left: 2px solid var(--border);
+    border-top: 2px solid var(--border);
+    border-radius: 2px 0 0 0;
+}
+
+#chat-resize-handle:hover::before { border-color: var(--text-dim); }
+
+body.chat-resizing { cursor: nwse-resize !important; user-select: none !important; }
+body.chat-resizing #chat-window { transition: none; }
+
+/* Standalone pop-out window (/chat/popout): fill the whole browser window
+   instead of floating as a corner widget, and drop controls that only make
+   sense inside the floating widget. */
+body.chat-popout nav,
+body.chat-popout #loading-bar,
+body.chat-popout .container,
+body.chat-popout #status-bar {
+    display: none;
+}
+
+body.chat-popout #chat-window {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    max-width: 100%;
+    max-height: 100%;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+}
+
+body.chat-popout #chat-resize-handle,
+body.chat-popout #popout-chat,
+body.chat-popout #minimize-chat {
+    display: none;
+}
 
 #chat-header {
     display: flex;
@@ -1114,7 +1177,7 @@ dialog h3 {
     gap: 8px;
     padding: 12px;
     overflow-y: auto;
-    height: 260px;
+    min-height: 80px;
 }
 
 .chat-empty {
@@ -1168,6 +1231,7 @@ dialog h3 {
 
 #send-button:hover { filter: brightness(1.08); }
 
+#popout-chat,
 #minimize-chat {
     background: none;
     border: none;
@@ -1178,10 +1242,22 @@ dialog h3 {
     padding: 0 4px;
 }
 
+#popout-chat { font-size: 0.95rem; }
+
+#popout-chat:hover,
 #minimize-chat:hover { color: var(--text); }
 
+/* Minimized: collapse to just the header. The window carries a fixed/min
+   height for the resize feature, so both must be lifted here for it to shrink
+   (JS also clears any inline height set by a drag-resize). */
+#chat-window.minimized {
+    height: auto;
+    min-height: 0;
+}
+
 #chat-window.minimized #chat-messages,
-#chat-window.minimized #chat-input {
+#chat-window.minimized #chat-input,
+#chat-window.minimized #chat-resize-handle {
     display: none;
 }
 
@@ -1242,8 +1318,9 @@ dialog h3 {
         right: 10px;
         left: 10px;
         bottom: 10px;
-        width: auto;
+        width: auto !important;
     }
+    #chat-resize-handle { display: none; }
 }
 
 /* ---------- Chat: rich features ---------- */
@@ -1255,14 +1332,14 @@ dialog h3 {
 
 .message.me .message-row { flex-direction: row-reverse; }
 
+/* A single static kebab button per message — no hover-reveal, so the row
+   never reflows as the user's cursor moves around the chat. */
 .message-actions {
-    display: none;
+    display: flex;
     gap: 2px;
     flex: none;
     position: relative;
 }
-
-.message:hover .message-actions { display: flex; }
 
 .message-actions .act {
     background: none;
@@ -1277,9 +1354,47 @@ dialog h3 {
 
 .message-actions .act:hover { color: var(--text); background: var(--surface2); }
 
+.msg-kebab { font-size: 0.9rem; padding: 2px 5px; }
+.msg-kebab.open { color: var(--text); background: var(--surface2); }
+
+.message-menu {
+    position: absolute;
+    top: 100%;
+    z-index: 1100;
+    display: flex;
+    flex-direction: column;
+    min-width: 108px;
+    padding: 4px;
+    margin-top: 2px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+
+.message-menu.hidden { display: none; }
+.message.me .message-menu { right: 0; }
+.message:not(.me) .message-menu { left: 0; }
+
+.message-menu button {
+    display: block;
+    width: 100%;
+    background: none;
+    border: none;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 0.78rem;
+    text-align: left;
+    white-space: nowrap;
+    padding: 5px 8px;
+    border-radius: 5px;
+}
+
+.message-menu button:hover { background: var(--surface2); }
+
 /* Edit/delete only make sense on your own messages. */
-.message:not(.me) .message-actions .edit,
-.message:not(.me) .message-actions .delete { display: none; }
+.message:not(.me) .message-menu .edit,
+.message:not(.me) .message-menu .delete { display: none; }
 
 .message-meta .edited { color: var(--text-dim); font-style: italic; }
 

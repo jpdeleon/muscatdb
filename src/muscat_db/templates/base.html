@@ -56,7 +56,7 @@
   })();
 </script>
 </head>
-<body>
+<body{% if chat_popout %} class="chat-popout"{% endif %}>
 <div id="loading-bar" role="progressbar" aria-label="Loading"></div>
 <nav>
   <a class="brand" href="/" data-nav-section="home">MuSCAT-db</a>
@@ -851,7 +851,8 @@
   })();
 </script>
 {% block scripts %}{% endblock %}
-<div id="chat-window" class="hidden" data-current-user="{{ current_user or '' }}">
+<div id="chat-window" class="hidden" data-current-user="{{ current_user or '' }}"{% if chat_popout %} data-popout="1"{% endif %}>
+    <div id="chat-resize-handle" title="Drag to resize" aria-hidden="true"></div>
     <div id="chat-header">
         <div class="chat-title">
             <span id="chat-status-dot" class="chat-status-dot" title="Connecting…"></span>
@@ -860,6 +861,7 @@
         </div>
         <div class="chat-header-actions">
             <span id="chat-unread" class="chat-unread hidden" aria-label="Unread messages">0</span>
+            <button id="popout-chat" type="button" aria-label="Open chat in a new window" title="Open in new window">⇱</button>
             <button id="minimize-chat" type="button" aria-label="Minimize chat">–</button>
         </div>
     </div>

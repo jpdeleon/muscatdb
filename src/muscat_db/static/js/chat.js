@@ -4,6 +4,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const chatWindow = document.getElementById("chat-window");
     const chatHeader = document.getElementById("chat-header");
     const minimizeChat = document.getElementById("minimize-chat");
+    const popoutChat = document.getElementById("popout-chat");
+    const resizeHandle = document.getElementById("chat-resize-handle");
     const chatMessages = document.getElementById("chat-messages");
     const chatEmpty = document.getElementById("chat-empty");
     const messageInput = document.getElementById("message-input");
@@ -16,6 +18,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (!chatWindow) return;
     chatWindow.classList.remove("hidden");
+
+    // The standalone /chat/popout window reuses this same markup + script;
+    // it fills the whole browser window (see body.chat-popout in styles.css)
+    // so resizing/minimizing/popping-out-again don't apply there.
+    const isPopout = chatWindow.dataset.popout === "1";
+    const MOBILE_BREAKPOINT = 480;
+    const isMobileViewport = () => window.innerWidth <= MOBILE_BREAKPOINT;
 
     const PRESET_EMOJI = ["👍", "🎉", "👀", "✅", "❤️", "😄"];
     const HERE_TOKEN = /@here\b/gi;
@@ -31,6 +40,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     let isMinimized = false;
+    let savedHeight = "";   // inline height stashed while minimized, restored on expand
     let unread = 0;
     let knownUsers = [];
     let acItems = [];
@@ -136,13 +146,99 @@ document.addEventListener("DOMContentLoaded", () => {
         chatWindow.classList.toggle("minimized", value);
         minimizeChat.textContent = value ? "+" : "–";
         minimizeChat.setAttribute("aria-label", value ? "Expand chat" : "Minimize chat");
-        if (!value) { clearUnread(); stopTitleFlash(); chatMessages.scrollTop = chatMessages.scrollHeight; }
-        try { localStorage.setItem("muscat-chat-min", value ? "1" : "0"); } catch (e) {}
+        if (value) {
+            // Drop any drag-resized inline height so the window can collapse to
+            // its header (inline styles outrank the .minimized CSS rule); stash
+            // it to restore on expand.
+            savedHeight = chatWindow.style.height;
+            chatWindow.style.height = "";
+        } else {
+            if (savedHeight) { chatWindow.style.height = savedHeight; savedHeight = ""; }
+            clearUnread(); stopTitleFlash(); chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+        // The pop-out window is always expanded — never let it write the shared
+        // minimize preference and clobber the floating widget's state.
+        if (!isPopout) { try { localStorage.setItem("muscat-chat-min", value ? "1" : "0"); } catch (e) {} }
     };
     chatHeader.addEventListener("click", (e) => {
+        if (isPopout) return;  // the pop-out window is always expanded
         if (e.target.closest("#chat-online")) return;  // let the online list be inspected
         setMinimized(!isMinimized);
     });
+
+    // ----- resize (drag the top-left handle; the window is anchored bottom-right) ---
+    const applySize = (w, h) => { chatWindow.style.width = w + "px"; chatWindow.style.height = h + "px"; };
+    const saveSize = () => {
+        try {
+            const rect = chatWindow.getBoundingClientRect();
+            localStorage.setItem("muscat-chat-size", JSON.stringify({ w: rect.width, h: rect.height }));
+        } catch (e) {}
+    };
+    const restoreSize = () => {
+        if (isMobileViewport()) return;  // mobile layout pins left/right; let CSS own the size
+        try {
+            const raw = localStorage.getItem("muscat-chat-size");
+            const parsed = raw ? JSON.parse(raw) : null;
+            if (!(parsed && Number.isFinite(parsed.w) && Number.isFinite(parsed.h))) return;
+            chatWindow.style.width = parsed.w + "px";
+            // While minimized the window must stay collapsed; hold the height
+            // aside so expanding restores it instead of inflating the header.
+            if (isMinimized) savedHeight = parsed.h + "px";
+            else chatWindow.style.height = parsed.h + "px";
+        } catch (e) {}
+    };
+    if (resizeHandle && !isPopout) {
+        let dragging = false, startX = 0, startY = 0, startW = 0, startH = 0;
+        const onMove = (e) => {
+            if (!dragging) return;
+            // Dragging up/left grows the box; CSS min/max-width/height clamp the result.
+            applySize(startW + (startX - e.clientX), startH + (startY - e.clientY));
+        };
+        const onUp = () => {
+            if (!dragging) return;
+            dragging = false;
+            document.body.classList.remove("chat-resizing");
+            document.removeEventListener("mousemove", onMove);
+            document.removeEventListener("mouseup", onUp);
+            saveSize();
+        };
+        resizeHandle.addEventListener("mousedown", (e) => {
+            if (isMobileViewport()) return;
+            e.preventDefault();
+            dragging = true;
+            const rect = chatWindow.getBoundingClientRect();
+            startX = e.clientX; startY = e.clientY; startW = rect.width; startH = rect.height;
+            document.body.classList.add("chat-resizing");
+            document.addEventListener("mousemove", onMove);
+            document.addEventListener("mouseup", onUp);
+        });
+        restoreSize();
+        // Only act on a mobile/desktop breakpoint crossing: mobile drops the
+        // custom size so the fixed-corner CSS layout takes over, and coming
+        // back re-applies it. CSS max-width/max-height already keep the
+        // custom size in bounds as the viewport changes, so no per-resize
+        // recompute is needed on the desktop side.
+        window.addEventListener("resize", () => {
+            if (isMobileViewport()) {
+                if (chatWindow.style.width) { chatWindow.style.width = ""; chatWindow.style.height = ""; }
+            } else if (!chatWindow.style.width) {
+                restoreSize();
+            }
+        });
+    }
+
+    // ----- pop out into a standalone window --------------------------------
+    if (popoutChat) {
+        if (isPopout) {
+            popoutChat.remove();  // already in the pop-out window
+        } else {
+            popoutChat.addEventListener("click", (e) => {
+                e.stopPropagation();
+                window.open("/chat/popout", "muscat-chat",
+                    "width=380,height=560,resizable=yes,scrollbars=yes,noopener");
+            });
+        }
+    }
 
     // ----- title flash on mention -----------------------------------------
     const stopTitleFlash = () => { if (flashTimer) { clearInterval(flashTimer); flashTimer = null; } document.title = origTitle; };
@@ -175,6 +271,34 @@ document.addEventListener("DOMContentLoaded", () => {
         });
         el.appendChild(bar);
     };
+
+    // ----- per-message kebab menu (react/edit/delete) ----------------------
+    // A single static button per message, opened on click — no hover-reveal,
+    // so the row never reflows as the cursor moves around the chat.
+    let openMenu = null;
+    let openMenuOutsideHandler = null;
+    const closeMessageMenu = () => {
+        if (openMenu) {
+            openMenu.classList.add("hidden");
+            const kebab = openMenu.parentElement && openMenu.parentElement.querySelector(".msg-kebab");
+            if (kebab) kebab.classList.remove("open");
+            openMenu = null;
+        }
+        if (openMenuOutsideHandler) {
+            document.removeEventListener("click", openMenuOutsideHandler);
+            openMenuOutsideHandler = null;
+        }
+    };
+    const openMessageMenu = (kebabBtn, menu) => {
+        menu.classList.remove("hidden");
+        kebabBtn.classList.add("open");
+        openMenu = menu;
+        openMenuOutsideHandler = (ev) => {
+            if (!menu.contains(ev.target) && ev.target !== kebabBtn) closeMessageMenu();
+        };
+        setTimeout(() => document.addEventListener("click", openMenuOutsideHandler), 0);
+    };
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMessageMenu(); });
 
     const openEmojiPicker = (anchor, msgId) => {
         const existing = document.querySelector(".emoji-picker");
@@ -290,29 +414,47 @@ document.addEventListener("DOMContentLoaded", () => {
         renderText(body, data.text);
         row.appendChild(body);
 
-        // Action buttons (edit/delete gated to own messages via CSS + .me class).
+        // Action kebab (edit/delete gated to own messages via CSS + .me class).
         if (!data.ephemeral && data.id != null) {
             const actions = document.createElement("div");
             actions.className = "message-actions";
-            const reactBtn = document.createElement("button");
-            reactBtn.type = "button"; reactBtn.className = "act react"; reactBtn.title = "React"; reactBtn.textContent = "☺";
-            reactBtn.addEventListener("click", (e) => { e.stopPropagation(); openEmojiPicker(actions, data.id); });
-            const editBtn = document.createElement("button");
-            editBtn.type = "button"; editBtn.className = "act edit"; editBtn.title = "Edit"; editBtn.textContent = "✎";
-            editBtn.addEventListener("click", (e) => { e.stopPropagation(); beginEdit(els.get(data.id)); });
-            const delBtn = document.createElement("button");
-            delBtn.type = "button"; delBtn.className = "act delete"; delBtn.title = "Delete"; delBtn.textContent = "🗑";
-            delBtn.addEventListener("click", (e) => {
+
+            const kebab = document.createElement("button");
+            kebab.type = "button"; kebab.className = "act msg-kebab";
+            kebab.title = "More actions"; kebab.setAttribute("aria-label", "Message actions");
+            kebab.textContent = "⋮";
+
+            const menu = document.createElement("div");
+            menu.className = "message-menu hidden";
+
+            const menuItem = (label, cls, onClick) => {
+                const b = document.createElement("button");
+                b.type = "button"; b.className = cls; b.textContent = label;
+                b.addEventListener("click", (e) => { e.stopPropagation(); closeMessageMenu(); onClick(); });
+                return b;
+            };
+            menu.append(
+                menuItem("☺ React", "react", () => openEmojiPicker(actions, data.id)),
+                menuItem("✎ Edit", "edit", () => beginEdit(els.get(data.id))),
+                menuItem("🗑 Delete", "delete", () => {
+                    const doDelete = () => socket.emit("delete_message", { id: data.id });
+                    if (window.showConfirmModal) {
+                        window.showConfirmModal("Delete message", "Delete this message? This cannot be undone.",
+                            { confirmLabel: "Delete", confirmClass: "btn primary" }).then((ok) => { if (ok) doDelete(); });
+                    } else {
+                        doDelete();
+                    }
+                }),
+            );
+
+            kebab.addEventListener("click", (e) => {
                 e.stopPropagation();
-                const doDelete = () => socket.emit("delete_message", { id: data.id });
-                if (window.showConfirmModal) {
-                    window.showConfirmModal("Delete message", "Delete this message? This cannot be undone.",
-                        { confirmLabel: "Delete", confirmClass: "btn primary" }).then((ok) => { if (ok) doDelete(); });
-                } else {
-                    doDelete();
-                }
+                const wasOpen = openMenu === menu;
+                closeMessageMenu();
+                if (!wasOpen) openMessageMenu(kebab, menu);
             });
-            actions.append(reactBtn, editBtn, delBtn);
+
+            actions.append(kebab, menu);
             row.appendChild(actions);
         }
         el.append(meta, row);
@@ -488,8 +630,10 @@ document.addEventListener("DOMContentLoaded", () => {
         onlineEl.title = users.length ? "Online: " + users.join(", ") : "";
     });
 
-    // Restore prior minimize state (UI only).
+    // Restore prior minimize state (UI only); the pop-out window always starts expanded.
     let storedMin = "0";
-    try { storedMin = localStorage.getItem("muscat-chat-min") || "0"; } catch (e) {}
+    if (!isPopout) {
+        try { storedMin = localStorage.getItem("muscat-chat-min") || "0"; } catch (e) {}
+    }
     setMinimized(storedMin === "1");
 });

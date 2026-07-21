@@ -1004,6 +1004,17 @@ def chat_users(request: Request):
         return JSONResponse({"users": []})
 
 
+@app.get("/chat/popout", response_class=HTMLResponse)
+def chat_popout_page():
+    """Standalone chat-only window (opened via the widget's pop-out button).
+
+    Reuses the same #chat-window markup, styles.css, and chat.js as the
+    floating widget on every other page; ``chat_popout=True`` just tells
+    base.html to hide the nav/page chrome and let the chat fill the window.
+    """
+    return _render("chat_popout.html", chat_popout=True)
+
+
 @app.get("/api/exofop/check_confirmed")
 async def check_confirmed_planets(tics: str):
     import urllib.parse
