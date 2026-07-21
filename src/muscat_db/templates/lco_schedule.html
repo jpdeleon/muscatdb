@@ -771,9 +771,24 @@
     return d.instrument + ' ' + d.date + ': ' + (d.run_name || d.run_id || 'legacy');
   }
 
+  // Planets are keyed by letter internally (b, c, …). Accept the TOI/TFOP
+  // candidate forms a user may type or import from a sheet — ".01"/"01" -> "b",
+  // ".02"/"02" -> "c" (1-based) — so a ".01" planet resolves to the same entry
+  // the resolvers store under "b". Letters and anything else pass through.
+  function normalizePlanetLabel(p) {
+    p = String(p == null ? '' : p).trim().toLowerCase();
+    if (/^[b-z]$/.test(p)) return p;
+    var n = null;
+    var dotted = p.match(/^\.(\d+)$/);
+    if (dotted) n = parseInt(dotted[1], 10);
+    else if (/^0\d+$/.test(p)) n = parseInt(p, 10);
+    if (n !== null && n >= 1 && n <= 25) return String.fromCharCode(97 + n);
+    return p;
+  }
+
   function populateSourceOptions(info) {
     var sel = el('sch-source');
-    var planet = (val('sch-planet') || 'b').toLowerCase();
+    var planet = normalizePlanetLabel(val('sch-planet') || 'b');
     var prev = pendingSource || sel.value;
     pendingSource = null;
     sel.innerHTML =
@@ -781,6 +796,14 @@
       '<option value="nasa">NASA catalog</option>' +
       '<option value="toi">TOI catalog</option>' +
       '<option value="linear">linear fit</option>';
+    if (info.sheet_configured) {
+      var gs = document.createElement('option');
+      gs.value = 'gsheet'; gs.textContent = 'Google Sheet';
+      sel.appendChild(gs);
+      var gt = document.createElement('option');
+      gt.value = 'gsheet_tc'; gt.textContent = 'Sheet transit centers (linear fit)';
+      sel.appendChild(gt);
+    }
     (info.datasets || []).forEach(function (d, i) {
       if (d.planets_fitted && d.planets_fitted.indexOf(planet) !== -1) {
         var opt = document.createElement('option');
@@ -830,7 +853,7 @@
   }
 
   function applySource(info) {
-    var planet = (val('sch-planet') || 'b').toLowerCase();
+    var planet = normalizePlanetLabel(val('sch-planet') || 'b');
     var source = val('sch-source');
     var ref = (info.reference_ephemeris || {})[planet] || {};
     var nasa = (info.nasa_ephemeris || {})[planet] || {};
@@ -882,6 +905,41 @@
       setFieldSource('sch-period', source.toUpperCase());
       saveOptions();
       msg('msg-windows', source.toUpperCase() + ': t0=' + ephem.t0 + ', P=' + ephem.period + ' d' + (dur != null ? ', dur=' + dur + ' h' : ''), 'ok');
+      return;
+    }
+
+    if (source === 'gsheet') {
+      var g = (info.sheet_ephemeris || {})[planet] || {};
+      if (g.t0 == null || g.period == null) {
+        setVal('sch-t0', ''); setVal('sch-period', '');
+        setFieldSource('sch-t0', ''); setFieldSource('sch-period', '');
+        saveOptions();
+        msg('msg-windows', 'No Google Sheet ephemeris for ' + planet, 'err');
+        return;
+      }
+      setVal('sch-t0', tupleString(g.t0, g.t0_unc));
+      setVal('sch-period', tupleString(g.period, g.period_unc));
+      setFieldSource('sch-t0', 'SHEET'); setFieldSource('sch-period', 'SHEET');
+      if (g.duration != null) { dur = g.duration; setVal('sch-duration', tupleString(g.duration, g.duration_unc)); setFieldSource('sch-duration', 'SHEET'); }
+      saveOptions();
+      msg('msg-windows', 'Google Sheet: t0=' + g.t0 + ', P=' + g.period + ' d' + (dur != null ? ', dur=' + dur + ' h' : ''), 'ok');
+      return;
+    }
+
+    if (source === 'gsheet_tc') {
+      var gt = (info.sheet_fit_ephemeris || {})[planet] || {};
+      if (gt.t0 == null || gt.period == null) {
+        setVal('sch-t0', ''); setVal('sch-period', '');
+        setFieldSource('sch-t0', ''); setFieldSource('sch-period', '');
+        saveOptions();
+        msg('msg-windows', 'No Sheet transit-center fit for ' + planet + ' (needs ≥2 epochs and a seed period)', 'err');
+        return;
+      }
+      setVal('sch-t0', tupleString(gt.t0, gt.t0_unc));
+      setVal('sch-period', tupleString(gt.period, gt.period_unc));
+      setFieldSource('sch-t0', 'SHEET'); setFieldSource('sch-period', 'SHEET');
+      saveOptions();
+      msg('msg-windows', 'Sheet linear fit: t0=' + gt.t0 + ', P=' + gt.period + ' d' + (dur != null ? ', dur=' + dur + ' h' : ''), 'ok');
       return;
     }
 

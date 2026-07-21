@@ -101,6 +101,12 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("MUSCAT_CATALOG_BATCH_MAX_ACTIVE", "4", "Concurrent catalog batch requests"),
     EnvVar("MUSCAT_CATALOG_BATCH_MAX_ITEMS", "200", "Stars allowed per catalog batch"),
     EnvVar("MUSCAT_CATALOG_BATCH_MAX_BYTES", "262144", "Serialized bytes allowed per catalog batch"),
+    EnvVar(
+        "MUSCAT_EPHEMERIS_SHEET_TTL_S",
+        "300",
+        "Cache lifetime (seconds) for a per-user ephemeris Google Sheet tab fetch "
+        "on the LCO schedule page",
+    ),
     EnvVar("MUSCAT_ZIP_BUILD_WORKERS", "1", "Concurrent output ZIP builders"),
     EnvVar("MUSCAT_ZIP_MAX_FILES", "10000", "Files allowed per output ZIP"),
     EnvVar("MUSCAT_ZIP_MAX_INPUT_BYTES", str(2 << 30), "Uncompressed input bytes allowed per output ZIP"),

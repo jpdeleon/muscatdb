@@ -51,6 +51,7 @@ from muscat_db import transit_obs
 from muscat_db import fov as fov_opt
 from muscat_db import ephemeris_math
 from muscat_db import ephemeris_import
+from muscat_db import gsheet_ephemeris
 from muscat_db import test_observations
 from muscat_db import lco_monitor
 from muscat_db import http_client
@@ -79,7 +80,6 @@ from muscat_db.catalog import (
     _nasa_confirmed_toi_membership,
     _nexsci_db_membership,
     _normalize_target_name,
-    _query_target_coordinates,
     _query_target_planets_catalog,
     _query_target_planets_nasa,
     _query_target_planets_toi,
@@ -121,9 +121,11 @@ from muscat_db.database import (
     get_user_ads_token,
     get_user_eso_credentials,
     get_user_lco_token,
+    get_user_ephem_sheet,
     set_user_ads_token,
     set_user_eso_credentials,
     set_user_lco_token,
+    set_user_ephem_sheet,
     _normalize_filters,
 )
 from muscat_db.job_store import get_job_store
@@ -3025,6 +3027,150 @@ def api_settings_lco_token(request: Request, payload: dict = Body(...)):
     return JSONResponse({"ok": True, "user_token_configured": bool(token)})
 
 
+@settings_router.get("/ephem-sheet-status", response_class=JSONResponse)
+def api_settings_ephem_sheet_status(request: Request):
+    user = _request_user(request)
+    if not user:
+        return _settings_auth_error()
+    try:
+        cfg = get_user_ephem_sheet(user)
+    except UserSettingsError as exc:
+        return JSONResponse(
+            {"ok": False, "error": "stored ephemeris sheet cannot be read", "detail": str(exc)},
+            status_code=503,
+        )
+    return JSONResponse(
+        {
+            "ok": True,
+            "user": user,
+            "configured": cfg is not None,
+            "ephem_tab": (cfg or {}).get("ephem_tab") or gsheet_ephemeris.DEFAULT_EPHEM_TAB,
+            "tc_tab": (cfg or {}).get("tc_tab") or gsheet_ephemeris.DEFAULT_TC_TAB,
+            "ephem_cols": (cfg or {}).get("ephem_cols") or {},
+            "tc_cols": (cfg or {}).get("tc_cols") or {},
+            "secret_configured": bool(os.environ.get("MUSCAT_DB_SECRET")),
+        }
+    )
+
+
+def _clean_payload_col_map(value) -> dict:
+    """Keep only known-field -> non-empty-header string pairs from a payload."""
+    if not isinstance(value, dict):
+        return {}
+    allowed = set(gsheet_ephemeris.EPHEM_FIELDS) | set(gsheet_ephemeris.TC_FIELDS)
+    cleaned: dict[str, str] = {}
+    for key, header in value.items():
+        key_s = str(key).strip()
+        header_s = str(header or "").strip()
+        if key_s in allowed and header_s:
+            cleaned[key_s] = header_s
+    return cleaned
+
+
+@settings_router.post("/ephem-sheet", response_class=JSONResponse)
+def api_settings_ephem_sheet(request: Request, payload: dict = Body(...)):
+    if not _is_same_origin(request):
+        return _csrf_error()
+    user = _request_user(request)
+    if not user:
+        return _settings_auth_error()
+    url = str(payload.get("url") or "").strip()
+    keep_url = bool(payload.get("keep_url"))
+    ephem_tab = str(payload.get("ephem_tab") or "").strip()
+    tc_tab = str(payload.get("tc_tab") or "").strip()
+    ephem_cols = _clean_payload_col_map(payload.get("ephem_cols"))
+    tc_cols = _clean_payload_col_map(payload.get("tc_cols"))
+    # Editing tabs/columns on an already-saved sheet: keep the stored URL so the
+    # user need not re-enter (and we need not re-expose) it.
+    if not url and keep_url:
+        try:
+            existing = get_user_ephem_sheet(user)
+        except UserSettingsError as exc:
+            return JSONResponse(
+                {"ok": False, "error": "stored ephemeris sheet cannot be read", "detail": str(exc)},
+                status_code=503,
+            )
+        if not existing:
+            return JSONResponse(
+                {"ok": False, "error": "no saved sheet to update; provide a URL"},
+                status_code=400,
+            )
+        url = existing["url"]
+    # Validate the URL/ID up front (SSRF guard) so a bad reference is rejected
+    # at save time rather than silently degrading to "no ephemeris" later.
+    if url:
+        try:
+            gsheet_ephemeris.sheet_id_from(url)
+        except gsheet_ephemeris.GsheetError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    try:
+        set_user_ephem_sheet(user, url, ephem_tab, tc_tab, ephem_cols, tc_cols)
+    except UserSettingsError as exc:
+        return JSONResponse(
+            {"ok": False, "error": "could not save ephemeris sheet", "detail": str(exc)},
+            status_code=503,
+        )
+    return JSONResponse({"ok": True, "configured": bool(url)})
+
+
+@settings_router.post("/ephem-sheet-columns", response_class=JSONResponse)
+def api_settings_ephem_sheet_columns(request: Request, payload: dict = Body(...)):
+    """List each tab's columns so the user can map fields to them.
+
+    Uses the URL from the request when provided (validated), else the user's
+    saved sheet, so an already-configured sheet can be re-inspected without
+    re-exposing the stored URL to the browser.
+    """
+    if not _is_same_origin(request):
+        return _csrf_error()
+    user = _request_user(request)
+    if not user:
+        return _settings_auth_error()
+    url = str(payload.get("url") or "").strip()
+    ephem_tab = str(payload.get("ephem_tab") or "").strip()
+    tc_tab = str(payload.get("tc_tab") or "").strip()
+    if url:
+        try:
+            gsheet_ephemeris.sheet_id_from(url)
+        except gsheet_ephemeris.GsheetError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    else:
+        try:
+            saved = get_user_ephem_sheet(user)
+        except UserSettingsError as exc:
+            return JSONResponse(
+                {"ok": False, "error": "stored ephemeris sheet cannot be read", "detail": str(exc)},
+                status_code=503,
+            )
+        if not saved:
+            return JSONResponse(
+                {"ok": False, "error": "provide a sheet URL first"}, status_code=400
+            )
+        url = saved["url"]
+        ephem_tab = ephem_tab or saved["ephem_tab"]
+        tc_tab = tc_tab or saved["tc_tab"]
+    ephem_tab = ephem_tab or gsheet_ephemeris.DEFAULT_EPHEM_TAB
+    tc_tab = tc_tab or gsheet_ephemeris.DEFAULT_TC_TAB
+    ephem_columns = gsheet_ephemeris.tab_columns(url, ephem_tab)
+    tc_columns = gsheet_ephemeris.tab_columns(url, tc_tab)
+    if not ephem_columns and not tc_columns:
+        return JSONResponse(
+            {"ok": False, "error": "no columns found (is the sheet published and are the tab names correct?)"},
+            status_code=502,
+        )
+    return JSONResponse(
+        {
+            "ok": True,
+            "ephem_tab": ephem_tab,
+            "tc_tab": tc_tab,
+            "ephem_columns": ephem_columns,
+            "tc_columns": tc_columns,
+            "ephem_suggested": gsheet_ephemeris.suggest_ephem_columns(ephem_columns),
+            "tc_suggested": gsheet_ephemeris.suggest_tc_columns(tc_columns),
+        }
+    )
+
+
 @settings_router.get("/ads-token-status", response_class=JSONResponse)
 def api_settings_ads_token_status(request: Request):
     user = _request_user(request)
@@ -3202,7 +3348,7 @@ def api_lco_requestgroups(request: Request, proposal: str = ""):
 
 
 @lco_router.post("/windows", response_class=JSONResponse)
-def api_lco_windows(payload: dict = Body(...)):
+def api_lco_windows(request: Request, payload: dict = Body(...)):
     """Generate transit windows from explicit t0/period/duration or a catalog lookup."""
     try:
         t0 = payload.get("t0")
@@ -3210,6 +3356,10 @@ def api_lco_windows(payload: dict = Body(...)):
         duration = payload.get("duration")
         target = (payload.get("target") or "").strip()
         planet = (payload.get("planet") or "").strip().lower()
+        # Planets are keyed by letter everywhere (b, c, …). Accept TOI/TFOP
+        # candidate forms (".01"/"01" -> b) so a request for ".01" matches the
+        # "b" entry the resolvers store.
+        planet = gsheet_ephemeris._planet_label(planet) or planet
         source = (payload.get("source") or "catalog").strip().lower()
 
         if t0 in (None, "") or period in (None, ""):
@@ -3228,6 +3378,31 @@ def api_lco_windows(payload: dict = Body(...)):
                 planets = _query_target_planets_toi(target)
             elif source in ("", "catalog"):
                 planets = _query_target_planets_catalog(target)
+            elif source in ("gsheet", "gsheet_tc"):
+                cfg = _user_ephem_sheet_cfg(request)
+                if not cfg:
+                    return JSONResponse(
+                        {"ok": False, "error": "no ephemeris Google Sheet configured (see Settings)"},
+                        status_code=400,
+                    )
+                if source == "gsheet":
+                    planets = _sheet_ephemeris(target, cfg)
+                else:
+                    # Transit-centers tab -> linear fit; seed epoch assignment
+                    # from the sheet ephemeris tab, then the catalog. Duration is
+                    # backfilled from that same seed since a fit has none.
+                    sheet_ephem = _sheet_ephemeris(target, cfg)
+                    seed_planets = _query_target_planets_catalog(target)
+                    seed_by_planet = {}
+                    for pl in set(sheet_ephem) | set(seed_planets):
+                        seed = sheet_ephem.get(pl) or seed_planets.get(pl) or {}
+                        if seed.get("t0") is not None and seed.get("period"):
+                            seed_by_planet[pl] = seed
+                    planets = _sheet_fit_ephemeris(target, cfg, seed_by_planet)
+                    for pl, entry in planets.items():
+                        seed = sheet_ephem.get(pl) or seed_planets.get(pl) or {}
+                        if entry.get("duration") is None and seed.get("duration") is not None:
+                            entry["duration"] = seed["duration"]
             else:
                 return JSONResponse(
                     {"ok": False, "error": f"click 'Fetch ephemeris' first for the '{source}' source"},
@@ -4027,8 +4202,107 @@ def api_ephemeris_targets():
     return JSONResponse({"ok": True, "targets": targets})
 
 
+def _user_ephem_sheet_cfg(request) -> dict | None:
+    """Return the requesting user's ephemeris sheet config (tab defaults
+    applied), or None when no user / no sheet / unreadable."""
+    user = _request_user(request) if request else None
+    if not user:
+        return None
+    try:
+        cfg = get_user_ephem_sheet(user)
+    except UserSettingsError:
+        logger.debug("could not read ephemeris sheet config for %s", user, exc_info=True)
+        return None
+    if not cfg:
+        return None
+    return {
+        "url": cfg["url"],
+        "ephem_tab": cfg.get("ephem_tab") or gsheet_ephemeris.DEFAULT_EPHEM_TAB,
+        "tc_tab": cfg.get("tc_tab") or gsheet_ephemeris.DEFAULT_TC_TAB,
+        "ephem_cols": cfg.get("ephem_cols") or {},
+        "tc_cols": cfg.get("tc_cols") or {},
+    }
+
+
+def _sheet_ephemeris(target: str, cfg: dict) -> dict:
+    """``{planet: {t0, period, duration, *_unc}}`` from the sheet ephemeris tab."""
+    try:
+        return gsheet_ephemeris.query_target_ephemeris(
+            target, cfg["url"], cfg["ephem_tab"], cfg.get("ephem_cols")
+        )
+    except gsheet_ephemeris.GsheetError:
+        return {}
+
+
+def _sheet_fit_ephemeris(target: str, cfg: dict, seed_by_planet: dict) -> dict:
+    """Linear-fit ``{planet: {t0, period, *_unc}}`` from the sheet transit-centers
+    tab. ``seed_by_planet`` supplies a per-planet ``{t0, period}`` used only to
+    assign integer epochs when the tab has no explicit epoch column; the fit
+    re-derives t0/period from the transit centers."""
+    try:
+        parsed = gsheet_ephemeris.query_target_transit_centers(
+            target, cfg["url"], cfg["tc_tab"], cfg.get("tc_cols")
+        )
+    except gsheet_ephemeris.GsheetError:
+        return {}
+    by_planet: dict[str, list[dict]] = {}
+    for row in parsed.get("rows") or []:
+        by_planet.setdefault(row["planet"], []).append(row)
+
+    results: dict = {}
+    for planet, points in by_planet.items():
+        seed = seed_by_planet.get(planet) or {}
+        t0_seed = seed.get("t0")
+        p_seed = seed.get("period")
+        have_seed = t0_seed is not None and p_seed
+        if not have_seed and any(pt.get("source_epoch") is None for pt in points):
+            # No seed to assign epochs and the tab did not supply them: cannot fit.
+            continue
+        if not have_seed and len(points) < 2:
+            # Without a seed period a single point cannot yield a real fit; skip
+            # rather than echo a fabricated reference period.
+            continue
+        # Reference echoed back only if the fit itself can't run (<2 points).
+        t0_ref = float(t0_seed) if have_seed else float(points[0]["tc"])
+        p_ref = float(p_seed) if have_seed else 1.0
+        epochs, tcs, uncs = [], [], []
+        for pt in points:
+            epoch = pt.get("source_epoch")
+            if epoch is None:
+                epoch = ephemeris_math.assign_epoch(pt["tc"], t0_ref, p_ref)
+            epochs.append(epoch)
+            tcs.append(pt["tc"])
+            uncs.append(pt["tc_unc"])
+        fit_result = ephemeris_math.fit_linear_ephemeris(
+            epochs, tcs, uncs, t0_ref, p_ref, fit_method="unweighted"
+        )
+        entry: dict = {"t0": fit_result["t0_fit"], "period": fit_result["period_fit"]}
+        if fit_result.get("t0_fit_unc"):
+            entry["t0_unc"] = fit_result["t0_fit_unc"]
+        if fit_result.get("period_fit_unc"):
+            entry["period_unc"] = fit_result["period_fit_unc"]
+        results[planet] = entry
+    return results
+
+
+def _target_coordinates(target: str) -> dict | None:
+    """Pointing coordinates for the schedule page: catalog CSVs first, then
+    SIMBAD.
+
+    The ephemeris catalogs (NASA/TOI) are consulted first via
+    ``_resolve_archive_coords``; when the target is in neither, it falls back to
+    SIMBAD name resolution (both cached), so a catalog-less target still gets
+    coordinates instead of an empty RA/Dec field. Returns ``{"ra", "dec",
+    "source"}`` (source one of nasa/toi/simbad) or None when unresolved."""
+    resolved = _resolve_archive_coords(target)
+    if resolved is None:
+        return None
+    ra, dec, source = resolved
+    return {"ra": ra, "dec": dec, "source": source}
+
+
 @ephemeris_router.get("/target-info", response_class=JSONResponse)
-def api_ephemeris_target_info(target: str):
+def api_ephemeris_target_info(target: str, request: Request):
     target = (target or "").strip()
     if not target:
         return JSONResponse({"ok": False, "error": "Target is required"}, status_code=400)
@@ -4159,22 +4433,50 @@ def api_ephemeris_target_info(target: str):
             ),
         })
         
+    # Per-user Google Sheet ephemeris sources (optional). The ephemeris tab
+    # feeds t0/period/duration directly; the transit-centers tab is linear-fit
+    # against the best available seed ephemeris to derive t0/period.
+    sheet_cfg = _user_ephem_sheet_cfg(request)
+    sheet_ephem: dict = {}
+    sheet_fit_ephem: dict = {}
+    if sheet_cfg:
+        sheet_ephem = _sheet_ephemeris(target, sheet_cfg)
+        seed_by_planet: dict = {}
+        for pl in set(sheet_ephem) | seen_planets:
+            seed = (
+                sheet_ephem.get(pl)
+                or ref_ephem.get(pl)
+                or nasa_ephem.get(pl)
+                or toi_ephem.get(pl)
+                or {}
+            )
+            if seed.get("t0") is not None and seed.get("period"):
+                seed_by_planet[pl] = seed
+        sheet_fit_ephem = _sheet_fit_ephemeris(target, sheet_cfg, seed_by_planet)
+        seen_planets.update(sheet_ephem.keys())
+        seen_planets.update(sheet_fit_ephem.keys())
+
     # Ensure all seen planets are initialized in all ephemerides
     for pl in seen_planets:
         ref_ephem.setdefault(pl, {})
         nasa_ephem.setdefault(pl, {})
         toi_ephem.setdefault(pl, {})
-            
+        sheet_ephem.setdefault(pl, {})
+        sheet_fit_ephem.setdefault(pl, {})
+
     planets_sorted = sorted(list(seen_planets))
-    
+
     return JSONResponse({
         "ok": True,
         "target": target,
         "planets": planets_sorted,
-        "coordinates": _query_target_coordinates(target),
+        "coordinates": _target_coordinates(target),
         "reference_ephemeris": ref_ephem,
         "nasa_ephemeris": nasa_ephem,
         "toi_ephemeris": toi_ephem,
+        "sheet_configured": sheet_cfg is not None,
+        "sheet_ephemeris": sheet_ephem,
+        "sheet_fit_ephemeris": sheet_fit_ephem,
         "datasets": datasets_list
     })
 

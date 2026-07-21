@@ -1368,6 +1368,101 @@ def user_ads_token_configured(username: str | None) -> bool:
         return False
 
 
+_EPHEM_SHEET_KEYS = (
+    "ephem_sheet_url_enc",
+    "ephem_sheet_ephem_tab",
+    "ephem_sheet_tc_tab",
+    "ephem_sheet_ephem_cols",
+    "ephem_sheet_tc_cols",
+)
+
+
+def _clean_col_map(cols: dict | None) -> dict:
+    """Normalize a {field: header} column mapping to non-empty string pairs."""
+    if not isinstance(cols, dict):
+        return {}
+    cleaned: dict[str, str] = {}
+    for key, value in cols.items():
+        key_s = str(key).strip()
+        value_s = str(value or "").strip()
+        if key_s and value_s:
+            cleaned[key_s] = value_s
+    return cleaned
+
+
+def set_user_ephem_sheet(
+    username: str | None,
+    url: str | None,
+    ephem_tab: str | None = None,
+    tc_tab: str | None = None,
+    ephem_cols: dict | None = None,
+    tc_cols: dict | None = None,
+) -> None:
+    """Store a per-user ephemeris Google Sheet (URL encrypted, tabs/columns plain).
+
+    A blank ``url`` clears the sheet configuration entirely. Blank tab names and
+    empty column maps are removed so the resolver falls back to its own defaults
+    (alias auto-detection for columns).
+    """
+    url = (url or "").strip()
+    if not url:
+        update_user_settings(username, {}, remove=list(_EPHEM_SHEET_KEYS))
+        return
+    updates: dict = {"ephem_sheet_url_enc": _encrypt_token(url)}
+    removes: list[str] = []
+    for key, tab in (
+        ("ephem_sheet_ephem_tab", ephem_tab),
+        ("ephem_sheet_tc_tab", tc_tab),
+    ):
+        tab = (tab or "").strip()
+        if tab:
+            updates[key] = tab
+        else:
+            removes.append(key)
+    for key, cols in (
+        ("ephem_sheet_ephem_cols", ephem_cols),
+        ("ephem_sheet_tc_cols", tc_cols),
+    ):
+        cleaned = _clean_col_map(cols)
+        if cleaned:
+            updates[key] = cleaned
+        else:
+            removes.append(key)
+    update_user_settings(username, updates, remove=removes or None)
+
+
+def get_user_ephem_sheet(username: str | None) -> dict | None:
+    """Return the sheet config or None when not configured.
+
+    Keys: ``url``, ``ephem_tab``, ``tc_tab`` (tab names as stored, possibly
+    empty; callers apply defaults) and ``ephem_cols``/``tc_cols`` column maps
+    (possibly empty dicts). Raises :class:`UserSettingsError` if the URL cannot
+    be decrypted.
+    """
+    if not (username or "").strip():
+        return None
+    settings = get_user_settings(username)
+    ciphertext = settings.get("ephem_sheet_url_enc")
+    if not ciphertext:
+        return None
+    ephem_cols = settings.get("ephem_sheet_ephem_cols")
+    tc_cols = settings.get("ephem_sheet_tc_cols")
+    return {
+        "url": _decrypt_token(str(ciphertext)),
+        "ephem_tab": str(settings.get("ephem_sheet_ephem_tab") or "").strip(),
+        "tc_tab": str(settings.get("ephem_sheet_tc_tab") or "").strip(),
+        "ephem_cols": ephem_cols if isinstance(ephem_cols, dict) else {},
+        "tc_cols": tc_cols if isinstance(tc_cols, dict) else {},
+    }
+
+
+def user_ephem_sheet_configured(username: str | None) -> bool:
+    try:
+        return get_user_ephem_sheet(username) is not None
+    except UserSettingsError:
+        return False
+
+
 def set_user_eso_credentials(
     username: str | None,
     eso_username: str | None,
