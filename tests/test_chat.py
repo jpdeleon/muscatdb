@@ -168,54 +168,99 @@ def test_on_job_finished_persists_system_message(chat_db, monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# @bot context auto-clear: TTL window + reset marker cutoff
+# @bot: private, per-user, in-memory conversation context
 # --------------------------------------------------------------------------
-def test_agent_history_drops_turns_older_than_ttl(chat_db, monkeypatch):
+@pytest.fixture(autouse=True)
+def _clear_agent_ctx():
+    """The @bot context lives in a module global; isolate each test."""
+    chat._agent_ctx.clear()
+    yield
+    chat._agent_ctx.clear()
+
+
+def test_agent_ctx_roundtrips_user_and_assistant_turns():
+    key = chat._ctx_key("alice", "sid1")
+    assert chat._agent_ctx_get(key) == []
+    chat._agent_ctx_add(key,
+                        {"role": "user", "content": "alice: q1"},
+                        {"role": "assistant", "content": "a1"})
+    turns = chat._agent_ctx_get(key)
+    assert turns == [
+        {"role": "user", "content": "alice: q1"},
+        {"role": "assistant", "content": "a1"},
+    ]
+
+
+def test_agent_ctx_caps_at_history_turns():
+    key = chat._ctx_key("alice", "sid1")
+    for i in range(20):
+        chat._agent_ctx_add(key,
+                            {"role": "user", "content": f"q{i}"},
+                            {"role": "assistant", "content": f"a{i}"})
+    # The deque keeps only the most recent _AGENT_HISTORY_TURNS entries.
+    assert len(chat._agent_ctx_get(key)) == chat._AGENT_HISTORY_TURNS
+
+
+def test_agent_ctx_drops_after_idle_ttl(monkeypatch):
     monkeypatch.setenv("MUSCAT_AGENT_HISTORY_TTL_S", "600")
-    now = time.time()
-    save_chat_message("alice", "old question", kind="user", created_at=now - 1000)
-    save_chat_message("bob", "recent question", kind="user", created_at=now - 60)
-
-    contents = [t["content"] for t in chat._agent_history(exclude_id=None)]
-
-    assert any("recent question" in c for c in contents)
-    assert all("old question" not in c for c in contents)   # aged out of the window
-
-
-def test_agent_history_reset_marker_cuts_off_prior_turns(chat_db, monkeypatch):
-    monkeypatch.setenv("MUSCAT_AGENT_HISTORY_TTL_S", "0")   # isolate the reset behavior
-    now = time.time()
-    save_chat_message("alice", "before reset", kind="user", created_at=now - 30)
-    save_chat_message("system", chat._RESET_MARKER, kind="system", created_at=now - 20)
-    save_chat_message("bob", "after reset", kind="user", created_at=now - 10)
-
-    contents = [t["content"] for t in chat._agent_history(exclude_id=None)]
-
-    assert any("after reset" in c for c in contents)
-    assert all("before reset" not in c for c in contents)
+    key = chat._ctx_key("alice", "sid1")
+    chat._agent_ctx_add(key,
+                        {"role": "user", "content": "q"},
+                        {"role": "assistant", "content": "a"})
+    # Age the last-activity stamp past the TTL; the next read resets it.
+    _, turns = chat._agent_ctx[key]
+    chat._agent_ctx[key] = (time.time() - 1000, turns)
+    assert chat._agent_ctx_get(key) == []
+    assert key not in chat._agent_ctx   # auto-cleared
 
 
-def test_agent_history_ignores_non_reset_system_messages(chat_db, monkeypatch):
-    monkeypatch.setenv("MUSCAT_AGENT_HISTORY_TTL_S", "0")
-    now = time.time()
-    save_chat_message("alice", "before job note", kind="user", created_at=now - 30)
-    save_chat_message("system", "Photometry for TOI-1234 (muscat3) finished", kind="system", created_at=now - 20)
-    save_chat_message("bob", "after job note", kind="user", created_at=now - 10)
-
-    contents = [t["content"] for t in chat._agent_history(exclude_id=None)]
-
-    # A job-finished system message is not a reset marker; nothing is cut off.
-    assert any("before job note" in c for c in contents)
-    assert any("after job note" in c for c in contents)
+def test_agent_ctx_reset_clears_only_that_conversation():
+    a = chat._ctx_key("alice", "s1")
+    b = chat._ctx_key("bob", "s2")
+    for k in (a, b):
+        chat._agent_ctx_add(k, {"role": "user", "content": "q"}, {"role": "assistant", "content": "a"})
+    chat._agent_ctx_clear(a)
+    assert chat._agent_ctx_get(a) == []
+    assert chat._agent_ctx_get(b) != []   # bob's private thread is untouched
 
 
-def test_agent_history_maps_agent_replies_to_assistant_role(chat_db, monkeypatch):
-    monkeypatch.setenv("MUSCAT_AGENT_HISTORY_TTL_S", "0")
-    now = time.time()
-    save_chat_message("alice", "hi bot", kind="user", created_at=now - 30)
-    save_chat_message(chat.chat_agent.AGENT_NAME, "hello there", kind="agent", created_at=now - 20)
+def test_private_target_routes_to_user_room_or_sid():
+    # Authenticated → the user's room (reaches every tab + the pop-out window).
+    assert chat._private_target("alice", "sidX") == {"room": "user:alice"}
+    # Anonymous → just this one connection.
+    assert chat._private_target(None, "sidX") == {"to": "sidX"}
 
-    turns = chat._agent_history(exclude_id=None)
 
-    assert turns[0] == {"role": "user", "content": "alice: hi bot"}
-    assert {"role": "assistant", "content": "hello there"} in turns
+def test_private_agent_payload_is_unsaved_and_flagged():
+    p = chat._private_agent_payload("hello")
+    assert p["id"] is None            # no edit/delete/react controls client-side
+    assert p["private"] is True       # drives the 'only you' badge
+    assert p["kind"] == "agent"
+
+
+@pytest.mark.parametrize("text, matches", [
+    ("/me observing TOI-1234", True),
+    ("  /ME waves", True),
+    ("/media query", False),          # word boundary: not the /me command
+    ("hi /me", False),                # only at the start of the message
+])
+def test_me_command_prefix(text, matches):
+    assert bool(chat._ME_PREFIX_RE.match(text)) is matches
+
+
+@pytest.mark.parametrize("text, matches", [
+    ("heads up @everyone", True),
+    ("@all please check", True),
+    ("posting to @channel", True),
+    ("email me at a@everyone.com", False),   # not preceded by word/@ char
+    ("ping @allen", False),                  # word boundary: @allen is a name
+    ("no ping here", False),
+])
+def test_broadcast_mention_detection(text, matches):
+    assert bool(chat._BROADCAST_MENTION_RE.search(text)) is matches
+
+
+def test_online_usernames_excludes_anonymous(monkeypatch):
+    monkeypatch.setattr(chat, "_users_by_sid",
+                        {"s1": "alice", "s2": "alice", "s3": None, "s4": "bob"})
+    assert chat._online_usernames() == {"alice", "bob"}   # de-duped, no anonymous

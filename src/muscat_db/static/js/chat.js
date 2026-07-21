@@ -371,10 +371,47 @@ document.addEventListener("DOMContentLoaded", () => {
             return;
         }
 
+        // /me actions: a centered, attributed status line ("✳ Alice is …").
+        if (data.kind === "action") {
+            const act = document.createElement("div");
+            act.className = "message action";
+            const body = document.createElement("div");
+            body.className = "message-body";
+            const who = document.createElement("span");
+            who.className = "user";
+            who.textContent = isMine(data) ? "You" : (data.user || "Anonymous");
+            body.append("✳ ", who, " ");
+            renderText(body, data.text);
+            const time = document.createElement("span");
+            time.className = "time";
+            time.textContent = formatTime(data.ts);
+            body.appendChild(time);
+            act.appendChild(body);
+            chatMessages.appendChild(act);
+            if (data.id != null) els.set(data.id, { el: act, data });
+            scrollToBottom();
+            return;
+        }
+
+        // @help: a local, private command reference rendered from a left-aligned
+        // card (never sent to the server — see maybeRunLocalCommand).
+        if (data.kind === "help") {
+            const card = document.createElement("div");
+            card.className = "message system help";
+            const body = document.createElement("div");
+            body.className = "message-body";
+            renderText(body, data.text);
+            card.appendChild(body);
+            chatMessages.appendChild(card);
+            scrollToBottom();
+            return;
+        }
+
         const el = document.createElement("div");
         el.className = "message " + (isMine(data) ? "me" : "them");
         if (data.ephemeral) el.classList.add("ephemeral");
         if (data.kind === "agent") el.classList.add("agent");
+        if (data.private) el.classList.add("private");
         if (data.mentions && currentUser &&
             data.mentions.some((n) => n.toLowerCase() === currentUser.toLowerCase())) {
             el.classList.add("mention-me");
@@ -399,6 +436,13 @@ document.addEventListener("DOMContentLoaded", () => {
             // Name-agnostic badge (the author span already shows the @name).
             const tag = document.createElement("span");
             tag.className = "tag agent-tag"; tag.textContent = "AI";
+            meta.appendChild(tag);
+        }
+        if (data.private) {
+            // Private @bot exchange: visible only to this user (server routes it
+            // to their room and never persists it).
+            const tag = document.createElement("span");
+            tag.className = "tag private-tag"; tag.textContent = "only you";
             meta.appendChild(tag);
         }
         const editedTag = document.createElement("span");
@@ -476,9 +520,66 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     };
 
+    // ----- special commands ------------------------------------------------
+    // Reference shown by @help. Built at call time so the @name example reflects
+    // the resolved user. Kept client-side (not the server) so it stays a
+    // private, zero-traffic, always-available lookup.
+    const helpText = () => {
+        const example = getCurrentUser() !== "Anonymous" ? getCurrentUser() : "alice";
+        return [
+            "Chat commands",
+            "  @here — insert a link to the page you're on",
+            "  @name — notify a teammate (e.g. @" + example + ")",
+            "  @everyone — ping everyone currently online (also @all, @channel)",
+            "  @bot … — ask the codebase assistant, privately (only you see it)",
+            "  @bot /reset — start a fresh @bot conversation",
+            "  /me … — post a status line (e.g. /me observing TOI-1234 on muscat3)",
+            "  /shrug … — add a ¯\\_(ツ)_/¯ to your message",
+            "  @test … — send a message that isn't saved",
+            "  /clear — hide messages from your view (local only)",
+            "  @help — show this list",
+            "Tip: TOI-1234 and TIC 12345678 auto-link to the target page.",
+        ].join("\n");
+    };
+
+    // Handle purely client-side commands (never sent to the server). Returns
+    // true if the input was consumed.
+    const maybeRunLocalCommand = (raw) => {
+        if (/^@help\b/i.test(raw)) {
+            renderMessage({ kind: "help", text: helpText(), ts: Date.now() / 1000, private: true });
+            return true;
+        }
+        if (/^\/clear\b/i.test(raw)) {
+            els.clear();
+            chatMessages.innerHTML = "";
+            renderMessage({
+                kind: "system", ts: Date.now() / 1000,
+                text: "Cleared your local view — reload the page to see the full history again.",
+            });
+            return true;
+        }
+        return false;
+    };
+
+    // Text substitutions applied to an outgoing message (still sent normally).
+    const applyTextCommands = (text) => {
+        const shrug = text.match(/^\/shrug\b\s*/i);
+        if (shrug) return (text.slice(shrug[0].length) + " ¯\\_(ツ)_/¯").trim();
+        return text;
+    };
+
     // ----- sending ---------------------------------------------------------
     const send = () => {
-        const text = expandHere(messageInput.value).trim();
+        const raw = messageInput.value.trim();
+        if (!raw) return;
+        if (maybeRunLocalCommand(raw)) {
+            messageInput.value = "";
+            stopTyping();
+            hideAutocomplete();
+            messageInput.focus();
+            return;
+        }
+        const text = applyTextCommands(expandHere(messageInput.value).trim());
         if (!text) return;
         socket.emit("message", { user: getCurrentUser(), text });
         messageInput.value = "";

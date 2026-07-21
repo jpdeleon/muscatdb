@@ -1431,6 +1431,12 @@ body.chat-popout #minimize-chat {
     color: #fff;
 }
 
+/* Private @bot exchange badge — only the asker ever sees these messages. */
+.message-meta .tag.private-tag {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent);
+}
+
 .message.system {
     align-self: center;
     max-width: 95%;
@@ -1446,6 +1452,44 @@ body.chat-popout #minimize-chat {
 }
 
 .message.system .time { margin-left: 6px; opacity: 0.7; }
+
+/* /me action lines: centered, attributed, understated. */
+.message.action {
+    align-self: center;
+    max-width: 95%;
+    text-align: center;
+}
+
+.message.action .message-body {
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 0.78rem;
+    font-style: italic;
+    padding: 2px 8px;
+}
+
+.message.action .user { color: var(--accent); font-style: normal; }
+.message.action .time { margin-left: 6px; opacity: 0.7; }
+
+/* @help command reference: a left-aligned, monospace, private card. */
+.message.system.help {
+    align-self: stretch;
+    max-width: 100%;
+    text-align: left;
+}
+
+.message.system.help .message-body {
+    white-space: pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-style: normal;
+    font-size: 0.74rem;
+    line-height: 1.55;
+    color: var(--text);
+    background: var(--surface2);
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+}
 
 .chat-mention { color: var(--accent); font-weight: 600; }
 .chat-mention.mention-self { background: var(--accent2); color: #06231d; border-radius: 4px; padding: 0 3px; }

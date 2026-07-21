@@ -1851,22 +1851,49 @@ def toggle_chat_reaction(msg_id: int, user_name: str, emoji: str) -> dict | None
         return {"id": msg_id, "reactions": reactions.get(msg_id, [])}
 
 
+# Auth accounts that are test/demo/system identities rather than real
+# teammates. They are kept out of the chat @-mention autocomplete and out of
+# mention resolution (so they never appear as suggestions and never get nudged).
+# Override with MUSCAT_CHAT_EXCLUDE_USERS (comma-separated, case-insensitive);
+# an empty value disables the filter entirely. A user who has actually posted a
+# chat message is always kept, even if listed here.
+_DEFAULT_EXCLUDED_CHAT_USERS = frozenset(
+    {"testuser", "trusted-user", "diagnostic", "observer", "alice", "john"}
+)
+
+
+def _excluded_chat_users() -> set[str]:
+    raw = os.environ.get("MUSCAT_CHAT_EXCLUDE_USERS")
+    if raw is None:
+        return set(_DEFAULT_EXCLUDED_CHAT_USERS)
+    return {n.strip().lower() for n in raw.split(",") if n.strip()}
+
+
 def get_known_chat_usernames(limit: int = 200) -> list[str]:
     """Usernames for @-mention autocomplete: everyone who has authenticated
-    (users table) plus any historical chat authors, de-duplicated and sorted."""
+    (users table) plus any historical chat authors, de-duplicated and sorted.
+
+    Test/demo/system accounts (see ``_excluded_chat_users``) are dropped unless
+    they have actually posted a chat message."""
     path = db_path()
+    excluded = _excluded_chat_users()
     with get_conn(path) as conn:
         _ensure_chat_schema(conn, path)
-        names: set[str] = set()
-        try:
-            for (u,) in conn.execute("SELECT username FROM users"):
-                if u and u.strip():
-                    names.add(u.strip())
-        except sqlite3.OperationalError:
-            pass
+        # Real chat authors are always kept, so exclusion never hides someone
+        # who has demonstrably participated.
+        chatted: set[str] = set()
         for (u,) in conn.execute(
             "SELECT DISTINCT user_name FROM chat_messages WHERE kind = 'user'"
         ):
             if u and u.strip():
-                names.add(u.strip())
+                chatted.add(u.strip())
+        names = set(chatted)
+        try:
+            for (u,) in conn.execute("SELECT username FROM users"):
+                if u and u.strip() and (
+                    u.strip().lower() not in excluded or u.strip() in chatted
+                ):
+                    names.add(u.strip())
+        except sqlite3.OperationalError:
+            pass
     return sorted(names, key=str.lower)[:limit]

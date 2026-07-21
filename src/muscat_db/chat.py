@@ -40,6 +40,9 @@ _RATE_WINDOW_S = 10.0    # ... per this many seconds, per connection
 _RESERVED_MENTIONS = {"here", "test", "everyone", "channel", "all", chat_agent.AGENT_NAME}
 _MENTION_RE = re.compile(r"(?<![\w@])@([A-Za-z0-9._-]{1,64})")
 _TEST_PREFIX_RE = re.compile(r"^\s*@test\b\s*", re.IGNORECASE)
+_ME_PREFIX_RE = re.compile(r"^\s*/me\b", re.IGNORECASE)
+# @all / @everyone / @channel: nudge everyone currently online (a team heads-up).
+_BROADCAST_MENTION_RE = re.compile(r"(?<![\w@])@(?:all|everyone|channel)\b", re.IGNORECASE)
 
 # ----- live (in-memory) connection state -----------------------------------
 # Single-worker deployment: these live in one process. A multi-worker/multi-host
@@ -81,8 +84,20 @@ def _display(user: str | None) -> str:
     return user or "Anonymous"
 
 
+def _private_target(user: str | None, sid: str) -> dict:
+    """socket.io emit kwargs that reach only the asker: their user room (every
+    tab + the pop-out window) when authenticated, else just this connection."""
+    return {"room": f"user:{user}"} if user else {"to": sid}
+
+
 def _online_users() -> list[str]:
     return sorted({_display(u) for u in _users_by_sid.values()}, key=str.lower)
+
+
+def _online_usernames() -> set[str]:
+    """Distinct signed-in users with at least one live connection (anonymous
+    connections have no room to nudge, so they are excluded)."""
+    return {u for u in _users_by_sid.values() if u}
 
 
 async def _broadcast_presence() -> None:
@@ -163,6 +178,10 @@ async def connect(sid, environ):
 async def disconnect(sid):
     _users_by_sid.pop(sid, None)
     _rate.pop(sid, None)
+    # Anonymous @bot context is per-connection; drop it so it can't leak. A
+    # signed-in user's context is keyed by name (shared across tabs) and kept
+    # until the idle-gap TTL expires, so a reload doesn't wipe their thread.
+    _agent_ctx.pop(f"sid:{sid}", None)
     await _broadcast_presence()
 
 
@@ -192,6 +211,36 @@ async def message(sid, data):
         })
         return
 
+    # @bot → private exchange: neither the question nor the reply is persisted or
+    # broadcast; both are delivered only to the asker (all their tabs + pop-out).
+    if chat_agent.addressed(text):
+        await sio.emit("message", {
+            "id": None, "user": display, "text": text, "kind": "user",
+            "ephemeral": False, "private": True, "ts": time.time(), "sid": sid,
+            "mentions": [], "reactions": [], "edited": False,
+        }, **_private_target(user, sid))
+        _spawn_agent(sid, user, chat_agent.extract_question(text))
+        return
+
+    # /me <action> → IRC-style status line, attributed and broadcast.
+    m = _ME_PREFIX_RE.match(text)
+    if m:
+        action = text[m.end():].strip()
+        if not action:
+            return
+        mentions = _parse_mentions(action)
+        try:
+            msg = db.save_chat_message(display, action, mentions=mentions, kind="action")
+        except Exception:
+            logger.exception("failed to persist /me action")
+            await sio.emit("chat_error", {"error": "message could not be saved"}, to=sid)
+            return
+        payload = {**msg, "sid": sid}
+        await sio.emit("message", payload)
+        for name in mentions:
+            await sio.emit("mention", {"from": display, "message": payload}, room=f"user:{name}")
+        return
+
     mentions = _parse_mentions(text)
     try:
         msg = db.save_chat_message(display, text, mentions=mentions, kind="user")
@@ -205,9 +254,10 @@ async def message(sid, data):
     # Nudge each mentioned user (on any page/tab) so they notice.
     for name in mentions:
         await sio.emit("mention", {"from": display, "message": payload}, room=f"user:{name}")
-    # Hand the question to the codebase assistant when it is addressed (@bot).
-    if chat_agent.addressed(text):
-        _spawn_agent(sid, chat_agent.extract_question(text), msg.get("id"))
+    # @all / @everyone / @channel → ping every other online teammate too.
+    if _BROADCAST_MENTION_RE.search(text):
+        for name in _online_usernames() - {user} - set(mentions):
+            await sio.emit("mention", {"from": display, "message": payload}, room=f"user:{name}")
 
 
 @sio.on("edit_message")
@@ -274,40 +324,33 @@ async def typing(sid, data):
     await sio.emit("typing", {"user": _display(user), "typing": is_typing}, skip_sid=sid)
 
 
-# ----- codebase assistant (@bot) -------------------------------------------
+# ----- codebase assistant (@bot): private, per-user, in-memory --------------
+# The @bot exchange is private to the asker: neither the question nor the reply
+# is persisted or broadcast — both are delivered only to the asker's own
+# connections (every tab + the pop-out window). Conversation context is
+# therefore held in memory per user, never written to the shared chat history.
+#
 # Recent turns handed to the model for follow-up context.
 _AGENT_HISTORY_TURNS = 8
-# Auto-clear: history older than this (seconds) is dropped, so an idle gap resets
-# @bot's context on its own. 0/negative disables the time cutoff.
+# Idle-gap auto-clear: a conversation untouched for this many seconds is dropped,
+# so an idle gap resets @bot on its own. 0/negative disables the time cutoff.
 _DEFAULT_HISTORY_TTL_S = 900.0
-# Persisted system divider posted by "@bot /reset"; _agent_history treats the
-# most recent one as a hard cutoff so the next question starts fresh.
-_RESET_MARKER = "🧹 @bot conversation context cleared"
 # Re-emit the "typing" indicator this often while the model works, so it does
 # not hit the client's ~4s auto-clear during a long (multi-second) generation.
 _AGENT_TYPING_HEARTBEAT_S = 2.0
 # Keep a strong reference to in-flight agent tasks so they are not garbage
 # collected before completion (asyncio only holds a weak reference).
 _agent_tasks: set[asyncio.Task] = set()
+# Per-conversation context for the private @bot exchange, keyed by ``_ctx_key``
+# (the nginx user, or the socket id for anonymous sessions). Each value is a
+# ``(last_activity_ts, deque-of-turns)`` pair; the deque caps its own length.
+_agent_ctx: dict[str, tuple[float, deque]] = {}
 
 
-def _spawn_agent(sid: str, question: str, exclude_id: int | None) -> None:
-    """Answer the question in the background so the message handler returns at
-    once (the model call can take many seconds)."""
-    if _LOOP is None:  # no running loop captured yet; nothing to schedule onto
-        return
-    task = asyncio.create_task(_run_agent(sid, question, exclude_id))
-    _agent_tasks.add(task)
-    task.add_done_callback(_agent_tasks.discard)
-
-
-def _ephemeral_agent_payload(text: str) -> dict:
-    """A live-only agent message (never persisted): busy notes, errors, intro."""
-    return {
-        "id": None, "user": chat_agent.DISPLAY_NAME, "text": text,
-        "kind": "agent", "ephemeral": True, "ts": time.time(), "sid": None,
-        "mentions": [], "reactions": [], "edited": False,
-    }
+def _ctx_key(user: str | None, sid: str) -> str:
+    """A stable conversation key: the nginx user (shared across their tabs and
+    surviving reconnects within the TTL) or the socket id when anonymous."""
+    return f"user:{user}" if user else f"sid:{sid}"
 
 
 def _history_ttl_s() -> float:
@@ -317,120 +360,115 @@ def _history_ttl_s() -> float:
         return _DEFAULT_HISTORY_TTL_S
 
 
-def _agent_history(exclude_id: int | None) -> list[dict]:
-    """Recent chat mapped to chat-model roles: the agent's own replies become
-    ``assistant`` turns, everyone else becomes ``user`` turns prefixed with the
-    speaker's name. Skips system rows and the just-posted question.
-
-    Context is auto-cleared two ways: turns older than ``MUSCAT_AGENT_HISTORY_TTL_S``
-    are dropped (idle-gap reset), and everything up to the most recent ``@bot``
-    reset marker is discarded (explicit ``@bot /reset``)."""
-    try:
-        recent = db.get_recent_chat_messages()
-    except Exception:
-        logger.debug("agent history load failed", exc_info=True)
+def _agent_ctx_get(key: str) -> list[dict]:
+    """This conversation's recent turns, or ``[]`` after an idle-gap TTL reset."""
+    entry = _agent_ctx.get(key)
+    if entry is None:
         return []
-
-    # Idle-gap auto-clear: keep only turns newer than the TTL.
+    last, turns = entry
     ttl = _history_ttl_s()
-    if ttl > 0:
-        cutoff_ts = time.time() - ttl
-        recent = [m for m in recent if (m.get("ts") or 0) >= cutoff_ts]
-
-    # Explicit clear: discard everything up to and including the last reset marker.
-    last_reset = max(
-        (i for i, m in enumerate(recent)
-         if m.get("kind") == "system" and (m.get("text") or "") == _RESET_MARKER),
-        default=-1,
-    )
-    if last_reset >= 0:
-        recent = recent[last_reset + 1:]
-
-    turns: list[dict] = []
-    for m in recent:
-        if m.get("id") == exclude_id:
-            continue
-        kind = m.get("kind")
-        body = (m.get("text") or "").strip()
-        if not body or kind == "system":
-            continue
-        author = m.get("user") or "user"
-        if kind == "agent" and author.lower() == chat_agent.AGENT_NAME:
-            turns.append({"role": "assistant", "content": body})
-        else:
-            turns.append({"role": "user", "content": f"{author}: {body}"})
-    return turns[-_AGENT_HISTORY_TURNS:]
+    if ttl > 0 and time.time() - last > ttl:
+        _agent_ctx.pop(key, None)
+        return []
+    return list(turns)
 
 
-async def _reset_agent_context() -> None:
-    """Persist + broadcast the reset divider so _agent_history cuts off here and
-    the next @bot question starts with a clean context (shared across the room)."""
-    try:
-        msg = db.save_chat_message("system", _RESET_MARKER, kind="system")
-    except Exception:
-        logger.exception("failed to persist @bot reset marker")
-        await sio.emit(
-            "message",
-            _ephemeral_agent_payload("Couldn't clear my context just now — please try again."),
-        )
+def _agent_ctx_add(key: str, user_turn: dict, assistant_turn: dict) -> None:
+    entry = _agent_ctx.get(key)
+    turns = entry[1] if entry is not None else deque(maxlen=_AGENT_HISTORY_TURNS)
+    turns.append(user_turn)
+    turns.append(assistant_turn)
+    _agent_ctx[key] = (time.time(), turns)
+
+
+def _agent_ctx_clear(key: str) -> None:
+    _agent_ctx.pop(key, None)
+
+
+def _spawn_agent(sid: str, user: str | None, question: str) -> None:
+    """Answer in the background so the message handler returns at once (the model
+    call can take many seconds)."""
+    if _LOOP is None:  # no running loop captured yet; nothing to schedule onto
         return
-    await sio.emit("message", {**msg, "sid": None})
+    task = asyncio.create_task(_run_agent(sid, user, question))
+    _agent_tasks.add(task)
+    task.add_done_callback(_agent_tasks.discard)
 
 
-async def _typing_heartbeat() -> None:
-    """Keep the agent's typing indicator alive until cancelled."""
+def _private_agent_payload(text: str) -> dict:
+    """A live-only, private @bot message (never persisted, shown only to the
+    asker): the answer plus intro/busy/error notes. ``id`` is None so the client
+    attaches no edit/delete/react controls; ``private`` drives the 'only you'
+    badge."""
+    return {
+        "id": None, "user": chat_agent.DISPLAY_NAME, "text": text,
+        "kind": "agent", "ephemeral": False, "private": True,
+        "ts": time.time(), "sid": None,
+        "mentions": [], "reactions": [], "edited": False,
+    }
+
+
+async def _typing_heartbeat(target: dict) -> None:
+    """Keep @bot's typing indicator alive (only for the asker) until cancelled."""
     try:
         while True:
-            await sio.emit("typing", {"user": chat_agent.DISPLAY_NAME, "typing": True})
+            await sio.emit("typing", {"user": chat_agent.DISPLAY_NAME, "typing": True}, **target)
             await asyncio.sleep(_AGENT_TYPING_HEARTBEAT_S)
     except asyncio.CancelledError:
         pass
 
 
-async def _run_agent(sid: str, question: str, exclude_id: int | None) -> None:
-    if not question:  # bare "@bot": show a short intro, no model call
+async def _run_agent(sid: str, user: str | None, question: str) -> None:
+    target = _private_target(user, sid)
+    key = _ctx_key(user, sid)
+    if not question:  # bare "@bot": short intro, no model call
         intro = (
             f"Hi! I'm @{chat_agent.AGENT_NAME}, the muscat-db codebase assistant. "
-            f"Ask me things like \"@{chat_agent.AGENT_NAME} how does the photometry "
-            "job lifecycle work?\""
+            "This chat is private to you — nobody else sees it. Ask me things like "
+            f"\"@{chat_agent.AGENT_NAME} how does the photometry job lifecycle work?\" "
+            f"(\"@{chat_agent.AGENT_NAME} /reset\" starts a fresh conversation.)"
         )
-        await sio.emit("message", _ephemeral_agent_payload(intro), to=sid)
+        await sio.emit("message", _private_agent_payload(intro), **target)
         return
     if chat_agent.is_reset_command(question):  # "@bot /reset": clear context, no model call
-        await _reset_agent_context()
+        _agent_ctx_clear(key)
+        await sio.emit(
+            "message",
+            _private_agent_payload("🧹 Cleared our conversation context. Starting fresh."),
+            **target,
+        )
         return
     if not chat_agent.reserve():  # model already at capacity
         await sio.emit(
             "message",
-            _ephemeral_agent_payload(
+            _private_agent_payload(
                 "I'm still answering an earlier question — give me a moment and ask again."
             ),
-            to=sid,
+            **target,
         )
         return
-    heartbeat = asyncio.create_task(_typing_heartbeat())
+    heartbeat = asyncio.create_task(_typing_heartbeat(target))
     try:
-        reply = await chat_agent.answer(question, _agent_history(exclude_id))
-        try:
-            msg = db.save_chat_message(chat_agent.DISPLAY_NAME, reply, kind="agent")
-        except Exception:
-            logger.exception("failed to persist agent reply")
-            await sio.emit("message", _ephemeral_agent_payload(reply))
-        else:
-            await sio.emit("message", {**msg, "sid": None})
+        reply = await chat_agent.answer(question, _agent_ctx_get(key))
+        _agent_ctx_add(
+            key,
+            {"role": "user", "content": f"{_display(user)}: {question}"},
+            {"role": "assistant", "content": reply},
+        )
+        await sio.emit("message", _private_agent_payload(reply), **target)
     except Exception as e:
         logger.warning("chat agent request failed: %s", e, exc_info=True)
         await sio.emit(
             "message",
-            _ephemeral_agent_payload(
+            _private_agent_payload(
                 "⚠️ Sorry, I couldn't reach the model right now. Please try again shortly."
             ),
-            to=sid,
+            **target,
         )
     finally:
         heartbeat.cancel()
         chat_agent.release()
-        await sio.emit("typing", {"user": chat_agent.DISPLAY_NAME, "typing": False})
+        await sio.emit("typing", {"user": chat_agent.DISPLAY_NAME, "typing": False}, **target)
 
 
 # ----- job-finished system messages ----------------------------------------
