@@ -641,7 +641,7 @@ details.adv[open] > summary { color: var(--text); margin-bottom: 0.5rem; }
 /* ---------- Run/site selector chips ---------- */
 /* Used as <a> (server-rendered navigation) and as <button> (client-side
    switching), so the font must be inherited rather than the UA button default. */
-.site-chips { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin: 0 0 0.75rem; }
+.site-chips { display: flex; align-items: center; justify-content: center; gap: 0.4rem; flex-wrap: wrap; margin: 0 0 0.75rem; }
 .site-chips .site-label { font-size: 0.8rem; color: var(--text-dim); }
 .site-chip {
   background: var(--surface2); color: var(--text);
