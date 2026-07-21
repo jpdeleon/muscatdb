@@ -224,8 +224,8 @@ def test_classify_split_gap_when_relay_leaves_a_gap(monkeypatch):
 def test_classify_partial_reserved_for_single_site(monkeypatch):
     duration = 2.0
     n = _n_samp_for(duration)
-    # Only lsc has any coverage at all (and it's incomplete): no second site
-    # exists to relay with, so this is genuinely "partial".
+    # Only lsc has coverage, and it spans the front half -- so it includes the
+    # ingress contact (sample 0). One site + a contact observed => "partial".
     _patch_site_masks(monkeypatch, {"lsc": (0, n // 2)})
 
     wins = [{"epoch": 0, "mid": "2026-03-15T07:30:00"}]
@@ -235,6 +235,36 @@ def test_classify_partial_reserved_for_single_site(monkeypatch):
     assert res[0]["sites"] == ["lsc"]
     assert res[0]["best_site"] == "lsc"
     assert "split_sites" not in res[0]
+
+
+def test_classify_partial_requires_a_contact_not_mid_only(monkeypatch):
+    duration = 2.0
+    n = _n_samp_for(duration)
+    # The single covering site sees only the middle of the transit -- neither
+    # ingress (sample 0) nor egress (last sample). With no contact observed this
+    # is not a useful partial and is rated "none".
+    _patch_site_masks(monkeypatch, {"lsc": (n // 2 - 5, n // 2 + 6)})
+
+    wins = [{"epoch": 0, "mid": "2026-03-15T07:30:00"}]
+    res = T.classify_transits(97.64, 29.67, wins, None, duration, sites=["lsc", "cpt", "tfn"])
+
+    assert res[0]["rating"] == "none"
+    assert res[0]["sites"] == []
+    assert res[0]["best_site"] is None
+
+
+def test_classify_partial_on_egress_contact(monkeypatch):
+    duration = 2.0
+    n = _n_samp_for(duration)
+    # A single site covering the back half sees egress (the last sample): a
+    # genuine partial even though ingress is missed.
+    _patch_site_masks(monkeypatch, {"lsc": (n // 2, n)})
+
+    wins = [{"epoch": 0, "mid": "2026-03-15T07:30:00"}]
+    res = T.classify_transits(97.64, 29.67, wins, None, duration, sites=["lsc", "cpt", "tfn"])
+
+    assert res[0]["rating"] == "partial"
+    assert res[0]["best_site"] == "lsc"
 
 
 def test_classify_full_site_skips_pair_search(monkeypatch):

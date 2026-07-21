@@ -9,8 +9,9 @@ covers the whole transit, but two sites in relay (one covering ingress through
 a handoff, the other the handoff through egress) do -- ``split_gap`` when a
 real gap remains near the handoff, ``split_overlap`` when the two sites' own
 coverage meets or overlaps with no gap. ``partial`` is reserved for the
-single-site case: only one site sees any part of the transit, and it's
-incomplete (only ingress or only egress, say), with no second site to help.
+single-site case where one site sees a transit *contact* (ingress or egress)
+but not the whole transit, with no second site to help; a lone site that sees
+only the mid-transit sliver (neither contact) is rated ``none``.
 
 No new dependency: astropy is already required. The LCO site coordinates are
 frozen below (resolved once from astropy's site registry, sourced against
@@ -186,6 +187,29 @@ def _site_coverage_span(mask, offsets, start_jd: float, end_jd: float):
     )
 
 
+def _observes_contact(mask_row, start_jd: float, end_jd: float, mid_jd, half: float) -> bool:
+    """True if a transit *contact* (ingress or egress of the bare transit,
+    ``mid ± half``) lands on an observable sample.
+
+    ``mask_row`` is one window's per-sample boolean coverage over
+    ``start_jd``..``end_jd``. The middle of the transit is deliberately ignored:
+    only the ingress and egress samples count, so a site that sees only the
+    mid-transit sliver does not qualify. Falls back to the grid edges when the
+    midpoint is unknown (those edges are the bare-transit contacts by
+    construction when padding is excluded).
+    """
+    n = len(mask_row)
+    if mid_jd is None or end_jd <= start_jd:
+        return bool(mask_row[0] or mask_row[-1])
+
+    def sample_at(jd: float) -> int:
+        frac = (jd - start_jd) / (end_jd - start_jd)
+        frac = min(1.0, max(0.0, frac))
+        return int(round(frac * (n - 1)))
+
+    return bool(mask_row[sample_at(mid_jd - half)] or mask_row[sample_at(mid_jd + half)])
+
+
 def classify_transits(
     ra_deg: float,
     dec_deg: float,
@@ -209,9 +233,10 @@ def classify_transits(
     and ``best_site`` is a full site if any, else the most-covered site.
 
     - ``full``: one site alone covers the whole transit (``frac >= 0.999``).
-    - ``partial``: exactly one site has any coverage at all, and it's
-      incomplete -- only ingress or only egress (or some other sliver) can be
-      observed, with no second site to fill in the rest.
+    - ``partial``: exactly one site has coverage, that coverage includes a
+      transit contact (ingress or egress) but not the whole transit, and there
+      is no second site to relay with. A lone site that observes only the
+      middle -- neither contact -- is rated ``none`` instead (not useful).
     - ``split_gap`` / ``split_overlap``: two or more sites each have some
       coverage. The best pair (highest combined coverage) is always resolved
       to one of these two ratings -- there is no "still partial" outcome once
@@ -221,7 +246,9 @@ def classify_transits(
       gap (``split_overlap_min`` minutes covered by both). Both also carry
       ``split_sites`` (``[early, late]``, chronological) and ``split_windows``
       (each site's own observable start/end + a ``fragmented`` flag).
-    - ``none``: no site observes any part of the transit.
+    - ``none``: no site observes a transit contact -- either no site sees any
+      part of the transit, or the only coverage is a single site's mid-transit
+      sliver with neither ingress nor egress.
 
     When ``include_padding=True`` and ``pad_before_min``/``pad_after_min`` are
     given, split entries also get ``ingress_bracket_ok`` / ``egress_bracket_ok``:
@@ -309,11 +336,16 @@ def classify_transits(
             continue
 
         if len(partial_sites) < 2:
-            # At most one site sees anything at all: no second site exists to
-            # relay with, so this is genuinely "partial" (or "none").
+            # At most one site sees anything at all: no second site to relay
+            # with. "partial" is reserved for coverage that includes a transit
+            # contact (ingress or egress); a lone site that sees only the middle
+            # -- neither contact -- is not scientifically useful and is rated
+            # "none".
             best = partial_sites[0] if partial_sites else None
-            rating = "partial" if best else "none"
-            results.append({"rating": rating, "sites": partial_sites, "best_site": best})
+            if best and _observes_contact(mask2d[best][i], starts[i], ends[i], mids[i], half):
+                results.append({"rating": "partial", "sites": partial_sites, "best_site": best})
+            else:
+                results.append({"rating": "none", "sites": [], "best_site": None})
             continue
 
         # 2+ sites each have some coverage: always resolve to a two-site relay
