@@ -2384,7 +2384,13 @@
           window.showLoading('Reloading…');
         }
         var reloadDelay = (s.run_type === 'test') ? 400 : 1200;
-        setTimeout(function () { window.location.reload(); }, reloadDelay);
+        // Point the URL at the run that just finished before reloading: runId
+        // was updated to the launch response's run_id, but the address bar's
+        // ?run= still holds whatever run was selected before this fit started.
+        var reloadUrl = new URL(window.location.href);
+        if (runId) { reloadUrl.searchParams.set('run', runId); }
+        else { reloadUrl.searchParams.delete('run'); }
+        setTimeout(function () { window.location.href = reloadUrl.toString(); }, reloadDelay);
       } else if (s.state === 'error') {
         stopPolling(); setRunning(false); clearJob();
         logEl.textContent += '\n\n✗ fit run exited with code ' + s.returncode;
