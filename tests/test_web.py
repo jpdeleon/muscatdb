@@ -1446,6 +1446,26 @@ def test_lco_proposals_receive_nginx_user(mock_db, monkeypatch):
     assert captured == {"user_name": "alice", "token": None}
 
 
+def test_lco_proposals_refuses_operator_token_for_nginx_user(mock_db, monkeypatch):
+    """An nginx-authenticated user with no saved LCO token must not fall back to
+    the operator's global LCO_API_TOKEN for a portal call: the endpoint returns
+    403 and the request never reaches the LCO network."""
+    monkeypatch.setenv("MUSCAT_DB_SECRET", "settings-secret")
+    monkeypatch.setenv("LCO_API_TOKEN", "operator-global-token")
+
+    def must_not_call(*args, **kwargs):
+        raise AssertionError("LCO network must not be reached without the user's own token")
+
+    monkeypatch.setattr("urllib.request.urlopen", must_not_call)
+    r = TestClient(app, client=("127.0.0.1", 12345)).get(
+        "/api/lco/proposals", headers={"X-Forwarded-User": "alice"}
+    )
+    assert r.status_code == 403
+    body = r.json()
+    assert body["ok"] is False
+    assert "operator-global-token" not in r.text
+
+
 def test_x_forwarded_user_ignored_from_non_loopback_peer(monkeypatch):
     """A spoofed header from a non-loopback peer must not authenticate the user.
 

@@ -100,8 +100,19 @@ class LcoError(Exception):
         return {"ok": False, "error": self.message, "detail": self.detail, "status": self.status}
 
 
-def _get_lco_api_token(user_name: str | None = None) -> str:
-    """Return the LCO API token for *user_name*, falling back to the legacy env var."""
+def _get_lco_api_token(user_name: str | None = None, *, require_own_token: bool = False) -> str:
+    """Return the LCO API token for *user_name*.
+
+    A logged-in (nginx-authenticated) user acts under their *own* LCO account:
+    telescope-time bookings, proposal listings, and IPP validation all run under
+    whichever token authenticates the request. So when ``require_own_token`` is
+    set — the identity-bearing portal calls (proposals, requestgroups, IPP,
+    submit) — an authenticated user with no saved token is refused rather than
+    silently borrowing the server's shared ``LCO_API_TOKEN`` (which belongs to
+    the operator, not them). The global token remains the fallback only for
+    unauthenticated/CLI callers (``user_name`` is ``None``) and for read-only
+    archive access, which never carries the caller's identity.
+    """
     if user_name:
         try:
             user_token = get_user_lco_token(user_name)
@@ -113,6 +124,16 @@ def _get_lco_api_token(user_name: str | None = None) -> str:
             ) from exc
         if user_token:
             return user_token
+        if require_own_token:
+            raise LcoError(
+                "Your LCO API token is not configured",
+                status=403,
+                detail=(
+                    "This action runs under your own LCO account. Save your "
+                    "personal LCO token in Settings; the server's shared token "
+                    "is not used on behalf of logged-in users."
+                ),
+            )
     token = os.environ.get("LCO_API_TOKEN")
     if not token:
         raise LcoError(
@@ -127,10 +148,23 @@ def _get_lco_api_token(user_name: str | None = None) -> str:
 
 
 def config_state(user_name: str | None = None) -> dict:
-    """Return the configuration state for LCO variables. No secrets exposed."""
+    """Return the configuration state for LCO variables. No secrets exposed.
+
+    Portal actions (proposals, IPP, submit) run under the caller's own LCO
+    identity, so for a logged-in (authenticated) user the server's global token
+    does not count toward ``token_configured``/``submit_allowed`` — only their
+    saved per-user token does. Unauthenticated/CLI callers keep the global token
+    as a valid source.
+    """
+    authenticated = bool((user_name or "").strip())
     user_token_configured = user_lco_token_configured(user_name)
     global_token_configured = bool(os.environ.get("LCO_API_TOKEN"))
-    token_configured = user_token_configured or global_token_configured
+    if authenticated:
+        token_configured = user_token_configured
+        token_source = "user" if user_token_configured else None
+    else:
+        token_configured = user_token_configured or global_token_configured
+        token_source = "user" if user_token_configured else ("global" if global_token_configured else None)
     download_root_configured = bool(
         os.environ.get("MUSCAT_LCO_DIR") or os.environ.get("MUSCAT_DATA_DIR")
     )
@@ -140,7 +174,7 @@ def config_state(user_name: str | None = None) -> dict:
         "token_configured": token_configured,
         "user_token_configured": user_token_configured,
         "global_token_configured": global_token_configured,
-        "token_source": "user" if user_token_configured else ("global" if global_token_configured else None),
+        "token_source": token_source,
         "download_root_configured": download_root_configured,
         "download_root": str(root) if root else None,
         "submit_allowed": token_configured and download_root_configured and submit_flag_enabled,
@@ -153,6 +187,7 @@ def _lco_api_request(
     data: dict | None = None,
     user_name: str | None = None,
     token: str | None = None,
+    require_own_token: bool = False,
 ) -> dict:
     """Make an authenticated request to the LCO API.
 
@@ -160,8 +195,12 @@ def _lco_api_request(
     (archive-api.lco.global) authenticate with the same DRF token using the
     ``Token`` scheme. Using ``Bearer`` makes the archive return HTTP 401
     ``{"detail": "No Such User"}``.
+
+    ``require_own_token`` forbids the global-token fallback for an authenticated
+    user (see :func:`_get_lco_api_token`); it is ignored when ``token`` is passed
+    explicitly.
     """
-    token = token or _get_lco_api_token(user_name)
+    token = token or _get_lco_api_token(user_name, require_own_token=require_own_token)
     headers = {"Authorization": "Token " + token, "Content-Type": "application/json"}
     body = json.dumps(data).encode("utf-8") if data is not None else None
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
@@ -185,12 +224,18 @@ def _lco_api_request(
         raise LcoError("LCO API request failed", detail=str(e))
 
 
-def get_proposals(user_name: str | None = None, token: str | None = None) -> dict:
+def get_proposals(
+    user_name: str | None = None,
+    token: str | None = None,
+    *,
+    require_own_token: bool = True,
+) -> dict:
     """Fetch the current user's active proposals."""
     return _lco_api_request(
         "https://observe.lco.global/api/proposals/?state=ACTIVE",
         user_name=user_name,
         token=token,
+        require_own_token=require_own_token,
     )
 
 
@@ -198,26 +243,35 @@ def get_requestgroups(
     proposal: str,
     user_name: str | None = None,
     token: str | None = None,
+    *,
+    require_own_token: bool = True,
 ) -> dict:
     """Fetch request groups for a given proposal."""
     if not proposal:
         raise LcoError("Proposal ID is required", status=400)
     url = f"https://observe.lco.global/api/requestgroups/?proposal={urllib.parse.quote(proposal)}"
-    return _lco_api_request(url, user_name=user_name, token=token)
+    return _lco_api_request(url, user_name=user_name, token=token, require_own_token=require_own_token)
 
 
 def get_requestgroup(
     requestgroup_id: int,
     user_name: str | None = None,
     token: str | None = None,
+    *,
+    require_own_token: bool = True,
 ) -> dict:
-    """Fetch one submitted request group, including current child states."""
+    """Fetch one submitted request group, including current child states.
+
+    The background monitor (:mod:`muscat_db.lco_monitor`) polls this for records
+    it did not necessarily submit under a per-user token, so it opts out of the
+    own-token requirement to keep legacy/global-submitted requests observable.
+    """
     try:
         identifier = int(requestgroup_id)
     except (TypeError, ValueError) as exc:
         raise LcoError("Request-group ID must be numeric", status=400) from exc
     url = f"https://observe.lco.global/api/requestgroups/{identifier}/"
-    return _lco_api_request(url, user_name=user_name, token=token)
+    return _lco_api_request(url, user_name=user_name, token=token, require_own_token=require_own_token)
 
 
 def _query_params(filters: dict) -> str:
@@ -1599,15 +1653,22 @@ def max_allowable_ipp(
     request_group: dict,
     user_name: str | None = None,
     token: str | None = None,
+    *,
+    require_own_token: bool = True,
 ) -> dict:
     """Run the max-allowable-IPP dry-run."""
     url = "https://observe.lco.global/api/requestgroups/max_allowable_ipp/"
-    return _lco_api_request(url, method="POST", data=request_group, user_name=user_name, token=token)
+    return _lco_api_request(
+        url, method="POST", data=request_group,
+        user_name=user_name, token=token, require_own_token=require_own_token,
+    )
 
 def submit_requestgroup(
     request_group: dict,
     user_name: str | None = None,
     token: str | None = None,
+    *,
+    require_own_token: bool = True,
 ) -> dict:
     """Submit a live observation request."""
     if os.environ.get("MUSCAT_LCO_ALLOW_SUBMIT") != "1":
@@ -1617,4 +1678,7 @@ def submit_requestgroup(
             detail="To enable, set MUSCAT_LCO_ALLOW_SUBMIT=1 in the server environment.",
         )
     url = "https://observe.lco.global/api/requestgroups/"
-    return _lco_api_request(url, method="POST", data=request_group, user_name=user_name, token=token)
+    return _lco_api_request(
+        url, method="POST", data=request_group,
+        user_name=user_name, token=token, require_own_token=require_own_token,
+    )

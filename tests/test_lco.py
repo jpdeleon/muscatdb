@@ -329,6 +329,115 @@ class LcoTest(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_portal_call_refuses_global_fallback_for_authenticated_user(self):
+        """An nginx-authenticated user without a saved token must not borrow the
+        operator's global LCO_API_TOKEN for identity-bearing portal calls."""
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "MUSCAT_DB_PATH": path,
+                    "MUSCAT_DB_SECRET": "test-secret",
+                    "LCO_API_TOKEN": "global-token",
+                },
+            ):
+                set_user_lco_token("alice", "alice-token")
+                # Own token is honored regardless of the flag.
+                self.assertEqual(
+                    lco._get_lco_api_token("alice", require_own_token=True),
+                    "alice-token",
+                )
+                # Authenticated user with no saved token is refused (not global).
+                with self.assertRaises(lco.LcoError) as cm:
+                    lco._get_lco_api_token("bob", require_own_token=True)
+                self.assertEqual(cm.exception.status, 403)
+                # Unauthenticated/CLI callers keep the global fallback even when
+                # the identity-bearing flag is set.
+                self.assertEqual(
+                    lco._get_lco_api_token(None, require_own_token=True),
+                    "global-token",
+                )
+        finally:
+            os.unlink(path)
+
+    def test_get_proposals_refuses_global_for_authenticated_user_without_token(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "MUSCAT_DB_PATH": path,
+                    "MUSCAT_DB_SECRET": "test-secret",
+                    "LCO_API_TOKEN": "global-token",
+                },
+            ):
+                with patch("urllib.request.urlopen") as mock_urlopen:
+                    with self.assertRaises(lco.LcoError) as cm:
+                        lco.get_proposals("bob")
+                    self.assertEqual(cm.exception.status, 403)
+                    mock_urlopen.assert_not_called()
+        finally:
+            os.unlink(path)
+
+    def test_archive_search_still_falls_back_for_authenticated_user(self):
+        """Read-only archive access is not identity-bearing, so it keeps the
+        global fallback for an authenticated user without a saved token."""
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "MUSCAT_DB_PATH": path,
+                    "MUSCAT_DB_SECRET": "test-secret",
+                    "LCO_API_TOKEN": "global-token",
+                },
+            ):
+                with patch("urllib.request.urlopen") as mock_urlopen:
+                    mock_response = MagicMock()
+                    mock_response.status = 200
+                    mock_response.read.return_value = b'{"results": []}'
+                    mock_urlopen.return_value.__enter__.return_value = mock_response
+                    lco.archive_search({"OBJECT": "WASP-12"}, user_name="bob")
+                    request = mock_urlopen.call_args[0][0]
+                    self.assertEqual(
+                        request.get_header("Authorization"), "Token global-token"
+                    )
+        finally:
+            os.unlink(path)
+
+    def test_config_state_authenticated_user_ignores_global_token(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "MUSCAT_DB_PATH": path,
+                    "MUSCAT_DB_SECRET": "test-secret",
+                    "LCO_API_TOKEN": "global-token",
+                    "MUSCAT_LCO_DIR": os.path.dirname(path),
+                    "MUSCAT_LCO_ALLOW_SUBMIT": "1",
+                },
+            ):
+                # Authenticated user without their own token: global does not count.
+                state = lco.config_state("bob")
+                self.assertTrue(state["global_token_configured"])
+                self.assertFalse(state["user_token_configured"])
+                self.assertFalse(state["token_configured"])
+                self.assertIsNone(state["token_source"])
+                self.assertFalse(state["submit_allowed"])
+                # Unauthenticated/CLI caller: global token is a valid source.
+                anon = lco.config_state(None)
+                self.assertTrue(anon["token_configured"])
+                self.assertEqual(anon["token_source"], "global")
+                self.assertTrue(anon["submit_allowed"])
+        finally:
+            os.unlink(path)
+
     @patch.dict(os.environ, {"LCO_API_TOKEN": "test-token"})
     @patch("urllib.request.urlopen")
     def test_get_proposals_ok(self, mock_urlopen):

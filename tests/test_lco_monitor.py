@@ -111,7 +111,7 @@ def test_monitor_downloads_final_frames_then_scans_and_ingests(monitor_db, tmp_p
 
     monkeypatch.setattr(
         "muscat_db.lco.get_requestgroup",
-        lambda group_id, user_name=None: result,
+        lambda group_id, user_name=None, **kwargs: result,
     )
     pages = iter(
         [
