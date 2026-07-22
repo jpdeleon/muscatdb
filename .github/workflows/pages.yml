@@ -1,0 +1,55 @@
+name: Pages
+
+# Deploys the pre-built static documentation snapshot to GitHub Pages. The
+# snapshot is generated on the production host (it needs the real muscat.db and
+# the ~/ql figure trees that CI runners do not have) and force-pushed to the
+# orphan `pages` branch by scripts/deploy_static_site.sh. Because that branch is
+# always force-pushed as a single orphan commit, regenerated figures never
+# accumulate in the repository history and are never tracked on main/test. This
+# workflow only uploads and deploys the `pages` branch — it never builds.
+
+on:
+  push:
+    branches: [pages]
+  workflow_dispatch:
+
+# Allow one concurrent deployment; let an in-progress run finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy static snapshot
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: pages
+
+      - name: Guard — site/ must exist on the pages branch
+        run: |
+          if [ ! -d site ] || [ -z "$(ls -A site 2>/dev/null)" ]; then
+            echo "::error::the 'pages' branch has no site/ tree. Publish it from the host with 'scripts/deploy_static_site.sh'."
+            exit 1
+          fi
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,2370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jobs — MuSCAT-db</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230f1117' stroke='%2345d6b5' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='14' fill='none' stroke='%236c8cff' stroke-width='2.5'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%2345d6b5'/%3E%3Cg fill='%23e1e4ed'%3E%3Ccircle cx='12' cy='14' r='1.6'/%3E%3Ccircle cx='52' cy='18' r='1.2'/%3E%3Ccircle cx='50' cy='48' r='1.8'/%3E%3Ccircle cx='14' cy='50' r='1.4'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%230f1117' stroke='%2345d6b5' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='14' fill='none' stroke='%236c8cff' stroke-width='2.5'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%2345d6b5'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../static/styles.css">
+<script src="../static/js/storage.js"></script>
+<script src="../static/js/format.js"></script>
+<script src="../static/js/jobPolling.js"></script>
+<script>
+  // Global fetch-activity tracker. Installed in <head> so it wraps window.fetch
+  // before any page script runs, giving every page a consistent loading
+  // indicator while it queries data (FOV → Gaia, ephemeris datasets, LCO
+  // schedule, …). It counts in-flight *same-origin* /api/ requests only, so the
+  // background job/status pollers (which hit /jobs/status, not /api/) never
+  // flash the bar. The loading-bar controller below subscribes via onChange.
+  (function () {
+    var origFetch = window.fetch ? window.fetch.bind(window) : null;
+    if (!origFetch) return;
+    var active = 0;
+    var tracker = { active: 0, onChange: null };
+    function notify() {
+      tracker.active = active;
+      if (typeof tracker.onChange === 'function') {
+        try { tracker.onChange(active); } catch (e) { /* never let UI break fetch */ }
+      }
+    }
+    function begin() { active++; notify(); }
+    function end() { active = Math.max(0, active - 1); notify(); }
+    function shouldTrack(input) {
+      try {
+        var urlStr = (typeof input === 'string') ? input
+                   : (input && input.url) ? input.url : String(input);
+        var u = new URL(urlStr, window.location.href);
+        var isStatus = u.pathname.endsWith('/status') || u.pathname.endsWith('/status-batch');
+        return u.origin === window.location.origin && u.pathname.indexOf('/api/') === 0 && !isStatus;
+      } catch (e) { return false; }
+    }
+    window.fetch = function (input, init) {
+      if (!shouldTrack(input)) return origFetch(input, init);
+      begin();
+      var p;
+      try {
+        p = origFetch(input, init);
+      } catch (e) {
+        end();
+        throw e;
+      }
+      p.then(end, end);
+      return p;
+    };
+    window.MuscatFetchTracker = tracker;
+  })();
+</script>
+</head>
+<body>
+<!--muscat-static-snapshot-banner-->
+<div id="snapshot-banner" role="note" style="display:flex;align-items:center;gap:.6rem;padding:.5rem .9rem;background:#3a2d00;color:#ffe9a8;font:500 .85rem/1.3 system-ui,sans-serif;border-bottom:1px solid #5a4700;"><span>&#128196; Static documentation snapshot of <strong>muscat-db</strong> &mdash; live data &amp; actions are disabled.</span><button type="button" aria-label="Dismiss" onclick="this.closest('#snapshot-banner').remove()" style="margin-left:auto;background:none;border:0;color:inherit;font-size:1.1rem;line-height:1;cursor:pointer;padding:0 .3rem;">&times;</button></div>
+<div id="loading-bar" role="progressbar" aria-label="Loading"></div>
+<nav>
+  <a class="brand" href="../" data-nav-section="home">MuSCAT-db</a>
+  <a href="../logs/" data-nav-section="obslog">ObsLog</a>
+  <a id="target-nav-link" href="../target/V1298_Tau/" data-nav-section="target">Target</a>
+  <a id="photometry-nav-link" href="../photometry/muscat/251119/V1298_Tau/" data-nav-section="photometry">Photometry</a>
+  <a id="transit-fit-nav-link" href="../transit-fit/muscat/260123/HAT-P-32b/" data-nav-section="transit-fit">Transit Fit</a>
+  <a id="ephemeris-nav-link" href="../ephemeris/" data-nav-section="ephemeris">Ephemeris</a>
+  <a id="ttv-fit-nav-link" href="../ephemeris/" style="display: none;">TTV Fit</a>
+  <a href="../jobs/" data-nav-section="jobs">Jobs</a>
+  <span class="spacer"></span>
+  <a href="../lco/schedule/" data-nav-section="lco">LCO</a>
+  <a href="../fov/" data-nav-section="fov">FOV</a>
+  <a href="../exposure/" data-nav-section="exposure">Exp Calc</a>
+  <a href="../toi/" data-nav-section="toi">TOI</a>
+  <a href="../nexsci/" data-nav-section="nexsci">NExScI</a>
+  <a href="../guide/" data-nav-section="guide" style="margin-right: 0.5rem;">Guide</a>
+  <a href="../settings/" data-nav-section="settings">Settings <span class="badge" id="current-user-badge" hidden></span></a>
+  <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle light/dark theme" title="Toggle theme">
+    <svg class="icon-sun" viewbox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="4"></circle>
+      <line x1="12" y1="2" x2="12" y2="5"></line>
+      <line x1="12" y1="19" x2="12" y2="22"></line>
+      <line x1="2" y1="12" x2="5" y2="12"></line>
+      <line x1="19" y1="12" x2="22" y2="12"></line>
+      <line x1="4.5" y1="4.5" x2="6.6" y2="6.6"></line>
+      <line x1="17.4" y1="17.4" x2="19.5" y2="19.5"></line>
+      <line x1="4.5" y1="19.5" x2="6.6" y2="17.4"></line>
+      <line x1="17.4" y1="6.6" x2="19.5" y2="4.5"></line>
+    </svg>
+    <svg class="icon-moon" viewbox="0 0 24 24" aria-hidden="true">
+      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"></path>
+    </svg>
+  </button>
+</nav>
+<script>
+  (function () {
+    var path = window.location.pathname.replace(/\/+$/, '') || '/';
+    var section = {
+      '/': 'home',
+      '/logs': 'obslog',
+      '/target': 'target',
+      '/photometry': 'photometry',
+      '/transit-fit': 'transit-fit',
+      '/ephemeris': 'ephemeris',
+      '/jobs': 'jobs',
+      '/fov': 'fov',
+      '/exposure': 'exposure',
+      '/toi': 'toi',
+      '/nexsci': 'nexsci',
+      '/guide': 'guide',
+      '/settings': 'settings'
+    }[path];
+
+    if (path.indexOf('/lco/') === 0) section = 'lco';
+    if (/^\/(?:muscat|muscat2|muscat3|muscat4|sinistro)(?:\/|$)/.test(path)) {
+      section = 'obslog';
+    }
+
+    document.querySelectorAll('nav a[data-nav-section]').forEach(function (link) {
+      if (link.dataset.navSection === section) {
+        link.setAttribute('aria-current', 'page');
+      }
+    });
+  })();
+
+  // Resolve the current nginx-authenticated user once, per request and uncached
+  // (see /whoami in web.py). The result is shared via a promise so the navbar
+  // badge and the chat widget reuse a single request instead of each firing
+  // their own. This is required because the targets/target pages are served
+  // from a globally-cached HTML blob that must NOT embed a per-user identity;
+  // the name is filled in client-side instead. Empty string means no user.
+  (function () {
+    window.MuscatWhoami = fetch('/whoami', { headers: { 'X-Requested-With': 'fetch' } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        return (d && typeof d.user === 'string' && d.user.trim()) ? d.user.trim() : '';
+      })
+      .catch(function () { return ''; });
+    window.MuscatWhoami.then(function (user) {
+      if (!user) return;
+      var badge = document.getElementById('current-user-badge');
+      if (badge && !badge.textContent.trim()) {
+        badge.textContent = user;
+        badge.hidden = false;
+      }
+    });
+  })();
+</script>
+<div class="container">
+
+<h1>Jobs</h1>
+
+<div class="jobs-summary" id="time-summary">
+  <span class="job-count" data-time="recent" onclick="toggleRecent(this)">Today</span>
+</div>
+
+<div class="jobs-summary" id="type-summary">
+  <span class="job-count" data-type="photometry" onclick="toggleType(this, 'photometry')">Photometry</span>
+  <span class="job-count" data-type="transit_fit" onclick="toggleType(this, 'transit_fit')">Transit Fit</span>
+  <span class="job-count" data-type="ttv_fit" onclick="toggleType(this, 'ttv_fit')">TTV Fit</span>
+  <span class="job-count" data-type="lco_archive_download" onclick="toggleType(this, 'lco_archive_download')">LCO Archive</span>
+</div>
+<div class="jobs-summary" id="inst-summary"></div>
+
+
+
+
+
+<div class="jobs-summary" id="jobs-summary">
+  
+    
+    <span class="job-count " data-status="running" onclick="toggleStatus(this, 'running')">
+      <span class="job-count-num">0</span>
+      <span class="job-count-label">Running</span>
+    </span>
+  
+    
+    <span class="job-count " data-status="pending" onclick="toggleStatus(this, 'pending')">
+      <span class="job-count-num">0</span>
+      <span class="job-count-label">Pending</span>
+    </span>
+  
+    
+    <span class="job-count has-done" data-status="done" onclick="toggleStatus(this, 'done')">
+      <span class="job-count-num">8</span>
+      <span class="job-count-label">Done</span>
+    </span>
+  
+    
+    <span class="job-count " data-status="error" onclick="toggleStatus(this, 'error')">
+      <span class="job-count-num">0</span>
+      <span class="job-count-label">Failed</span>
+    </span>
+  
+    
+    <span class="job-count " data-status="cancelled" onclick="toggleStatus(this, 'cancelled')">
+      <span class="job-count-num">0</span>
+      <span class="job-count-label">Cancelled</span>
+    </span>
+  
+  <span class="job-count-bar-spacer"></span>
+  <span class="job-count job-count-clear" id="clear-filter" style="display:none;cursor:pointer;opacity:0.6;" onclick="clearFilter()">✕ Clear filter</span>
+</div>
+
+<div class="search-bar">
+  <input id="job-search" type="text" placeholder="Search target, run name, instrument, date, type…" autocomplete="off">
+  <span id="search-status" class="hint"></span>
+</div>
+
+
+
+<details class="adv job-section" id="photometry-jobs-section" open data-job-section="photometry">
+  <summary>Photometry Jobs</summary>
+  <div class="csv-wrap">
+  <table class="jobs-table" data-job-type="photometry">
+    <thead>
+      <tr>
+        <th data-sort-attr="target" class="sortable">Target</th>
+        <th data-sort-attr="run_name" class="sortable">Run Name</th>
+        <th data-sort-attr="instrument" class="sortable">Instrument</th>
+        <th data-sort-attr="obsdate" class="sortable">Date Obs</th>
+        <th data-sort-attr="startedAt" data-sort-type="number" class="sortable">Date Run</th>
+        <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
+        <th data-sort-attr="state" class="sortable">Status</th>
+        <th>Details</th>
+        <th>Actions</th>
+        <th data-sort-attr="userName" class="sortable">User</th>
+      </tr>
+    </thead>
+    <tbody>
+      
+    
+    <tr class="job-row" data-key="photometry:sinistro/250313/HIP67522/default" data-status="done" data-type="photometry" data-started-at="1784707460" data-user-name="" data-action-inst="" data-action-date="" data-job-inst="sinistro" data-job-date="250313" data-job-target="HIP67522" data-job-run="default" data-photometry-url="" data-lco-followup-ready="0" data-search="hip67522 default sinistro 250313 photometry  ">
+      
+      <td><strong><a href="../photometry/sinistro/250313/HIP67522/">HIP67522</a></strong></td>
+      <td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="default">
+        default
+      </td>
+      
+      <td class="inst-cell"><span class="badge badge-blue">sinistro</span></td>
+      
+      
+      <td class="mono">
+        
+          250313
+        
+      </td>
+      
+      <td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">
+        
+          Jul 22 17:04
+        
+      </td>
+      <td class="mono elapsed-cell" data-elapsed="24">24s</td>
+      <td class="status-cell">
+        
+          <span class="badge badge-green status-badge">Done</span>
+        
+      </td>
+      <td class="details-cell" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">
+        
+          <span class="badge badge-amber">test</span>
+        
+        
+        
+      </td>
+      
+      <td class="job-actions">
+        
+          <button class="btn sm" data-job-action="rerun" data-key="photometry:sinistro/250313/HIP67522/default" title="Re-run this job">⟳ Re-run</button>
+        
+        <button class="btn sm log-btn" data-job-action="log" data-type="photometry" data-inst="sinistro" data-date="250313" data-target="HIP67522" data-run="default" title="View log" style="margin-left:0.25rem;">📄 Log</button>
+        <button class="btn sm hide-btn" data-job-action="hide" data-key="photometry:sinistro/250313/HIP67522/default" title="Hide this row" style="margin-left:0.25rem;">✕</button>
+      </td>
+      
+      <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">—</td>
+    </tr>
+    <tr class="log-row" style="display:none;">
+      <td colspan="10">
+        <pre class="log-content">Loading…</pre>
+      </td>
+    </tr>
+  
+    
+    <tr class="job-row" data-key="photometry:muscat3/260716/TOI-1410/big_aper" data-status="done" data-type="photometry" data-started-at="1784627204" data-user-name="" data-action-inst="" data-action-date="" data-job-inst="muscat3" data-job-date="260716" data-job-target="TOI-1410" data-job-run="big_aper" data-photometry-url="" data-lco-followup-ready="0" data-search="toi-1410 big_aper muscat3 260716 photometry  ">
+      
+      <td><strong><a href="../photometry/muscat3/260716/TOI-1410/">TOI-1410</a></strong></td>
+      <td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="big_aper">
+        big_aper
+      </td>
+      
+      <td class="inst-cell"><span class="badge badge-blue">muscat3</span></td>
+      
+      
+      <td class="mono">
+        
+          260716
+        
+      </td>
+      
+      <td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">
+        
+          Jul 21 18:46
+        
+      </td>
+      <td class="mono elapsed-cell" data-elapsed="207">3m 27s</td>
+      <td class="status-cell">
+        
+          <span class="badge badge-green status-badge">Done</span>
+        
+      </td>
+      <td class="details-cell" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">
+        
+          <span class="badge badge-blue">full</span>
+        
+        
+        
+      </td>
+      
+      <td class="job-actions">
+        
+          <button class="btn sm" data-job-action="rerun" data-key="photometry:muscat3/260716/TOI-1410/big_aper" title="Re-run this job">⟳ Re-run</button>
+        
+        <button class="btn sm log-btn" data-job-action="log" data-type="photometry" data-inst="muscat3" data-date="260716" data-target="TOI-1410" data-run="big_aper" title="View log" style="margin-left:0.25rem;">📄 Log</button>
+        <button class="btn sm hide-btn" data-job-action="hide" data-key="photometry:muscat3/260716/TOI-1410/big_aper" title="Hide this row" style="margin-left:0.25rem;">✕</button>
+      </td>
+      
+      <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">—</td>
+    </tr>
+    <tr class="log-row" style="display:none;">
+      <td colspan="10">
+        <pre class="log-content">Loading…</pre>
+      </td>
+    </tr>
+  
+    </tbody>
+  </table>
+  </div>
+</details>
+
+<details class="adv job-section" id="transit-fit-jobs-section" open data-job-section="transit_fit" style="margin-top:1rem;">
+  <summary>Transit Fit Jobs</summary>
+  <div class="csv-wrap">
+  <table class="jobs-table" data-job-type="transit_fit">
+    <thead>
+      <tr>
+        <th data-sort-attr="target" class="sortable">Target</th>
+        <th data-sort-attr="run_name" class="sortable">Run Name</th>
+        <th data-sort-attr="instrument" class="sortable">Instrument</th>
+        <th data-sort-attr="obsdate" class="sortable">Date Obs</th>
+        <th data-sort-attr="startedAt" data-sort-type="number" class="sortable">Date Run</th>
+        <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
+        <th data-sort-attr="state" class="sortable">Status</th>
+        <th>Details</th>
+        <th>Actions</th>
+        <th data-sort-attr="userName" class="sortable">User</th>
+      </tr>
+    </thead>
+    <tbody>
+      
+    
+    <tr class="job-row" data-key="transit_fit:muscat4/250718/TIC89071445/default" data-status="done" data-type="transit_fit" data-started-at="1784619421" data-user-name="" data-action-inst="" data-action-date="" data-job-inst="muscat4" data-job-date="250718" data-job-target="TIC89071445" data-job-run="default" data-photometry-url="" data-lco-followup-ready="0" data-search="tic89071445 default muscat4 250718 transit_fit  ">
+      
+      <td><strong><a href="../transit-fit/muscat4/250718/TIC89071445/">TIC89071445</a></strong></td>
+      <td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="default">
+        default
+      </td>
+      
+      <td class="inst-cell"><span class="badge badge-blue">muscat4</span></td>
+      
+      
+      <td class="mono">
+        
+          250718
+        
+      </td>
+      
+      <td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">
+        
+          Jul 21 16:37
+        
+      </td>
+      <td class="mono elapsed-cell" data-elapsed="502">8m 22s</td>
+      <td class="status-cell">
+        
+          <span class="badge badge-green status-badge">Done</span>
+        
+      </td>
+      <td class="details-cell" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">
+        
+          <span class="badge badge-blue">full</span>
+        
+        
+        
+      </td>
+      
+      <td class="job-actions">
+        
+          <button class="btn sm" data-job-action="rerun" data-key="transit_fit:muscat4/250718/TIC89071445/default" title="Re-run this job">⟳ Re-run</button>
+        
+        <button class="btn sm log-btn" data-job-action="log" data-type="transit_fit" data-inst="muscat4" data-date="250718" data-target="TIC89071445" data-run="default" title="View log" style="margin-left:0.25rem;">📄 Log</button>
+        <button class="btn sm hide-btn" data-job-action="hide" data-key="transit_fit:muscat4/250718/TIC89071445/default" title="Hide this row" style="margin-left:0.25rem;">✕</button>
+      </td>
+      
+      <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">—</td>
+    </tr>
+    <tr class="log-row" style="display:none;">
+      <td colspan="10">
+        <pre class="log-content">Loading…</pre>
+      </td>
+    </tr>
+  
+    
+    <tr class="job-row" data-key="transit_fit:muscat4/250416/TOI-6715/default" data-status="done" data-type="transit_fit" data-started-at="1784616707" data-user-name="" data-action-inst="" data-action-date="" data-job-inst="muscat4" data-job-date="250416" data-job-target="TOI-6715" data-job-run="default" data-photometry-url="" data-lco-followup-ready="0" data-search="toi-6715 default muscat4 250416 transit_fit  ">
+      
+      <td><strong><a href="../transit-fit/muscat4/250416/TOI-6715/">TOI-6715</a></strong></td>
+      <td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="default">
+        default
+      </td>
+      
+      <td class="inst-cell"><span class="badge badge-blue">muscat4</span></td>
+      
+      
+      <td class="mono">
+        
+          250416
+        
+      </td>
+      
+      <td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">
+        
+          Jul 21 15:51
+        
+      </td>
+      <td class="mono elapsed-cell" data-elapsed="369">6m 9s</td>
+      <td class="status-cell">
+        
+          <span class="badge badge-green status-badge">Done</span>
+        
+      </td>
+      <td class="details-cell" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">
+        
+          <span class="badge badge-blue">full</span>
+        
+        
+        
+      </td>
+      
+      <td class="job-actions">
+        
+          <button class="btn sm" data-job-action="rerun" data-key="transit_fit:muscat4/250416/TOI-6715/default" title="Re-run this job">⟳ Re-run</button>
+        
+        <button class="btn sm log-btn" data-job-action="log" data-type="transit_fit" data-inst="muscat4" data-date="250416" data-target="TOI-6715" data-run="default" title="View log" style="margin-left:0.25rem;">📄 Log</button>
+        <button class="btn sm hide-btn" data-job-action="hide" data-key="transit_fit:muscat4/250416/TOI-6715/default" title="Hide this row" style="margin-left:0.25rem;">✕</button>
+      </td>
+      
+      <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">—</td>
+    </tr>
+    <tr class="log-row" style="display:none;">
+      <td colspan="10">
+        <pre class="log-content">Loading…</pre>
+      </td>
+    </tr>
+  
+    </tbody>
+  </table>
+  </div>
+</details>
+
+<details class="adv job-section" id="ttv-fit-jobs-section" open data-job-section="ttv_fit" style="margin-top:1rem;">
+  <summary>TTV Fit Jobs</summary>
+  <div class="csv-wrap">
+  <table class="jobs-table" data-job-type="ttv_fit">
+    <thead>
+      <tr>
+        <th data-sort-attr="target" class="sortable">Target</th>
+        <th data-sort-attr="run_name" class="sortable">Run Name</th>
+        <th data-sort-attr="startedAt" data-sort-type="number" class="sortable">Date Run</th>
+        <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
+        <th data-sort-attr="state" class="sortable">Status</th>
+        <th>Details</th>
+        <th>Actions</th>
+        <th data-sort-attr="userName" class="sortable">User</th>
+      </tr>
+    </thead>
+    <tbody>
+      
+    
+    <tr class="job-row" data-key="ttv_fit:_/_/HIP67522/lco_only" data-status="done" data-type="ttv_fit" data-started-at="1784597447" data-user-name="" data-action-inst="" data-action-date="" data-job-inst="_" data-job-date="_" data-job-target="HIP67522" data-job-run="lco_only" data-photometry-url="" data-lco-followup-ready="0" data-search="hip67522 lco_only _ _ ttv_fit  ">
+      
+      <td><strong><a href="../ephemeris/">HIP67522</a></strong></td>
+      <td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="lco_only">
+        lco_only
+      </td>
+      
+      
+      <td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">
+        
+          Jul 21 10:30
+        
+      </td>
+      <td class="mono elapsed-cell" data-elapsed="62">1m 2s</td>
+      <td class="status-cell">
+        
+          <span class="badge badge-green status-badge">Done</span>
+        
+      </td>
+      <td class="details-cell" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">
+        
+          <span class="badge badge-blue">full</span>
+        
+        
+        
+      </td>
+      
+      <td class="job-actions">
+        
+          <button class="btn sm" data-job-action="rerun" data-key="ttv_fit:_/_/HIP67522/lco_only" title="Re-run this job">⟳ Re-run</button>
+        
+        <button class="btn sm log-btn" data-job-action="log" data-type="ttv_fit" data-inst="_" data-date="_" data-target="HIP67522" data-run="lco_only" title="View log" style="margin-left:0.25rem;">📄 Log</button>
+        <button class="btn sm hide-btn" data-job-action="hide" data-key="ttv_fit:_/_/HIP67522/lco_only" title="Hide this row" style="margin-left:0.25rem;">✕</button>
+      </td>
+      
+      <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">—</td>
+    </tr>
+    <tr class="log-row" style="display:none;">
+      <td colspan="8">
+        <pre class="log-content">Loading…</pre>
+      </td>
+    </tr>
+  
+    
+    <tr class="job-row" data-key="ttv_fit:_/_/HIP67522/joint_tess_no_outliers" data-status="done" data-type="ttv_fit" data-started-at="1784595750" data-user-name="" data-action-inst="" data-action-date="" data-job-inst="_" data-job-date="_" data-job-target="HIP67522" data-job-run="joint_tess_no_outliers" data-photometry-url="" data-lco-followup-ready="0" data-search="hip67522 joint_tess_no_outliers _ _ ttv_fit  ">
+      
+      <td><strong><a href="../ephemeris/">HIP67522</a></strong></td>
+      <td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="joint_tess_no_outliers">
+        joint_tess_no_outliers
+      </td>
+      
+      
+      <td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">
+        
+          Jul 21 10:02
+        
+      </td>
+      <td class="mono elapsed-cell" data-elapsed="70">1m 10s</td>
+      <td class="status-cell">
+        
+          <span class="badge badge-green status-badge">Done</span>
+        
+      </td>
+      <td class="details-cell" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">
+        
+          <span class="badge badge-blue">full</span>
+        
+        
+        
+      </td>
+      
+      <td class="job-actions">
+        
+          <button class="btn sm" data-job-action="rerun" data-key="ttv_fit:_/_/HIP67522/joint_tess_no_outliers" title="Re-run this job">⟳ Re-run</button>
+        
+        <button class="btn sm log-btn" data-job-action="log" data-type="ttv_fit" data-inst="_" data-date="_" data-target="HIP67522" data-run="joint_tess_no_outliers" title="View log" style="margin-left:0.25rem;">📄 Log</button>
+        <button class="btn sm hide-btn" data-job-action="hide" data-key="ttv_fit:_/_/HIP67522/joint_tess_no_outliers" title="Hide this row" style="margin-left:0.25rem;">✕</button>
+      </td>
+      
+      <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">—</td>
+    </tr>
+    <tr class="log-row" style="display:none;">
+      <td colspan="8">
+        <pre class="log-content">Loading…</pre>
+      </td>
+    </tr>
+  
+    </tbody>
+  </table>
+  </div>
+</details>
+
+
+<details class="adv job-section" id="lco-archive-jobs-section" open data-job-section="lco_archive_download" data-always-visible="1" style="margin-top:1rem;">
+  <summary>LCO Archive Downloads</summary>
+  <div class="csv-wrap">
+  <table class="jobs-table" data-job-type="lco_archive_download">
+    <thead>
+      <tr>
+        <th class="lco-actions-head">Actions</th>
+        <th data-sort-attr="target" class="sortable">Target</th>
+        <th data-sort-attr="run_name" class="sortable">Progress</th>
+        <th data-sort-attr="instrument" class="sortable">Instrument</th>
+        <th data-sort-attr="obsdate" class="sortable">Date Obs</th>
+        <th data-sort-attr="startedAt" data-sort-type="number" class="sortable">Date Run</th>
+        <th data-sort-attr="elapsed" data-sort-type="number" class="sortable">Elapsed</th>
+        <th data-sort-attr="state" class="sortable">Status</th>
+        <th>Details</th>
+        <th data-sort-attr="userName" class="sortable">User</th>
+      </tr>
+    </thead>
+    <tbody>
+      
+    
+    <tr class="job-row" data-key="lco_archive_download:8f32307fba554658" data-status="done" data-type="lco_archive_download" data-started-at="1784216839" data-user-name="" data-action-inst="muscat3" data-action-date="260716" data-job-inst="muscat3" data-job-date="260716" data-job-target="TOI-1410" data-job-run="8f32307fba554658" data-photometry-url="/photometry?inst=muscat3&date=260716&target=TOI-1410" data-lco-followup-ready="1" data-search="toi-1410 722/722 frames muscat3 260716 lco_archive_download  /mnt_ut3/raid_ut3/data/muscat3/260716">
+      
+      <td class="job-actions lco-actions-cell">
+        
+          <a class="btn sm" href="../photometry/muscat/251119/V1298_Tau/" title="Open this dataset in Photometry" aria-label="Open this dataset in Photometry">🔭</a>
+        
+        <button class="btn sm hide-btn" data-job-action="hide" data-key="lco_archive_download:8f32307fba554658" title="Hide this row">Hide</button>
+      </td>
+      
+      <td><strong><a href="../lco/archive/">TOI-1410</a></strong></td>
+      <td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="722/722 frames">
+        722/722 frames
+      </td>
+      
+      <td class="inst-cell"><span class="badge badge-blue">muscat3</span></td>
+      
+      
+      <td class="mono obsdate-cell">
+        
+          <a href="../muscat3/260716/" title="Open obslog for muscat3 260716">260716</a>
+        
+      </td>
+      
+      <td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">
+        
+          Jul 17 00:47
+        
+      </td>
+      <td class="mono elapsed-cell" data-elapsed="405">6m 45s</td>
+      <td class="status-cell">
+        
+          <span class="badge badge-green status-badge">Done</span>
+        
+      </td>
+      <td class="details-cell" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">
+        
+          <span class="badge badge-blue">archive</span>
+        
+        
+        
+          <span class="details-text mono" style="color:var(--text-dim);margin-left:0.5rem;" title="/mnt_ut3/raid_ut3/data/MuSCAT3/260716">/mnt_ut3/raid_ut3/data/MuSCAT3/260716</span>
+        
+      </td>
+      
+      <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">—</td>
+    </tr>
+    <tr class="log-row" style="display:none;">
+      <td colspan="10">
+        <pre class="log-content">Loading…</pre>
+      </td>
+    </tr>
+  
+    
+    <tr class="job-row" data-key="lco_archive_download:5361d17a56e24525" data-status="done" data-type="lco_archive_download" data-started-at="1783930682" data-user-name="" data-action-inst="muscat3" data-action-date="260713" data-job-inst="muscat3" data-job-date="260713" data-job-target="TOI-2074" data-job-run="5361d17a56e24525" data-photometry-url="/photometry?inst=muscat3&date=260713&target=TOI-2074" data-lco-followup-ready="1" data-search="toi-2074 60/60 frames muscat3 260713 lco_archive_download  /mnt_ut3/raid_ut3/data/muscat3/260713">
+      
+      <td class="job-actions lco-actions-cell">
+        
+          <a class="btn sm" href="../photometry/muscat/251119/V1298_Tau/" title="Open this dataset in Photometry" aria-label="Open this dataset in Photometry">🔭</a>
+        
+        <button class="btn sm hide-btn" data-job-action="hide" data-key="lco_archive_download:5361d17a56e24525" title="Hide this row">Hide</button>
+      </td>
+      
+      <td><strong><a href="../lco/archive/">TOI-2074</a></strong></td>
+      <td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="60/60 frames">
+        60/60 frames
+      </td>
+      
+      <td class="inst-cell"><span class="badge badge-blue">muscat3</span></td>
+      
+      
+      <td class="mono obsdate-cell">
+        
+          <a href="../muscat3/260713/" title="Open obslog for muscat3 260713">260713</a>
+        
+      </td>
+      
+      <td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">
+        
+          Jul 13 17:18
+        
+      </td>
+      <td class="mono elapsed-cell" data-elapsed="37">37s</td>
+      <td class="status-cell">
+        
+          <span class="badge badge-green status-badge">Done</span>
+        
+      </td>
+      <td class="details-cell" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">
+        
+          <span class="badge badge-blue">archive</span>
+        
+        
+        
+          <span class="details-text mono" style="color:var(--text-dim);margin-left:0.5rem;" title="/mnt_ut3/raid_ut3/data/MuSCAT3/260713">/mnt_ut3/raid_ut3/data/MuSCAT3/260713</span>
+        
+      </td>
+      
+      <td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">—</td>
+    </tr>
+    <tr class="log-row" style="display:none;">
+      <td colspan="10">
+        <pre class="log-content">Loading…</pre>
+      </td>
+    </tr>
+  
+      <tr class="empty-job-row" data-empty-for="lco_archive_download" style="display:none;">
+        <td colspan="10" style="color:var(--text-dim);text-align:center;padding:1rem;">
+          No LCO archive downloads are currently tracked in this server process.
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</details>
+
+<div id="hide-confirm-overlay">
+  <div class="modal-box">
+    <p style="margin-bottom:0.75rem;font-size:0.95rem;font-weight:600;">Hide this job?</p>
+    <p style="color:var(--text-dim);font-size:0.85rem;margin-bottom:1.5rem;line-height:1.5;">It will reappear when triggered from the Photometry or Transit Fit page.</p>
+    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
+      <button class="btn" onclick="closeHideConfirm()">Cancel</button>
+      <button class="btn danger" onclick="confirmHide()">Hide</button>
+    </div>
+  </div>
+</div>
+
+</div>
+<div id="status-bar" role="status" aria-live="polite">
+  <span class="dot"></span>
+  <span id="status-text">Loading…</span>
+</div>
+
+<div id="message-modal" data-mode="message" data-kind="default" role="dialog" aria-modal="true" aria-labelledby="message-modal-title" aria-describedby="message-modal-text">
+  <div class="modal-box">
+    <p id="message-modal-title" class="modal-title"></p>
+    <p id="message-modal-text" class="modal-text"></p>
+    <div class="modal-actions">
+      <button class="btn" id="message-modal-cancel" type="button" hidden>Cancel</button>
+      <button class="btn" id="message-modal-ok" type="button">OK</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const root = document.documentElement;
+    const btn = document.getElementById('theme-toggle');
+    if (window.MuscatRouteState) window.MuscatRouteState.applyNavbar();
+    const stored = localStorage.getItem('muscat-theme');
+    apply(stored || 'light');
+    btn.addEventListener('click', function () {
+      const next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      apply(next);
+      localStorage.setItem('muscat-theme', next);
+    });
+    function apply(t) { root.setAttribute('data-theme', t); }
+  })();
+
+  (function () {
+    const bar    = document.getElementById('loading-bar');
+    const status = document.getElementById('status-bar');
+    const text   = document.getElementById('status-text');
+    const table  = document.getElementById('targets-table');
+
+    // The bar is visible while ANY of these is true: the page is still loading,
+    // a tracked background job is active, or a same-origin /api/ request is in
+    // flight. A running job keeps it up indefinitely (that label wins over the
+    // transient page-load / fetch labels). It only slides away once all three
+    // are false.
+    let pageLoading = true;
+    let pageLabel   = 'Loading…';
+    let jobRunning  = false;
+    let jobLabel    = '';
+    let fetchActive = false;
+    let fetchLabel  = 'Loading…';
+    let hideTimer   = null;
+
+    if (table) {
+      const rows = table.tBodies[0] ? table.tBodies[0].rows.length : 0;
+      pageLabel = 'Rendering ' + rows.toLocaleString() + ' targets…';
+    }
+
+    function render() {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      if (pageLoading || jobRunning || fetchActive) {
+        bar.classList.remove('done');
+        status.classList.add('visible');
+        text.textContent = jobRunning ? jobLabel : (pageLoading ? pageLabel : fetchLabel);
+      } else {
+        bar.classList.add('done');
+        if (status.classList.contains('visible')) {
+          text.textContent = 'Ready';
+          hideTimer = setTimeout(function () { status.classList.remove('visible'); }, 700);
+        }
+      }
+      // Keep the bar in the DOM so we can re-show it on the next navigation.
+    }
+
+    function showLoading(label) {
+      pageLabel = label || 'Loading…';
+      pageLoading = true;
+      render();
+    }
+    function done() {
+      pageLoading = false;
+      render();
+    }
+    // Called by the site-wide background-job watcher below.
+    function setJob(running, label) {
+      jobRunning = !!running;
+      jobLabel   = label || 'Running…';
+      render();
+    }
+    // Called by the global /api/ fetch tracker (installed in <head>). A generic
+    // label is used unless a page has set its own via showLoading.
+    function setFetch(active, label) {
+      fetchActive = !!active;
+      fetchLabel  = label || 'Loading…';
+      render();
+    }
+    window.showLoading = showLoading;
+    window.done = done;
+    window.MuscatLoadingBar = { showLoading: showLoading, done: done, setJob: setJob, setFetch: setFetch };
+
+    // Subscribe to in-flight /api/ requests so every page shows the same
+    // loading indicator while fetching data, with no per-page wiring.
+    if (window.MuscatFetchTracker) {
+      window.MuscatFetchTracker.onChange = function (n) { setFetch(n > 0); };
+      setFetch(window.MuscatFetchTracker.active > 0);
+    }
+
+    if (document.readyState === 'complete') {
+      done();
+    } else {
+      showLoading(pageLabel);
+      window.addEventListener('load', done);
+    }
+
+    // Re-show the bar when the user navigates away via a same-origin link.
+    document.addEventListener('click', function (e) {
+      const link = e.target.closest('a');
+      if (!link) return;
+      if (link.target && link.target !== '_self') return;
+      if (link.hasAttribute('download')) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+      const href = link.getAttribute('href');
+      if (!href || href.startsWith('#') || href.startsWith('javascript:') || href.startsWith('mailto:')) return;
+      const url = new URL(link.href, window.location.href);
+      if (url.origin !== window.location.origin) return;
+      // Skip pure in-page hash changes (same path, different fragment).
+      if (url.pathname === window.location.pathname && url.hash) return;
+      showLoading('Loading…');
+    }, true);
+
+    // Restore on bfcache restores (back/forward navigation).
+    window.addEventListener('pageshow', function (e) {
+      if (e.persisted) done();
+    });
+  })();
+
+  // Site-wide background-job watcher: keeps the loading bar up on ANY page for
+  // as long as a job the user launched (saved under `phot:job` / `fit:job`) is
+  // still active on the server, and takes it down once that job finishes.
+  (function () {
+    const st  = window.MuscatStorage;
+    const bar = window.MuscatLoadingBar;
+    if (!st || !bar) return;
+
+    const POLL_MS = 4000;
+    let timer = null;
+
+    // Reconstruct the canonical job key: "<type>:<inst>/<date>/<target>[/<run_id>]"
+    // (server strips spaces from the target — see photometry.job_key).
+    function jobKey(type, j) {
+      if (!j || !j.inst || !j.date || !j.target) return null;
+      let k = type + ':' + j.inst + '/' + j.date + '/' + String(j.target).replace(/ /g, '');
+      if (j.run_id) k += '/' + j.run_id;
+      return k;
+    }
+    // TTV runs are keyed on a slugged run name rather than a run_id — see
+    // ttv_fit.ttv_job_key() / jobs.slugify_run_name().
+    function ttvJobKey(j) {
+      if (!j || !j.target) return null;
+      const slug = String(j.run_name || '').trim().toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40)
+        .replace(/^_+|_+$/g, '') || 'default';
+      return 'ttv_fit:' + String(j.target).replace(/ /g, '') + '/' + slug;
+    }
+    function trackedKeys() {
+      const keys = [];
+      const p = jobKey('photometry', st.getJSON('phot:job', null));
+      if (p) keys.push(p);
+      const f = jobKey('transit_fit', st.getJSON('fit:job', null));
+      if (f) keys.push(f);
+      const t = ttvJobKey(st.getJSON('muscat-ttv-job', null));
+      if (t) keys.push(t);
+      return keys;
+    }
+    function stop() { if (timer) { clearTimeout(timer); timer = null; } }
+    function schedule() {
+      if (!timer) timer = setTimeout(function () { timer = null; tick(); }, POLL_MS);
+    }
+    function labelFor(states) {
+      if (states.length === 1) {
+        return states[0] === 'pending' ? 'Queued — waiting to start…' : 'Running job…';
+      }
+      return 'Running ' + states.length + ' jobs…';
+    }
+    function tick() {
+      const tracked = trackedKeys();
+      if (tracked.length === 0) { bar.setJob(false, ''); stop(); return; }
+      fetch('/api/jobs/status?active_only=1', { headers: { 'X-Requested-With': 'fetch' } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          const active = {};
+          (d.active || []).forEach(function (a) { active[a.key] = a.state; });
+          const mine = tracked.filter(function (k) { return active[k]; });
+          if (mine.length > 0) {
+            bar.setJob(true, labelFor(mine.map(function (k) { return active[k]; })));
+            schedule();
+          } else {
+            // Tracked job(s) are no longer active — finished, cancelled, or
+            // cleared. Take the bar down and stop polling until the next launch
+            // or navigation re-checks. (The launching page owns clearing the
+            // localStorage key on its own terminal-state handling.)
+            bar.setJob(false, '');
+            stop();
+          }
+        })
+        .catch(function () { schedule(); });
+    }
+
+    // Let a page trigger an immediate re-check right after it launches a job,
+    // instead of waiting up to POLL_MS for the next tick.
+    window.MuscatJobIndicator = { refresh: function () { stop(); tick(); } };
+
+    if (trackedKeys().length > 0) tick();
+  })();
+
+  // ----- resizable table columns ------------------------------------------
+  (function () {
+    function initTable(table) {
+      if (table.dataset.resizableInit === '1') return;
+      if (table.offsetParent === null) return; // Skip if table is currently hidden
+      table.dataset.resizableInit = '1';
+      const headRow = table.tHead && table.tHead.rows[0];
+      if (!headRow) return;
+      const ths = Array.from(headRow.cells);
+      const tableId = table.id || 'tbl-' + Math.random().toString(36).slice(2);
+      // Lock in current natural widths (measured under table-layout: auto) so
+      // dragging one column doesn't shove the others around.
+      const measured = ths.map(function (th, i) {
+        const stored = localStorage.getItem('colw:' + tableId + ':' + i);
+        if (stored) {
+          const w = parseFloat(stored);
+          if (w > 30) {
+            th.style.maxWidth = 'none';
+            return w;
+          }
+        }
+        return th.getBoundingClientRect().width;
+      });
+      let hasStored = false;
+      for (let i = 0; i < ths.length; i++) {
+        if (localStorage.getItem('colw:' + tableId + ':' + i)) {
+          hasStored = true;
+          break;
+        }
+      }
+      if (!hasStored) {
+        const containerW = table.parentElement.clientWidth;
+        let totalMeasured = 0;
+        measured.forEach(function (w) {
+          totalMeasured += w;
+        });
+        ths.forEach(function (th, i) {
+          const share = totalMeasured > 0 ? (measured[i] / totalMeasured) : (1 / ths.length);
+          th.style.width = (containerW * share) + 'px';
+          th.style.maxWidth = 'none';
+        });
+      } else {
+        ths.forEach(function (th, i) {
+          th.style.width = measured[i] + 'px';
+        });
+      }
+
+      // Now switch to fixed layout so column widths are honoured exactly.
+      table.classList.add('resizable-init');
+      ths.forEach(function (th, i) {
+        if (i === ths.length - 1) return;  // no handle on the last column
+        const handle = document.createElement('div');
+        handle.className = 'col-resizer';
+        handle.title = 'Drag to resize column';
+        th.appendChild(handle);
+        handle.addEventListener('mousedown', function (e) {
+          startResize(e, table, th, th.cellIndex, tableId);
+        });
+        handle.addEventListener('dblclick', function () {
+          // Double-click resets this column to auto-fit content.
+          th.style.width = '';
+          th.style.maxWidth = '';
+          const currentIdx = th.cellIndex;
+          localStorage.removeItem('colw:' + tableId + ':' + currentIdx);
+          th.style.width = th.getBoundingClientRect().width + 'px';
+          localStorage.setItem('colw:' + tableId + ':' + currentIdx,
+                               parseFloat(th.style.width));
+        });
+      });
+    }
+
+    function startResize(e, table, th, idx, tableId) {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW = th.getBoundingClientRect().width;
+      const handle = e.currentTarget;
+      handle.classList.add('resizing');
+      th.classList.add('resizing');
+      th.style.maxWidth = 'none';
+      document.body.style.cursor = 'col-resize';
+      function onMove(ev) {
+        const minW = th.dataset.sortAttr === 'filters' ? 15 : 40;
+        const newW = Math.max(minW, startW + (ev.clientX - startX));
+        th.style.width = newW + 'px';
+      }
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        handle.classList.remove('resizing');
+        th.classList.remove('resizing');
+        document.body.style.cursor = '';
+        const finalW = parseFloat(th.style.width);
+        if (!isNaN(finalW)) {
+          localStorage.setItem('colw:' + tableId + ':' + idx, finalW);
+        }
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    }
+
+    // Suppress the native browser tooltip for CSS-styled help-tooltip spans.
+    // The CSS ::after pseudo-element reads from data-tip; the native title
+    // attribute would create a duplicate tooltip bubble.
+    // Also watch for dynamically inserted tooltips via MutationObserver.
+    window.initTooltips = function (root) {
+      (root || document).querySelectorAll('.help-tooltip').forEach(function (el) {
+        if (el.getAttribute('data-tip')) return;
+        var t = el.getAttribute('title');
+        if (t) { el.setAttribute('data-tip', t); el.removeAttribute('title'); }
+      });
+    };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function () { initTooltips(); });
+    } else {
+      initTooltips();
+    }
+    if (window.MutationObserver) {
+      var _tipObs = new MutationObserver(function (mutations) {
+        mutations.forEach(function (m) {
+          m.addedNodes.forEach(function (n) {
+            if (n.nodeType === 1) initTooltips(n);
+          });
+        });
+      });
+      _tipObs.observe(document.documentElement, { childList: true, subtree: true });
+    }
+
+    function initAll() {
+      document.querySelectorAll('table').forEach(initTable);
+    }
+    window.initTable = initTable;
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAll);
+    } else {
+      initAll();
+    }
+
+    // Re-init tables inside <details> when expanded (their cells have no
+    // measured width while hidden).
+    // ----- click-to-sort columns ------------------------------------------
+    function raToHours(s) {
+      const m = (s || '').match(/^\s*(-?\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      return parseInt(m[1], 10) + parseInt(m[2], 10)/60 + (parseFloat(m[3]) || 0)/3600;
+    }
+    function decToDegrees(s) {
+      const m = (s || '').match(/^\s*([+-]?)(\d+):(\d+)(?::(\d+(?:\.\d+)?))?/);
+      if (!m) return NaN;
+      const sign = m[1] === '-' ? -1 : 1;
+      return sign * (parseInt(m[2], 10) + parseInt(m[3], 10)/60 + (parseFloat(m[4]) || 0)/3600);
+    }
+
+    function detectKind(values) {
+      const non = values.filter(v => v && v.trim() !== '');
+      if (!non.length) return 'string';
+      if (non.every(v => /^[+-]\d{1,2}:\d{2}(:\d+(\.\d+)?)?$/.test(v.trim()))) return 'dec';
+      if (non.every(v => /^\d{1,2}:\d{2}(:\d+(\.\d+)?)?$/.test(v.trim()))) return 'ra';
+      if (non.every(v => !isNaN(parseFloat(v.replace(/[^\d.+\-eE]/g, ''))))) return 'number';
+      return 'string';
+    }
+    function keyFor(kind, raw) {
+      if (raw == null) return null;
+      if (kind === 'number') {
+        const n = parseFloat(raw.replace(/[^\d.+\-eE]/g, ''));
+        return isNaN(n) ? null : n;
+      }
+      if (kind === 'ra')  { const h = raToHours(raw);   return isNaN(h) ? null : h; }
+      if (kind === 'dec') { const d = decToDegrees(raw); return isNaN(d) ? null : d; }
+      return (raw || '').toString().toLowerCase();
+    }
+    function rowKey(row, colIdx, sortAttr, kind) {
+      if (sortAttr && row.dataset[sortAttr] !== undefined) {
+        const raw = row.dataset[sortAttr];
+        if (kind === 'number') {
+          const n = parseFloat(raw);
+          return isNaN(n) ? null : n;
+        }
+        if (kind === 'ra')  { const h = raToHours(raw);    return isNaN(h) ? null : h; }
+        if (kind === 'dec') { const d = decToDegrees(raw); return isNaN(d) ? null : d; }
+        return (raw || '').toString().toLowerCase();
+      }
+      const cell = row.cells[colIdx];
+      return keyFor(kind, cell ? cell.textContent.trim() : '');
+    }
+
+    function initSortable(table) {
+      if (table.dataset.sortableInit === '1') return;
+      table.dataset.sortableInit = '1';
+      const headerRow = table.tHead && table.tHead.rows[0];
+      const tbody = table.tBodies[0];
+      if (!headerRow || !tbody) return;
+      // Snapshot original row order so a third click can restore it.
+      // Pair detail rows (log-row) with their primary so restore keeps them together.
+      const allInitRows = Array.from(tbody.rows);
+      const initPairs = [];
+      for (let i = 0; i < allInitRows.length; i++) {
+        const primary = allInitRows[i];
+        const detail = (i + 1 < allInitRows.length && allInitRows[i + 1].classList.contains('log-row'))
+          ? allInitRows[++i] : null;
+        initPairs.push({ primary, detail });
+      }
+      initPairs.forEach((p, i) => { p.primary.dataset._origIdx = i; });
+      const originalOrder = initPairs;
+
+      Array.from(headerRow.cells).forEach((th, colIdx) => {
+        if (th.classList.contains('no-sort')) return;
+        th.classList.add('sortable');
+        th.addEventListener('click', function (e) {
+          if (e.target.closest('.col-resizer')) return;  // ignore handle clicks
+          const dir = th.dataset.sortDir;
+          const next = dir === 'asc' ? 'desc' : dir === 'desc' ? '' : 'asc';
+          Array.from(headerRow.cells).forEach(h => h.removeAttribute('data-sort-dir'));
+          if (next) th.dataset.sortDir = next;
+
+          if (!next) {
+            // Restore original order (pairs kept together).
+            originalOrder.forEach(p => {
+              tbody.appendChild(p.primary || p);
+              if (p.detail) tbody.appendChild(p.detail);
+            });
+            return;
+          }
+
+          // Decide sort kind: explicit hint or auto-detect from cell text.
+          let kind = th.dataset.sortType;
+          const currentIdx = th.cellIndex;
+          if (!kind) {
+            const samples = Array.from(tbody.rows).slice(0, 25)
+              .map(r => r.cells[currentIdx] ? r.cells[currentIdx].textContent.trim() : '');
+            kind = detectKind(samples);
+          }
+          const sortAttr = th.dataset.sortAttr;  // camelCase data-* key
+
+          const dirSign = next === 'asc' ? 1 : -1;
+          // Pair detail rows (e.g. .log-row) with their preceding primary row
+          // so sorting doesn't break the adjacency.
+          const allRows = Array.from(tbody.rows);
+          const pairs = [];
+          for (let i = 0; i < allRows.length; i++) {
+            const primary = allRows[i];
+            const detail = (i + 1 < allRows.length && allRows[i + 1].classList.contains('log-row'))
+              ? allRows[++i] : null;
+            pairs.push({ primary, detail });
+          }
+          const sorted = pairs.slice().sort((a, b) => {
+            if (sortAttr === 'startedAt') {
+              const statusA = a.primary.dataset.status;
+              const statusB = b.primary.dataset.status;
+              const isRunningA = (statusA === 'running' || statusA === 'cancelling');
+              const isRunningB = (statusB === 'running' || statusB === 'cancelling');
+              if (isRunningA && !isRunningB) return -1;
+              if (isRunningB && !isRunningA) return 1;
+            }
+            const ka = rowKey(a.primary, currentIdx, sortAttr, kind);
+            const kb = rowKey(b.primary, currentIdx, sortAttr, kind);
+            if (ka == null && kb == null) return 0;
+            if (ka == null) return 1;   // nulls always last
+            if (kb == null) return -1;
+            if (ka < kb) return -1 * dirSign;
+            if (ka > kb) return  1 * dirSign;
+            // stable tiebreak on original index
+            return (parseInt(a.primary.dataset._origIdx, 10) - parseInt(b.primary.dataset._origIdx, 10));
+          });
+          sorted.forEach(p => {
+            tbody.appendChild(p.primary);
+            if (p.detail) tbody.appendChild(p.detail);
+          });
+        });
+      });
+    }
+
+    function initAllSortable() {
+      document.querySelectorAll('table').forEach(initSortable);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAllSortable);
+    } else {
+      initAllSortable();
+    }
+
+    // ----- draggable columns ----------------------------------------------
+    function initDraggableColumns(table) {
+      if (table.dataset.draggableInit === '1') return;
+      table.dataset.draggableInit = '1';
+      const headerRow = table.tHead && table.tHead.rows[0];
+      if (!headerRow) return;
+      const ths = Array.from(headerRow.cells);
+      
+      ths.forEach(function (th) {
+        th.setAttribute('draggable', 'true');
+        
+        th.addEventListener('dragstart', function (e) {
+          if (e.target.closest('.col-resizer')) {
+            e.preventDefault();
+            return;
+          }
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', th.cellIndex);
+          th.classList.add('dragging');
+        });
+        
+        th.addEventListener('dragend', function () {
+          ths.forEach(function (t) {
+            t.classList.remove('dragging', 'drag-over-left', 'drag-over-right');
+          });
+        });
+        
+        th.addEventListener('dragover', function (e) {
+          e.preventDefault();
+          const rect = th.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          
+          ths.forEach(function (t) {
+            t.classList.remove('drag-over-left', 'drag-over-right');
+          });
+          
+          if (relX < rect.width / 2) {
+            th.classList.add('drag-over-left');
+          } else {
+            th.classList.add('drag-over-right');
+          }
+        });
+        
+        th.addEventListener('dragleave', function () {
+          th.classList.remove('drag-over-left', 'drag-over-right');
+        });
+        
+        th.addEventListener('drop', function (e) {
+          e.preventDefault();
+          th.classList.remove('drag-over-left', 'drag-over-right');
+          
+          const sourceIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
+          const targetIdx = th.cellIndex;
+          if (isNaN(sourceIdx) || sourceIdx === targetIdx) return;
+          
+          const rect = th.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          const insertBefore = relX < rect.width / 2;
+          
+          Array.from(table.rows).forEach(function (row) {
+            const cell = row.cells[sourceIdx];
+            const targetCell = row.cells[targetIdx];
+            if (!cell || !targetCell) return;
+            
+            if (insertBefore) {
+              row.insertBefore(cell, targetCell);
+            } else {
+              row.insertBefore(cell, targetCell.nextSibling);
+            }
+          });
+        });
+      });
+    }
+
+    function initAllDraggable() {
+      document.querySelectorAll('table').forEach(initDraggableColumns);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAllDraggable);
+    } else {
+      initAllDraggable();
+    }
+
+    // ----- inline notes editor (delegated) --------------------------------
+    document.addEventListener('click', function (e) {
+      const cell = e.target.closest('.note-cell');
+      if (!cell || cell.classList.contains('editing')) return;
+      if (e.target.closest('a, button')) return;
+      openEditor(cell);
+    });
+
+    function openEditor(cell) {
+      const obj = cell.dataset.object;
+      const current = cell.querySelector('.note-text').textContent;
+      cell.classList.add('editing');
+      cell.innerHTML = '';
+      const ta = document.createElement('textarea');
+      ta.value = current;
+      ta.rows = 2;
+      ta.placeholder = 'Type a note…';
+      const actions = document.createElement('div');
+      actions.className = 'note-actions';
+      const save = document.createElement('button');
+      save.className = 'save'; save.textContent = 'Save';
+      const cancel = document.createElement('button');
+      cancel.textContent = 'Cancel';
+      const del = document.createElement('button');
+      del.className = 'del'; del.textContent = 'Delete';
+      actions.append(save, cancel, del);
+      cell.append(ta, actions);
+      ta.focus(); ta.select();
+
+      function close(note) {
+        cell.classList.remove('editing');
+        cell.innerHTML =
+          '<span class="note-text">' + escapeHtml(note) + '</span>' +
+          '<span class="note-placeholder"' + (note ? ' style="display:none;"' : '') + '>+ add note</span>';
+      }
+      function escapeHtml(s) {
+        return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      }
+
+      async function commit() {
+        const value = ta.value.trim();
+        try {
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({note: value}),
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          close(value);
+        } catch (err) {
+          showMessageModal('Error', 'Save failed: ' + err.message);
+        }
+      }
+      async function destroy() {
+        try {
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {method: 'DELETE'});
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          close('');
+        } catch (err) {
+          showMessageModal('Error', 'Delete failed: ' + err.message);
+        }
+      }
+
+      save.addEventListener('click', commit);
+      del.addEventListener('click', destroy);
+      cancel.addEventListener('click', () => close(current));
+      ta.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); commit(); }
+        else if (e.key === 'Escape') { e.preventDefault(); close(current); }
+      });
+    }
+
+    document.addEventListener('toggle', function (e) {
+      if (e.target.tagName === 'DETAILS' && e.target.open) {
+        e.target.querySelectorAll('table').forEach(function (t) {
+          delete t.dataset.resizableInit;
+          t.classList.remove('resizable-init');
+          // Clear previously-set widths so we re-measure from real layout.
+          if (t.tHead && t.tHead.rows[0]) {
+            Array.from(t.tHead.rows[0].cells).forEach(function (th) {
+              th.querySelectorAll('.col-resizer').forEach(h => h.remove());
+              th.style.width = '';
+            });
+          }
+          initTable(t);
+        });
+      }
+    }, true);
+  })();
+
+  (function () {
+    var modal = document.getElementById('message-modal');
+    var titleEl = document.getElementById('message-modal-title');
+    var textEl = document.getElementById('message-modal-text');
+    var okBtn = document.getElementById('message-modal-ok');
+    var cancelBtn = document.getElementById('message-modal-cancel');
+    var pendingResolve = null;
+
+    function modalOptions(opts) {
+      if (typeof opts === 'string') return { kind: opts };
+      return opts || {};
+    }
+
+    function showModal(title, text, opts) {
+      opts = modalOptions(opts);
+      titleEl.textContent = title || '';
+      textEl.textContent = text || '';
+      modal.dataset.kind = opts.kind || 'default';
+      modal.classList.add('visible');
+      okBtn.focus();
+    }
+
+    window.showMessageModal = function(title, text, opts) {
+      opts = modalOptions(opts);
+      pendingResolve = null;
+      modal.dataset.mode = 'message';
+      okBtn.textContent = 'OK';
+      okBtn.className = 'btn';
+      cancelBtn.hidden = true;
+      showModal(title, text, opts);
+    };
+    window.closeMessageModal = function(result) {
+      modal.classList.remove('visible');
+      modal.dataset.mode = 'message';
+      modal.dataset.kind = 'default';
+      if (pendingResolve) {
+        var resolve = pendingResolve;
+        pendingResolve = null;
+        resolve(!!result);
+      }
+    };
+    window.showConfirmModal = function(title, text, opts) {
+      opts = opts || {};
+      return new Promise(function (resolve) {
+        pendingResolve = resolve;
+        modal.dataset.mode = 'confirm';
+        okBtn.textContent = opts.confirmLabel || 'Confirm';
+        okBtn.className = opts.confirmClass || 'btn primary';
+        cancelBtn.textContent = opts.cancelLabel || 'Cancel';
+        cancelBtn.hidden = false;
+        showModal(title, text, opts);
+      });
+    };
+    okBtn.addEventListener('click', function () {
+      window.closeMessageModal(pendingResolve ? true : false);
+    });
+    cancelBtn.addEventListener('click', function () {
+      window.closeMessageModal(false);
+    });
+  })();
+</script>
+
+<script>
+(function() {
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  function formatElapsed(seconds) {
+    if (seconds < 60) return seconds + 's';
+    var m = Math.floor(seconds / 60);
+    var s = seconds % 60;
+    if (m < 60) return m + 'm ' + s + 's';
+    var h = Math.floor(m / 60);
+    m = m % 60;
+    if (h < 24) return h + 'h ' + m + 'm';
+    var d = Math.floor(h / 24);
+    h = h % 24;
+    return d + 'd ' + h + 'h';
+  }
+
+  var allRows = Array.from(document.querySelectorAll('.jobs-table tbody tr.job-row'));
+  var allTables = Array.from(document.querySelectorAll('.jobs-table'));
+  var allSections = Array.from(document.querySelectorAll('.job-section'));
+  var total = allRows.length;
+  var activeStatus = null;
+  var searchInput = document.getElementById('job-search');
+  var searchStatus = document.getElementById('search-status');
+
+  var hiddenKeys = [];
+  try { var s = localStorage.getItem('jobs:hidden'); if (s) hiddenKeys = JSON.parse(s); } catch (_) {}
+
+  var activeType = '';
+  var activeInst = '';
+  var activeRecent = '';
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function addInstFilterIfMissing(inst) {
+    if (!inst) return;
+    var container = document.getElementById('inst-summary');
+    if (!container || container.querySelector('.job-count[data-inst="' + inst + '"]')) return;
+    var span = document.createElement('span');
+    span.className = 'job-count';
+    span.setAttribute('data-inst', inst);
+    span.onclick = function() { toggleInst(this, inst); };
+    span.textContent = inst;
+    container.appendChild(span);
+  }
+
+  // Get today's date at midnight for comparison
+  function getTodayMidnight() {
+    var d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d.getTime() / 1000; // return as Unix timestamp in seconds
+  }
+
+  // ── Time filter (today/recent jobs) ───────────────────────────────────────
+  window.toggleRecent = function(el) {
+    document.querySelectorAll('#time-summary .job-count').forEach(function(e) { e.classList.remove('active'); });
+    if (activeRecent === 'recent') { activeRecent = ''; }
+    else { activeRecent = 'recent'; el.classList.add('active'); }
+    applyFilters(); reconcileSectionsForFilter(); saveFilters();
+  };
+
+  // ── Type filter (badges) ──────────────────────────────────────────────────
+  window.toggleType = function(el, type) {
+    document.querySelectorAll('#type-summary .job-count').forEach(function(e) { e.classList.remove('active'); });
+    if (activeType === type) { activeType = ''; }
+    else { activeType = type; el.classList.add('active'); }
+    applyFilters(); reconcileSectionsForFilter(); saveFilters();
+  };
+
+  // ── Instrument filter (badges) ────────────────────────────────────────────
+  window.toggleInst = function(el, inst) {
+    document.querySelectorAll('#inst-summary .job-count').forEach(function(e) { e.classList.remove('active'); });
+    if (activeInst === inst) { activeInst = ''; }
+    else { activeInst = inst; el.classList.add('active'); }
+    applyFilters(); reconcileSectionsForFilter(); saveFilters();
+  };
+
+  // Populate instrument badges from rows
+  (function() {
+    var insts = {};
+    allRows.forEach(function(r) {
+      var c = r.querySelector('.inst-cell');
+      if (c) { var v = c.textContent.trim(); if (v) insts[v] = true; }
+    });
+    var container = document.getElementById('inst-summary');
+    Object.keys(insts).sort().forEach(function(v) {
+      var span = document.createElement('span');
+      span.className = 'job-count';
+      span.setAttribute('data-inst', v);
+      span.onclick = function() { toggleInst(this, v); };
+      span.textContent = v;
+      container.appendChild(span);
+    });
+  })();
+
+  function rowByKey(key) {
+    for (var i = 0; i < allRows.length; i++) {
+      if (allRows[i].getAttribute('data-key') === key) return allRows[i];
+    }
+    return null;
+  }
+
+  function setLcoObslogLink(row, url, date) {
+    if (!row || !url) return;
+    var cell = row.querySelector('.obsdate-cell');
+    if (!cell) return;
+    var link = document.createElement('a');
+    link.href = url;
+    link.textContent = date || cell.textContent.trim();
+    link.title = 'Open obslog for this dataset';
+    cell.innerHTML = '';
+    cell.appendChild(link);
+  }
+
+  function ensureLcoArchiveRow(job) {
+    if (!job || job.type !== 'lco_archive_download') return null;
+    var existing = rowByKey(job.key);
+    if (existing) return existing;
+
+    var tbody = document.querySelector('table[data-job-type="lco_archive_download"] tbody');
+    if (!tbody) return null;
+    var row = document.createElement('tr');
+    row.className = 'job-row';
+    row.setAttribute('data-key', job.key || '');
+    row.setAttribute('data-status', job.state || '');
+    row.setAttribute('data-type', 'lco_archive_download');
+    row.setAttribute('data-started-at', Math.round(job.started_at || 0));
+    row.setAttribute('data-user-name', job.user_name || '');
+    row.setAttribute('data-action-inst', job.action_inst || '');
+    row.setAttribute('data-action-date', job.action_date || '');
+    row.setAttribute('data-job-inst', job.inst || '');
+    row.setAttribute('data-job-date', job.date || '');
+    row.setAttribute('data-job-target', job.target || '');
+    row.setAttribute('data-job-run', job.run_id || '');
+    row.setAttribute('data-photometry-url', job.photometry_url || '');
+    row.setAttribute('data-lco-followup-ready', job.can_run_dataset_action ? '1' : '0');
+    row.setAttribute('data-search', [
+      job.target || '',
+      job.run_name || '',
+      job.inst || '',
+      job.date || '',
+      'lco_archive_download',
+      job.user_name || '',
+      job.details || ''
+    ].join(' ').toLowerCase());
+    row.innerHTML =
+      '<td class="job-actions lco-actions-cell"></td>' +
+      '<td><strong><a href="../lco/archive/">' + escapeHtml(job.target || 'LCO archive') + '</a></strong></td>' +
+      '<td class="mono run-name-cell" style="font-size:0.8rem;color:var(--text-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></td>' +
+      '<td class="inst-cell"><span class="badge badge-blue">' + escapeHtml(job.inst || 'lco') + '</span></td>' +
+      '<td class="mono obsdate-cell">' + escapeHtml(job.date || 'mixed') + '</td>' +
+      '<td class="mono date-run-cell" style="font-size:0.8rem;color:var(--text-dim);">' + escapeHtml(job.started_at_str || '—') + '</td>' +
+      '<td class="mono elapsed-cell" data-elapsed="' + escapeHtml(job.elapsed || 0) + '">' + escapeHtml(job.state === 'pending' ? '—' : formatElapsed(job.elapsed || 0)) + '</td>' +
+      '<td class="status-cell"></td>' +
+      '<td class="details-cell" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;"><span class="badge badge-blue">archive</span></td>' +
+      '<td class="mono user-cell" style="font-size:0.8rem;color:var(--text-dim);">' + escapeHtml(job.user_name || '—') + '</td>';
+
+    var empty = tbody.querySelector('tr.empty-job-row');
+    tbody.insertBefore(row, empty || null);
+    var logRow = document.createElement('tr');
+    logRow.className = 'log-row';
+    logRow.style.display = 'none';
+    logRow.innerHTML = '      <td colspan="11"><pre class="log-content">Loading…</pre></td>';
+    tbody.insertBefore(logRow, empty || null);
+    allRows.push(row);
+    addInstFilterIfMissing(job.inst || '');
+    replaceStatusBadge(row, job.state || '');
+    updateRunName(row, job.run_name || '');
+    updateDetails(row, job.details || '');
+    replaceActions(row, job.state || '', job.key || '', 'lco_archive_download', job.inst || '', job.date || '', job.target || '', '');
+    setLcoObslogLink(row, job.obslog_url || '', job.action_date || job.date || '');
+    return row;
+  }
+
+  function updateSectionVisibility() {
+    allSections.forEach(function(section) {
+      var type = section.getAttribute('data-job-section') || '';
+      var alwaysVisible = section.getAttribute('data-always-visible') === '1';
+      var rows = Array.from(section.querySelectorAll('tbody tr.job-row'));
+      var anyVisible = rows.some(function(r) { return r.style.display !== 'none'; });
+      section.querySelectorAll('tbody tr.empty-job-row').forEach(function(row) {
+        row.style.display = anyVisible ? 'none' : '';
+      });
+      if (activeType && activeType !== type) {
+        section.style.display = 'none';
+        return;
+      }
+      section.style.display = (anyVisible || alwaysVisible) ? '' : 'none';
+    });
+  }
+
+  function anyFilterActive() {
+    var q = searchInput ? searchInput.value.trim() : '';
+    return !!(activeStatus || activeType || activeInst || activeRecent || q);
+  }
+
+  // Open/close a section without persisting the change, so a temporary
+  // filter-driven expand never overwrites the user's saved collapse preference.
+  // The '_suppressPersist' flag is cleared by the section's own 'toggle' listener
+  // when the (asynchronous) toggle event fires.
+  function setSectionOpen(section, open) {
+    if (!section || section.open === open) return;
+    section._suppressPersist = true;
+    section.open = open;
+  }
+
+  // When a filter is active, expand any visible section that still has matching
+  // rows so results are never hidden behind a collapsed <details>. When no filter
+  // is active, restore each section to its saved open/closed preference. Call
+  // this only on user-driven filter changes (chip clicks, search, clear) — never
+  // from the live poll, so a manual collapse while filtering is respected.
+  function reconcileSectionsForFilter() {
+    var filtering = anyFilterActive();
+    allSections.forEach(function(section) {
+      if (filtering) {
+        if (section.style.display === 'none') return;
+        var anyVisible = Array.from(section.querySelectorAll('tbody tr.job-row'))
+          .some(function(r) { return r.style.display !== 'none'; });
+        if (anyVisible) setSectionOpen(section, true);
+      } else {
+        var saved = null;
+        try { saved = localStorage.getItem('jobs:details:' + section.id); } catch (_) {}
+        setSectionOpen(section, saved !== 'closed');
+      }
+    });
+  }
+
+  function replaceStatusBadge(row, state) {
+    var td = row.querySelector('.status-cell');
+    if (!td) return;
+    var labels = {done: 'Done', error: 'Failed', cancelled: 'Cancelled', running: 'Running', cancelling: 'Cancelling…', pending: 'Pending'};
+    var classes = {done: 'badge-green', running: 'badge-amber pulse'};
+    var badge = document.createElement('span');
+    badge.className = 'badge status-badge ' + (classes[state] || 'badge-filter-other');
+    if (state === 'error') badge.style.cssText = 'background:var(--red);color:white;';
+    else if (state === 'cancelled' || state === 'cancelling') badge.style.cssText = 'background:var(--text-dim);color:white;';
+    else if (state === 'pending') badge.style.cssText = 'background:var(--blue);color:white;';
+    badge.textContent = labels[state] || String(state || '');
+    td.replaceChildren(badge);
+  }
+
+  function actionButton(label, className, action, attrs) {
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = className;
+    button.setAttribute('data-job-action', action);
+    button.textContent = label;
+    Object.keys(attrs || {}).forEach(function(name) {
+      button.setAttribute('data-' + name, String(attrs[name] == null ? '' : attrs[name]));
+    });
+    return button;
+  }
+
+  function replaceActions(row, state, key, type, inst, date, target, runId) {
+    var td = row.querySelector('td.job-actions');
+    if (!td) return;
+    runId = runId || '';
+    row.setAttribute('data-job-inst', inst || '');
+    row.setAttribute('data-job-date', date || '');
+    row.setAttribute('data-job-target', target || '');
+    row.setAttribute('data-job-run', runId);
+    td.replaceChildren();
+    if (type === 'lco_archive_download') {
+      var photometryUrl = row.getAttribute('data-photometry-url') || '';
+      if (state === 'done' && photometryUrl.indexOf('/photometry?') === 0) {
+        row.setAttribute('data-lco-followup-ready', '1');
+        var link = document.createElement('a');
+        link.className = 'btn sm';
+        link.href = photometryUrl;
+        link.title = 'Open this dataset in Photometry';
+        link.setAttribute('aria-label', link.title);
+        link.textContent = '🔭';
+        td.appendChild(link);
+      } else {
+        row.setAttribute('data-lco-followup-ready', '0');
+      }
+      var hideLco = actionButton('Hide', 'btn sm hide-btn', 'hide', {key: key});
+      hideLco.title = 'Hide this row';
+      td.appendChild(hideLco);
+      return;
+    }
+    var attrs = {key: key, type: type, inst: inst, date: date, target: target, run: runId};
+    var main;
+    if (state === 'running') {
+      main = actionButton('Cancel', 'btn sm danger', 'cancel', attrs);
+    } else if (state === 'cancelling') {
+      main = actionButton('Cancelling…', 'btn sm', '', {});
+      main.disabled = true;
+    } else if (state === 'pending') {
+      main = actionButton('Cancel', 'btn sm danger', 'cancel', attrs);
+    } else {
+      main = actionButton('⟳ Re-run', 'btn sm', 'rerun', {key: key});
+      main.title = 'Re-run this job';
+    }
+    td.appendChild(main);
+    var log = actionButton('📄 Log', 'btn sm log-btn', 'log', attrs);
+    log.title = 'View log';
+    log.style.marginLeft = '0.25rem';
+    td.appendChild(log);
+    var hide = actionButton('✕', 'btn sm hide-btn', 'hide', {key: key});
+    hide.title = 'Hide this row';
+    hide.style.marginLeft = '0.25rem';
+    td.appendChild(hide);
+  }
+
+  function updateErrorDesc(row, text) {
+    var td = row.querySelector('.details-cell');
+    if (!td) return;
+    var existing = td.querySelector('.error-desc');
+    if (existing) {
+      existing.textContent = text;
+    } else if (text) {
+      var span = document.createElement('span');
+      span.className = 'error-desc';
+      span.style.cssText = 'color:var(--red);font-size:0.8rem;font-family:monospace;margin-left:0.3rem;';
+      span.textContent = text;
+      td.appendChild(span);
+    }
+  }
+
+  function updateRunName(row, text) {
+    if (text == null) return;
+    var td = row.querySelector('.run-name-cell');
+    if (!td) return;
+    td.textContent = text || '—';
+    td.title = text || '';
+  }
+
+  function updateDetails(row, text) {
+    if (text == null) return;
+    var td = row.querySelector('.details-cell');
+    if (!td) return;
+    var span = td.querySelector('.details-text');
+    if (!span && text) {
+      span = document.createElement('span');
+      span.className = 'details-text mono';
+      span.style.cssText = 'color:var(--text-dim);margin-left:0.5rem;';
+      td.appendChild(span);
+    }
+    if (span) {
+      span.textContent = text || '';
+      span.title = text || '';
+      span.style.display = text ? '' : 'none';
+    }
+  }
+
+  // ── Status filter ────────────────────────────────────────────────────────
+  window.toggleStatus = function(el, status) {
+    if (activeStatus === status) {
+      activeStatus = null;
+      document.querySelectorAll('.job-count').forEach(function(e) { e.classList.remove('active'); });
+    } else {
+      activeStatus = status;
+      document.querySelectorAll('.job-count').forEach(function(e) { e.classList.remove('active'); });
+      el.classList.add('active');
+    }
+    applyFilters(); reconcileSectionsForFilter(); showClearFilter(); saveFilters();
+  };
+
+  window.clearFilter = function() {
+    activeStatus = null;
+    activeType = '';
+    activeInst = '';
+    activeRecent = '';
+    document.querySelectorAll('.job-count').forEach(function(e) { e.classList.remove('active'); });
+    applyFilters(); reconcileSectionsForFilter(); showClearFilter(); saveFilters();
+  };
+
+  function showClearFilter() {
+    var el = document.getElementById('clear-filter');
+    if (!el) return;
+    el.style.display = (activeStatus || activeType || activeInst || activeRecent) ? '' : 'none';
+  }
+
+  // ── Search ───────────────────────────────────────────────────────────────
+  function updateCounts() {
+    var counts = { running: 0, pending: 0, done: 0, error: 0, cancelled: 0 };
+    var nonHiddenCount = 0;
+    allRows.forEach(function(r) {
+      var isHidden = hiddenKeys.indexOf(r.getAttribute('data-key')) !== -1;
+      if (!isHidden) {
+        nonHiddenCount++;
+        var s = r.getAttribute('data-status');
+        if (s === 'cancelling') s = 'running';
+        if (counts[s] !== undefined) {
+          counts[s]++;
+        }
+      }
+    });
+    total = nonHiddenCount;
+
+    var countEls = (document.getElementById('jobs-summary') || document.createElement('div')).querySelectorAll('.job-count');
+    countEls.forEach(function(el) {
+      var s = el.getAttribute('data-status');
+      if (s && counts[s] !== undefined) {
+        var num = el.querySelector('.job-count-num');
+        if (num) {
+          num.textContent = counts[s];
+          el.classList.toggle('has-' + s, counts[s] > 0);
+        }
+      }
+    });
+  }
+
+  function applyFilters() {
+    updateCounts();
+    var q = (searchInput ? searchInput.value : '').toLowerCase().trim();
+    var visible = 0;
+    allRows.forEach(function(r) {
+      var ok = true;
+      if (q) {
+        var haystack = r.getAttribute('data-search') || '';
+        ok = haystack.indexOf(q) !== -1;
+      }
+      if (ok && activeStatus) {
+        var s = r.getAttribute('data-status');
+        var keepLcoFollowupVisible = activeStatus === 'running'
+          && r.getAttribute('data-type') === 'lco_archive_download'
+          && r.getAttribute('data-lco-followup-ready') === '1';
+        if (activeStatus === 'running') {
+          ok = (s === 'running' || s === 'cancelling' || keepLcoFollowupVisible);
+        } else {
+          ok = s === activeStatus;
+        }
+      }
+      if (ok && activeType) ok = r.getAttribute('data-type') === activeType;
+      if (ok && activeInst) {
+        var instCell = r.querySelector('.inst-cell');
+        ok = instCell && instCell.textContent.trim() === activeInst;
+      }
+      if (ok && activeRecent === 'recent') {
+        var startedAt = parseInt(r.getAttribute('data-started-at') || '0', 10);
+        var todayMidnight = getTodayMidnight();
+        ok = startedAt >= todayMidnight;
+      }
+      var isHidden = hiddenKeys.indexOf(r.getAttribute('data-key')) !== -1;
+      r.style.display = (ok && !isHidden) ? '' : 'none';
+      var logRow = r.nextElementSibling;
+      if (logRow && logRow.classList.contains('log-row') && (!ok || isHidden)) logRow.style.display = 'none';
+      if (ok && !isHidden) visible++;
+    });
+    if (searchStatus) {
+      searchStatus.textContent = (q || activeStatus || activeType || activeInst || activeRecent) ? visible + ' / ' + total + ' matching' : total + ' jobs';
+    }
+    updateSectionVisibility();
+  }
+
+  if (searchInput) searchInput.addEventListener('input', function() { applyFilters(); reconcileSectionsForFilter(); saveFilters(); });
+
+  // ── Hide row (with confirmation) ─────────────────────────────────────────
+  var pendingHideKey = null;
+
+  window.hideRow = function(btn, key) {
+    pendingHideKey = key;
+    document.getElementById('hide-confirm-overlay').classList.add('visible');
+  };
+
+  window.confirmHide = function() {
+    if (pendingHideKey) {
+      if (hiddenKeys.indexOf(pendingHideKey) === -1) hiddenKeys.push(pendingHideKey);
+      try { localStorage.setItem('jobs:hidden', JSON.stringify(hiddenKeys)); } catch (_) {}
+      applyFilters();
+    }
+    closeHideConfirm();
+  };
+
+  window.closeHideConfirm = function() {
+    document.getElementById('hide-confirm-overlay').classList.remove('visible');
+    pendingHideKey = null;
+  };
+
+  // ── Cancel job (in-place) ────────────────────────────────────────────────
+  window.cancelJob = function(btn) {
+    var type   = btn.getAttribute('data-type');
+    var inst   = btn.getAttribute('data-inst');
+    var date   = btn.getAttribute('data-date');
+    var target = btn.getAttribute('data-target');
+    var runId  = btn.getAttribute('data-run') || '';
+    var url, body;
+    if (type === 'ttv_fit') {
+      url = '/api/ttv-fit/cancel';
+      body = JSON.stringify({ target: target, run_name: runId });
+    } else if (type === 'transit_fit') {
+      url = '/api/transit-fit/cancel';
+      body = JSON.stringify({ inst: inst, date: date, target: target, run_id: runId });
+    } else {
+      url = '/api/photometry/cancel';
+      body = JSON.stringify({ inst: inst, date: date, target: target, run_id: runId });
+    }
+
+    btn.disabled = true;
+    btn.innerText = 'Cancelling…';
+
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body
+    })
+    .then(function(r) { if (!r.ok) return r.json().then(function(e) { throw new Error(e.error || 'Failed'); }); return r.json(); })
+    .then(function() {
+      var row = btn.closest('.job-row');
+      if (row) {
+        row.setAttribute('data-status', 'cancelling');
+        replaceStatusBadge(row, 'cancelling');
+        btn.disabled = true;
+        btn.innerText = 'Cancelling…';
+        applyFilters();
+      }
+    })
+    .catch(function(err) {
+      showMessageModal('Error', err.message);
+      btn.disabled = false;
+      btn.innerText = 'Cancel';
+    });
+  };
+
+  // ── Re-run job (in-place) ───────────────────────────────────────────────
+  window.reRunJob = function(btn, key) {
+    btn.disabled = true;
+    btn.innerText = 'Launching…';
+    fetch('/api/jobs/rerun', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: key })
+    })
+    .then(function(r) { if (!r.ok) return r.json().then(function(e) { throw new Error(e.error || 'Failed'); }); return r.json(); })
+    .then(function() {
+      var hidx = hiddenKeys.indexOf(key);
+      if (hidx !== -1) {
+        hiddenKeys.splice(hidx, 1);
+        try { localStorage.setItem('jobs:hidden', JSON.stringify(hiddenKeys)); } catch (_) {}
+      }
+      var row = rowByKey(key);
+      if (row) {
+        row.setAttribute('data-status', 'running');
+        replaceStatusBadge(row, 'running');
+        replaceActions(
+          row, 'running', key, row.getAttribute('data-type') || '',
+          row.getAttribute('data-job-inst') || '', row.getAttribute('data-job-date') || '',
+          row.getAttribute('data-job-target') || '', row.getAttribute('data-job-run') || ''
+        );
+        applyFilters();
+      }
+    })
+    .catch(function(err) {
+      showMessageModal('Error', err.message);
+      btn.disabled = false;
+      btn.innerText = '⟳ Re-run';
+    });
+  };
+
+  // ── View log (inline expand) ────────────────────────────────────────────
+  window.viewLog = function(btn, type, inst, date, target, runId) {
+    var row = btn.closest('tr');
+    var logRow = row.nextElementSibling;
+    if (!logRow || !logRow.classList.contains('log-row')) return;
+    var pre = logRow.querySelector('pre.log-content');
+    if (!pre) return;
+
+    if (logRow.style.display !== 'none') { logRow.style.display = 'none'; return; }
+
+    logRow.style.display = '';
+    pre.textContent = 'Loading…';
+    var url;
+    if (type === 'ttv_fit') {
+      url = '/api/jobs/ttv-log/' + encodeURIComponent(target);
+      if (runId) url += '?run=' + encodeURIComponent(runId);
+    } else {
+      url = '/api/jobs/log/' + encodeURIComponent(type) + '/' + encodeURIComponent(inst) + '/' + encodeURIComponent(date) + '/' + encodeURIComponent(target);
+      if (runId) url += '?run=' + encodeURIComponent(runId);
+    }
+    fetch(url)
+      .then(function(r) { if (!r.ok) throw new Error('Log not found'); return r.text(); })
+      .then(function(text) { pre.textContent = text; })
+      .catch(function(err) { pre.textContent = 'Error: ' + err.message; });
+  };
+
+  // Job identifiers are untrusted persisted data.  Keep them in data
+  // attributes and pass them as values; never interpolate them into inline JS.
+  document.addEventListener('click', function(event) {
+    var button = event.target.closest('[data-job-action]');
+    if (!button) return;
+    var action = button.getAttribute('data-job-action');
+    if (action === 'cancel') cancelJob(button);
+    else if (action === 'rerun') reRunJob(button, button.getAttribute('data-key') || '');
+    else if (action === 'hide') hideRow(button, button.getAttribute('data-key') || '');
+    else if (action === 'log') viewLog(
+      button,
+      button.getAttribute('data-type') || '',
+      button.getAttribute('data-inst') || '',
+      button.getAttribute('data-date') || '',
+      button.getAttribute('data-target') || '',
+      button.getAttribute('data-run') || ''
+    );
+  });
+
+  // ── Live polling (in-place updates, no page reload) ────────────────────
+  function refreshLiveElapsed() {
+    var now = Math.floor(Date.now() / 1000);
+    document.querySelectorAll('.job-row[data-status="running"] .elapsed-cell, .job-row[data-status="cancelling"] .elapsed-cell').forEach(function(cell) {
+      var row = cell.closest('.job-row');
+      var startedAt = row ? parseInt(row.getAttribute('data-started-at') || '0', 10) : 0;
+      var e = parseInt(cell.getAttribute('data-elapsed') || '0', 10);
+      if (startedAt > 0) {
+        e = Math.max(0, now - startedAt);
+      } else {
+        e += 1;
+      }
+      cell.setAttribute('data-elapsed', e);
+      cell.textContent = formatElapsed(e);
+    });
+  }
+
+  function pollRunning() {
+    fetch('/api/jobs/status')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        // Update finished jobs in-place
+        for (var key in data.finished) {
+          if (!data.finished.hasOwnProperty(key)) continue;
+          var f = data.finished[key];
+          var row = rowByKey(key);
+          if (!row && f.type === 'lco_archive_download') row = ensureLcoArchiveRow(f);
+          if (!row) continue;
+          var rowType = row.getAttribute('data-type') || f.type || '';
+          if (row.getAttribute('data-status') === f.state && rowType !== 'lco_archive_download') continue;
+
+          row.setAttribute('data-status', f.state);
+          if (f.action_inst != null) row.setAttribute('data-action-inst', f.action_inst || '');
+          if (f.action_date != null) row.setAttribute('data-action-date', f.action_date || '');
+          if (f.photometry_url != null) row.setAttribute('data-photometry-url', f.photometry_url || '');
+          if (f.obslog_url) setLcoObslogLink(row, f.obslog_url, f.action_date || f.date || '');
+          replaceStatusBadge(row, f.state);
+          var td = row.querySelector('.elapsed-cell');
+          if (td && f.elapsed != null) {
+            td.setAttribute('data-elapsed', f.elapsed);
+            td.textContent = formatElapsed(f.elapsed);
+          }
+          var dateRunTd = row.querySelector('.date-run-cell');
+          if (dateRunTd && f.started_at_str) {
+            dateRunTd.textContent = f.started_at_str;
+          }
+          if (f.started_at) {
+            row.setAttribute('data-started-at', Math.round(f.started_at));
+          }
+          var userTd = row.querySelector('.user-cell');
+          if (userTd && f.user_name) {
+            userTd.textContent = f.user_name;
+            row.setAttribute('data-user-name', f.user_name);
+          }
+          if (f.error_desc) updateErrorDesc(row, f.error_desc);
+          updateRunName(row, f.run_name);
+          updateDetails(row, f.details);
+
+          var type = rowType || '';
+          if (type !== 'transit_fit' && type !== 'ttv_fit' && type !== 'lco_archive_download') type = 'photometry';
+          replaceActions(
+            row, f.state, key, type,
+            f.inst || row.getAttribute('data-job-inst') || '',
+            f.date || row.getAttribute('data-job-date') || '',
+            f.target || row.getAttribute('data-job-target') || '',
+            f.run_id || row.getAttribute('data-job-run') || ''
+          );
+        }
+
+        // Update running jobs in-place
+        if (data.running) {
+          data.running.forEach(function(rj) {
+            var row = rowByKey(rj.key);
+            if (!row && rj.type === 'lco_archive_download') row = ensureLcoArchiveRow(rj);
+            if (row) {
+              var dateRunTd = row.querySelector('.date-run-cell');
+              if (dateRunTd && rj.started_at_str) {
+                dateRunTd.textContent = rj.started_at_str;
+              }
+              if (rj.started_at) {
+                row.setAttribute('data-started-at', Math.round(rj.started_at));
+              }
+              if (rj.action_inst != null) row.setAttribute('data-action-inst', rj.action_inst || '');
+              if (rj.action_date != null) row.setAttribute('data-action-date', rj.action_date || '');
+              if (rj.photometry_url != null) row.setAttribute('data-photometry-url', rj.photometry_url || '');
+              if (rj.obslog_url) setLcoObslogLink(row, rj.obslog_url, rj.action_date || rj.date || '');
+              updateRunName(row, rj.run_name);
+              updateDetails(row, rj.details);
+              var userTd = row.querySelector('.user-cell');
+              if (userTd && rj.user_name) {
+                userTd.textContent = rj.user_name;
+                row.setAttribute('data-user-name', rj.user_name);
+              }
+              // Update state transitions (e.g. pending -> running)
+              if (row.getAttribute('data-status') !== rj.state) {
+                row.setAttribute('data-status', rj.state);
+                replaceStatusBadge(row, rj.state);
+                var type = row.getAttribute('data-type') || '';
+                if (type !== 'transit_fit' && type !== 'ttv_fit' && type !== 'lco_archive_download') type = 'photometry';
+                replaceActions(
+                  row, rj.state, rj.key, type,
+                  rj.inst || row.getAttribute('data-job-inst') || '',
+                  rj.date || row.getAttribute('data-job-date') || '',
+                  rj.target || row.getAttribute('data-job-target') || '',
+                  rj.run_id || row.getAttribute('data-job-run') || ''
+                );
+              }
+            }
+          });
+        }
+
+        // Ensure pulse class on running badges
+        allRows.forEach(function(r) {
+          if (r.getAttribute('data-status') === 'running') {
+            var b = r.querySelector('.status-badge');
+            if (b && !b.classList.contains('pulse')) b.classList.add('pulse');
+          }
+        });
+
+        // Always re-apply filters to refresh status counts and visibility
+        applyFilters();
+      })
+      .catch(function() {});
+  }
+
+  // ── Initialise ──────────────────────────────────────────────────────────
+  if (searchStatus) searchStatus.textContent = total + ' jobs';
+
+  // Read all saved values first and apply them without intermediate saves.
+  // This avoids a race where toggleType/toggleStatus call saveFilters() before
+  // all dimensions have been restored, overwriting values yet to be read.
+  (function() {
+    var savedStatus, savedSearch, savedType, savedInst, savedRecent;
+    try { savedStatus = localStorage.getItem('jobs:activeStatus'); } catch (_) {}
+    try { savedSearch = localStorage.getItem('jobs:search'); } catch (_) {}
+    try { savedType = localStorage.getItem('jobs:typeFilter'); } catch (_) {}
+    try { savedInst = localStorage.getItem('jobs:instFilter'); } catch (_) {}
+    try { savedRecent = localStorage.getItem('jobs:recentFilter'); } catch (_) {}
+
+    if (savedStatus) {
+      try {
+        var el = document.querySelector('.job-count[data-status="' + savedStatus + '"]');
+        if (el) { toggleStatus(el, savedStatus); }
+      } catch (_) {}
+    }
+    if (savedSearch && searchInput) { searchInput.value = savedSearch; }
+    if (savedType) {
+      try {
+        var tel = document.querySelector('#type-summary .job-count[data-type="' + savedType + '"]');
+        if (tel) { toggleType(tel, savedType); }
+      } catch (_) {}
+    }
+    if (savedInst) {
+      try {
+        var iel = document.querySelector('#inst-summary .job-count[data-inst="' + savedInst + '"]');
+        if (iel) { toggleInst(iel, savedInst); }
+      } catch (_) {}
+    }
+    if (savedRecent) {
+      try {
+        var rel = document.querySelector('#time-summary .job-count[data-time="recent"]');
+        if (rel) { toggleRecent(rel); }
+      } catch (_) {}
+    }
+    // Save final consolidated state after all restores are done
+    saveFilters();
+    showClearFilter();
+  })();
+  applyFilters();        // ensure table reflects state (even when nothing was restored)
+  showClearFilter();
+  window.addEventListener('pageshow', function(ev) {
+    if (ev.persisted) {
+      // On bfcache restore the JS context is preserved, so activeType/activeInst
+      // still hold the old values. Directly set, don't toggle, to avoid toggling off.
+      try {
+        var s = localStorage.getItem('jobs:activeStatus');
+        if (s && activeStatus !== s) {
+          var el = document.querySelector('.job-count[data-status="' + s + '"]');
+          if (el) toggleStatus(el, s);
+        }
+      } catch (_) {}
+      try {
+        var sq = localStorage.getItem('jobs:search');
+        if (sq && searchInput) searchInput.value = sq;
+      } catch (_) {}
+      try {
+        var st = localStorage.getItem('jobs:typeFilter');
+        if (st && activeType !== st) {
+          var tel = document.querySelector('#type-summary .job-count[data-type="' + st + '"]');
+          if (tel) toggleType(tel, st);
+        }
+      } catch (_) {}
+      try {
+        var si = localStorage.getItem('jobs:instFilter');
+        if (si && activeInst !== si) {
+          var iel = document.querySelector('#inst-summary .job-count[data-inst="' + si + '"]');
+          if (iel) toggleInst(iel, si);
+        }
+      } catch (_) {}
+      try {
+        var sr = localStorage.getItem('jobs:recentFilter');
+        if (sr && activeRecent !== sr) {
+          var rel = document.querySelector('#time-summary .job-count[data-time="recent"]');
+          if (rel) toggleRecent(rel);
+        }
+      } catch (_) {}
+      applyFilters();
+      showClearFilter();
+      saveFilters();
+    }
+  });
+
+  function saveFilters() {
+    try {
+      localStorage.setItem('jobs:activeStatus', activeStatus || '');
+      localStorage.setItem('jobs:search', searchInput ? searchInput.value : '');
+      localStorage.setItem('jobs:typeFilter', activeType || '');
+      localStorage.setItem('jobs:instFilter', activeInst || '');
+      localStorage.setItem('jobs:recentFilter', activeRecent || '');
+    } catch (_) {}
+  }
+
+  // ── Sort persistence ────────────────────────────────────────────────────
+  function saveSort(colIdx, dir) {
+    try { localStorage.setItem('jobs:sort', JSON.stringify({ col: colIdx, dir })); } catch (_) {}
+  }
+  function restoreSort() {
+    try {
+      var raw = localStorage.getItem('jobs:sort');
+      if (!raw) return;
+      var ref = JSON.parse(raw);
+      if (ref.col == null || !ref.dir) return;
+      allTables.forEach(function(table) {
+        var headerRow = table.tHead && table.tHead.rows[0];
+        if (!headerRow) return;
+        var th = headerRow.cells[ref.col];
+        if (!th) return;
+        th.dataset.sortDir = ref.dir === 'asc' ? '' : 'asc';
+        th.click();
+      });
+    } catch (_) {}
+  }
+  document.querySelectorAll('.jobs-table thead tr:first-child th.sortable').forEach(function(th) {
+    th.addEventListener('click', function() {
+      requestAnimationFrame(function() { saveSort(th.cellIndex, th.dataset.sortDir || ''); });
+    });
+  });
+  requestAnimationFrame(restoreSort);
+
+  ['photometry-jobs-section', 'transit-fit-jobs-section', 'ttv-fit-jobs-section', 'lco-archive-jobs-section'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var key = 'jobs:details:' + id;
+    try {
+      var saved = localStorage.getItem(key);
+      if (saved === 'closed') el.removeAttribute('open');
+      else if (saved === 'open') el.setAttribute('open', '');
+    } catch (_) {}
+    el.addEventListener('toggle', function() {
+      // Skip persistence for programmatic (filter-driven) open/close so a
+      // temporary expand does not clobber the user's saved preference.
+      if (el._suppressPersist) { el._suppressPersist = false; return; }
+      try { localStorage.setItem(key, el.open ? 'open' : 'closed'); } catch (_) {}
+    });
+  });
+
+  // Collapse state has now been restored; if a saved filter is already active,
+  // expand any collapsed section that has matching rows so results are visible
+  // on load (mirrors the on-click behaviour).
+  reconcileSectionsForFilter();
+
+  // Poll while the Jobs page is open so archive downloads submitted from other
+  // pages can appear here even if no active row existed at initial page load.
+  setInterval(refreshLiveElapsed, 1000);
+  setInterval(pollRunning, 3000);
+})();
+</script>
+
+<div id="chat-window" class="hidden" data-current-user="">
+    <div id="chat-resize-handle" title="Drag to resize" aria-hidden="true"></div>
+    <div id="chat-header">
+        <div class="chat-title">
+            <span id="chat-status-dot" class="chat-status-dot" title="Connecting…"></span>
+            <span>Chat</span>
+            <span id="chat-online" class="chat-online">…</span>
+        </div>
+        <div class="chat-header-actions">
+            <span id="chat-unread" class="chat-unread hidden" aria-label="Unread messages">0</span>
+            <button id="popout-chat" type="button" aria-label="Open chat in a new window" title="Open in new window">⇱</button>
+            <button id="minimize-chat" type="button" aria-label="Minimize chat">–</button>
+        </div>
+    </div>
+    <div id="chat-messages">
+        <div id="chat-empty" class="chat-empty">No messages yet — say hello. Type <code>@help</code> for commands, <code>@here</code> to share this page, <code>@name</code> to notify someone, or <code>@bot</code> to ask the assistant privately.</div>
+    </div>
+    <div id="chat-typing" class="chat-typing" aria-live="polite"></div>
+    <div id="chat-input">
+        <div class="chat-input-wrap">
+            <input type="text" id="message-input" placeholder="Message… (@help for commands)" autocomplete="off">
+            <div id="chat-autocomplete" class="chat-autocomplete hidden"></div>
+        </div>
+        <button id="send-button" type="button">Send</button>
+    </div>
+</div>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="../static/js/chat.js"></script>
+</body>
+</html>
