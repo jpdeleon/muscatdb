@@ -1772,7 +1772,45 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
             outputs = None
         target_params = fit.get_target_parameters(target)
 
+    # Collect all runs for this target across all instruments/dates,
+    # so "Previous Fit" source options are available regardless of which
+    # instrument and date the user currently has selected.
+    all_runs: list[dict] = []
+    seen_run_keys: set = set()
+    if target:
+        import yaml as _yaml
+        for inst_name in INSTRUMENTS:
+            inst_dates = {d["obsdate"] for d in _get_dates(db, inst_name)}
+            inst_dates.update(phot.output_dates(inst_name))
+            for d in sorted(inst_dates, reverse=True):
+                for r in fit.list_fit_runs(inst_name, d, target):
+                    key = (inst_name, d, r.run_id)
+                    if key not in seen_run_keys:
+                        seen_run_keys.add(key)
+                        planets_fitted = "b"
+                        try:
+                            rdir = fit.fit_output_dir(inst_name, d, target, r.run_id or None)
+                            fpath = rdir / "fit.yaml"
+                            if fpath.is_file():
+                                with open(fpath) as f:
+                                    cfg = _yaml.safe_load(f) or {}
+                                planets_fitted = str(cfg.get("planets", "b"))
+                        except Exception:
+                            pass
+                        all_runs.append({
+                            "run_id": r.run_id,
+                            "run_name": r.run_name,
+                            "date": d,
+                            "inst": inst_name,
+                            "planets_fitted": planets_fitted,
+                            "site": r.site,
+                            "telescope": r.telescope,
+                            "mode": r.mode,
+                            "is_legacy": r.is_legacy,
+                        })
+        all_runs.sort(key=lambda r: r["date"], reverse=True)
 
+    runs_json = all_runs
     return _render(
         "transit_fit.html",
         instruments=list(INSTRUMENTS),
@@ -1780,6 +1818,7 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
         sel_site=sel_site, sel_telescope=sel_telescope, sel_mode=sel_mode,
         csv_sites=csv_sites, csv_telescopes=csv_telescopes, csv_modes=csv_modes,
         runs=runs, sel_run=sel_run,
+        runs_json=runs_json,
         dates=dates, targets=targets,
         csvs=csvs, outputs=outputs,
         target_params=target_params,
@@ -1788,7 +1827,7 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
 
 
 @transit_fit_router.get("/query-archive")
-async def transit_fit_query_archive(target: str, source: str = "nasa"):
+async def transit_fit_query_archive(target: str, source: str = "nasa", inst: str = "", date: str = "", run_id: str = ""):
     if not (target or "").strip():
         return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
 
@@ -2030,6 +2069,121 @@ async def transit_fit_query_archive(target: str, source: str = "nasa"):
             if v is None:
                 params[k] = ""
         return {"params": params, "pl_name": pl_name}
+
+    if source == "previous":
+        if not inst or not date:
+            return JSONResponse({"ok": False, "error": "inst and date are required for previous fit source"}, status_code=400)
+
+        import yaml
+        from muscat_db.transit_fit import list_fit_runs, fit_output_dir
+
+        runs = list_fit_runs(inst, date, target)
+        if not runs:
+            return JSONResponse({"ok": False, "error": f"No previous fit runs found for {target} at {inst}/{date}"})
+
+        selected_run_id = run_id or runs[0].run_id
+        matched = [r for r in runs if r.run_id == selected_run_id]
+        if not matched:
+            return JSONResponse({"ok": False, "error": f"Run {selected_run_id!r} not found for {target} at {inst}/{date}"})
+        rdir = fit_output_dir(inst, date, target, selected_run_id or None)
+
+        sys_cfg = {}
+        sys_yaml = rdir / "sys.yaml"
+        if sys_yaml.is_file():
+            with open(sys_yaml) as f:
+                sys_cfg = yaml.safe_load(f) or {}
+
+        summary_rows: dict[str, dict] = {}
+        summary_csv = rdir / "out" / "summary.csv"
+        if summary_csv.is_file():
+            with open(summary_csv, newline="") as f:
+                reader = csv.reader(f)
+                headers = next(reader)
+                headers[0] = "parameter"
+                for row in reader:
+                    if not row:
+                        continue
+                    rd = dict(zip(headers, row))
+                    param = rd.get("parameter", "")
+                    if "[" not in param or not param.endswith("]"):
+                        continue
+                    base, _, idx_str = param[:-1].partition("[")
+                    try:
+                        idx = int(idx_str)
+                    except ValueError:
+                        continue
+                    if idx == 0:
+                        summary_rows[base] = rd
+
+        star_cfg = sys_cfg.get("star", {})
+        planets_cfg = sys_cfg.get("planets", {})
+        pl_key = next(iter(planets_cfg)) if planets_cfg else "b"
+        pl_cfg = planets_cfg.get(pl_key, {})
+
+        def _f(v, default=None):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return default
+
+        ref_time = None
+        log_file = rdir / "timer-fit.log"
+        if log_file.is_file():
+            with open(log_file) as lf:
+                for line in lf:
+                    if "ref. time:" in line:
+                        try:
+                            ref_time = int(line.split("ref. time:")[-1].strip())
+                        except ValueError:
+                            ref_time = None
+                        break
+
+        t0_r = summary_rows.get("t0", {})
+        dur_r = summary_rows.get("dur", {})
+        ror_r = summary_rows.get("ror", {})
+        b_r = summary_rows.get("b", {})
+
+        def _fp(cfg_key, fitted_row):
+            val = _f(fitted_row.get("mean")) if fitted_row else (_f(pl_cfg.get(cfg_key, [None])[0]) if isinstance(pl_cfg.get(cfg_key), list) else None)
+            unc = _f(fitted_row.get("sd")) if fitted_row else (_f(pl_cfg.get(cfg_key, [None, None])[1]) if isinstance(pl_cfg.get(cfg_key), list) else None)
+            return val, unc
+
+        period_pair = pl_cfg.get("period", [None, None])
+
+        def _scalar(key):
+            v = star_cfg.get(key)
+            return _f(v[0]) if isinstance(v, list) and v else None
+
+        def _unc(key):
+            v = star_cfg.get(key)
+            return _f(v[1]) if isinstance(v, list) and len(v) > 1 else None
+
+        params = {
+            "planets": pl_key,
+            "teff": _scalar("teff"),
+            "teff_unc": _unc("teff"),
+            "logg": _scalar("logg"),
+            "logg_unc": _unc("logg"),
+            "feh": _scalar("feh"),
+            "feh_unc": _unc("feh"),
+            "period": _f(period_pair[0]),
+            "period_unc": _f(period_pair[1]),
+            "t0": (_f(t0_r.get("mean")) + ref_time) if (ref_time is not None and t0_r) else _f(t0_r.get("mean")),
+            "t0_unc": _f(t0_r.get("sd")),
+            "dur": _f(dur_r.get("mean")) * 24.0 if dur_r else None,
+            "dur_unc": _f(dur_r.get("sd")) * 24.0 if dur_r else None,
+            "ror": _f(ror_r.get("mean")),
+            "ror_unc": _f(ror_r.get("sd")),
+            "b": _f(b_r.get("mean")),
+            "b_unc": _f(b_r.get("sd")),
+            "st_ref": "Previous Fit",
+            "pl_ref": "Previous Fit",
+        }
+        for k, v in params.items():
+            if v is None:
+                params[k] = ""
+
+        return JSONResponse({"ok": True, "params": params, "pl_name": target, "stored_run_id": selected_run_id})
 
     urlopen_is_mocked = hasattr(_async_get, "called")
 

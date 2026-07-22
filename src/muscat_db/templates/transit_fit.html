@@ -753,6 +753,7 @@
   // polling, the live-log key, and cancellation all target the right run.
   var runId  = {{ sel_run|tojson }};
   var fitResultsExist = {{ (outputs and outputs.has_any)|tojson }};
+  var PREVIOUS_RUNS = {{ runs_json | tojson }};
   // Before a run_id exists (not yet launched, or launch failed before one was
   // assigned), the key must still be scoped per inst/date/target like OPT_KEY/
   // CSV_KEY below — otherwise a failure on one target's page (e.g. a dropped
@@ -913,7 +914,9 @@
   // Human label for an archive source value. The `src-stellar`/`src-planet`
   // badges show this catalog label; the ref containers hold the paper link.
   function sourceLabelFor(source) {
-    return source === 'toi' ? 'TOI Catalog' : 'NASA Exoplanet Archive';
+    if (source === 'toi') return 'TOI Catalog';
+    if (source && source.startsWith('previous:')) return 'Previous Fit';
+    return 'NASA Exoplanet Archive';
   }
 
   function collectOptions() {
@@ -1333,8 +1336,13 @@
           '<select class="planet-source-select" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 0.2rem 0.25rem; font-size: 0.75rem;">' +
             '<option value="nasa"' + (savedSource === 'nasa' ? ' selected' : '') + '>NASA</option>' +
             '<option value="toi"' + (savedSource === 'toi' ? ' selected' : '') + '>TOI</option>' +
+            (typeof PREVIOUS_RUNS !== 'undefined' ? PREVIOUS_RUNS.map(function(r) {
+              var val = 'previous:' + r.inst + ':' + r.date + ':' + r.run_id;
+              var pl = (r.planets_fitted || 'b').split('').join(', ');
+              return '<option value="' + val + '"' + (savedSource === val ? ' selected' : '') + '>' + pl + ': ' + r.inst.toUpperCase() + ' (' + r.date + ') - ' + r.run_name + '</option>';
+            }).join('') : '') +
           '</select>' +
-          '<button class="btn sm planet-query-btn" type="button" style="font-size: 0.75rem; padding: 0.2rem 0.5rem;">Query Archive</button>';
+          '<button class="btn sm planet-query-btn" type="button" style="font-size: 0.75rem; padding: 0.2rem 0.5rem;">Query source</button>';
 
     if (!isFirst) {
       headerHtml += '<button class="btn sm danger planet-remove-btn" type="button" style="font-size: 0.75rem; padding: 0.2rem 0.5rem; border-color: var(--red); color: var(--red);">Remove</button>';
@@ -1495,10 +1503,18 @@
       queryBtn.innerText = 'Querying...';
 
       var sourceSelect = card.querySelector('.planet-source-select');
-      var source = sourceSelect ? sourceSelect.value : 'nasa';
-      var sourceLabel = sourceLabelFor(source);
+      var rawSource = sourceSelect ? sourceSelect.value : 'nasa';
+      var sourceLabel = sourceLabelFor(rawSource);
+      var apiSource = rawSource.startsWith('previous:') ? 'previous' : rawSource;
+      var runId = '', runInst = inst, runDate = date;
+      if (rawSource.startsWith('previous:')) {
+        var parts = rawSource.split(':');
+        runInst = parts[1] || inst;
+        runDate = parts[2] || date;
+        runId = parts[3] || '';
+      }
 
-      fetch('/api/transit-fit/query-archive?target=' + encodeURIComponent(targetVal) + '&source=' + encodeURIComponent(source))
+      fetch('/api/transit-fit/query-archive?target=' + encodeURIComponent(targetVal) + '&source=' + encodeURIComponent(apiSource) + '&inst=' + encodeURIComponent(runInst) + '&date=' + encodeURIComponent(runDate) + '&run_id=' + encodeURIComponent(runId))
         .then(function(res) {
           if (!res.ok) {
             return res.json().then(function(err) { throw new Error(err.error || 'Failed to query archive'); });
@@ -2601,10 +2617,12 @@
       queryBtn.innerText = 'Querying...';
 
       var sourceSelect = document.getElementById('archive-source-select');
-      var source = sourceSelect ? sourceSelect.value : 'nasa';
-      var sourceLabel = sourceLabelFor(source);
+      var rawSource = sourceSelect ? sourceSelect.value : 'nasa';
+      var sourceLabel = sourceLabelFor(rawSource);
+      var runId = rawSource && rawSource.startsWith('previous:') ? rawSource.split(':')[1] : '';
+      var apiSource = rawSource.startsWith('previous:') ? 'previous' : rawSource;
 
-      fetch('/api/transit-fit/query-archive?target=' + encodeURIComponent(targetVal) + '&source=' + encodeURIComponent(source))
+      fetch('/api/transit-fit/query-archive?target=' + encodeURIComponent(targetVal) + '&source=' + encodeURIComponent(apiSource) + '&inst=' + encodeURIComponent(inst) + '&date=' + encodeURIComponent(date) + '&run_id=' + encodeURIComponent(runId))
         .then(function (res) {
           if (!res.ok) {
             return res.json().then(function (err) { throw new Error(err.error || 'Failed to query archive'); });
