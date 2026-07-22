@@ -2385,8 +2385,11 @@
     var p = buildParams();
     p.kind = testKind(p);
     if (!p.kind) { showMessageModal('Unsupported test', 'Select MuSCAT site OGG (MuSCAT3), COJ (MuSCAT4), or Sinistro.'); return; }
-    if (!p.target_name || p.ra === null || p.dec === null || !p.windows.length) {
-      showMessageModal('Incomplete schedule', 'Enter a target and coordinates, then select a transit window.'); return;
+    if (!p.target_name || p.ra === null || p.dec === null) {
+      showMessageModal('Incomplete schedule', 'Enter a target and coordinates.'); return;
+    }
+    if (!p.windows.length) {
+      showMessageModal('Incomplete schedule', 'Generate and select a transit window first (Science obs tab).'); return;
     }
     p.exposure_budget_s = num('sch-test-budget') || 600;
     p.defocus_mm = p.defocus;

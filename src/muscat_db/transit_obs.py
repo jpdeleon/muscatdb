@@ -253,6 +253,101 @@ def _observes_contact(mask_row, start_jd: float, end_jd: float, mid_jd, half: fl
     return ingress_obs or egress_obs
 
 
+def _longest_true_run(mask) -> tuple[int, int]:
+    """``(start_idx, end_idx)`` of the longest contiguous ``True`` run in a
+    boolean array. A target rises/sets once within a few-hour window, so its
+    observable samples form a single run; a moon-separation dip can split that
+    run in two, in which case the longer (usable) leg is chosen. Assumes at
+    least one ``True`` sample."""
+    import numpy as np
+
+    arr = np.asarray(mask, dtype=bool)
+    best_start, best_end, best_len = 0, -1, 0
+    i, n = 0, len(arr)
+    while i < n:
+        if not arr[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and arr[j + 1]:
+            j += 1
+        if j - i + 1 > best_len:
+            best_len, best_start, best_end = j - i + 1, i, j
+        i = j + 1
+    return best_start, best_end
+
+
+def observable_interval(
+    ra_deg: float,
+    dec_deg: float,
+    window: dict,
+    site: str,
+    *,
+    max_airmass: float = 2.0,
+    twilight: str = DEFAULT_TWILIGHT,
+    moon_sep_min: float = 30.0,
+    max_lunar_phase: float = 1.0,
+    step_min: float = 1.0,
+) -> dict | None:
+    """Longest contiguous observable sub-interval of one window at one site.
+
+    Samples ``[window['start'], window['end']]`` at ``step_min`` cadence and
+    applies the same observability test as the windows table (target above the
+    airmass-implied altitude, Sun below twilight, Moon phase/separation). Returns
+    the longest contiguous observable run::
+
+        {"start": iso, "end": iso, "fraction": float,
+         "hit_start_limit": bool, "hit_end_limit": bool}
+
+    Unclipped edges keep the window's exact original timestamp; a clipped edge is
+    reported at sample precision. ``hit_start_limit`` / ``hit_end_limit`` are
+    ``True`` when the run is bounded by observability (the target rises/sets
+    inside the window) rather than by the window boundary itself, i.e. that edge
+    should be held back by a visibility safety margin. ``fraction`` is the
+    observable fraction of the whole window span. Returns ``None`` when the
+    target is never observable within the window (caller decides raise vs drop).
+    """
+    import numpy as np
+    import astropy.units as u
+    from astropy.time import Time
+    from astropy.coordinates import SkyCoord
+
+    if site not in LCO_SITES:
+        raise TransitObsError(f"unknown site: {site!r}", 400)
+    win_start = window.get("start")
+    win_end = window.get("end")
+    if not win_start or not win_end:
+        return None
+    t0 = Time(_parse_iso_utc(win_start))
+    t1 = Time(_parse_iso_utc(win_end))
+    span_s = float((t1 - t0).sec)
+    if span_s <= 0:
+        return None
+
+    alt_min = alt_limit_from_airmass(max_airmass)
+    sun_alt_max = twilight_limit(twilight)
+    n = max(2, int(round(span_s / (float(step_min) * 60.0))) + 1)
+    times = t0 + np.linspace(0.0, span_s, n) * u.s
+    target = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg)
+    mask, *_ = _observable_mask(
+        target, _earth_location(site), times, alt_min, sun_alt_max,
+        moon_sep_min, max_lunar_phase,
+    )
+    if not bool(np.asarray(mask).any()):
+        return None
+
+    first, last = _longest_true_run(mask)
+    hit_start = first > 0
+    hit_end = last < n - 1
+    return {
+        "start": times[first].isot + "Z" if hit_start else win_start,
+        "end": times[last].isot + "Z" if hit_end else win_end,
+        "fraction": float(np.asarray(mask).mean()),
+        "hit_start_limit": hit_start,
+        "hit_end_limit": hit_end,
+    }
+
+
 def classify_transits(
     ra_deg: float,
     dec_deg: float,

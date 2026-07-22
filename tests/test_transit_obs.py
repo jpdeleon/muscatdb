@@ -410,3 +410,61 @@ def test_visibility_series_structure():
 def test_visibility_series_rejects_unknown_site():
     with pytest.raises(T.TransitObsError):
         T.visibility_series(97.64, 29.67, "2026-03-15T10:00:00", 2.5, "jwst")
+
+
+# --------------------------------------------------------------------------- #
+# observable_interval / _longest_true_run
+# --------------------------------------------------------------------------- #
+
+
+def test_longest_true_run_picks_longer_leg():
+    assert T._longest_true_run([False, True, False, True, True, True, False]) == (3, 5)
+    assert T._longest_true_run([True, True, False, True]) == (0, 1)
+    assert T._longest_true_run([True]) == (0, 0)
+
+
+def test_observable_interval_clips_hip67522_set_edge():
+    """HIP67522 at LSC: the window runs to 06:08 but the target sets below the
+    airmass-2.0 limit by ~03:14, so the end is clipped and the start (already up)
+    is preserved verbatim."""
+    window = {"start": "2026-07-26T23:47:44.419201Z",
+              "end": "2026-07-27T06:08:44.419201Z"}
+    iv = T.observable_interval(207.52600, -40.83590, window, "lsc",
+                               max_airmass=2.0, twilight="nautical", moon_sep_min=30.0)
+    assert iv is not None
+    # Start unchanged (target above the limit at window open) -> exact original.
+    assert iv["start"] == window["start"]
+    assert iv["hit_start_limit"] is False
+    # End clipped by the target's set, ~03:14 UTC (well before 06:08).
+    assert iv["hit_end_limit"] is True
+    assert iv["end"].startswith("2026-07-27T03:1")
+    assert 0.4 < iv["fraction"] < 0.7
+
+
+def test_observable_interval_returns_none_when_unobservable():
+    """No Sinistro site but LSC sees HIP67522 in this window; CPT gets nothing."""
+    window = {"start": "2026-07-26T23:47:44Z", "end": "2026-07-27T06:08:44Z"}
+    iv = T.observable_interval(207.52600, -40.83590, window, "cpt",
+                               max_airmass=2.0, twilight="nautical", moon_sep_min=30.0)
+    assert iv is None
+
+
+def test_observable_interval_full_window_preserves_both_edges():
+    """A window entirely within the observable run keeps both boundaries and
+    flags neither edge as observability-bounded."""
+    # A 40-min window centred near HIP67522 culmination at LSC (target high).
+    window = {"start": "2026-07-27T00:00:00Z", "end": "2026-07-27T00:40:00Z"}
+    iv = T.observable_interval(207.52600, -40.83590, window, "lsc",
+                               max_airmass=2.0, twilight="nautical", moon_sep_min=30.0)
+    assert iv is not None
+    assert iv["start"] == window["start"]
+    assert iv["end"] == window["end"]
+    assert iv["hit_start_limit"] is False
+    assert iv["hit_end_limit"] is False
+    assert iv["fraction"] == pytest.approx(1.0, abs=1e-9)
+
+
+def test_observable_interval_rejects_unknown_site():
+    window = {"start": "2026-07-26T23:47:44Z", "end": "2026-07-27T06:08:44Z"}
+    with pytest.raises(T.TransitObsError):
+        T.observable_interval(207.526, -40.836, window, "jwst")
