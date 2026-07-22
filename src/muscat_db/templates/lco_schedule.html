@@ -506,6 +506,7 @@
     CHECK_IDS.forEach(function (id) { o[id] = chk(id); });
     o['_ephemTarget'] = ephemTarget;
     o['_fieldSources'] = fieldSources;
+    o['_cacheKey'] = exptimeCacheKey();
     return o;
   }
   function saveOptions() {
@@ -523,6 +524,10 @@
     if (!saved) return;
     TEXT_IDS.forEach(function (id) { if (saved[id] !== undefined && saved[id] !== '') setVal(id, saved[id]); });
     CHECK_IDS.forEach(function (id) { if (saved[id] !== undefined) setChk(id, saved[id]); });
+    // Exp times are only valid when restored settings match current settings.
+    if (saved['_cacheKey'] && saved['_cacheKey'] !== exptimeCacheKey()) {
+      clearExptimeFields();
+    }
     if (saved['sch-source']) pendingSource = saved['sch-source'];
     if (typeof saved['_ephemTarget'] === 'string') ephemTarget = saved['_ephemTarget'];
     var savedSrc = saved['_fieldSources'] || {};
@@ -1159,8 +1164,9 @@
     var firstWin = selected[0];
     var dateStr = firstWin.mid || firstWin.start;
     var yymmdd = (dateStr || '').substring(2, 10).replace(/-/g, '');
+    var planet = val('sch-planet');
     var kind = val('sch-kind');
-    var name = target + '_' + yymmdd;
+    var name = target + (planet ? '_' + planet : '') + '_' + yymmdd;
     if (kind === 'muscat3') {
       name += '_M3';
     } else if (kind === 'muscat4') {
@@ -1212,7 +1218,7 @@
     applyWinFilter();
     updateRequestName();
     updateSplitPanel();
-    applyAutoSite();
+    applyAutoConfig();
   }
 
   // Returns the observability of the single checked window when it's rated
@@ -1375,22 +1381,50 @@
     return uniq.length === 1 ? uniq[0] : '';
   }
 
-  var lastAutoSite = null;  // value applyAutoSite last wrote; guards a manual override
-  function applyAutoSite() {
+  // Sites that host 2m telescopes (MuSCAT). 1m-only sites default to Sinistro.
+  var _2M_SITES = { ogg: true, coj: true };
+
+  var lastAutoSite = null;  // value applyAutoConfig last wrote; guards a manual override
+  var lastAutoKind = null;  // value applyAutoConfig last wrote for sch-kind
+
+  function exptimeCacheKey() {
+    var kind = val('sch-kind');
+    var site = kind === 'sinistro' ? val('sch-site') : val('sch-muscat-site');
+    var filter = kind === 'sinistro' ? val('sch-effective-filter') : '';
+    return (val('sch-target') || '') + '|' + (val('sch-planet') || '') + '|' + kind + '|' + (site || '') + '|' + filter;
+  }
+  function clearExptimeFields() {
+    var muscat = val('sch-kind') !== 'sinistro';
+    (muscat ? ['sch-exp-g', 'sch-exp-r', 'sch-exp-i', 'sch-exp-z'] : ['sch-effective-exptime']).forEach(function (id) {
+      setVal(id, '');
+    });
+  }
+
+  function applyAutoConfig() {
     var site = autoSiteFromSelection();
-    if (site === null) return;
+    if (site === null || !site) return;
+
+    // Auto-set instrument from site: 1m-only sites get Sinistro, sites with
+    // 2m (ogg, coj) default to MuSCAT. Respect manual override.
+    var desiredKind = _2M_SITES[site] ? 'muscat' : 'sinistro';
+    var kindEl = el('sch-kind');
+    if (kindEl && desiredKind !== kindEl.value && (!kindEl.value || kindEl.value === lastAutoKind)) {
+      kindEl.value = desiredKind;
+      lastAutoKind = desiredKind;
+      applyKind();
+      clearExptimeFields();
+      saveOptions();
+    }
+
+    // Auto-set site for the (possibly changed) instrument.
     var selId = (val('sch-kind') === 'sinistro') ? 'sch-site' : 'sch-muscat-site';
     var sel = el(selId);
     if (!sel) return;
-    // A non-empty site must already be an option for THIS instrument (never
-    // invent lsc etc. for a MuSCAT dropdown); a shared site not offered here
-    // falls back to "let LCO pick".
     if (site) {
+      // The site must be a valid option for the current instrument dropdown.
       var ok = Array.prototype.some.call(sel.options, function (o) { return o.value === site; });
       if (!ok) site = '';
     }
-    // Respect a manual choice: only overwrite an empty field or the value we
-    // auto-filled last time.
     if (sel.value && sel.value !== lastAutoSite) return;
     if (sel.value === site) { lastAutoSite = site; return; }
     sel.value = site;
@@ -1566,6 +1600,7 @@
     }
   });
   el('sch-planet').addEventListener('change', function () {
+    updateRequestName();
     if (lastTargetInfo && lastInfoTarget === val('sch-target')) {
       populateSourceOptions(lastTargetInfo);
       applySource(lastTargetInfo);
@@ -1590,7 +1625,7 @@
     saveScheduleState();
     updateRequestName();
     updateSplitPanel();
-    applyAutoSite();
+    applyAutoConfig();
   });
   el('win-filter').addEventListener('change', function () {
     applyWinFilter();
@@ -1602,7 +1637,7 @@
       updateRequestName();
       updateExposureCount();
       updateSplitPanel();
-      applyAutoSite();
+      applyAutoConfig();
       el('btn-submit').disabled = true;
       lastDryRunHash = null;
     }
