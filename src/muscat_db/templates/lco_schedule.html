@@ -2184,7 +2184,9 @@
   function fmtDefocus(focus) {
     if (focus === null || focus === undefined || focus === '') return '—';
     var f = Number(focus);
-    return isFinite(f) ? (f === 0 ? '0' : f.toFixed(2)) + ' mm' : '—';
+    if (!isFinite(f)) return '—';
+    var rounded = Math.round(f * 2) / 2;
+    return rounded.toFixed(1) + ' mm';
   }
   function fmtObsDate(yymmdd) {
     var s = String(yymmdd || '');
@@ -2200,7 +2202,7 @@
     return '';
   }
   function applyObslogExposure(row) {
-    var exp = row.exptime;
+    var exp = Math.round(row.exptime);
     if (val('sch-kind') === 'sinistro') {
       setVal('sch-effective-exptime', String(exp));
       saveOptions();
@@ -2227,7 +2229,7 @@
         '<td>' + escapeHtml(row.filter || '—') + '</td>' +
         '<td>' + escapeHtml(row.read_mode || '—') + '</td>' +
         '<td>' + fmtDefocus(row.focus) + '</td>' +
-        '<td>' + row.exptime + '</td>' +
+        '<td>' + Math.round(row.exptime) + '</td>' +
         '<td>' + row.nframes + '</td>';
       tr.addEventListener('click', function () { applyObslogExposure(row); });
       tb.appendChild(tr);

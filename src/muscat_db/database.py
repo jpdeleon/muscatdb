@@ -1233,15 +1233,15 @@ def get_exposure_log_for_objects(db_path: str, objects: list[str]) -> list[dict]
             f"""SELECT instrument,
                        COALESCE(filter, '')    AS filter,
                        COALESCE(read_mode, '') AS read_mode,
-                       focus,
-                       ROUND(exptime, 3)       AS exptime,
+                       ROUND(focus * 2) / 2    AS focus,
+                       ROUND(exptime)          AS exptime,
                        COUNT(*)                AS nframes,
                        MAX(obsdate)            AS last_date,
                        MIN(obsdate)            AS first_date
                   FROM frames
                  WHERE object IN ({placeholders}) AND exptime IS NOT NULL
               GROUP BY instrument, COALESCE(filter, ''), COALESCE(read_mode, ''),
-                       focus, ROUND(exptime, 3)
+                       ROUND(focus * 2) / 2, ROUND(exptime)
               ORDER BY last_date DESC, instrument, filter""",
             objects,
         )
