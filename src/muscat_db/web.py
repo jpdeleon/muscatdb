@@ -3535,11 +3535,40 @@ def api_lco_visibility(
         return JSONResponse({"ok": False, "error": f"visibility unavailable: {e}"}, status_code=500)
 
 
-@lco_router.post("/ipp", response_class=JSONResponse)
-def api_lco_ipp(request: Request, payload: dict = Body(...)):
-    """Build the requestgroup and run the max-allowable-IPP dry-run."""
+@lco_router.post("/build", response_class=JSONResponse)
+def api_lco_build(payload: dict = Body(...)):
+    """Build the LCO requestgroup from the form params without contacting LCO.
+
+    Backs the "Create draft" step: the returned payload is shown in an editable
+    editor so the observer can tweak fields (e.g. exposure/requested time) before
+    the dry-run. No external call is made here.
+    """
     try:
         rg = lco.build_requestgroup(payload.get("kind"), payload)
+        return JSONResponse({"ok": True, "payload": rg, "payload_hash": lco.payload_hash(rg)})
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+
+
+def _requestgroup_from_payload(payload: dict) -> dict:
+    """The edited requestgroup the observer submitted, else one built from params.
+
+    When the draft editor sends an explicit ``requestgroup`` it is dry-run and
+    submitted verbatim (the payload hash then locks submit to exactly what was
+    checked); otherwise fall back to building it from the form params.
+    """
+    edited = payload.get("requestgroup")
+    if isinstance(edited, dict) and edited:
+        return edited
+    return lco.build_requestgroup(payload.get("kind"), payload)
+
+
+@lco_router.post("/ipp", response_class=JSONResponse)
+def api_lco_ipp(request: Request, payload: dict = Body(...)):
+    """Run the max-allowable-IPP dry-run on the edited draft (or a params-built
+    requestgroup when no edited ``requestgroup`` is supplied)."""
+    try:
+        rg = _requestgroup_from_payload(payload)
         ipp = lco.max_allowable_ipp(rg, _request_user(request))
         return JSONResponse(
             {"ok": True, "payload": rg, "payload_hash": lco.payload_hash(rg), "ipp": ipp}
@@ -3605,8 +3634,10 @@ def api_lco_test_plan(payload: dict = Body(...)):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
-def _test_request(record: dict, params: dict) -> dict:
-    plan = record["plan"]
+def _test_request(record: dict, params: dict, plan_override: dict | None = None) -> dict:
+    # The editable draft may carry small tweaks to the displayed plan; overlay
+    # them on the stored plan (which still holds the guarded internal keys).
+    plan = record["plan"] if not plan_override else {**record["plan"], **plan_override}
     base = {**params, "kind": plan["kind"]}
     base["name"] = str(base.get("name") or f"TEST {plan.get('target') or record['id']}")
     if not base["name"].upper().startswith("TEST"):
@@ -3619,7 +3650,7 @@ def _test_request(record: dict, params: dict) -> dict:
 def api_lco_test_ipp(observation_id: str, request: Request, payload: dict = Body(...)):
     try:
         record = test_observations.get_record(observation_id)
-        rg = _test_request(record, payload)
+        rg = _test_request(record, payload, payload.get("plan_override"))
         ipp = lco.max_allowable_ipp(rg, _request_user(request))
         digest = lco.payload_hash(rg)
         record = test_observations.update_record(observation_id, state="validated", payload_hash=digest)
@@ -3636,7 +3667,7 @@ def api_lco_test_submit(observation_id: str, request: Request, payload: dict = B
         return JSONResponse({"ok": False, "error": "submission requires explicit confirm"}, status_code=400)
     try:
         record = test_observations.get_record(observation_id)
-        rg = _test_request(record, payload)
+        rg = _test_request(record, payload, payload.get("plan_override"))
         digest = lco.payload_hash(rg)
         if not payload.get("dry_run_hash") or payload["dry_run_hash"] != digest or record["payload_hash"] != digest:
             return JSONResponse({"ok": False, "error": "no matching test-observation dry-run; run the dry-run again"}, status_code=409)
@@ -3669,7 +3700,7 @@ def api_lco_submit(request: Request, payload: dict = Body(...)):
             return JSONResponse(
                 {"ok": False, "error": "submission requires explicit confirm"}, status_code=400
             )
-        rg = lco.build_requestgroup(payload.get("kind"), payload)
+        rg = _requestgroup_from_payload(payload)
         expected = payload.get("dry_run_hash")
         if not expected or expected != lco.payload_hash(rg):
             return JSONResponse(

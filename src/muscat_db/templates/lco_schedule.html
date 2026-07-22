@@ -332,27 +332,29 @@
 
   <div class="lco-tab-panel" data-panel="science">
     <div class="lco-actions">
-      <button class="btn primary" type="button" id="btn-dry-run">Check settings</button>
-      <button class="btn" type="button" id="btn-submit" disabled
-        title="Enabled after a successful dry-run. Requires MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
+      <button class="btn primary" type="button" id="btn-create-draft" title="Build the LCO request payload from the form so you can review and edit it before checking settings">Create draft</button>
+      <button class="btn primary" type="button" id="btn-dry-run" style="display: none;">Check settings</button>
+      <button class="btn" type="button" id="btn-submit" disabled style="display: none;"
+        title="Enabled after a successful dry-run of the current draft. Requires MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
         Submit
       </button>
       <span class="lco-msg" id="msg-ipp" style="margin: 0;"></span>
     </div>
     <div id="ipp-result" style="margin-top: 0.75rem; display: none;">
-      <div class="lco-note" id="ipp-summary"></div>
-      <pre class="lco-pre" id="payload-pre"></pre>
+      <p class="lco-note" style="margin: 0 0 0.35rem;">Editable LCO request payload — tweak fields (e.g. <code>exposure_time</code>, window start/end) before checking settings. Editing after a check disables Submit until you re-check.</p>
+      <textarea class="lco-pre" id="payload-pre" spellcheck="false" aria-label="LCO request payload"></textarea>
+      <div class="lco-note" id="ipp-summary" style="margin-top: 0.4rem;"></div>
     </div>
   </div>
 
   <div class="lco-tab-panel" data-panel="test" style="display: none;">
     <div class="lco-actions">
       <div class="lco-field" style="max-width: 150px;"><label for="sch-test-budget">Test budget (s) <span class="help-tooltip" title="Maximum cumulative exposure time for the test observation, in seconds. Candidate exposures beyond this budget are dropped from the plan. Excludes acquisition/readout.">?</span></label><input id="sch-test-budget" type="number" min="1" step="1" value="600"></div>
-      <button class="btn" type="button" id="btn-test-observation" title="Plan a guarded closed-loop test observation">Test observation</button>
+      <button class="btn primary" type="button" id="btn-test-observation" title="Plan a guarded closed-loop test observation and build an editable draft">Create draft</button>
       <span class="lco-msg" id="msg-test-observation" style="margin: 0;"></span>
     </div>
-    <p class="lco-note">Plans a guarded closed-loop test observation. Exposure budget excludes acquisition/readout. Review all removed combinations and warnings before validation.</p>
-    <pre id="test-observation-summary" class="lco-pre" style="max-height: 45vh; overflow: auto; white-space: pre-wrap; display: none;"></pre>
+    <p class="lco-note">Plans a guarded closed-loop test observation. Exposure budget excludes acquisition/readout. Review all removed combinations and warnings, and edit the draft below (e.g. exposure/requested time) if needed, before checking settings.</p>
+    <textarea id="test-observation-summary" class="lco-pre" spellcheck="false" aria-label="Test observation draft" style="display: none;"></textarea>
     <div class="lco-actions" id="test-obs-actions" style="display: none;">
       <button class="btn primary" type="button" id="btn-test-dry-run">Check settings</button>
       <button class="btn danger" type="button" id="btn-test-submit" disabled>Submit TEST</button>
@@ -1338,6 +1340,7 @@
     if (!lastWindows.length && el('windows-table').style.display === 'none') return;
     lastDryRunHash = null;
     el('btn-submit').disabled = true;
+    resetDraftState();
     resetSplitSubmitState();
     clearWindows();
     el('vis-figure').style.display = 'none';
@@ -1357,7 +1360,7 @@
       selected: selectedWindowIndices(),
       dry_run_hash: lastDryRunHash,
       ipp_summary: el('ipp-summary').textContent,
-      payload_pre: el('payload-pre').textContent,
+      payload_pre: el('payload-pre').value,
       ipp_visible: el('ipp-result').style.display !== 'none'
     };
     if (extra) {
@@ -1373,10 +1376,13 @@
     lastWindows = Array.isArray(saved.windows) ? saved.windows : [];
     lastDryRunHash = saved.dry_run_hash || null;
     if (lastWindows.length) renderWindows(saved.selected || []);
-    if (saved.ipp_visible) {
+    if (saved.ipp_visible && saved.payload_pre) {
       el('ipp-result').style.display = '';
       el('ipp-summary').textContent = saved.ipp_summary || '';
-      el('payload-pre').textContent = saved.payload_pre || '';
+      el('payload-pre').value = saved.payload_pre || '';
+      el('btn-dry-run').style.display = '';
+      el('btn-submit').style.display = '';
+      el('btn-submit').disabled = !lastDryRunHash;
     }
   }
 
@@ -1919,39 +1925,70 @@
     return messages.length ? messages : null;
   }
 
+  // Science flow: Create draft (build the payload locally, editable) → Check
+  // settings (dry-run the *edited* JSON) → Submit (book exactly what was checked,
+  // hash-locked). "Create draft" only builds — build_requestgroup returns a clear
+  // error for any field it genuinely needs; all payload checking (the LCO
+  // dry-run) is left to "Check settings". Editing the draft after a check
+  // disables Submit until re-check.
+  function parseDraft() {
+    try {
+      var rg = JSON.parse(el('payload-pre').value);
+      if (!rg || typeof rg !== 'object' || Array.isArray(rg)) throw new Error('payload must be a JSON object');
+      return rg;
+    } catch (e) {
+      msg('msg-ipp', 'Draft JSON is invalid: ' + e.message, 'err');
+      return null;
+    }
+  }
+
+  // Collapse the editor + Check/Submit back to just "Create draft".
+  function resetDraftState() {
+    lastDryRunHash = null;
+    el('ipp-result').style.display = 'none';
+    el('payload-pre').value = '';
+    el('ipp-summary').textContent = '';
+    el('btn-dry-run').style.display = 'none';
+    el('btn-submit').style.display = 'none';
+    el('btn-submit').disabled = true;
+  }
+
+  el('btn-create-draft').addEventListener('click', function () {
+    msg('msg-ipp', 'Building draft…');
+    lastDryRunHash = null;
+    el('btn-submit').disabled = true;
+    fetch('/api/lco/build', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildParams()) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) { msg('msg-ipp', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
+        el('payload-pre').value = JSON.stringify(d.payload, null, 2);
+        el('ipp-summary').textContent = '';
+        el('ipp-result').style.display = '';
+        el('btn-dry-run').style.display = '';
+        el('btn-submit').style.display = '';
+        el('btn-submit').disabled = true;
+        msg('msg-ipp', 'Draft created. Edit if needed, then Check settings.', 'ok');
+        saveScheduleState();
+      }).catch(function (e) { msg('msg-ipp', String(e), 'err'); });
+  });
+
+  // Any edit to the draft invalidates the last dry-run.
+  el('payload-pre').addEventListener('input', function () {
+    if (lastDryRunHash) msg('msg-ipp', 'Draft edited — Check settings again before submitting.');
+    lastDryRunHash = null;
+    el('btn-submit').disabled = true;
+    el('ipp-summary').textContent = '';
+  });
+
   el('btn-dry-run').addEventListener('click', function () {
-    if (!selectedWindows().length) { msg('msg-ipp', 'Generate and select at least one window first', 'err'); return; }
-    // Pre-check the request-level required fields so the user gets a specific
-    // message instead of the backend's generic "missing required parameters".
-    if (!val('sch-target')) { msg('msg-ipp', 'Enter a target', 'err'); return; }
-    var reqCoords = parseCoords();
-    if (reqCoords.ra === null || reqCoords.dec === null) {
-      msg('msg-ipp', 'Enter valid "RA, Dec (deg)" — resolve the target or type coordinates', 'err');
-      return;
-    }
-    if (!val('sch-proposal')) { msg('msg-ipp', 'Select a proposal', 'err'); return; }
-    if (!val('sch-name')) { msg('msg-ipp', 'Request name is empty — reselect a window to auto-fill it', 'err'); return; }
-    var kind = val('sch-kind');
-    if (kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4') {
-      var hasExp = false;
-      ['g', 'r', 'i', 'z'].forEach(function (b) { if (num('sch-exp-' + b) !== null) hasExp = true; });
-      if (!hasExp) { msg('msg-ipp', 'Enter at least one exposure time (g, r, i, or z)', 'err'); return; }
-      if (!val('sch-muscat-site')) { msg('msg-ipp', 'Select a site (ogg or coj)', 'err'); return; }
-    } else if (kind === 'sinistro') {
-      if (num('sch-effective-exptime') === null) { msg('msg-ipp', 'Enter an exposure time (s)', 'err'); return; }
-      // An empty site is allowed for the 1m network: the request goes out with
-      // telescope_class only and LCO's scheduler picks an observable 1m node.
-      // This is the "let LCO pick" path used when the checked windows resolve to
-      // different best sites (auto-fill leaves the site blank then).
-    }
+    var rg = parseDraft();
+    if (!rg) return;
     msg('msg-ipp', 'Running dry-run…');
     lastDryRunHash = null;
     el('btn-submit').disabled = true;
-    fetch('/api/lco/ipp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildParams()) })
+    fetch('/api/lco/ipp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requestgroup: rg }) })
       .then(function (r) { return r.json(); }).then(function (d) {
         if (!d.ok) { msg('msg-ipp', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
         lastDryRunHash = d.payload_hash;
-        el('ipp-result').style.display = '';
         var ipp = d.ipp || {};
         var lcoErrors = formatLcoErrors(ipp);
         if (lcoErrors && lcoErrors.length > 0) {
@@ -1961,14 +1998,13 @@
             lcoErrors.map(function (e) { return e; }).join('<br>') +
             '</div>';
           el('ipp-summary').innerHTML = errorHtml;
-          msg('msg-ipp', 'Validation errors found. Fix them and re-run dry-run.', 'err');
+          msg('msg-ipp', 'Validation errors found. Fix the draft and re-run Check settings.', 'err');
         } else {
           el('btn-submit').disabled = false;
           var allowed = ipp.max_allowable_ipp_value !== undefined ? ipp.max_allowable_ipp_value : (ipp.errors ? 'Error in response' : 'OK');
           el('ipp-summary').textContent = 'Max allowable IPP: ' + allowed + ' · payload hash ' + (d.payload_hash || '').slice(0, 12);
           msg('msg-ipp', 'Dry-run OK. Submit button enabled.', 'ok');
         }
-        el('payload-pre').textContent = JSON.stringify(d.payload, null, 2);
         saveScheduleState();
       }).catch(function (e) { msg('msg-ipp', String(e), 'err'); });
   });
@@ -2035,7 +2071,10 @@
   }
 
   function submitLcoRequest() {
-    var body = buildParams();
+    var rg = parseDraft();
+    if (!rg) return;
+    var body = buildParams();     // metadata for local monitoring
+    body.requestgroup = rg;       // the edited draft is what gets booked
     body.confirm = true;
     body.dry_run_hash = lastDryRunHash;
     msg('msg-ipp', 'Submitting…');
@@ -2362,16 +2401,35 @@
         el('btn-test-submit').disabled = true;
         var _INTERNAL_PLAN_KEYS = ['fov_candidates', 'removed_combinations', 'provenance', 'capabilities', 'version'];
         var displayPlan = Object.fromEntries(Object.entries(d.record.plan).filter(function (kv) { return !_INTERNAL_PLAN_KEYS.includes(kv[0]); }));
-        el('test-observation-summary').textContent = JSON.stringify(displayPlan, null, 2);
+        el('test-observation-summary').value = JSON.stringify(displayPlan, null, 2);
         // Reveal the inline review + validate/submit controls in the Test obs tab.
         el('test-observation-summary').style.display = '';
         el('test-obs-actions').style.display = '';
-        msg('msg-test-observation', 'Draft generated. Review before checking settings.');
+        msg('msg-test-observation', 'Draft generated. Edit if needed, then Check settings.');
       }).catch(function (e) { showMessageModal('Test plan failed', String(e)); });
+  });
+  // The edited plan draft (displayed subset) is overlaid on the stored plan.
+  function parseTestDraft() {
+    try {
+      var plan = JSON.parse(el('test-observation-summary').value);
+      if (!plan || typeof plan !== 'object' || Array.isArray(plan)) throw new Error('draft must be a JSON object');
+      return plan;
+    } catch (e) {
+      msg('msg-test-observation', 'Draft JSON is invalid: ' + e.message, 'err');
+      return null;
+    }
+  }
+  // Editing the draft invalidates the last dry-run.
+  el('test-observation-summary').addEventListener('input', function () {
+    if (currentTestHash) msg('msg-test-observation', 'Draft edited — Check settings again before submitting.');
+    currentTestHash = null;
+    el('btn-test-submit').disabled = true;
   });
   el('btn-test-dry-run').addEventListener('click', function () {
     if (!currentTestRecord) return;
-    var p = buildParams(); p.kind = currentTestRecord.instrument;
+    var override = parseTestDraft();
+    if (!override) return;
+    var p = buildParams(); p.kind = currentTestRecord.instrument; p.plan_override = override;
     msg('msg-test-observation', 'Running guarded LCO dry-run…');
     fetch('/api/lco/test-observations/' + encodeURIComponent(currentTestRecord.id) + '/ipp', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(p) })
       .then(function (r) { return r.json(); }).then(function (d) {
@@ -2382,9 +2440,11 @@
   });
   el('btn-test-submit').addEventListener('click', function () {
     if (!currentTestRecord || !currentTestHash) return;
+    var override = parseTestDraft();
+    if (!override) return;
     showConfirmModal('Submit TEST observation?', 'This books the displayed telescope time and requires server-side live submission to be enabled.', {confirmLabel: 'Submit TEST', confirmClass: 'btn danger'}).then(function (confirmed) {
       if (!confirmed) return;
-      var p = buildParams(); p.kind = currentTestRecord.instrument; p.confirm = true; p.dry_run_hash = currentTestHash;
+      var p = buildParams(); p.kind = currentTestRecord.instrument; p.confirm = true; p.dry_run_hash = currentTestHash; p.plan_override = override;
       fetch('/api/lco/test-observations/' + encodeURIComponent(currentTestRecord.id) + '/submit', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(p) })
         .then(function (r) { return r.json(); }).then(function (d) {
           if (!d.ok) throw new Error(d.error || 'Submission failed');

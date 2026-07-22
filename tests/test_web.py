@@ -1599,6 +1599,110 @@ def test_lco_submit_succeeds_with_matching_hash(mock_db, monkeypatch):
     assert "result_json" not in monitored["requests"][0]
 
 
+def test_lco_build_returns_editable_payload_without_lco_call(monkeypatch):
+    # "Create draft" builds the payload only — it must never contact LCO.
+    monkeypatch.setattr(
+        "muscat_db.lco.max_allowable_ipp",
+        lambda payload, token=None: (_ for _ in ()).throw(AssertionError("no LCO call from /build")),
+    )
+    r = TestClient(app).post("/api/lco/build", json=_ipp_params())
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] and body["payload_hash"]
+    assert body["payload"]["requests"][0]["configurations"][0]["instrument_type"] == "1M0-SCICAM-SINISTRO"
+
+
+def test_lco_ipp_dry_runs_edited_requestgroup(monkeypatch):
+    import muscat_db.lco as _lco
+
+    captured = {}
+
+    def fake_ipp(payload, token=None):
+        captured["rg"] = payload
+        return {"max_allowable_ipp_value": 2.0}
+
+    monkeypatch.setattr("muscat_db.lco.max_allowable_ipp", fake_ipp)
+    rg = _lco.build_requestgroup("sinistro", _ipp_params())
+    rg["name"] = "EDITED DRAFT"  # a small edit to the draft payload
+    r = TestClient(app).post("/api/lco/ipp", json={"requestgroup": rg})
+    assert r.status_code == 200
+    body = r.json()
+    # The edited requestgroup is dry-run verbatim and its hash returned.
+    assert body["payload"]["name"] == "EDITED DRAFT"
+    assert body["payload_hash"] == _lco.payload_hash(rg)
+    assert captured["rg"]["name"] == "EDITED DRAFT"
+
+
+def test_lco_submit_books_edited_requestgroup(mock_db, monkeypatch):
+    import muscat_db.lco as _lco
+
+    params = _ipp_params()
+    rg = _lco.build_requestgroup(params["kind"], params)
+    rg["name"] = "EDITED SUBMIT"  # what gets booked, not a params rebuild ("s")
+    good_hash = _lco.payload_hash(rg)
+    captured = {}
+
+    def fake_submit(payload, token=None):
+        captured["rg"] = payload
+        return {
+            "id": 111, "name": payload["name"], "proposal": params["proposal"], "state": "PENDING",
+            "requests": [{"id": 222, "state": "PENDING", "windows": params["windows"]}],
+        }
+
+    monkeypatch.setattr("muscat_db.lco.submit_requestgroup", fake_submit)
+    r = TestClient(app).post(
+        "/api/lco/submit",
+        json={**params, "requestgroup": rg, "confirm": True, "dry_run_hash": good_hash},
+    )
+    assert r.status_code == 200
+    assert captured["rg"]["name"] == "EDITED SUBMIT"
+    assert r.json()["result"]["id"] == 111
+
+
+def test_lco_submit_edited_requestgroup_rejects_stale_hash(monkeypatch):
+    # Editing the draft after Check settings must invalidate the hash lock.
+    import muscat_db.lco as _lco
+
+    params = _ipp_params()
+    rg = _lco.build_requestgroup(params["kind"], params)
+    stale = _lco.payload_hash(rg)  # hash of the un-edited draft
+    rg["name"] = "EDITED AFTER CHECK"  # now the payload no longer matches the hash
+    monkeypatch.setattr(
+        "muscat_db.lco.submit_requestgroup",
+        lambda payload, token=None: (_ for _ in ()).throw(AssertionError("must not submit")),
+    )
+    r = TestClient(app).post(
+        "/api/lco/submit",
+        json={**params, "requestgroup": rg, "confirm": True, "dry_run_hash": stale},
+    )
+    assert r.status_code == 409
+    assert "dry-run" in r.json()["error"].lower()
+
+
+def test_test_request_overlays_plan_override(monkeypatch):
+    # The editable test draft (displayed plan subset) overlays the stored plan.
+    import muscat_db.web as _web
+
+    captured = {}
+
+    def fake_request_configurations(plan, base):
+        captured["plan"] = plan
+        return [{"cfg": 1}]
+
+    monkeypatch.setattr(_web.test_observations, "request_configurations", fake_request_configurations)
+    monkeypatch.setattr(_web.lco, "build_requestgroup",
+                        lambda kind, base, configurations=None: {"kind": kind, "configs": configurations})
+    record = {"id": "t1", "plan": {"kind": "sinistro", "exposure_time": 60, "target": "X"}}
+
+    _web._test_request(record, {"name": "TEST X"})
+    assert captured["plan"]["exposure_time"] == 60  # stored plan used as-is
+
+    _web._test_request(record, {"name": "TEST X"}, {"exposure_time": 999})
+    assert captured["plan"]["exposure_time"] == 999  # override applied
+    assert captured["plan"]["target"] == "X"         # untouched keys preserved
+    assert record["plan"]["exposure_time"] == 60     # stored record left intact
+
+
 def test_lco_split_partial_booking_still_registers_successful_leg(mock_db, monkeypatch):
     import muscat_db.lco as _lco
 
