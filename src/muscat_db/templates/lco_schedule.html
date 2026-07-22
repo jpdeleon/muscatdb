@@ -144,19 +144,19 @@
       <div class="muscat-only" style="display: none;">
         <select id="sch-muscat-site">
           <option value="">— select —</option>
-          <option value="ogg">ogg (M3)</option>
-          <option value="coj">coj (M4)</option>
+          <option value="ogg">ogg (MuSCAT3)</option>
+          <option value="coj">coj (MuSCAT4)</option>
         </select>
       </div>
       <div class="sinistro-only" style="display: none;">
         <select id="sch-site">
           <option value="">— select —</option>
-          <option value="ogg">ogg</option>
-          <option value="coj">coj</option>
-          <option value="lsc">lsc</option>
-          <option value="cpt">cpt</option>
-          <option value="tfn">tfn</option>
-          <option value="elp">elp</option>
+          <option value="ogg">ogg (Haleakala)</option>
+          <option value="coj">coj (Siding Spring)</option>
+          <option value="lsc">lsc (Cerro Tololo)</option>
+          <option value="cpt">cpt (Sutherland)</option>
+          <option value="tfn">tfn (Tenerife)</option>
+          <option value="elp">elp (McDonald)</option>
         </select>
       </div>
     </div>
@@ -170,24 +170,35 @@
         <option value="zs">zs</option>
       </select>
     </div>
+    <div class="lco-field sinistro-only" style="display: none;">
+      <label for="sch-effective-exptime">Exp time (s) <span class="help-tooltip" title="Exposure time in seconds for Sinistro observations.">?</span></label>
+      <input id="sch-effective-exptime" type="text" inputmode="decimal" placeholder="60">
+    </div>
+    <div class="lco-field sinistro-only" style="display: none;">
+      <label for="sch-effective-mode">Readout <span class="help-tooltip" title="Readout mode for Sinistro: 2k 2x2 uses central CCD region; full uses entire frame.">?</span></label>
+      <select id="sch-effective-mode">
+        <option value="central_2k_2x2">2k 2x2</option>
+        <option value="full_frame">full</option>
+      </select>
+    </div>
   </div>
   <div class="lco-msg" id="msg-proposals" style="margin-top: 0.4rem;"></div>
 
   <div class="muscat-only" style="margin-top: 0.6rem;">
-    <div style="font-size: 0.85rem; font-weight: 600; text-transform: lowercase; color: var(--text-dim); margin-bottom: 0.4rem;">Exposure times per band:</div>
+    <div class="lco-subhead">Exposure times per band</div>
     <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 0.5rem 1rem;">
       <div class="lco-field"><label for="sch-exp-g">g (s) <span class="help-tooltip" title="Exposure time in seconds for the g band.">?</span></label><input id="sch-exp-g" type="number" step="any" placeholder="30"></div>
       <div class="lco-field"><label for="sch-exp-r">r (s) <span class="help-tooltip" title="Exposure time in seconds for the r band.">?</span></label><input id="sch-exp-r" type="number" step="any" placeholder="30"></div>
       <div class="lco-field"><label for="sch-exp-i">i (s) <span class="help-tooltip" title="Exposure time in seconds for the i band.">?</span></label><input id="sch-exp-i" type="number" step="any" placeholder="30"></div>
       <div class="lco-field"><label for="sch-exp-z">z (s) <span class="help-tooltip" title="Exposure time in seconds for the z band.">?</span></label><input id="sch-exp-z" type="number" step="any" placeholder="30"></div>
     </div>
-    <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dim); margin-top: 0.6rem; margin-bottom: 0.4rem;">Settings:</div>
+    <div class="lco-subhead">Settings</div>
     <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.5rem 1rem;">
       <div class="lco-field"><label for="sch-exp-mode">Exp mode <span class="help-tooltip" title="Async returns immediately after exposure; Sync blocks until data is available.">?</span></label>
         <select id="sch-exp-mode"><option value="ASYNCHRONOUS" selected>Async</option><option value="SYNCHRONOUS">Sync</option></select></div>
-      <div class="lco-field"><label for="sch-readout">Readout mode <span class="help-tooltip" title="MUSCAT_FAST is faster but noisier; MUSCAT_SLOW is slower but lower read noise.">?</span></label><select id="sch-readout" style="font-size: 0.8rem;"><option value="MUSCAT_FAST">MUSCAT_FAST</option><option value="MUSCAT_SLOW">MUSCAT_SLOW</option></select></div>
+      <div class="lco-field"><label for="sch-readout">Readout mode <span class="help-tooltip" title="MUSCAT_FAST is faster but noisier; MUSCAT_SLOW is slower but lower read noise.">?</span></label><select id="sch-readout"><option value="MUSCAT_FAST">MUSCAT_FAST</option><option value="MUSCAT_SLOW">MUSCAT_SLOW</option></select></div>
     </div>
-    <div style="font-size: 0.85rem; font-weight: 600; text-transform: lowercase; color: var(--text-dim); margin-top: 0.6rem; margin-bottom: 0.4rem;">Narrowband filters:</div>
+    <div class="lco-subhead">Narrowband filters</div>
     <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap: 0.5rem 1rem;">
       <div class="lco-field"><label for="sch-nb-g">gp <span class="help-tooltip" title="gp narrowband filter: in or out of the beam.">?</span></label><select id="sch-nb-g"><option value="out">out</option><option value="in">in</option></select></div>
       <div class="lco-field"><label for="sch-nb-r">rp <span class="help-tooltip" title="rp narrowband filter: in or out of the beam.">?</span></label><select id="sch-nb-r"><option value="out">out</option><option value="in">in</option></select></div>
@@ -217,13 +228,6 @@
       </select>
     </div>
     <div class="lco-field"><label for="sch-defocus">Defocus (mm) <span class="help-tooltip" id="hint-defocus" title="Secondary-mirror offset from focus, in mm, to prevent CCD saturation on bright targets. 0 = focused. Limits: ±8mm for MuSCAT, ±5mm for Sinistro.">?</span></label><input id="sch-defocus" type="number" step="any" value="0" min="-8" max="8"></div>
-    <div class="lco-field sinistro-only"><label for="sch-effective-exptime">Exp time (s) <span class="help-tooltip" title="Exposure time in seconds for Sinistro observations.">?</span></label><input id="sch-effective-exptime" type="text" inputmode="decimal" placeholder="60"></div>
-    <div class="lco-field sinistro-only"><label for="sch-effective-mode">Readout <span class="help-tooltip" title="Readout mode for Sinistro: 2k 2x2 uses central CCD region; full uses entire frame.">?</span></label>
-      <select id="sch-effective-mode">
-        <option value="central_2k_2x2">2k 2x2</option>
-        <option value="full_frame">full</option>
-      </select>
-    </div>
   </div>
   <div class="lco-actions">
     <button class="btn" type="button" id="btn-exp" title="Calculate exposure times for this target">Show Exp</button>
@@ -247,23 +251,23 @@
     <div class="lco-field"><label for="sch-site-a">Leg A site (ingress) <span class="help-tooltip" title="LCO site for the ingress leg of a split relay request. Choose a site where ingress is observable.">?</span></label>
       <select id="sch-site-a">
         <option value="">— select —</option>
-        <option value="ogg">ogg</option>
-        <option value="coj">coj</option>
-        <option value="lsc">lsc</option>
-        <option value="cpt">cpt</option>
-        <option value="tfn">tfn</option>
-        <option value="elp">elp</option>
+        <option value="ogg">ogg (Haleakala)</option>
+        <option value="coj">coj (Siding Spring)</option>
+        <option value="lsc">lsc (Cerro Tololo)</option>
+        <option value="cpt">cpt (Sutherland)</option>
+        <option value="tfn">tfn (Tenerife)</option>
+        <option value="elp">elp (McDonald)</option>
       </select>
     </div>
     <div class="lco-field"><label for="sch-site-b">Leg B site (egress) <span class="help-tooltip" title="LCO site for the egress leg of a split relay request. Choose a site where egress is observable.">?</span></label>
       <select id="sch-site-b">
         <option value="">— select —</option>
-        <option value="ogg">ogg</option>
-        <option value="coj">coj</option>
-        <option value="lsc">lsc</option>
-        <option value="cpt">cpt</option>
-        <option value="tfn">tfn</option>
-        <option value="elp">elp</option>
+        <option value="ogg">ogg (Haleakala)</option>
+        <option value="coj">coj (Siding Spring)</option>
+        <option value="lsc">lsc (Cerro Tololo)</option>
+        <option value="cpt">cpt (Sutherland)</option>
+        <option value="tfn">tfn (Tenerife)</option>
+        <option value="elp">elp (McDonald)</option>
       </select>
     </div>
   </div>
@@ -705,8 +709,12 @@
     var muscat = k === 'muscat' || k === 'muscat3' || k === 'muscat4';
     var prevMuscat = lastScheduleKind === 'muscat' || lastScheduleKind === 'muscat3' || lastScheduleKind === 'muscat4';
     if (!prevMuscat) rememberSinistroFields();
-    document.querySelectorAll('.muscat-only').forEach(function (e) { e.style.display = muscat ? 'block' : 'none'; });
-    document.querySelectorAll('.sinistro-only').forEach(function (e) { e.style.display = muscat ? 'none' : 'block'; });
+    // .lco-field keeps its flex column layout (label above input); plain
+    // wrappers fall back to block. Forcing 'block' on a .lco-field would
+    // flatten it to label-beside-input, misaligning it with the other fields.
+    function kindDisplay(e) { return e.classList.contains('lco-field') ? 'flex' : 'block'; }
+    document.querySelectorAll('.muscat-only').forEach(function (e) { e.style.display = muscat ? kindDisplay(e) : 'none'; });
+    document.querySelectorAll('.sinistro-only').forEach(function (e) { e.style.display = muscat ? 'none' : kindDisplay(e); });
     updateDefocusLimits();
     var effExp = el('sch-effective-exptime');
     var effMode = el('sch-effective-mode');
@@ -1168,7 +1176,7 @@
     var yymmdd = (dateStr || '').substring(2, 10).replace(/-/g, '');
     var planet = val('sch-planet');
     var kind = val('sch-kind');
-    var name = target + (planet ? '_' + planet : '') + '_' + yymmdd;
+    var name = target + (planet || '') + '_' + yymmdd;
     if (kind === 'muscat3') {
       name += '_M3';
     } else if (kind === 'muscat4') {
