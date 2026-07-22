@@ -462,6 +462,33 @@
       document.addEventListener('mouseup', onUp);
     }
 
+    // Suppress the native browser tooltip for CSS-styled help-tooltip spans.
+    // The CSS ::after pseudo-element reads from data-tip; the native title
+    // attribute would create a duplicate tooltip bubble.
+    // Also watch for dynamically inserted tooltips via MutationObserver.
+    window.initTooltips = function (root) {
+      (root || document).querySelectorAll('.help-tooltip').forEach(function (el) {
+        if (el.getAttribute('data-tip')) return;
+        var t = el.getAttribute('title');
+        if (t) { el.setAttribute('data-tip', t); el.removeAttribute('title'); }
+      });
+    };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function () { initTooltips(); });
+    } else {
+      initTooltips();
+    }
+    if (window.MutationObserver) {
+      var _tipObs = new MutationObserver(function (mutations) {
+        mutations.forEach(function (m) {
+          m.addedNodes.forEach(function (n) {
+            if (n.nodeType === 1) initTooltips(n);
+          });
+        });
+      });
+      _tipObs.observe(document.documentElement, { childList: true, subtree: true });
+    }
+
     function initAll() {
       document.querySelectorAll('table').forEach(initTable);
     }
