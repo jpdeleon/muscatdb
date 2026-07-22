@@ -107,6 +107,8 @@ from muscat_db.database import (
     format_elapsed,
     get_dates as _get_dates,
     get_frames as _get_frames,
+    get_frame_objects as _get_frame_objects,
+    get_exposure_log_for_objects as _get_exposure_log_for_objects,
     get_instruments as _get_instruments,
     get_instruments_summary as _get_instruments_summary,
     get_objects as _get_objects,
@@ -3478,6 +3480,31 @@ def api_lco_windows(request: Request, payload: dict = Body(...)):
         return _lco_error_response(e)
     except (TypeError, ValueError) as e:
         return JSONResponse({"ok": False, "error": f"invalid numeric input: {e}"}, status_code=400)
+
+
+@lco_router.get("/obslog-exposures", response_class=JSONResponse)
+def api_lco_obslog_exposures(target: str):
+    """Past exposure configurations logged for a target (frames obslog).
+
+    Lists every distinct (instrument, filter, readout, defocus, exp time) the
+    target was observed with, newest first, so a recurring observation can reuse
+    a prior exposure time. OBJECT values are matched by normalized name, like
+    the rest of the app.
+    """
+    target = (target or "").strip()
+    if not target:
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    norm = _normalize_target_name(target)
+    db = _db_path()
+    try:
+        objects = [o for o in _get_frame_objects(db) if _normalize_target_name(o) == norm]
+        exposures = _get_exposure_log_for_objects(db, objects)
+    except Exception:
+        logger.debug("obslog exposure lookup failed for %s", target, exc_info=True)
+        return JSONResponse({"ok": False, "error": "obslog lookup failed"}, status_code=500)
+    return JSONResponse(
+        {"ok": True, "target": target, "objects": sorted(set(objects)), "exposures": exposures}
+    )
 
 
 @lco_router.get("/visibility", response_class=JSONResponse)

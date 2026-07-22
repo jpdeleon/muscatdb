@@ -10,8 +10,138 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 from astropy.io import fits
+from astropy.table import Table
+from astropy.wcs import WCS
 
 from muscat_db import exposure
+
+
+def _wcs_header(nx: int, ny: int, crval=(10.0, 20.0), scale_arcsec=0.267):
+    """Minimal celestial TAN WCS header for a test image."""
+    w = WCS(naxis=2)
+    w.wcs.crpix = [nx / 2.0, ny / 2.0]
+    w.wcs.crval = list(crval)
+    w.wcs.cdelt = [-scale_arcsec / 3600.0, scale_arcsec / 3600.0]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    return w
+
+
+# ── _measure_peak: measures the *target star's* peak, not a frame percentile ──
+
+
+def test_measure_peak_locates_target_via_wcs(tmp_path):
+    nx = ny = 200
+    data = np.full((ny, nx), 100.0)  # background
+    # bright 5x5 star well away from the frame centre
+    sx, sy = 140, 60
+    data[sy - 2:sy + 3, sx - 2:sx + 3] = 5000.0
+    w = _wcs_header(nx, ny)
+    fits_path = tmp_path / "sci.fits"
+    fits.writeto(fits_path, data, header=w.to_header())
+
+    star_sky = w.pixel_to_world(sx, sy)
+    peak = exposure._measure_peak(
+        str(fits_path), ra=star_sky.ra.deg, dec=star_sky.dec.deg
+    )
+    assert peak == pytest.approx(4900.0, abs=1.0)  # 5000 - background 100
+
+
+def test_measure_peak_ignores_cosmic_ray_spike(tmp_path):
+    nx = ny = 200
+    data = np.full((ny, nx), 100.0)
+    sx, sy = 100, 100
+    data[sy - 2:sy + 3, sx - 2:sx + 3] = 5000.0  # 25-px star
+    data[sy + 10, sx + 10] = 999999.0            # single hot pixel in the box
+    fits_path = tmp_path / "sci.fits"
+    fits.writeto(fits_path, data)  # no WCS -> frame-centre fallback
+
+    peak = exposure._measure_peak(str(fits_path))
+    # _PEAK_RANK-th brightest pixel is still the star, not the cosmic ray
+    assert peak == pytest.approx(4900.0, abs=1.0)
+
+
+def test_measure_peak_falls_back_to_frame_centre_without_wcs(tmp_path):
+    nx = ny = 200
+    data = np.full((ny, nx), 50.0)
+    data[ny // 2 - 2:ny // 2 + 3, nx // 2 - 2:nx // 2 + 3] = 3000.0
+    fits_path = tmp_path / "raw.fits"
+    fits.writeto(fits_path, data)  # muscat/muscat2-style: no WCS
+
+    peak = exposure._measure_peak(str(fits_path))
+    assert peak == pytest.approx(2950.0, abs=1.0)
+
+
+def test_measure_peak_reads_banzai_sci_extension(tmp_path):
+    nx = ny = 120
+    data = np.full((ny, nx), 200.0)
+    data[ny // 2 - 2:ny // 2 + 3, nx // 2 - 2:nx // 2 + 3] = 8000.0
+    hdul = fits.HDUList([
+        fits.PrimaryHDU(),  # BANZAI: empty primary
+        fits.ImageHDU(data, name="SCI"),
+    ])
+    fits_path = tmp_path / "e91.fits"
+    hdul.writeto(fits_path)
+
+    peak = exposure._measure_peak(str(fits_path))
+    assert peak == pytest.approx(7800.0, abs=1.0)
+
+
+# ── _electron_gain: no double-count of gain for BANZAI-reduced data ───────────
+
+
+@pytest.mark.parametrize("instrument", ["muscat3", "muscat4", "sinistro"])
+def test_electron_gain_is_unity_for_banzai_instruments(instrument):
+    assert exposure._electron_gain(instrument) == 1.0
+
+
+@pytest.mark.parametrize("instrument", ["muscat", "muscat2"])
+def test_electron_gain_uses_ccd_gain_for_raw_instruments(instrument):
+    expected = exposure.INSTRUMENT_PARAMS[instrument]["gain"]
+    assert exposure._electron_gain(instrument) == expected
+
+
+def test_calc_peak_does_not_double_count_gain_for_muscat3():
+    # BANZAI pixels are already electrons, so reported electrons must equal the
+    # native peak (previously multiplied by the 1.8 CCD gain).
+    r = exposure.calc_peak("muscat3", "gp", 12.0, focus_mm=0, exptime=30.0)
+    assert r["peak_electrons"] == pytest.approx(r["peak_adu"])
+
+
+# ── _extract_mags: prefer the most complete source over a nearer fragment ─────
+
+
+def test_extract_mags_prefers_complete_source_over_nearer_fragment():
+    col_map = {"gmag": "gp", "rmag": "rp", "imag": "ip", "zmag": "zs"}
+    # Row 0 is nearest but a deblended fragment (only r,i, with a spurious r);
+    # row 1 is the real star 0.6" further out with a full, consistent griz set.
+    cat = Table(
+        {
+            "_r": [0.41, 1.04],
+            "gmag": [np.nan, 11.77],
+            "rmag": [14.29, 10.74],
+            "imag": [11.74, 10.63],
+            "zmag": [np.nan, 10.70],
+        }
+    )
+    mags = exposure._extract_mags(cat, col_map)
+    assert mags == {"gp": 11.77, "rp": 10.74, "ip": 10.63, "zs": 10.70}
+    assert mags["rp"] != 14.29  # the fragment's spurious magnitude is rejected
+
+
+def test_extract_mags_backfills_missing_band_from_next_source():
+    col_map = {"gmag": "gp", "rmag": "rp", "imag": "ip", "zmag": "zs"}
+    # Primary (most complete) has 3 bands; zs only exists on the second source.
+    cat = Table(
+        {
+            "_r": [0.5, 2.0],
+            "gmag": [11.0, np.nan],
+            "rmag": [10.5, np.nan],
+            "imag": [10.4, np.nan],
+            "zmag": [np.nan, 10.3],
+        }
+    )
+    mags = exposure._extract_mags(cat, col_map)
+    assert mags == {"gp": 11.0, "rp": 10.5, "ip": 10.4, "zs": 10.3}
 
 
 def test_measure_header_fwhm_pix_converts_banzai_arcsec_to_pixels(tmp_path):

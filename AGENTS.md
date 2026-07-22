@@ -40,6 +40,7 @@
 * in the future, the pipeline will use celery and redis across several servers with 48, 120, and 120 cores
 
 ## backend and scripts
+* whenever appropriate, use the API when querying muscat-db: http://localhost:8000/docs
 * the output should be high-quality lightcurves from photometry, and robust inferences from transit fit
 * when writing new code, choose correctness over simplicity
 * check background process, report any idle or background processes related to muscat-db before running a new one

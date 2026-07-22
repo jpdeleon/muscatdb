@@ -184,6 +184,26 @@ def _full_well_gain(instrument: str, band: str) -> tuple[float, float]:
     return float(full_well), gain
 
 
+# BANZAI-reduced instruments deliver science pixels already in electrons
+# (header GAIN=1), so a measured/calibrated peak from those frames is *already*
+# in electrons and must not be multiplied by the CCD gain again. Raw frames
+# (muscat/muscat2) are in ADU and use their CCD gain (e-/ADU) for the
+# native->electron conversion. The physical gain in INSTRUMENT_PARAMS (1.8 for
+# muscat3/muscat4) is retained only for cross-instrument coef scaling
+# (_scale_coef), not for this conversion.
+_ELECTRON_NATIVE_INSTRUMENTS = frozenset({"muscat3", "muscat4", "sinistro"})
+
+
+def _electron_gain(instrument: str) -> float:
+    """Factor converting a measured native-unit peak to electrons.
+
+    1.0 for BANZAI-reduced data (already electrons); the CCD gain otherwise.
+    """
+    if instrument in _ELECTRON_NATIVE_INSTRUMENTS:
+        return 1.0
+    return float(INSTRUMENT_PARAMS.get(instrument, {}).get("gain", 1.0))
+
+
 # Approximate filter FWHM bandwidth, in nm. Placeholder values pending real
 # transmission-curve measurements; update here if exact filter specs become
 # available. Used to scale exposure time by filter width: a narrower filter
@@ -279,32 +299,105 @@ WHERE state IN ('pending', 'running', 'cancelling');
 # ---------------------------------------------------------------------------
 
 
-def _measure_peak(fits_path: str) -> float | None:
-    """Measure the peak pixel value (ADU) from a FITS image.
+# Peak-measurement geometry. The box is centred on the target and must be wide
+# enough to contain a heavily defocused donut (FWHM up to ~20 px at 6 mm) yet
+# small enough to exclude neighbouring stars. ``_PEAK_RANK`` uses the Nth
+# brightest pixel in the box (not the single max) so cosmic rays and hot pixels
+# don't inflate the measured peak, while a defocused donut's bright rim -- many
+# pixels near the true peak -- is still captured.
+_PEAK_BOX_HALF = 35
+_PEAK_RANK = 5
 
-    Skips bias level (median of the image) and returns the 99th percentile
-    value as a robust peak estimate (less sensitive to cosmic rays than max).
 
-    For calibrated images, bias should already be removed, but we still clip
-    a small baseline offset.
+def _science_image(hdul) -> tuple[np.ndarray, "fits.Header"] | tuple[None, None]:
+    """Return (2D science data, header) from a FITS HDU list.
+
+    Prefers BANZAI's named ``SCI`` extension (muscat3/muscat4/sinistro), then
+    falls back to the first HDU that holds a 2D image (raw muscat/muscat2, whose
+    data lives in the primary HDU).
+    """
+    try:
+        sci = hdul["SCI"]
+        if sci.data is not None and getattr(sci.data, "ndim", 0) >= 2 and sci.data.size:
+            return sci.data, sci.header
+    except (KeyError, IndexError):
+        pass
+    for hdu in hdul:
+        data = hdu.data
+        if data is not None and getattr(data, "ndim", 0) >= 2 and data.size:
+            return data, hdu.header
+    return None, None
+
+
+def _target_pixel(header, ra: float | None, dec: float | None) -> tuple[float, float] | None:
+    """Pixel (x=col, y=row) of the target via the image WCS, or None.
+
+    Returns None when coordinates are missing or the header carries no usable
+    celestial WCS (raw muscat/muscat2 have no WCS), so the caller can fall back
+    to the frame centre -- where the target is placed by the observer.
+    """
+    if ra is None or dec is None:
+        return None
+    try:
+        from astropy.wcs import WCS
+
+        wcs = WCS(header)
+        if not wcs.has_celestial:
+            return None
+        coord = SkyCoord(ra=ra, dec=dec, unit=(u.deg, u.deg), frame="icrs")
+        x, y = wcs.celestial.world_to_pixel(coord)
+        x, y = float(x), float(y)
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return None
+        return x, y
+    except Exception:
+        return None
+
+
+def _measure_peak(
+    fits_path: str,
+    ra: float | None = None,
+    dec: float | None = None,
+) -> float | None:
+    """Measure the *target star's* peak pixel value (native units, background-subtracted).
+
+    The target is located via the science-image WCS (BANZAI muscat3/muscat4/
+    sinistro); for frames without a celestial WCS (raw muscat/muscat2) the
+    target is assumed centred and the box is placed at the frame centre. The
+    peak is the ``_PEAK_RANK``-th brightest pixel in a box around the target
+    minus the frame's median background -- a cosmic-ray/hot-pixel-robust
+    estimate of the star's true peak, which is the quantity that saturates.
+
+    This replaces an earlier whole-frame 99.9th-percentile estimate, which
+    measured a field-background level (~hundreds of counts) rather than the
+    target's peak and made calibrated coefficients unrelated to real stellar
+    peaks. Returns the peak in the frame's native units (electrons for
+    BANZAI-reduced data, ADU for raw frames), or None on failure.
     """
     try:
         with fits.open(fits_path, memmap=False) as hdul:
-            data = hdul[0].data
+            data, header = _science_image(hdul)
             if data is None:
                 return None
-            # Use the first science extension if primary is empty
-            if data.ndim == 0 or data.size == 0:
-                for hdu in hdul[1:]:
-                    if hdu.data is not None and hdu.data.ndim >= 2:
-                        data = hdu.data
-                        break
-            if data is None or data.ndim < 2 or data.size == 0:
+            data = np.asarray(data, dtype=float)
+            if data.ndim > 2:
+                data = data.reshape((-1,) + data.shape[-2:])[0]
+            ny, nx = data.shape
+            pix = _target_pixel(header, ra, dec)
+            cx, cy = (nx / 2.0, ny / 2.0) if pix is None else pix
+            cx, cy = int(round(cx)), int(round(cy))
+            if not (0 <= cx < nx and 0 <= cy < ny):
+                cx, cy = nx // 2, ny // 2
+            half = _PEAK_BOX_HALF
+            box = data[max(0, cy - half):cy + half + 1,
+                       max(0, cx - half):cx + half + 1]
+            finite = box[np.isfinite(box)]
+            if finite.size == 0:
                 return None
-            # Subtract baseline (median of the whole image = bias/background)
-            baseline = np.median(data)
-            peak = np.percentile(data, 99.9) - baseline
-            return max(0.0, float(peak))
+            baseline = float(np.median(data[np.isfinite(data)]))
+            rank = min(_PEAK_RANK, finite.size)
+            peak = float(np.partition(finite.ravel(), -rank)[-rank]) - baseline
+            return max(0.0, peak)
     except Exception as exc:
         logger.debug("Failed to read peak from %s: %s", fits_path, exc)
         return None
@@ -387,16 +480,32 @@ def _query_vizier_catalog(coord, catalog: str, columns: list[str], radius_arcsec
 
 
 def _extract_mags(cat, col_map: dict[str, str]) -> dict[str, float]:
-    """Pull g/r/i/z mags from a distance-sorted table.
+    """Pull g/r/i/z mags, preferring the most complete source in the cone.
 
-    Prefers the nearest source, but backfills any band missing from the nearest
-    entry using the next-closest source that has it (catalog rows sometimes mask
-    individual bands).
+    Catalog deblending can place an *incomplete fragment* closer to the target
+    than the star itself (e.g. a 2-band detection 0.4" out while the real 4-band
+    source sits 1" out). Taking the strictly-nearest source then backfills that
+    fragment's spurious magnitudes. Instead, the primary source is the one with
+    the most valid bands, ties broken by proximity (the table is distance
+    sorted). Any band still missing from the primary is backfilled from the next
+    best source, in the same (completeness, proximity) order.
     """
+    valid_cols = [c for c in col_map if c in cat.colnames]
+    if not valid_cols or len(cat) == 0:
+        return {}
+
+    def _valid_count(entry) -> int:
+        return sum(1 for c in valid_cols if _clean_mag(entry[c]) is not None)
+
+    # Sort by descending valid-band count, then ascending distance (row order).
+    order = sorted(range(len(cat)), key=lambda i: (-_valid_count(cat[i]), i))
+
     mags: dict[str, float] = {}
-    for entry in cat:
-        for col, band in col_map.items():
-            if band in mags or col not in cat.colnames:
+    for i in order:
+        entry = cat[i]
+        for col in valid_cols:
+            band = col_map[col]
+            if band in mags:
                 continue
             cleaned = _clean_mag(entry[col])
             if cleaned is not None:
@@ -961,17 +1070,15 @@ def calibrate_instrument(
             _vizier_cache[key] = mags
         return mags
 
-    # Process frames: read FITS peak + look up magnitude
+    # Process frames: resolve target -> look up magnitude -> measure its peak.
     def _process(item: dict) -> dict | None:
         fits_path = _fits_exists(instrument, item["obsdate"], item["filename"])
         if not fits_path:
             return None
-        peak_adu = _measure_peak(fits_path)
-        if peak_adu is None or peak_adu <= 0:
-            return None
-        fwhm_pix = _measure_header_fwhm_pix(fits_path, instrument)
 
         # Resolve target name via SIMBAD (cached) and look up Pan-STARRS mags
+        # first: the coordinate is needed to locate the star in the frame, and
+        # skipping the peak read when there's no usable magnitude is cheaper.
         coords = _resolve(item)
         if not coords:
             return None
@@ -980,11 +1087,26 @@ def calibrate_instrument(
             return None
 
         band = item["band"]
+        # Narrowband filters share their broadband parent's magnitude (a star's
+        # magnitude doesn't change with filter width), so narrow frames can be
+        # calibrated directly from data instead of being dropped -- which is what
+        # happened before, since lookup_magnitudes only returns broadband keys.
         mag = mags.get(band)
+        if mag is None:
+            parent = _NARROW_TO_BROADBAND.get(band)
+            if parent is not None:
+                mag = mags.get(parent)
         if mag is None or mag > _MAX_CALIB_MAG:
             return None
 
+        # Measure the target star's peak at its resolved sky position.
+        peak_adu = _measure_peak(fits_path, ra=coords[0], dec=coords[1])
+        if peak_adu is None or peak_adu <= 0:
+            return None
+        fwhm_pix = _measure_header_fwhm_pix(fits_path, instrument)
+
         item["mags"] = mags
+        item["mag_used"] = mag
         item["peak_adu"] = peak_adu
         item["fwhm_pix"] = fwhm_pix
         return item
@@ -1022,7 +1144,9 @@ def calibrate_instrument(
         band = item["band"]
         focus_bin = round(item["focus"] * 2) / 2
         key = (band, focus_bin)
-        mag = item["mags"][band]
+        # ``mag_used`` resolves narrowband parents; ``mags[band]`` would KeyError
+        # for narrow bands, whose key is absent from the broadband-only lookup.
+        mag = item["mag_used"]
         airmass = item["airmass"]
         exptime = item["exptime"]
         peak_adu = item["peak_adu"]
@@ -1104,8 +1228,8 @@ def calc_peak(
     peak_adu = 10.0 ** logpeak
     params = INSTRUMENT_PARAMS.get(instrument, {})
     pixel_scale = params.get("pixel_scale", 0.4)
-    full_well, gain_val = _full_well_gain(instrument, band)
-    peak_electrons = peak_adu * gain_val
+    full_well, _gain_val = _full_well_gain(instrument, band)
+    peak_electrons = peak_adu * _electron_gain(instrument)
     pct_full_well = (peak_electrons / full_well) * 100.0 if full_well > 0 else 0.0
     return {
         "band": band,
@@ -1143,8 +1267,8 @@ def calc_exptime(
     exptime = target_adu * 60.0 / (10.0 ** (coef - 0.4 * mag_eff))
     params = INSTRUMENT_PARAMS.get(instrument, {})
     pixel_scale = params.get("pixel_scale", 0.4)
-    full_well, gain_val = _full_well_gain(instrument, band)
-    peak_electrons = target_adu * gain_val
+    full_well, _gain_val = _full_well_gain(instrument, band)
+    peak_electrons = target_adu * _electron_gain(instrument)
     pct_full_well = (peak_electrons / full_well) * 100.0 if full_well > 0 else 0.0
     return {
         "band": band,
@@ -1212,8 +1336,11 @@ def calc_all_bands(
                 if target_adu is not None:
                     band_target_adu = target_adu
                 else:
-                    full_well_b, gain_b = _full_well_gain(instrument, band)
-                    band_target_adu = (full_well_b * sat_frac) / gain_b
+                    full_well_b, _gain_b = _full_well_gain(instrument, band)
+                    # full_well is in electrons; convert the sat_frac target back
+                    # to the frame's native units (electrons for BANZAI data, so
+                    # the factor is 1.0 -- not the CCD gain).
+                    band_target_adu = (full_well_b * sat_frac) / _electron_gain(instrument)
                 r = calc_exptime(instrument, band, mag, focus_mm, band_target_adu, airmass)
             else:
                 r = calc_peak(instrument, band, mag, focus_mm, exptime or 30.0, airmass)

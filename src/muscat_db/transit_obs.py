@@ -187,27 +187,32 @@ def _site_coverage_span(mask, offsets, start_jd: float, end_jd: float):
     )
 
 
-def _observes_contact(mask_row, start_jd: float, end_jd: float, mid_jd, half: float) -> bool:
-    """True if a transit *contact* (ingress or egress of the bare transit,
-    ``mid ± half``) lands on an observable sample.
+def _contact_flags(mask_row, start_jd: float, end_jd: float, mid_jd, half: float):
+    """Return ``(ingress_observed, egress_observed)`` for the bare-transit
+    contacts (``mid ± half``) against one window's per-sample coverage over
+    ``start_jd``..``end_jd``.
 
-    ``mask_row`` is one window's per-sample boolean coverage over
-    ``start_jd``..``end_jd``. The middle of the transit is deliberately ignored:
-    only the ingress and egress samples count, so a site that sees only the
-    mid-transit sliver does not qualify. Falls back to the grid edges when the
-    midpoint is unknown (those edges are the bare-transit contacts by
+    The mid-transit is deliberately not consulted. Falls back to the grid edges
+    when the midpoint is unknown (those edges are the bare-transit contacts by
     construction when padding is excluded).
     """
     n = len(mask_row)
     if mid_jd is None or end_jd <= start_jd:
-        return bool(mask_row[0] or mask_row[-1])
+        return bool(mask_row[0]), bool(mask_row[-1])
 
     def sample_at(jd: float) -> int:
         frac = (jd - start_jd) / (end_jd - start_jd)
         frac = min(1.0, max(0.0, frac))
         return int(round(frac * (n - 1)))
 
-    return bool(mask_row[sample_at(mid_jd - half)] or mask_row[sample_at(mid_jd + half)])
+    return bool(mask_row[sample_at(mid_jd - half)]), bool(mask_row[sample_at(mid_jd + half)])
+
+
+def _observes_contact(mask_row, start_jd: float, end_jd: float, mid_jd, half: float) -> bool:
+    """True if a transit contact (ingress or egress) lands on an observable
+    sample; the mid-transit is excluded (see :func:`_contact_flags`)."""
+    ingress_obs, egress_obs = _contact_flags(mask_row, start_jd, end_jd, mid_jd, half)
+    return ingress_obs or egress_obs
 
 
 def classify_transits(
@@ -237,15 +242,17 @@ def classify_transits(
       transit contact (ingress or egress) but not the whole transit, and there
       is no second site to relay with. A lone site that observes only the
       middle -- neither contact -- is rated ``none`` instead (not useful).
-    - ``split_gap`` / ``split_overlap``: two or more sites each have some
-      coverage. The best pair (highest combined coverage) is always resolved
-      to one of these two ratings -- there is no "still partial" outcome once
-      2+ sites have any coverage. ``split_gap`` means a real gap remains near
-      the handoff (``split_gap_min`` minutes uncovered by either site);
-      ``split_overlap`` means the pair's coverage meets or overlaps with no
-      gap (``split_overlap_min`` minutes covered by both). Both also carry
+    - ``split_gap`` / ``split_overlap``: two or more sites have coverage AND the
+      best pair's union spans both contacts (ingress and egress) -- a genuine
+      ingress→egress relay. ``split_gap`` means a real gap remains near the
+      handoff (``split_gap_min`` minutes uncovered by either site);
+      ``split_overlap`` means the pair's coverage meets or overlaps with no gap
+      (``split_overlap_min`` minutes covered by both). Both also carry
       ``split_sites`` (``[early, late]``, chronological) and ``split_windows``
-      (each site's own observable start/end + a ``fragmented`` flag).
+      (each site's own observable start/end + a ``fragmented`` flag). If the
+      best pair's union misses a contact (the extra site only contributes a
+      sliver away from the contacts), the transit falls back to the single-site
+      rating: ``partial`` when the best site covers a contact, else ``none``.
     - ``none``: no site observes a transit contact -- either no site sees any
       part of the transit, or the only coverage is a single site's mid-transit
       sliver with neither ingress nor egress.
@@ -361,6 +368,21 @@ def classify_transits(
                 best_pair = (s1, s2)
         s1, s2 = best_pair
         m1, m2 = mask2d[s1][i], mask2d[s2][i]
+
+        # A genuine relay must span both contacts: the pair's union has to see
+        # ingress AND egress. If it misses one, the "extra" site is only adding
+        # a sliver away from the contacts (e.g. a few minutes in the padding),
+        # so fall back to the single-site rating -- partial when the best site
+        # covers a contact, else none -- matching the one-site branch above.
+        ingress_obs, egress_obs = _contact_flags(m1 | m2, starts[i], ends[i], mids[i], half)
+        if not (ingress_obs and egress_obs):
+            best_single = max(partial_sites, key=lambda s: frac[s][i])
+            if _observes_contact(mask2d[best_single][i], starts[i], ends[i], mids[i], half):
+                results.append({"rating": "partial", "sites": partial_sites, "best_site": best_single})
+            else:
+                results.append({"rating": "none", "sites": [], "best_site": None})
+            continue
+
         span1 = _site_coverage_span(m1, offsets, starts[i], ends[i])
         span2 = _site_coverage_span(m2, offsets, starts[i], ends[i])
         if span1[0] <= span2[0]:

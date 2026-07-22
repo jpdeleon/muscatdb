@@ -221,6 +221,34 @@ def test_classify_split_gap_when_relay_leaves_a_gap(monkeypatch):
     assert res[0]["split_overlap_min"] == 0.0
 
 
+def test_classify_split_falls_back_to_partial_when_union_misses_a_contact(monkeypatch):
+    duration = 2.0
+    n = _n_samp_for(duration)
+    # cpt sees only a middle sliver (no contact); lsc sees the back half incl.
+    # egress (the last sample). The pair's union covers egress but NOT ingress
+    # (sample 0), so it is not a genuine relay -- it falls back to a partial on
+    # the useful single site (lsc), not a misleading cpt->lsc split.
+    _patch_site_masks(monkeypatch, {"cpt": (n // 2 - 3, n // 2), "lsc": (n // 2, n)})
+    wins = [{"epoch": 0, "mid": "2026-03-15T07:30:00"}]
+    res = T.classify_transits(97.64, 29.67, wins, None, duration, sites=["lsc", "cpt", "tfn"])
+    assert res[0]["rating"] == "partial"
+    assert res[0]["best_site"] == "lsc"
+    assert "split_sites" not in res[0]
+
+
+def test_classify_split_falls_back_to_none_when_union_misses_both_contacts(monkeypatch):
+    duration = 2.0
+    n = _n_samp_for(duration)
+    # Two disjoint middle slivers, neither touching ingress (sample 0) nor
+    # egress (last sample): no contact anywhere, so the transit is "none".
+    _patch_site_masks(monkeypatch, {"cpt": (n // 3, n // 3 + 3), "lsc": (2 * n // 3, 2 * n // 3 + 3)})
+    wins = [{"epoch": 0, "mid": "2026-03-15T07:30:00"}]
+    res = T.classify_transits(97.64, 29.67, wins, None, duration, sites=["lsc", "cpt", "tfn"])
+    assert res[0]["rating"] == "none"
+    assert res[0]["best_site"] is None
+    assert res[0]["sites"] == []
+
+
 def test_classify_partial_reserved_for_single_site(monkeypatch):
     duration = 2.0
     n = _n_samp_for(duration)

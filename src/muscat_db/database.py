@@ -1207,6 +1207,47 @@ def get_frames(db_path: str, instrument: str, obsdate: str, ccd: int) -> list[di
         return [dict(zip(columns, r)) for r in cur.fetchall()]
 
 
+def get_frame_objects(db_path: str) -> list[str]:
+    """Distinct non-empty OBJECT values present in the frames obslog."""
+    with get_conn(db_path) as conn:
+        cur = conn.execute(
+            "SELECT DISTINCT object FROM frames WHERE object IS NOT NULL AND TRIM(object) != ''"
+        )
+        return [r[0] for r in cur.fetchall()]
+
+
+def get_exposure_log_for_objects(db_path: str, objects: list[str]) -> list[dict]:
+    """Distinct past exposure configurations for the given OBJECT values.
+
+    Groups the frames obslog by (instrument, filter, read_mode, focus, exptime)
+    so each row is one recurring setup with its frame count and the obsdate
+    range it was used, newest first. Feeds the schedule page's "Show ObsLog"
+    lookup so a recurring observation can reuse a prior exposure time.
+    """
+    objects = [o for o in objects if o]
+    if not objects:
+        return []
+    placeholders = ",".join("?" for _ in objects)
+    with get_conn(db_path, row_factory=sqlite3.Row) as conn:
+        cur = conn.execute(
+            f"""SELECT instrument,
+                       COALESCE(filter, '')    AS filter,
+                       COALESCE(read_mode, '') AS read_mode,
+                       focus,
+                       ROUND(exptime, 3)       AS exptime,
+                       COUNT(*)                AS nframes,
+                       MAX(obsdate)            AS last_date,
+                       MIN(obsdate)            AS first_date
+                  FROM frames
+                 WHERE object IN ({placeholders}) AND exptime IS NOT NULL
+              GROUP BY instrument, COALESCE(filter, ''), COALESCE(read_mode, ''),
+                       focus, ROUND(exptime, 3)
+              ORDER BY last_date DESC, instrument, filter""",
+            objects,
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
 def db_path() -> str:
     import pathlib
     return str(pathlib.Path(os.environ.get("MUSCAT_DB_PATH", "muscat.db")).resolve())
