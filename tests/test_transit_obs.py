@@ -82,10 +82,34 @@ def test_classify_returns_one_aligned_entry_per_window():
             assert r["best_site"] in r["sites"]
 
 
-def test_classify_moon_constraint_forces_none():
-    # No sample can be 180 deg from the Moon, so a 180 deg minimum rejects all.
-    res = T.classify_transits(97.64, 29.67, _windows(4), "muscat", 2.5, moon_sep_min=180.0)
+def test_classify_moon_phase_cap_forces_none():
+    # max_lunar_phase=0 admits only a perfectly new (0% illuminated) Moon, which
+    # never holds across a real window, so every window is rejected. (A 180 deg
+    # min-separation no longer forces none: it is skipped whenever the Moon is
+    # below the horizon or < 10% illuminated.)
+    res = T.classify_transits(97.64, 29.67, _windows(4), "muscat", 2.5, max_lunar_phase=0.0)
     assert all(r["rating"] == "none" for r in res)
+
+
+def test_observable_mask_separation_cut_and_phase_cap():
+    from astropy.time import Time
+    from astropy.coordinates import SkyCoord, get_body
+
+    loc = T._earth_location("lsc")
+    # Full-moon night, Moon well above the horizon at LSC; target sits on the Moon.
+    t = Time(["2024-01-25T04:00:00"])
+    moon = get_body("moon", Time("2024-01-25T04:00:00"))
+    tgt = SkyCoord(moon.ra, moon.dec)
+
+    mask, _talt, malt, _salt, msep, illum = T._observable_mask(
+        tgt, loc, t, 20.0, -12.0, moon_sep_min=30.0)
+    assert malt[0] > 0 and illum[0] > 0.9 and msep[0] < 5.0  # Moon up, bright, on-target
+    assert not bool(mask[0])  # rejected by the min-separation cut
+
+    # No separation cut, but the phase cap drops the bright Moon.
+    mask_phase, *_ = T._observable_mask(
+        tgt, loc, t, 20.0, -12.0, moon_sep_min=0.0, max_lunar_phase=0.5)
+    assert not bool(mask_phase[0])
 
 
 def test_classify_is_monotonic_in_strictness():
@@ -167,14 +191,15 @@ def _patch_site_masks(monkeypatch, site_true_ranges):
 
     monkeypatch.setattr(T, "_earth_location", lambda site: site)
 
-    def fake_observable_mask(target, location, times, alt_min, sun_alt_max, moon_sep_min):
+    def fake_observable_mask(target, location, times, alt_min, sun_alt_max,
+                             moon_sep_min, max_lunar_phase=1.0):
         n = len(times)
         mask = np.zeros(n, dtype=bool)
         rng = site_true_ranges.get(location)
         if rng:
             mask[rng[0]:rng[1]] = True
         zeros = np.zeros(n)
-        return mask, zeros, zeros, zeros, zeros
+        return mask, zeros, zeros, zeros, zeros, zeros
 
     monkeypatch.setattr(T, "_observable_mask", fake_observable_mask)
 
@@ -221,11 +246,39 @@ def test_classify_split_gap_when_relay_leaves_a_gap(monkeypatch):
     assert res[0]["split_overlap_min"] == 0.0
 
 
+def test_classify_split_falls_back_to_partial_when_union_misses_a_contact(monkeypatch):
+    duration = 2.0
+    n = _n_samp_for(duration)
+    # cpt sees only a middle sliver (no contact); lsc sees the back half incl.
+    # egress (the last sample). The pair's union covers egress but NOT ingress
+    # (sample 0), so it is not a genuine relay -- it falls back to a partial on
+    # the useful single site (lsc), not a misleading cpt->lsc split.
+    _patch_site_masks(monkeypatch, {"cpt": (n // 2 - 3, n // 2), "lsc": (n // 2, n)})
+    wins = [{"epoch": 0, "mid": "2026-03-15T07:30:00"}]
+    res = T.classify_transits(97.64, 29.67, wins, None, duration, sites=["lsc", "cpt", "tfn"])
+    assert res[0]["rating"] == "partial"
+    assert res[0]["best_site"] == "lsc"
+    assert "split_sites" not in res[0]
+
+
+def test_classify_split_falls_back_to_none_when_union_misses_both_contacts(monkeypatch):
+    duration = 2.0
+    n = _n_samp_for(duration)
+    # Two disjoint middle slivers, neither touching ingress (sample 0) nor
+    # egress (last sample): no contact anywhere, so the transit is "none".
+    _patch_site_masks(monkeypatch, {"cpt": (n // 3, n // 3 + 3), "lsc": (2 * n // 3, 2 * n // 3 + 3)})
+    wins = [{"epoch": 0, "mid": "2026-03-15T07:30:00"}]
+    res = T.classify_transits(97.64, 29.67, wins, None, duration, sites=["lsc", "cpt", "tfn"])
+    assert res[0]["rating"] == "none"
+    assert res[0]["best_site"] is None
+    assert res[0]["sites"] == []
+
+
 def test_classify_partial_reserved_for_single_site(monkeypatch):
     duration = 2.0
     n = _n_samp_for(duration)
-    # Only lsc has any coverage at all (and it's incomplete): no second site
-    # exists to relay with, so this is genuinely "partial".
+    # Only lsc has coverage, and it spans the front half -- so it includes the
+    # ingress contact (sample 0). One site + a contact observed => "partial".
     _patch_site_masks(monkeypatch, {"lsc": (0, n // 2)})
 
     wins = [{"epoch": 0, "mid": "2026-03-15T07:30:00"}]
@@ -235,6 +288,36 @@ def test_classify_partial_reserved_for_single_site(monkeypatch):
     assert res[0]["sites"] == ["lsc"]
     assert res[0]["best_site"] == "lsc"
     assert "split_sites" not in res[0]
+
+
+def test_classify_partial_requires_a_contact_not_mid_only(monkeypatch):
+    duration = 2.0
+    n = _n_samp_for(duration)
+    # The single covering site sees only the middle of the transit -- neither
+    # ingress (sample 0) nor egress (last sample). With no contact observed this
+    # is not a useful partial and is rated "none".
+    _patch_site_masks(monkeypatch, {"lsc": (n // 2 - 5, n // 2 + 6)})
+
+    wins = [{"epoch": 0, "mid": "2026-03-15T07:30:00"}]
+    res = T.classify_transits(97.64, 29.67, wins, None, duration, sites=["lsc", "cpt", "tfn"])
+
+    assert res[0]["rating"] == "none"
+    assert res[0]["sites"] == []
+    assert res[0]["best_site"] is None
+
+
+def test_classify_partial_on_egress_contact(monkeypatch):
+    duration = 2.0
+    n = _n_samp_for(duration)
+    # A single site covering the back half sees egress (the last sample): a
+    # genuine partial even though ingress is missed.
+    _patch_site_masks(monkeypatch, {"lsc": (n // 2, n)})
+
+    wins = [{"epoch": 0, "mid": "2026-03-15T07:30:00"}]
+    res = T.classify_transits(97.64, 29.67, wins, None, duration, sites=["lsc", "cpt", "tfn"])
+
+    assert res[0]["rating"] == "partial"
+    assert res[0]["best_site"] == "lsc"
 
 
 def test_classify_full_site_skips_pair_search(monkeypatch):
@@ -327,3 +410,61 @@ def test_visibility_series_structure():
 def test_visibility_series_rejects_unknown_site():
     with pytest.raises(T.TransitObsError):
         T.visibility_series(97.64, 29.67, "2026-03-15T10:00:00", 2.5, "jwst")
+
+
+# --------------------------------------------------------------------------- #
+# observable_interval / _longest_true_run
+# --------------------------------------------------------------------------- #
+
+
+def test_longest_true_run_picks_longer_leg():
+    assert T._longest_true_run([False, True, False, True, True, True, False]) == (3, 5)
+    assert T._longest_true_run([True, True, False, True]) == (0, 1)
+    assert T._longest_true_run([True]) == (0, 0)
+
+
+def test_observable_interval_clips_hip67522_set_edge():
+    """HIP67522 at LSC: the window runs to 06:08 but the target sets below the
+    airmass-2.0 limit by ~03:14, so the end is clipped and the start (already up)
+    is preserved verbatim."""
+    window = {"start": "2026-07-26T23:47:44.419201Z",
+              "end": "2026-07-27T06:08:44.419201Z"}
+    iv = T.observable_interval(207.52600, -40.83590, window, "lsc",
+                               max_airmass=2.0, twilight="nautical", moon_sep_min=30.0)
+    assert iv is not None
+    # Start unchanged (target above the limit at window open) -> exact original.
+    assert iv["start"] == window["start"]
+    assert iv["hit_start_limit"] is False
+    # End clipped by the target's set, ~03:14 UTC (well before 06:08).
+    assert iv["hit_end_limit"] is True
+    assert iv["end"].startswith("2026-07-27T03:1")
+    assert 0.4 < iv["fraction"] < 0.7
+
+
+def test_observable_interval_returns_none_when_unobservable():
+    """No Sinistro site but LSC sees HIP67522 in this window; CPT gets nothing."""
+    window = {"start": "2026-07-26T23:47:44Z", "end": "2026-07-27T06:08:44Z"}
+    iv = T.observable_interval(207.52600, -40.83590, window, "cpt",
+                               max_airmass=2.0, twilight="nautical", moon_sep_min=30.0)
+    assert iv is None
+
+
+def test_observable_interval_full_window_preserves_both_edges():
+    """A window entirely within the observable run keeps both boundaries and
+    flags neither edge as observability-bounded."""
+    # A 40-min window centred near HIP67522 culmination at LSC (target high).
+    window = {"start": "2026-07-27T00:00:00Z", "end": "2026-07-27T00:40:00Z"}
+    iv = T.observable_interval(207.52600, -40.83590, window, "lsc",
+                               max_airmass=2.0, twilight="nautical", moon_sep_min=30.0)
+    assert iv is not None
+    assert iv["start"] == window["start"]
+    assert iv["end"] == window["end"]
+    assert iv["hit_start_limit"] is False
+    assert iv["hit_end_limit"] is False
+    assert iv["fraction"] == pytest.approx(1.0, abs=1e-9)
+
+
+def test_observable_interval_rejects_unknown_site():
+    window = {"start": "2026-07-26T23:47:44Z", "end": "2026-07-27T06:08:44Z"}
+    with pytest.raises(T.TransitObsError):
+        T.observable_interval(207.526, -40.836, window, "jwst")

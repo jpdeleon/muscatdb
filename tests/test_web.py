@@ -4,14 +4,49 @@ import os
 import json
 import sqlite3
 import tempfile
-import getpass
 import zipfile
 import pytest
 from fastapi.testclient import TestClient
 from starlette.responses import Response
 
 from muscat_db.database import save_job, get_persisted_jobs
-from muscat_db.web import app, _annotate_lco_archive_results
+from muscat_db.web import app, _annotate_lco_archive_results, _script_json
+
+
+# --------------------------------------------------------------------------
+# XSS: JSON embedded in inline <script> (toi.html / nexsci.html use | safe)
+# --------------------------------------------------------------------------
+def test_script_json_neutralizes_script_breakout():
+    evil = {"comment": "</script><img src=x onerror=alert(1)>", "amp": "a & b"}
+    out = _script_json(evil)
+    # No character that could close the <script> element or start a tag/comment.
+    assert "<" not in out and ">" not in out and "&" not in out
+    assert "</script>" not in out
+    assert "\\u003c" in out and "\\u003e" in out and "\\u0026" in out
+
+
+def test_script_json_escapes_js_line_separators():
+    # U+2028/U+2029 are valid in JSON strings but are line terminators in JS
+    # source, which would break the `const X = {...}` literal. Build them with
+    # chr() so this test file stays pure ASCII.
+    ls, ps = chr(0x2028), chr(0x2029)
+    out = _script_json({"u": f"a{ls}b{ps}c"})
+    assert ls not in out and ps not in out
+    assert "\\u2028" in out and "\\u2029" in out
+
+
+def test_script_json_round_trips_to_original_values():
+    ls, ps = chr(0x2028), chr(0x2029)
+    original = {"name": "TOI-1234 </script>", "amp": "x & y", "sep": f"a{ls}b{ps}c"}
+    out = _script_json(original)
+    # A JS engine parses \\uXXXX escapes back to the identical characters, so the
+    # data the page sees is unchanged - only the transport is made safe.
+    decoded = (
+        out.replace("\\u003c", "<").replace("\\u003e", ">")
+        .replace("\\u0026", "&").replace("\\u2028", ls).replace("\\u2029", ps)
+    )
+    assert json.loads(decoded) == original
+
 
 @pytest.fixture
 def mock_db(monkeypatch):
@@ -64,7 +99,7 @@ def test_jobs_status_response_counts_and_started_at(mock_db, monkeypatch):
         elapsed=20,
         started_at=1700000100.0,
         run_name="Run2"
-        # defaults to getpass.getuser()
+        # user_name omitted: stays "" (no nginx user), never the OS account
     )
     save_job(
         type_="photometry",
@@ -96,17 +131,54 @@ def test_jobs_status_response_counts_and_started_at(mock_db, monkeypatch):
     assert len(running_jobs) == 2
     
     user1_found = False
-    default_user_found = False
+    empty_user_found = False
     for job in running_jobs:
         assert "started_at" in job
         assert "user_name" in job
         if job["user_name"] == "test_user1":
             user1_found = True
-        elif job["user_name"] == getpass.getuser():
-            default_user_found = True
-            
+        elif job["user_name"] == "":
+            empty_user_found = True
+
     assert user1_found
-    assert default_user_found
+    # A job saved without a user_name keeps an empty attribution (rendered as
+    # "—"), never the OS account that runs the server process.
+    assert empty_user_found
+
+
+def test_state_update_preserves_nginx_user(mock_db):
+    """A job created by an nginx-authenticated user must keep that attribution
+    when later state transitions (sync_jobs/watchdog/cancel) re-save the row
+    without a user_name. Regression: the OS account used to overwrite it."""
+    common = dict(
+        type_="photometry",
+        inst="muscat3",
+        date="260101",
+        target="WASP-33b",
+        run_name="Run1",
+    )
+    # 1. Creation carries the nginx user.
+    save_job(
+        **common,
+        state="running",
+        returncode=None,
+        elapsed=0,
+        started_at=1700000000.0,
+        user_name="alice",
+    )
+    # 2. Terminal transition omits user_name, as sync_jobs does.
+    save_job(
+        **common,
+        state="done",
+        returncode=0,
+        elapsed=42,
+        started_at=1700000000.0,
+    )
+
+    rows = [j for j in get_persisted_jobs() if j["target"] == "WASP-33b"]
+    assert len(rows) == 1
+    assert rows[0]["state"] == "done"
+    assert rows[0]["user_name"] == "alice"
 
 
 def test_ttv_output_file_rejects_paths_outside_run(tmp_path, monkeypatch):
@@ -530,7 +602,7 @@ def test_target_detail_harps_panel_is_lazy_loaded(mock_db, monkeypatch):
         ], "2026-07-01"),
     )
 
-    def fail_if_called(datasets, target_name=None):
+    def fail_if_called(target_name=None, datasets=None):
         raise AssertionError("HARPS rows should not be loaded during target page render")
 
     monkeypatch.setattr(web, "_harps_data_for_target", fail_if_called)
@@ -571,7 +643,7 @@ def test_target_harps_rv_api_returns_table_payload(mock_db, monkeypatch):
     monkeypatch.setattr(
         web,
         "_harps_data_for_target",
-        lambda datasets, target_name=None: {
+        lambda target_name=None, datasets=None: {
             "columns": ["target", "BJD", "RV_mlc_nzp"],
             "rows": [{"target": "HD209458", "BJD": "2451000.123456", "RV_mlc_nzp": "-2.5"}],
             "total_rows": 1,
@@ -594,6 +666,125 @@ def test_target_harps_rv_api_returns_table_payload(mock_db, monkeypatch):
     assert data["harps_rv"]["total_rows"] == 1
     assert data["harps_rv"]["rows"][0]["BJD"] == "2451000.123456"
     assert data["harps_rv"]["source"] == "data/HARPS_RVBank_ver02.csv.zip"
+
+
+_LAMOST_VOTABLE_ONE_ROW = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<VOTABLE xmlns="http://www.ivoa.net/xml/VOTable/v1.3" version="1.3">'
+    '<RESOURCE type="results"><TABLE>'
+    '<FIELD name="obsid" datatype="long"/>'
+    '<FIELD name="ra" datatype="double"/>'
+    '<DATA><TABLEDATA>'
+    '<TR><TD>123</TD><TD>197.1</TD></TR>'
+    '</TABLEDATA></DATA>'
+    '</TABLE></RESOURCE></VOTABLE>'
+)
+
+
+class _FakeAsyncClient:
+    """Async client double whose ``get`` replays a scripted list of behaviours
+    (an ``httpx.Response`` to return, or an ``Exception`` to raise) per call."""
+
+    def __init__(self, behaviours):
+        self._behaviours = list(behaviours)
+        self.calls = 0
+
+    async def get(self, url, **kwargs):
+        b = self._behaviours[min(self.calls, len(self._behaviours) - 1)]
+        self.calls += 1
+        if isinstance(b, Exception):
+            raise b
+        return b
+
+
+def test_lamost_archive_retries_once_on_timeout(monkeypatch):
+    import httpx
+    from muscat_db import catalog, http_client
+
+    monkeypatch.setattr(catalog, "_resolve_archive_coords", lambda name: (197.1, 55.0, "toi"))
+    resp = httpx.Response(200, text=_LAMOST_VOTABLE_ONE_ROW, request=httpx.Request("GET", "https://lamost.invalid"))
+    fake = _FakeAsyncClient([httpx.ReadTimeout(""), resp])  # timeout, then success
+    monkeypatch.setattr(http_client, "get_async_client", lambda: fake)
+
+    r = TestClient(app).get("/api/targets/lamost-archive?name=TOI3891")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["total"] == 1
+    assert fake.calls == 2  # first attempt timed out, retry succeeded
+
+
+def test_lamost_archive_timeout_returns_clear_error(monkeypatch):
+    import httpx
+    from muscat_db import catalog, http_client
+
+    monkeypatch.setattr(catalog, "_resolve_archive_coords", lambda name: (197.1, 55.0, "toi"))
+    fake = _FakeAsyncClient([httpx.ReadTimeout(""), httpx.ReadTimeout("")])  # both attempts time out
+    monkeypatch.setattr(http_client, "get_async_client", lambda: fake)
+
+    r = TestClient(app).get("/api/targets/lamost-archive?name=TOI3891")
+
+    assert r.status_code == 504
+    body = r.json()
+    assert body["ok"] is False
+    # Error must be non-empty and describe the timeout (the old code leaked "").
+    assert "timed out" in body["error"].lower()
+    assert fake.calls == 2
+
+
+def _eso_tap_json(target_names):
+    """Minimal ESO TAP JSON envelope with one 'target_name' column."""
+    return {"metadata": [{"name": "target_name"}], "data": [[n] for n in target_names]}
+
+
+def test_eso_archive_name_hit_skips_cone(monkeypatch):
+    import httpx
+    from muscat_db import http_client, web
+
+    resp = httpx.Response(200, json=_eso_tap_json(["WASP-12"]), request=httpx.Request("GET", "https://eso.invalid"))
+    fake = _FakeAsyncClient([resp])
+    monkeypatch.setattr(http_client, "get_async_client", lambda: fake)
+
+    # The cone-search is lazy: it must not resolve coords or query when the name hits.
+    cone = {"resolved": False}
+
+    def _resolve(name):
+        cone["resolved"] = True
+        return (197.1, 55.0, "toi")
+
+    monkeypatch.setattr(web, "_resolve_archive_coords", _resolve)
+
+    r = TestClient(app).get("/api/targets/eso-archive?name=WASP-12")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["query_method"] == "name"
+    assert body["total"] == 1
+    assert cone["resolved"] is False  # cone path never entered
+    assert fake.calls == 1  # only the name query
+
+
+def test_eso_archive_cone_retries_on_timeout(monkeypatch):
+    import httpx
+    from muscat_db import http_client, web
+
+    name_empty = httpx.Response(200, json=_eso_tap_json([]), request=httpx.Request("GET", "https://eso.invalid"))
+    cone_ok = httpx.Response(200, json=_eso_tap_json(["NearbyStar"]), request=httpx.Request("GET", "https://eso.invalid"))
+    # name(empty) -> cone(timeout) -> cone(success)
+    fake = _FakeAsyncClient([name_empty, httpx.ReadTimeout(""), cone_ok])
+    monkeypatch.setattr(http_client, "get_async_client", lambda: fake)
+    monkeypatch.setattr(web, "_resolve_archive_coords", lambda name: (197.1, 55.0, "toi"))
+
+    r = TestClient(app).get("/api/targets/eso-archive?name=NONAME999")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["total"] == 1
+    assert "cone" in body["query_method"]
+    assert fake.calls == 3  # name + timed-out cone + retried cone
 
 
 def test_ephemeris_targets_are_normalized_unique_names(mock_db):
@@ -1149,6 +1340,33 @@ def test_lco_settings_save_and_status_are_per_nginx_user(mock_db, monkeypatch):
     assert "alice-token" not in str(config)
 
 
+def test_whoami_returns_nginx_authenticated_user():
+    # Loopback peer + X-Forwarded-User simulates an nginx-authenticated request.
+    # The chat widget uses /whoami to label messages on every page (including the
+    # globally-cached index/target pages that cannot embed a per-user identity).
+    client = TestClient(app, client=("127.0.0.1", 12345))
+    r = client.get("/whoami", headers={"X-Forwarded-User": "alice"})
+    assert r.status_code == 200
+    assert r.json() == {"user": "alice"}
+
+
+def test_whoami_is_null_without_trusted_user():
+    # No trusted forwarded user → whoami reports no user, so the chat falls back
+    # to "Anonymous" client-side rather than mislabeling messages.
+    client = TestClient(app)
+    r = client.get("/whoami")
+    assert r.status_code == 200
+    assert r.json() == {"user": None}
+
+
+def test_whoami_ignores_untrusted_forwarded_user():
+    # A non-loopback peer must not be able to impersonate a user via the header.
+    client = TestClient(app)  # default peer is ("testclient", 50000)
+    r = client.get("/whoami", headers={"X-Forwarded-User": "mallory"})
+    assert r.status_code == 200
+    assert r.json() == {"user": None}
+
+
 def test_ads_settings_save_status_and_config_are_per_nginx_user(mock_db, monkeypatch):
     monkeypatch.setenv("MUSCAT_DB_SECRET", "settings-secret")
     monkeypatch.delenv("ADS_API_TOKEN", raising=False)
@@ -1226,6 +1444,26 @@ def test_lco_proposals_receive_nginx_user(mock_db, monkeypatch):
     )
     assert r.status_code == 200
     assert captured == {"user_name": "alice", "token": None}
+
+
+def test_lco_proposals_refuses_operator_token_for_nginx_user(mock_db, monkeypatch):
+    """An nginx-authenticated user with no saved LCO token must not fall back to
+    the operator's global LCO_API_TOKEN for a portal call: the endpoint returns
+    403 and the request never reaches the LCO network."""
+    monkeypatch.setenv("MUSCAT_DB_SECRET", "settings-secret")
+    monkeypatch.setenv("LCO_API_TOKEN", "operator-global-token")
+
+    def must_not_call(*args, **kwargs):
+        raise AssertionError("LCO network must not be reached without the user's own token")
+
+    monkeypatch.setattr("urllib.request.urlopen", must_not_call)
+    r = TestClient(app, client=("127.0.0.1", 12345)).get(
+        "/api/lco/proposals", headers={"X-Forwarded-User": "alice"}
+    )
+    assert r.status_code == 403
+    body = r.json()
+    assert body["ok"] is False
+    assert "operator-global-token" not in r.text
 
 
 def test_x_forwarded_user_ignored_from_non_loopback_peer(monkeypatch):
@@ -1359,6 +1597,110 @@ def test_lco_submit_succeeds_with_matching_hash(mock_db, monkeypatch):
     assert monitored["requests"][0]["request_id"] == 67890
     assert "payload_json" not in monitored["requests"][0]
     assert "result_json" not in monitored["requests"][0]
+
+
+def test_lco_build_returns_editable_payload_without_lco_call(monkeypatch):
+    # "Create draft" builds the payload only — it must never contact LCO.
+    monkeypatch.setattr(
+        "muscat_db.lco.max_allowable_ipp",
+        lambda payload, token=None: (_ for _ in ()).throw(AssertionError("no LCO call from /build")),
+    )
+    r = TestClient(app).post("/api/lco/build", json=_ipp_params())
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] and body["payload_hash"]
+    assert body["payload"]["requests"][0]["configurations"][0]["instrument_type"] == "1M0-SCICAM-SINISTRO"
+
+
+def test_lco_ipp_dry_runs_edited_requestgroup(monkeypatch):
+    import muscat_db.lco as _lco
+
+    captured = {}
+
+    def fake_ipp(payload, token=None):
+        captured["rg"] = payload
+        return {"max_allowable_ipp_value": 2.0}
+
+    monkeypatch.setattr("muscat_db.lco.max_allowable_ipp", fake_ipp)
+    rg = _lco.build_requestgroup("sinistro", _ipp_params())
+    rg["name"] = "EDITED DRAFT"  # a small edit to the draft payload
+    r = TestClient(app).post("/api/lco/ipp", json={"requestgroup": rg})
+    assert r.status_code == 200
+    body = r.json()
+    # The edited requestgroup is dry-run verbatim and its hash returned.
+    assert body["payload"]["name"] == "EDITED DRAFT"
+    assert body["payload_hash"] == _lco.payload_hash(rg)
+    assert captured["rg"]["name"] == "EDITED DRAFT"
+
+
+def test_lco_submit_books_edited_requestgroup(mock_db, monkeypatch):
+    import muscat_db.lco as _lco
+
+    params = _ipp_params()
+    rg = _lco.build_requestgroup(params["kind"], params)
+    rg["name"] = "EDITED SUBMIT"  # what gets booked, not a params rebuild ("s")
+    good_hash = _lco.payload_hash(rg)
+    captured = {}
+
+    def fake_submit(payload, token=None):
+        captured["rg"] = payload
+        return {
+            "id": 111, "name": payload["name"], "proposal": params["proposal"], "state": "PENDING",
+            "requests": [{"id": 222, "state": "PENDING", "windows": params["windows"]}],
+        }
+
+    monkeypatch.setattr("muscat_db.lco.submit_requestgroup", fake_submit)
+    r = TestClient(app).post(
+        "/api/lco/submit",
+        json={**params, "requestgroup": rg, "confirm": True, "dry_run_hash": good_hash},
+    )
+    assert r.status_code == 200
+    assert captured["rg"]["name"] == "EDITED SUBMIT"
+    assert r.json()["result"]["id"] == 111
+
+
+def test_lco_submit_edited_requestgroup_rejects_stale_hash(monkeypatch):
+    # Editing the draft after Check settings must invalidate the hash lock.
+    import muscat_db.lco as _lco
+
+    params = _ipp_params()
+    rg = _lco.build_requestgroup(params["kind"], params)
+    stale = _lco.payload_hash(rg)  # hash of the un-edited draft
+    rg["name"] = "EDITED AFTER CHECK"  # now the payload no longer matches the hash
+    monkeypatch.setattr(
+        "muscat_db.lco.submit_requestgroup",
+        lambda payload, token=None: (_ for _ in ()).throw(AssertionError("must not submit")),
+    )
+    r = TestClient(app).post(
+        "/api/lco/submit",
+        json={**params, "requestgroup": rg, "confirm": True, "dry_run_hash": stale},
+    )
+    assert r.status_code == 409
+    assert "dry-run" in r.json()["error"].lower()
+
+
+def test_test_request_overlays_plan_override(monkeypatch):
+    # The editable test draft (displayed plan subset) overlays the stored plan.
+    import muscat_db.web as _web
+
+    captured = {}
+
+    def fake_request_configurations(plan, base):
+        captured["plan"] = plan
+        return [{"cfg": 1}]
+
+    monkeypatch.setattr(_web.test_observations, "request_configurations", fake_request_configurations)
+    monkeypatch.setattr(_web.lco, "build_requestgroup",
+                        lambda kind, base, configurations=None: {"kind": kind, "configs": configurations})
+    record = {"id": "t1", "plan": {"kind": "sinistro", "exposure_time": 60, "target": "X"}}
+
+    _web._test_request(record, {"name": "TEST X"})
+    assert captured["plan"]["exposure_time"] == 60  # stored plan used as-is
+
+    _web._test_request(record, {"name": "TEST X"}, {"exposure_time": 999})
+    assert captured["plan"]["exposure_time"] == 999  # override applied
+    assert captured["plan"]["target"] == "X"         # untouched keys preserved
+    assert record["plan"]["exposure_time"] == 60     # stored record left intact
 
 
 def test_lco_split_partial_booking_still_registers_successful_leg(mock_db, monkeypatch):
@@ -1997,7 +2339,7 @@ def test_harps_rvbank_rows_fall_back_to_online_stream(monkeypatch, tmp_path):
     assert res["rows"][0]["RV_mlc_nzp"] == "-3.25"
 
 
-def test_harps_target_lookup_uses_toi_catalog_coords_after_db_miss(monkeypatch):
+def test_harps_target_lookup_uses_toi_catalog_coords(monkeypatch):
     from muscat_db import catalog, web
 
     monkeypatch.setattr(catalog, "_HARPS_MATCH_ARCSEC", 5.0)
@@ -2045,14 +2387,62 @@ def test_harps_target_lookup_uses_toi_catalog_coords_after_db_miss(monkeypatch):
 
     monkeypatch.setattr(catalog, "_query_harps_rvbank_rows", fake_query)
 
+    # Header pointing centre (8:03:21 = 120.8375 deg) is supplied but should be
+    # ignored: the catalog coord is a higher-priority tier and resolves the match.
     result = web._harps_data_for_target(
-        [{"ra": "8:03:21", "dec": "+3:20:46"}],
         "TOI00488",
+        [{"ra": "8:03:21", "dec": "+3:20:46"}],
     )
 
     assert result["total_rows"] == 1
     assert captured["matches"][0]["target"] == "GJ3473"
     assert (120.593607, 3.337163) in captured["coords"]
+    # Header centre is a last resort, so it is not consulted once the catalog hits.
+    assert all(abs(ra - 120.8375) > 1e-6 for ra, _ in captured["coords"])
+
+
+def test_harps_target_lookup_falls_back_to_header_center(monkeypatch):
+    """Catalog miss + SIMBAD miss → the header pointing centre is used."""
+    from muscat_db import catalog, web
+
+    monkeypatch.setattr(catalog, "_HARPS_MATCH_ARCSEC", 5.0)
+    monkeypatch.setattr(
+        catalog,
+        "_load_harps_targets",
+        lambda: ([{"target": "GJ3473", "ra": 120.592808, "dec": 3.33695, "n_rv": 32}], "2026-07-08"),
+    )
+    # Target resolves in neither catalog nor SIMBAD.
+    monkeypatch.setattr(catalog, "_target_catalog_coord_candidates", lambda name: [])
+    monkeypatch.setattr(catalog, "_resolve_archive_coords", lambda name: None)
+
+    captured = {}
+
+    def fake_query(coords, matches, max_rows=None):
+        captured["coords"] = coords
+        captured["matches"] = matches
+        return {
+            "columns": ["target"],
+            "rows": [{"target": "GJ3473"}],
+            "total_rows": 1,
+            "display_rows": 1,
+            "truncated": False,
+            "matched_targets": matches,
+            "source_kind": "local",
+            "source": "fake",
+            "error": "",
+        }
+
+    monkeypatch.setattr(catalog, "_query_harps_rvbank_rows", fake_query)
+
+    # Header centre sits on GJ3473 → matched only because it is the last resort.
+    result = web._harps_data_for_target(
+        "GJ3473",
+        [{"ra": 120.592808, "dec": 3.33695}],
+    )
+
+    assert result["total_rows"] == 1
+    assert captured["matches"][0]["target"] == "GJ3473"
+    assert (120.592808, 3.33695) in captured["coords"]
 
 
 def test_nasa_confirmed_toi_membership_matches_tic_and_period(monkeypatch):

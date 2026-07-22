@@ -654,9 +654,9 @@ def _run_server(
     os.environ["MUSCAT_DB_PATH"] = db
     import uvicorn
     if reload:
-        uvicorn.run("muscat_db.web:app", host=host, port=port, reload=True)
+        uvicorn.run("muscat_db.web:sio_app", host=host, port=port, reload=True)
     else:
-        uvicorn.run("muscat_db.web:app", host=host, port=port, workers=workers)
+        uvicorn.run("muscat_db.web:sio_app", host=host, port=port, workers=workers)
 
 
 @app.command(cls=_Cmd)

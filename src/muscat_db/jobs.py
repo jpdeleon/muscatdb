@@ -22,6 +22,7 @@ cycle: ``photometry`` and ``transit_fit`` import from here, never the reverse.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import signal
@@ -331,3 +332,41 @@ def terminate_pg(proc: subprocess.Popen) -> None:
         except OSError:
             pass
     threading.Thread(target=kill_after, args=(proc,), daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Job-finished hooks
+#
+# Both pipelines call ``fire_job_finished`` exactly once when a job first reaches
+# a terminal state (guarded by ``_notified_job_keys``). The chat feature
+# registers a listener at startup to post a system message; kept here so the
+# pipelines stay decoupled from the web/chat layer (no import cycle).
+# ---------------------------------------------------------------------------
+
+_logger = logging.getLogger(__name__)
+_JOB_FINISHED_HOOKS: list = []
+_notified_job_keys: set[str] = set()
+_hook_lock = threading.Lock()
+
+
+def register_job_finished_hook(fn) -> None:
+    """Register a callback invoked with keyword job info when a job finishes."""
+    with _hook_lock:
+        if fn not in _JOB_FINISHED_HOOKS:
+            _JOB_FINISHED_HOOKS.append(fn)
+
+
+def fire_job_finished(job_key: str, **info) -> None:
+    """Invoke all registered hooks once per ``job_key``. Safe to call on every
+    sync pass: repeat calls for an already-notified key are ignored. Hook
+    exceptions are logged, never propagated into the job lifecycle."""
+    with _hook_lock:
+        if job_key in _notified_job_keys:
+            return
+        _notified_job_keys.add(job_key)
+        hooks = list(_JOB_FINISHED_HOOKS)
+    for fn in hooks:
+        try:
+            fn(job_key=job_key, **info)
+        except Exception:  # never let a chat hook break job syncing
+            _logger.exception("job-finished hook failed for %s", job_key)

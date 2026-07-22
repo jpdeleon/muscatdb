@@ -62,9 +62,19 @@ ENV_VARS: tuple[EnvVar, ...] = (
         "timer package output directory",
     ),
     EnvVar(
+        "MUSCAT_TIMER_PROJECT",
+        "<repo>/../ext_tools/timer",
+        "timer repository path (transit-fit source; read by the @bot chat assistant for grounding)",
+    ),
+    EnvVar(
         "MUSCAT_TTV_DIR",
         str(Path.home() / "ql" / "harmonic"),
         "harmonic package output directory (TTV fits, keyed on target)",
+    ),
+    EnvVar(
+        "MUSCAT_HARMONIC_PROJECT",
+        "<repo>/../ext_tools/harmonic",
+        "harmonic repository path (TTV-fit source; read by the @bot chat assistant for grounding)",
     ),
     EnvVar(
         "MUSCAT_QUICKLOOK_URL",
@@ -91,6 +101,12 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("MUSCAT_CATALOG_BATCH_MAX_ACTIVE", "4", "Concurrent catalog batch requests"),
     EnvVar("MUSCAT_CATALOG_BATCH_MAX_ITEMS", "200", "Stars allowed per catalog batch"),
     EnvVar("MUSCAT_CATALOG_BATCH_MAX_BYTES", "262144", "Serialized bytes allowed per catalog batch"),
+    EnvVar(
+        "MUSCAT_EPHEMERIS_SHEET_TTL_S",
+        "300",
+        "Cache lifetime (seconds) for a per-user ephemeris Google Sheet tab fetch "
+        "on the LCO schedule page",
+    ),
     EnvVar("MUSCAT_ZIP_BUILD_WORKERS", "1", "Concurrent output ZIP builders"),
     EnvVar("MUSCAT_ZIP_MAX_FILES", "10000", "Files allowed per output ZIP"),
     EnvVar("MUSCAT_ZIP_MAX_INPUT_BYTES", str(2 << 30), "Uncompressed input bytes allowed per output ZIP"),
@@ -149,6 +165,43 @@ ENV_VARS: tuple[EnvVar, ...] = (
         "NASA ADS API Token (used to query published papers about the target)",
         secret=True,
     ),
+    EnvVar(
+        "ESO_USERNAME",
+        None,
+        "ESO archive username — global server-side fallback for ESO TAP queries. "
+        "Per-user credentials (saved in Settings) take precedence. "
+        "Anonymous queries are used when neither is set.",
+        secret=False,
+    ),
+    EnvVar(
+        "ESO_PASSWORD",
+        None,
+        "ESO archive password — global server-side fallback for ESO TAP queries. "
+        "Keep paired with ESO_USERNAME.",
+        secret=True,
+    ),
+    EnvVar(
+        "MUSCAT_CHAT_AGENT_NAME",
+        "bot",
+        "The @name that invokes the codebase assistant in team chat (e.g. @bot).",
+    ),
+    EnvVar(
+        "MUSCAT_OLLAMA_URL",
+        "http://muscat-ut4.c.u-tokyo.ac.jp:11434",
+        "Base URL of the ollama server backing the chat assistant (its /api/chat "
+        "endpoint), reachable over HTTP from this host. ollama on muscat-ut4 binds "
+        "127.0.0.1; scripts/ollama_tunnel.sh forwards it, so set this to the local "
+        "tunnel end (http://127.0.0.1:11434).",
+    ),
+    EnvVar(
+        "MUSCAT_OLLAMA_MODEL",
+        "gemma4:latest",
+        "Ollama model tag the chat assistant runs.",
+    ),
+    EnvVar("MUSCAT_OLLAMA_TIMEOUT_S", "120", "Per-request generation timeout for the chat assistant (seconds)"),
+    EnvVar("MUSCAT_OLLAMA_MAX_CONCURRENT", "2", "Concurrent chat-assistant requests before callers get a 'busy' note"),
+    EnvVar("MUSCAT_OLLAMA_NUM_CTX", "8192", "Context window (tokens) requested from ollama; caps prompt+history+reply"),
+    EnvVar("MUSCAT_AGENT_HISTORY_TTL_S", "900", "Idle-gap auto-clear: drop @bot history older than this (seconds; 0 disables)"),
 )
 
 

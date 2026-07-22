@@ -16,6 +16,8 @@ import threading
 import time
 from typing import IO
 
+import yaml
+
 from muscat_db import jobs, database
 from muscat_db.job_store import get_job_store
 from muscat_db import __meta__, __muscatdb_version__, __version__
@@ -72,6 +74,20 @@ def _format_csv_table(csv_text: str) -> str:
     return f"{header}\n{ruler}\n" + "\n".join(data)
 
 
+class _MetaDumper(yaml.SafeDumper):
+    """Dump meta.yaml with multi-line strings (csv_content, ini_content, ...)
+    as block literals instead of PyYAML's default folded style, which inserts
+    a blank line after every embedded newline and is unreadable for CSV data."""
+
+
+def _represent_multiline_str(dumper: yaml.Dumper, value: str):
+    style = "|" if "\n" in value else None
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
+
+
+_MetaDumper.add_representer(str, _represent_multiline_str)
+
+
 def _write_log_banner(logf: IO, cmd: list[str], options: dict | None = None) -> None:
     separator = "=" * 60
     now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -87,6 +103,13 @@ def _write_log_banner(logf: IO, cmd: list[str], options: dict | None = None) -> 
                 logf.write(f"  csv_content:\n{_format_csv_table(v)}\n\n")
             elif k == "ini_content" and isinstance(v, str) and v.strip():
                 logf.write(f"  ini_content:\n{v.rstrip()}\n\n")
+            elif k == "input_snapshot":
+                # The full ephemeris-page UI state (dataset checkboxes, manual
+                # points, plot settings, ...) that produced this run's
+                # csv_content -- kept in meta.yaml for the ephemeris page to
+                # restore, not worth dumping into the human-readable log.
+                n_manual = len((v or {}).get("manual_points") or [])
+                logf.write(f"  input_snapshot: <ui state, {n_manual} manual point(s); see meta.yaml>\n")
             else:
                 logf.write(f"  {k}: {v!r}\n")
         logf.write("\n")
@@ -312,9 +335,8 @@ def write_ttv_inputs(
         "created_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "options": options,
     }
-    import yaml
     with open(rdir / "meta.yaml", "w") as f:
-        yaml.safe_dump(meta, f, default_flow_style=False, sort_keys=False)
+        yaml.dump(meta, f, Dumper=_MetaDumper, default_flow_style=False, sort_keys=False)
 
 
 def validate_ttv_options(options: dict | None) -> str | None:
@@ -792,6 +814,7 @@ def _get_ttv_outputs_mtime(
         "has_samples": False,
         "has_model": False,
         "extra_files": [],
+        "input_snapshot": None,
     }
     try:
         rdir = ttv_output_dir(target, run_name)
@@ -800,6 +823,14 @@ def _get_ttv_outputs_mtime(
 
     if not rdir.is_dir():
         return outputs
+
+    meta_path = rdir / "meta.yaml"
+    if meta_path.is_file():
+        try:
+            meta = yaml.safe_load(meta_path.read_text()) or {}
+            outputs["input_snapshot"] = (meta.get("options") or {}).get("input_snapshot")
+        except Exception:
+            logger.warning("could not parse meta.yaml for %s/%s", target, run_name, exc_info=True)
 
     if (rdir / "harmonic.log").is_file():
         outputs["has_log"] = True

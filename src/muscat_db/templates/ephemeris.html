@@ -44,9 +44,13 @@
   <!-- Dataset Checkbox List Table -->
   <details class="adv ephemeris-fold" id="datasets-section" style="display: none; margin-bottom: 1.5rem;" open>
     <summary>Select Datasets to Include in Fit</summary>
-    <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem; margin-top: 1rem;">
+    <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; margin-top: 1rem;">
       <button class="btn sm" type="button" onclick="toggleAllDatasets(true)">Select All</button>
       <button class="btn sm" type="button" onclick="toggleAllDatasets(false)">Deselect All</button>
+      <label class="opt-check-item" style="margin-left: 0.5rem;">
+        <input type="checkbox" id="hide-deselected-checkbox">
+        <span>Hide deselected rows</span>
+      </label>
     </div>
     <div class="csv-wrap" style="border: 1px solid var(--border); border-radius: 8px;">
       <table id="datasets-table" style="margin: 0;">
@@ -137,11 +141,11 @@
   <div id="oc-plot"></div>
   <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.75rem; gap: 1.5rem; flex-wrap: wrap;">
     <div style="display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; flex-grow: 1;">
-      <label class="opt-check-item">
+      <label class="opt-check-item" title="Also plot deselected/unchecked datapoints, as faded hollow markers labeled &quot;(unused)&quot;, so you can see what the fit is leaving out.">
         <input type="checkbox" id="show-excluded-checkbox" checked>
         <span>Show Excluded Points</span>
       </label>
-      <label class="opt-check-item">
+      <label class="opt-check-item" title="Show a secondary x-axis with the UTC calendar date alongside BJD. Mutually exclusive with Show epoch numbers.">
         <input type="checkbox" id="show-twin-checkbox">
         <span>Show date (UTC)</span>
       </label>
@@ -455,6 +459,11 @@
   tr.selected-row td {
     background: color-mix(in srgb, var(--accent) 3%, transparent);
   }
+  /* "Hide deselected rows" checkbox: driven purely by CSS so it stays in
+     sync with the table across re-renders without any extra JS bookkeeping. */
+  #datasets-table.hide-deselected tbody tr:not(.selected-row):not(.empty-row) {
+    display: none;
+  }
   /* A manual transit center flagged as >5σ from the fitted ephemeris. */
   tr.manual-flagged td {
     background: color-mix(in srgb, var(--red) 8%, transparent);
@@ -625,6 +634,13 @@
       const cb = document.getElementById('show-excluded-checkbox');
       if (cb) cb.checked = state.show_excluded;
     }
+    if (typeof state.hide_deselected === 'boolean') {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'hide-deselected', String(state.hide_deselected));
+      const cb = document.getElementById('hide-deselected-checkbox');
+      if (cb) cb.checked = state.hide_deselected;
+      const table = document.getElementById('datasets-table');
+      if (table) table.classList.toggle('hide-deselected', state.hide_deselected);
+    }
     if (typeof state.show_utc === 'boolean') {
       localStorage.setItem(STORAGE_OPTS_PREFIX + 'show-twin', String(state.show_utc));
       const cb = document.getElementById('show-twin-checkbox');
@@ -767,6 +783,7 @@
       planet_options: planetOptions,
       planet_plot_settings: currentPlanetPlotSettings,
       show_excluded: Boolean(document.getElementById('show-excluded-checkbox')?.checked),
+      hide_deselected: Boolean(document.getElementById('hide-deselected-checkbox')?.checked),
       show_utc: Boolean(document.getElementById('show-twin-checkbox')?.checked),
       show_epoch: Boolean(document.getElementById('show-epoch-checkbox')?.checked),
       show_ttv_model: Boolean(document.getElementById('show-ttv-model-checkbox')?.checked),
@@ -916,6 +933,19 @@
         drawPlot();
       }
       scheduleSaveView();
+    });
+
+    // Restore hide-deselected-rows checkbox preference
+    const savedHideDeselected = localStorage.getItem(STORAGE_OPTS_PREFIX + 'hide-deselected');
+    const hideDeselectedCheckbox = document.getElementById('hide-deselected-checkbox');
+    const datasetsTable = document.getElementById('datasets-table');
+    if (savedHideDeselected !== null) {
+      hideDeselectedCheckbox.checked = savedHideDeselected === 'true';
+    }
+    datasetsTable.classList.toggle('hide-deselected', hideDeselectedCheckbox.checked);
+    hideDeselectedCheckbox.addEventListener('change', function() {
+      localStorage.setItem(STORAGE_OPTS_PREFIX + 'hide-deselected', this.checked);
+      datasetsTable.classList.toggle('hide-deselected', this.checked);
     });
 
     // Restore show-twin checkbox preference
@@ -1749,7 +1779,7 @@
     loadManualPoints();
 
     if (datasets.length === 0 && manualPoints.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="${columnCount}" style="text-align: center; color: var(--text-dim);">No completed fits found. Use “+ Add transit center” to enter a transit time by hand.</td></tr>`;
+      tbody.innerHTML = `<tr class="empty-row"><td colspan="${columnCount}" style="text-align: center; color: var(--text-dim);">No completed fits found. Use “+ Add transit center” to enter a transit time by hand.</td></tr>`;
       reinitResizableTable();
       return;
     }
@@ -3389,6 +3419,10 @@
           showMessageModal('No Transit Time Data', 'No transit time data. Please check at least one dataset to fit.');
           return;
         }
+        // Snapshot the full ephemeris-page UI state (checked datasets, manual
+        // points incl. CSV imports, planet options, ...) alongside the run so
+        // switching back to this run later can restore exactly what fed it.
+        options.input_snapshot = collectEphemerisViewState();
 
         const runNameVal = (document.getElementById('opt-run_name')?.value || '').trim();
         const outputQs = 'target=' + encodeURIComponent(target) +
@@ -3670,6 +3704,10 @@
           if (deleteBtn) deleteBtn.style.display = 'inline-block';
           logEl.textContent += '\n\n✓ done — reloading…';
           if (typeof window.showLoading === 'function') window.showLoading('Reloading…');
+          // Point the URL at the run that just finished before reloading, so the
+          // reload lands on its results instead of whatever ?run= was already
+          // in the address bar (e.g. an older run viewed before this fit started).
+          updateTTVRunUrl(runName, 'replace');
           setTimeout(() => { window.location.reload(); }, 1200);
         } else if (s.state === 'error') {
           poller.stop();
@@ -3800,6 +3838,23 @@
       });
   }
 
+  // Restore the ephemeris-page UI (checked datasets, manual points incl. CSV
+  // imports, planet options, TTV knobs, ...) to whatever produced the run
+  // currently on screen. Runs created before this snapshot existed have none
+  // -- leave the live selection untouched rather than clearing it.
+  function applyTTVRunSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return;
+    const combinedKey = getCombinedStorageKey();
+    applyViewStateToStorage(snapshot, combinedKey);
+    loadManualPlanets();
+    renderPlanetCards(combinedPlanets, combinedRefEphem);
+    renderDatasetsTable(combinedDatasets);
+    renderPlanetPlotSettings();
+    refreshTTVCmd();
+    scheduleComputeFit(0);
+    scheduleSaveView();
+  }
+
   function loadTTVRunOutputs(target, runName, runs, historyMode = 'replace') {
     const qs = `target=${encodeURIComponent(target)}&run_name=${encodeURIComponent(runName)}`;
     const deleteBtn = document.getElementById('delete-btn');
@@ -3812,6 +3867,7 @@
           updateTTVRunUrl(runName, historyMode);
           if (deleteBtn) deleteBtn.style.display = 'inline-block';
           renderTTVOutputs(target, runName, res.outputs, runs);
+          applyTTVRunSnapshot(res.outputs.input_snapshot);
         } else {
           if (deleteBtn) deleteBtn.style.display = 'none';
           hideTTVOutputs();

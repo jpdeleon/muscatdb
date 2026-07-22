@@ -231,6 +231,178 @@
     </div>
   </details>
 
+  <details class="adv" id="ads-details" style="margin-top: 1rem;">
+    <summary>NASA ADS Publications</summary>
+    <div style="margin-top: 0.5rem;">
+      <div class="lco-banner" id="ads-config-banner" style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 1.25rem; font-size: 0.85rem;">
+        <span class="pill" style="display: inline-flex; align-items: center; gap: 0.35rem;">
+          <span class="dot" id="ads-cfg-token" style="width: 9px; height: 9px; border-radius: 50%; background: var(--text-dim); display: inline-block;"></span> ADS API token
+        </span>
+        <span class="lco-note" style="margin: 0; font-size: 0.78rem; color: var(--text-dim);">Set up ADS API access from <a href="https://ui.adsabs.harvard.edu/user/settings/token" target="_blank" rel="noopener">your ADS token settings</a>, then save your token in <a href="/settings">Settings</a>.</span>
+      </div>
+      <div class="search-bar" style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; width: 100%;">
+        <input id="ads-query-input" type="text" placeholder="Search papers on ADS…" value="{{ target_name }}" style="flex: 1;" autocomplete="off">
+        <button id="ads-search-btn" class="btn" style="padding: 0 1.25rem; height: 36px; display: inline-flex; align-items: center; justify-content: center; font-size: 0.9rem;" type="button">Search</button>
+      </div>
+      <div id="ads-status" class="hint" style="margin-bottom: 0.5rem;"></div>
+      <div id="ads-results-list" style="display: flex; flex-direction: column; gap: 0.75rem;">
+        <!-- papers will go here -->
+      </div>
+    </div>
+  </details>
+
+  <script>
+    (function() {
+      const details = document.getElementById('ads-details');
+      const input = document.getElementById('ads-query-input');
+      const btn = document.getElementById('ads-search-btn');
+      const status = document.getElementById('ads-status');
+      const resultsList = document.getElementById('ads-results-list');
+      let loaded = false;
+
+      function updateConfigBanner() {
+        fetch('/api/ads/config')
+          .then(r => r.json())
+          .then(d => {
+            if (d.ok) {
+              const dot = document.getElementById('ads-cfg-token');
+              if (dot) {
+                dot.style.background = d.token_configured ? '#2ecc71' : '#e07b53';
+              }
+            }
+          })
+          .catch(() => {});
+      }
+      updateConfigBanner();
+
+      function searchADS() {
+        const query = input.value.trim();
+        if (!query) {
+          status.textContent = 'Please enter a search query.';
+          status.style.color = 'var(--red)';
+          return;
+        }
+
+        status.textContent = 'Querying NASA ADS...';
+        status.style.color = 'var(--text-dim)';
+        resultsList.replaceChildren();
+
+        fetch('/api/targets/publications?q=' + encodeURIComponent(query))
+          .then(res => {
+            if (!res.ok) {
+              return res.json().then(err => {
+                let msg = err.error || 'Request failed';
+                if (err.token_missing) {
+                  msg = 'ADS API token is not configured. Save your token in <a href="/settings">Settings</a>.';
+                }
+                throw new Error(msg);
+              });
+            }
+            return res.json();
+          })
+          .then(data => {
+            const papers = data.papers || [];
+            if (papers.length === 0) {
+              status.textContent = 'No published papers found on NASA ADS for "' + query + '".';
+              return;
+            }
+            status.textContent = 'Found ' + papers.length + ' paper(s) on NASA ADS.';
+            
+            papers.forEach(paper => {
+              const card = document.createElement('div');
+              card.className = 'ads-paper-card';
+              card.style.padding = '0.75rem';
+              card.style.border = '1px solid var(--border)';
+              card.style.borderRadius = '8px';
+              card.style.background = 'var(--surface2)';
+              card.style.display = 'flex';
+              card.style.flexDirection = 'column';
+              card.style.gap = '0.35rem';
+
+              const titleLink = document.createElement('a');
+              titleLink.href = 'https://ui.adsabs.harvard.edu/abs/' + encodeURIComponent(paper.bibcode) + '/abstract';
+              titleLink.target = '_blank';
+              titleLink.rel = 'noopener noreferrer';
+              titleLink.style.fontWeight = '600';
+              titleLink.style.fontSize = '0.95rem';
+              titleLink.style.color = 'var(--accent)';
+              titleLink.textContent = (paper.title && paper.title.length > 0) ? paper.title[0] : 'Untitled';
+              card.appendChild(titleLink);
+
+              const authorsDiv = document.createElement('div');
+              authorsDiv.style.fontSize = '0.85rem';
+              authorsDiv.style.color = 'var(--text)';
+              const authorsList = paper.author || [];
+              if (authorsList.length > 5) {
+                authorsDiv.textContent = authorsList.slice(0, 5).join(', ') + ' et al.';
+              } else if (authorsList.length > 0) {
+                authorsDiv.textContent = authorsList.join(', ');
+              } else {
+                authorsDiv.textContent = 'No authors listed';
+              }
+              card.appendChild(authorsDiv);
+
+              const metaDiv = document.createElement('div');
+              metaDiv.style.fontSize = '0.8rem';
+              metaDiv.style.color = 'var(--text-dim)';
+              metaDiv.style.display = 'flex';
+              metaDiv.style.gap = '1rem';
+              metaDiv.style.flexWrap = 'wrap';
+
+              function addLabeledText(container, label, value) {
+                const strong = document.createElement('strong');
+                strong.textContent = label + ':';
+                container.appendChild(strong);
+                container.appendChild(document.createTextNode(' ' + String(value)));
+              }
+
+              const journalSpan = document.createElement('span');
+              addLabeledText(journalSpan, 'Journal', paper.pub || 'Unknown');
+              metaDiv.appendChild(journalSpan);
+
+              const dateSpan = document.createElement('span');
+              addLabeledText(dateSpan, 'Date', paper.pubdate || 'Unknown');
+              metaDiv.appendChild(dateSpan);
+
+              const citationSpan = document.createElement('span');
+              addLabeledText(citationSpan, 'Citations', paper.citation_count !== undefined ? paper.citation_count : 0);
+              metaDiv.appendChild(citationSpan);
+
+              const bibcodeSpan = document.createElement('span');
+              bibcodeSpan.className = 'mono';
+              bibcodeSpan.style.fontSize = '0.75rem';
+              bibcodeSpan.style.color = 'var(--text-dim)';
+              bibcodeSpan.textContent = 'Bibcode: ' + paper.bibcode;
+              metaDiv.appendChild(bibcodeSpan);
+
+              card.appendChild(metaDiv);
+              resultsList.appendChild(card);
+            });
+            loaded = true;
+          })
+          .catch(err => {
+            status.textContent = 'Error: ' + err.message;
+            status.style.color = 'var(--red)';
+            console.error(err);
+          });
+      }
+
+
+
+      btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        searchADS();
+      });
+
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          searchADS();
+        }
+      });
+    })();
+  </script>
+
   <details class="adv" id="harps-rv-details" style="margin-top: 1rem;">
     <summary><span id="harps-rv-summary">HARPS RVBank Data</span></summary>
     <div style="margin-top: 0.5rem;">
@@ -618,44 +790,143 @@
     })();
   </script>
   {% endif %}
-
-  <details class="adv" id="ads-details" style="margin-top: 1rem;">
-    <summary>NASA ADS Publications</summary>
+  <details class="adv" id="eso-archive-details" style="margin-top: 1rem;">
+    <summary><span id="eso-archive-summary">ESO Archive Data</span></summary>
     <div style="margin-top: 0.5rem;">
-      <div class="lco-banner" id="ads-config-banner" style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 1.25rem; font-size: 0.85rem;">
+      <div class="lco-banner" id="eso-config-banner" style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 1.25rem; font-size: 0.85rem;">
         <span class="pill" style="display: inline-flex; align-items: center; gap: 0.35rem;">
-          <span class="dot" id="ads-cfg-token" style="width: 9px; height: 9px; border-radius: 50%; background: var(--text-dim); display: inline-block;"></span> ADS API token
+          <span class="dot" id="eso-cfg-cred" style="width: 9px; height: 9px; border-radius: 50%; background: var(--text-dim); display: inline-block;"></span> ESO credentials
         </span>
-        <span class="lco-note" style="margin: 0; font-size: 0.78rem; color: var(--text-dim);">Set up ADS API access from <a href="https://ui.adsabs.harvard.edu/user/settings/token" target="_blank" rel="noopener">your ADS token settings</a>, then save your token in <a href="/settings">Settings</a>.</span>
+        <span class="lco-note" style="margin: 0; font-size: 0.78rem; color: var(--text-dim);">Configure ESO username/password in <a href="/settings">Settings</a> to include proprietary data. Anonymous queries return public observations only.</span>
       </div>
-      <div class="search-bar" style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; width: 100%;">
-        <input id="ads-query-input" type="text" placeholder="Search papers on ADS…" value="{{ target_name }}" style="flex: 1;" autocomplete="off">
-        <button id="ads-search-btn" class="btn" style="padding: 0 1.25rem; height: 36px; display: inline-flex; align-items: center; justify-content: center; font-size: 0.9rem;" type="button">Search</button>
-      </div>
-      <div id="ads-status" class="hint" style="margin-bottom: 0.5rem;"></div>
-      <div id="ads-results-list" style="display: flex; flex-direction: column; gap: 0.75rem;">
-        <!-- papers will go here -->
-      </div>
+      <p class="hint" id="eso-archive-status" style="margin-top: 0;">Open this section to search the ESO Science Archive for observations of this target. <a href="https://archive.eso.org/scienceportal/home" target="_blank" rel="noopener">Open ESO science portal</a>.</p>
+      <div id="eso-archive-content"></div>
     </div>
   </details>
 
   <script>
     (function() {
-      const details = document.getElementById('ads-details');
-      const input = document.getElementById('ads-query-input');
-      const btn = document.getElementById('ads-search-btn');
-      const status = document.getElementById('ads-status');
-      const resultsList = document.getElementById('ads-results-list');
+      const details = document.getElementById('eso-archive-details');
+      if (!details) return;
+      const summary = document.getElementById('eso-archive-summary');
+      const status = document.getElementById('eso-archive-status');
+      const content = document.getElementById('eso-archive-content');
+      const targetName = {{ target_name | tojson }};
       let loaded = false;
+      let loading = false;
+
+      function clearNode(node) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+      }
+
+      function mjdToDate(mjd) {
+        if (mjd == null || mjd === '') return '';
+        const d = new Date((Number(mjd) - 40587) * 86400000);
+        return d.toISOString().split('T')[0];
+      }
+
+      function renderTable(data) {
+        const columns = data.columns || [];
+        const rows = data.rows || [];
+        const wrap = document.createElement('div');
+        const link = document.createElement('p');
+        link.className = 'hint';
+        link.style.marginTop = '0';
+        link.innerHTML = '<a href="https://archive.eso.org/scienceportal/home" target="_blank" rel="noopener noreferrer">Open ESO science portal</a>';
+        wrap.appendChild(link);
+        wrap.className = 'csv-wrap';
+        const table = document.createElement('table');
+        table.id = 'eso-archive-table';
+        const thead = document.createElement('thead');
+        const headRow = document.createElement('tr');
+        columns.forEach(col => {
+          const th = document.createElement('th');
+          th.textContent = col;
+          headRow.appendChild(th);
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = document.createElement('tbody');
+        rows.forEach(row => {
+          const tr = document.createElement('tr');
+          columns.forEach(col => {
+            const td = document.createElement('td');
+            const value = row[col] !== null && row[col] !== undefined ? row[col] : '';
+            if (col === 'access_url' && value) {
+              const a = document.createElement('a');
+              a.href = String(value);
+              a.target = '_blank';
+              a.rel = 'noopener';
+              a.textContent = 'Download';
+              td.appendChild(a);
+            } else if ((col === 't_min' || col === 't_max') && value) {
+              td.textContent = mjdToDate(value);
+              td.className = 'mono';
+            } else {
+              if (/^-?\d/.test(value)) td.className = 'mono';
+              td.textContent = value;
+            }
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        content.appendChild(wrap);
+      }
+
+      function loadEsoArchive() {
+        if (loaded || loading) return;
+        loading = true;
+        status.textContent = 'Querying ESO Science Archive...';
+        status.style.color = 'var(--text-dim)';
+        fetch('/api/targets/eso-archive?name=' + encodeURIComponent(targetName))
+          .then(res => {
+            const ct = res.headers.get('content-type') || '';
+            if (!ct.includes('json')) {
+              return res.text().then(body => { throw new Error(body.slice(0, 200)); });
+            }
+            return res.json().then(data => ({ ok: res.ok, data: data }));
+          })
+          .then(result => {
+            if (!result.ok || !result.data.ok) {
+              var errMsg = result.data.error || 'Request failed';
+              if (result.data.detail) {
+                errMsg += ' — ' + result.data.detail;
+              }
+              throw new Error(errMsg);
+            }
+            const data = result.data;
+            const total = data.total || 0;
+            clearNode(content);
+            if (!total) {
+              summary.textContent = 'ESO Archive Data';
+              status.textContent = 'No ESO archive data found for this target.';
+              status.style.color = 'var(--text-dim)';
+              return;
+            }
+            summary.textContent = 'ESO Archive Data (' + total.toLocaleString() + ' observations)';
+            status.textContent = '';
+            renderTable(data);
+            loaded = true;
+          })
+          .catch(err => {
+            status.textContent = 'ESO archive lookup failed: ' + err.message;
+            status.style.color = 'var(--red)';
+          })
+          .finally(() => {
+            loading = false;
+          });
+      }
 
       function updateConfigBanner() {
-        fetch('/api/ads/config')
+        fetch('/api/settings/eso-credentials-status')
           .then(r => r.json())
           .then(d => {
             if (d.ok) {
-              const dot = document.getElementById('ads-cfg-token');
+              const dot = document.getElementById('eso-cfg-cred');
               if (dot) {
-                dot.style.background = d.token_configured ? '#2ecc71' : '#e07b53';
+                dot.style.background = d.user_credentials_configured || d.global_credentials_configured ? '#2ecc71' : '#e07b53';
               }
             }
           })
@@ -663,130 +934,244 @@
       }
       updateConfigBanner();
 
-      function searchADS() {
-        const query = input.value.trim();
-        if (!query) {
-          status.textContent = 'Please enter a search query.';
-          status.style.color = 'var(--red)';
-          return;
-        }
+      details.addEventListener('toggle', function() {
+        if (details.open) loadEsoArchive();
+      });
+    })();
+  </script>
 
-        status.textContent = 'Querying NASA ADS...';
+  <details class="adv" id="lamost-archive-details" style="margin-top: 1rem;">
+    <summary><span id="lamost-archive-summary">LAMOST Archive Spectra</span></summary>
+    <div style="margin-top: 0.5rem;">
+      <p class="hint" id="lamost-archive-status" style="margin-top: 0;">Open this section to search the LAMOST DR11 Medium-Resolution Survey for spectra of this target. <a href="https://www.lamost.org/dr11/v2.0/medcas/search" target="_blank" rel="noopener">Open LAMOST search portal</a>.</p>
+      <div id="lamost-archive-content"></div>
+    </div>
+  </details>
+
+  <script>
+    (function() {
+      const details = document.getElementById('lamost-archive-details');
+      if (!details) return;
+      const summary = document.getElementById('lamost-archive-summary');
+      const status = document.getElementById('lamost-archive-status');
+      const content = document.getElementById('lamost-archive-content');
+      const targetName = {{ target_name | tojson }};
+      let loaded = false;
+      let loading = false;
+
+      function clearNode(node) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+      }
+
+      function lamostDownloadUrl(row) {
+        if (!row.obsid) return null;
+        return 'http://www.lamost.org/dr11/v2.0/medspectrum/fits/' + row.obsid + '?token=';
+      }
+
+      function renderTable(data) {
+        const columns = data.columns || [];
+        const rows = data.rows || [];
+        const wrap = document.createElement('div');
+        const link = document.createElement('p');
+        link.className = 'hint';
+        link.style.marginTop = '0';
+        link.innerHTML = '<a href="https://www.lamost.org/dr11/v2.0/medcas/search" target="_blank" rel="noopener noreferrer">Open LAMOST search portal</a>';
+        wrap.appendChild(link);
+        wrap.className = 'csv-wrap';
+        const table = document.createElement('table');
+        table.id = 'lamost-archive-table';
+        const thead = document.createElement('thead');
+        const headRow = document.createElement('tr');
+        columns.forEach(col => {
+          if (col === 'spec') return;
+          const th = document.createElement('th');
+          th.textContent = col;
+          headRow.appendChild(th);
+        });
+        const thDL = document.createElement('th');
+        thDL.textContent = '';
+        headRow.appendChild(thDL);
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = document.createElement('tbody');
+        rows.forEach(row => {
+          const tr = document.createElement('tr');
+          columns.forEach(col => {
+            if (col === 'spec') return;
+            const td = document.createElement('td');
+            const value = row[col] !== null && row[col] !== undefined ? row[col] : '';
+            if (/^-?\d/.test(value)) td.className = 'mono';
+            td.textContent = value;
+            tr.appendChild(td);
+          });
+          const url = lamostDownloadUrl(row);
+          const tdDL = document.createElement('td');
+          if (url) {
+            const a = document.createElement('a');
+            a.href = url;
+            a.target = '_blank';
+            a.rel = 'noopener';
+            a.textContent = 'FITS';
+            tdDL.appendChild(a);
+          }
+          tr.appendChild(tdDL);
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        content.appendChild(wrap);
+      }
+
+      function loadLamostArchive() {
+        if (loaded || loading) return;
+        loading = true;
+        status.textContent = 'Querying LAMOST DR11 archive...';
         status.style.color = 'var(--text-dim)';
-        resultsList.replaceChildren();
-
-        fetch('/api/targets/publications?q=' + encodeURIComponent(query))
+        fetch('/api/targets/lamost-archive?name=' + encodeURIComponent(targetName))
           .then(res => {
-            if (!res.ok) {
-              return res.json().then(err => {
-                let msg = err.error || 'Request failed';
-                if (err.token_missing) {
-                  msg = 'ADS API token is not configured. Save your token in <a href="/settings">Settings</a>.';
-                }
-                throw new Error(msg);
-              });
+            const ct = res.headers.get('content-type') || '';
+            if (!ct.includes('json')) {
+              return res.text().then(body => { throw new Error(body.slice(0, 200)); });
             }
-            return res.json();
+            return res.json().then(data => ({ ok: res.ok, data: data }));
           })
-          .then(data => {
-            const papers = data.papers || [];
-            if (papers.length === 0) {
-              status.textContent = 'No published papers found on NASA ADS for "' + query + '".';
+          .then(result => {
+            if (!result.ok || !result.data.ok) {
+              throw new Error(result.data.error || 'Request failed');
+            }
+            const data = result.data;
+            const total = data.total || 0;
+            clearNode(content);
+            if (!total) {
+              summary.textContent = 'LAMOST Archive Spectra';
+              status.textContent = 'No LAMOST data found for this target.';
+              status.style.color = 'var(--text-dim)';
               return;
             }
-            status.textContent = 'Found ' + papers.length + ' paper(s) on NASA ADS.';
-            
-            papers.forEach(paper => {
-              const card = document.createElement('div');
-              card.className = 'ads-paper-card';
-              card.style.padding = '0.75rem';
-              card.style.border = '1px solid var(--border)';
-              card.style.borderRadius = '8px';
-              card.style.background = 'var(--surface2)';
-              card.style.display = 'flex';
-              card.style.flexDirection = 'column';
-              card.style.gap = '0.35rem';
-
-              const titleLink = document.createElement('a');
-              titleLink.href = 'https://ui.adsabs.harvard.edu/abs/' + encodeURIComponent(paper.bibcode) + '/abstract';
-              titleLink.target = '_blank';
-              titleLink.rel = 'noopener noreferrer';
-              titleLink.style.fontWeight = '600';
-              titleLink.style.fontSize = '0.95rem';
-              titleLink.style.color = 'var(--accent)';
-              titleLink.textContent = (paper.title && paper.title.length > 0) ? paper.title[0] : 'Untitled';
-              card.appendChild(titleLink);
-
-              const authorsDiv = document.createElement('div');
-              authorsDiv.style.fontSize = '0.85rem';
-              authorsDiv.style.color = 'var(--text)';
-              const authorsList = paper.author || [];
-              if (authorsList.length > 5) {
-                authorsDiv.textContent = authorsList.slice(0, 5).join(', ') + ' et al.';
-              } else if (authorsList.length > 0) {
-                authorsDiv.textContent = authorsList.join(', ');
-              } else {
-                authorsDiv.textContent = 'No authors listed';
-              }
-              card.appendChild(authorsDiv);
-
-              const metaDiv = document.createElement('div');
-              metaDiv.style.fontSize = '0.8rem';
-              metaDiv.style.color = 'var(--text-dim)';
-              metaDiv.style.display = 'flex';
-              metaDiv.style.gap = '1rem';
-              metaDiv.style.flexWrap = 'wrap';
-
-              function addLabeledText(container, label, value) {
-                const strong = document.createElement('strong');
-                strong.textContent = label + ':';
-                container.appendChild(strong);
-                container.appendChild(document.createTextNode(' ' + String(value)));
-              }
-
-              const journalSpan = document.createElement('span');
-              addLabeledText(journalSpan, 'Journal', paper.pub || 'Unknown');
-              metaDiv.appendChild(journalSpan);
-
-              const dateSpan = document.createElement('span');
-              addLabeledText(dateSpan, 'Date', paper.pubdate || 'Unknown');
-              metaDiv.appendChild(dateSpan);
-
-              const citationSpan = document.createElement('span');
-              addLabeledText(citationSpan, 'Citations', paper.citation_count !== undefined ? paper.citation_count : 0);
-              metaDiv.appendChild(citationSpan);
-
-              const bibcodeSpan = document.createElement('span');
-              bibcodeSpan.className = 'mono';
-              bibcodeSpan.style.fontSize = '0.75rem';
-              bibcodeSpan.style.color = 'var(--text-dim)';
-              bibcodeSpan.textContent = 'Bibcode: ' + paper.bibcode;
-              metaDiv.appendChild(bibcodeSpan);
-
-              card.appendChild(metaDiv);
-              resultsList.appendChild(card);
-            });
+            summary.textContent = 'LAMOST Archive Spectra (' + total.toLocaleString() + ')';
+            status.textContent = '';
+            renderTable(data);
             loaded = true;
           })
           .catch(err => {
-            status.textContent = 'Error: ' + err.message;
+            status.textContent = 'LAMOST archive lookup failed: ' + err.message;
             status.style.color = 'var(--red)';
-            console.error(err);
+          })
+          .finally(() => {
+            loading = false;
           });
       }
 
-
-
-      btn.addEventListener('click', function(e) {
-        e.preventDefault();
-        searchADS();
+      details.addEventListener('toggle', function() {
+        if (details.open) loadLamostArchive();
       });
+    })();
+  </script>
 
-      input.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          searchADS();
-        }
+  <details class="adv" id="lamost-rv-details" style="margin-top: 1rem;">
+    <summary><span id="lamost-rv-summary">LAMOST RV data</span></summary>
+    <div style="margin-top: 0.5rem;">
+      <p class="hint" id="lamost-rv-status" style="margin-top: 0;">Open this section to load coordinate-matched LAMOST RV data from Li et al. (2024) / LAMA. Match tolerance: {{ '%.6g'|format(lamost_match_arcsec) }} arcsec.</p>
+      <p class="hint" style="margin-top: 0.25rem;">Data source: <a href="https://zenodo.org/records/11160083" target="_blank" rel="noopener noreferrer">LAMA catalog on Zenodo (Li et al. 2024)</a>.</p>
+      <div id="lamost-rv-content"></div>
+    </div>
+  </details>
+
+  <script>
+    (function() {
+      const details = document.getElementById('lamost-rv-details');
+      if (!details) return;
+      const summary = document.getElementById('lamost-rv-summary');
+      const status  = document.getElementById('lamost-rv-status');
+      const content = document.getElementById('lamost-rv-content');
+      const targetName = {{ target_name | tojson }};
+      let loaded = false;
+      let loading = false;
+
+      function clearNode(node) {
+        while (node.firstChild) node.removeChild(node.firstChild);
+      }
+
+      function renderTable(rv) {
+        const columns = rv.columns || [];
+        const rows    = rv.rows    || [];
+        const wrap  = document.createElement('div');
+        wrap.className = 'csv-wrap';
+        const table = document.createElement('table');
+        table.id = 'lamost-rv-table';
+        const thead   = document.createElement('thead');
+        const headRow = document.createElement('tr');
+        columns.forEach(col => {
+          const th = document.createElement('th');
+          th.textContent = col;
+          headRow.appendChild(th);
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = document.createElement('tbody');
+        rows.forEach(row => {
+          const tr = document.createElement('tr');
+          columns.forEach(col => {
+            const td = document.createElement('td');
+            const value = row[col] !== null && row[col] !== undefined ? row[col] : '';
+            if (/^-?\d/.test(String(value))) td.className = 'mono';
+            td.textContent = value;
+            tr.appendChild(td);
+          });
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        content.appendChild(wrap);
+      }
+
+      function loadLamostRV() {
+        if (loaded || loading) return;
+        loading = true;
+        status.textContent = 'Loading LAMOST RV data...';
+        status.style.color = 'var(--text-dim)';
+        fetch('/api/targets/lamost-rv?name=' + encodeURIComponent(targetName))
+          .then(res => res.json().then(data => ({ ok: res.ok, data: data })))
+          .then(result => {
+            if (!result.ok || !result.data.ok) {
+              throw new Error(result.data.error || 'Request failed');
+            }
+            const rv = result.data.lamost_rv || {};
+            const total = rv.total_rows || 0;
+            clearNode(content);
+            if (rv.error) {
+              summary.textContent = 'LAMOST RV data';
+              status.textContent = 'Error: ' + rv.error;
+              status.style.color = 'var(--red)';
+              return;
+            }
+            if (!total) {
+              summary.textContent = 'LAMOST RV data';
+              status.textContent = 'No LAMA RV match found for this target within ' + rv.match_arcsec + ' arcsec.';
+              status.style.color = 'var(--text-dim)';
+              return;
+            }
+            summary.textContent = 'LAMOST RV data (N=' + total.toLocaleString() + ' obs)';
+            let hint = 'Matched within ' + rv.match_arcsec + ' arcsec';
+            if (rv.sep_arcsec !== null && rv.sep_arcsec !== undefined) {
+              hint += ' (closest: ' + rv.sep_arcsec + '″)';
+            }
+            hint += '. Source: LAMA_stars.csv (Li et al. 2024).';
+            status.textContent = hint;
+            status.style.color = 'var(--text-dim)';
+            renderTable(rv);
+            loaded = true;
+          })
+          .catch(err => {
+            summary.textContent = 'LAMOST RV data';
+            status.textContent = 'LAMOST RV lookup failed: ' + err.message;
+            status.style.color = 'var(--red)';
+          })
+          .finally(() => { loading = false; });
+      }
+
+      details.addEventListener('toggle', function() {
+        if (details.open) loadLamostRV();
       });
     })();
   </script>

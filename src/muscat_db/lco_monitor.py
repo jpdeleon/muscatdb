@@ -442,8 +442,13 @@ def process_request(request: dict, *, path: str | None = None, now: float | None
             _process_datasets(request_id, path=path, now=now)
             return
 
+        # Background polling, not an interactive submit: keep observing requests
+        # that were submitted under the server's global token (user_name unset or
+        # without a saved per-user token) by allowing the global fallback here.
         group = lco.get_requestgroup(
-            request["requestgroup_id"], user_name=request.get("user_name") or None
+            request["requestgroup_id"],
+            user_name=request.get("user_name") or None,
+            require_own_token=False,
         )
         child = _request_child(group, request_id)
         request_state = str(

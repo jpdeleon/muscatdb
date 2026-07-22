@@ -41,6 +41,16 @@
     outline: none; border-color: var(--accent);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
   }
+  .lco-subhead {
+    font-size: 0.72rem; font-weight: 600; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 0.04em;
+    margin: 0.7rem 0 0.45rem;
+  }
+  .lco-subhead:first-child { margin-top: 0; }
+  /* Site selects are wrapped in a toggle <div>, so stretch them to fill the
+     field like the directly-nested selects in the other fields. */
+  .lco-field > .muscat-only > select,
+  .lco-field > .sinistro-only > select { width: 100%; }
   .lco-actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-top: 0.4rem; }
   .lco-note { font-size: 0.78rem; color: var(--text-dim); margin-top: 0.5rem; }
   .lco-table-wrap { overflow-x: auto; }
@@ -48,6 +58,17 @@
   table.lco-table th, table.lco-table td { padding: 0.4rem 0.55rem; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
   table.lco-table th { color: var(--text-dim); font-weight: 600; font-size: 0.72rem; text-transform: uppercase; }
   pre.lco-pre { background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px; padding: 0.8rem; font-size: 0.78rem; overflow-x: auto; max-height: 360px; }
+  textarea.lco-pre {
+    background: var(--input-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.8rem; font-size: 0.78rem; color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.45;
+    width: 100%; box-sizing: border-box; display: block; white-space: pre;
+    resize: vertical; min-height: 280px;
+  }
+  textarea.lco-pre:focus {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
   .muscat-only, .sinistro-only { display: none; }
   details.lco-dataset {
     border: 1px solid var(--border);

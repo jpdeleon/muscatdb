@@ -100,8 +100,19 @@ class LcoError(Exception):
         return {"ok": False, "error": self.message, "detail": self.detail, "status": self.status}
 
 
-def _get_lco_api_token(user_name: str | None = None) -> str:
-    """Return the LCO API token for *user_name*, falling back to the legacy env var."""
+def _get_lco_api_token(user_name: str | None = None, *, require_own_token: bool = False) -> str:
+    """Return the LCO API token for *user_name*.
+
+    A logged-in (nginx-authenticated) user acts under their *own* LCO account:
+    telescope-time bookings, proposal listings, and IPP validation all run under
+    whichever token authenticates the request. So when ``require_own_token`` is
+    set — the identity-bearing portal calls (proposals, requestgroups, IPP,
+    submit) — an authenticated user with no saved token is refused rather than
+    silently borrowing the server's shared ``LCO_API_TOKEN`` (which belongs to
+    the operator, not them). The global token remains the fallback only for
+    unauthenticated/CLI callers (``user_name`` is ``None``) and for read-only
+    archive access, which never carries the caller's identity.
+    """
     if user_name:
         try:
             user_token = get_user_lco_token(user_name)
@@ -113,6 +124,16 @@ def _get_lco_api_token(user_name: str | None = None) -> str:
             ) from exc
         if user_token:
             return user_token
+        if require_own_token:
+            raise LcoError(
+                "Your LCO API token is not configured",
+                status=403,
+                detail=(
+                    "This action runs under your own LCO account. Save your "
+                    "personal LCO token in Settings; the server's shared token "
+                    "is not used on behalf of logged-in users."
+                ),
+            )
     token = os.environ.get("LCO_API_TOKEN")
     if not token:
         raise LcoError(
@@ -127,10 +148,23 @@ def _get_lco_api_token(user_name: str | None = None) -> str:
 
 
 def config_state(user_name: str | None = None) -> dict:
-    """Return the configuration state for LCO variables. No secrets exposed."""
+    """Return the configuration state for LCO variables. No secrets exposed.
+
+    Portal actions (proposals, IPP, submit) run under the caller's own LCO
+    identity, so for a logged-in (authenticated) user the server's global token
+    does not count toward ``token_configured``/``submit_allowed`` — only their
+    saved per-user token does. Unauthenticated/CLI callers keep the global token
+    as a valid source.
+    """
+    authenticated = bool((user_name or "").strip())
     user_token_configured = user_lco_token_configured(user_name)
     global_token_configured = bool(os.environ.get("LCO_API_TOKEN"))
-    token_configured = user_token_configured or global_token_configured
+    if authenticated:
+        token_configured = user_token_configured
+        token_source = "user" if user_token_configured else None
+    else:
+        token_configured = user_token_configured or global_token_configured
+        token_source = "user" if user_token_configured else ("global" if global_token_configured else None)
     download_root_configured = bool(
         os.environ.get("MUSCAT_LCO_DIR") or os.environ.get("MUSCAT_DATA_DIR")
     )
@@ -140,7 +174,7 @@ def config_state(user_name: str | None = None) -> dict:
         "token_configured": token_configured,
         "user_token_configured": user_token_configured,
         "global_token_configured": global_token_configured,
-        "token_source": "user" if user_token_configured else ("global" if global_token_configured else None),
+        "token_source": token_source,
         "download_root_configured": download_root_configured,
         "download_root": str(root) if root else None,
         "submit_allowed": token_configured and download_root_configured and submit_flag_enabled,
@@ -153,6 +187,7 @@ def _lco_api_request(
     data: dict | None = None,
     user_name: str | None = None,
     token: str | None = None,
+    require_own_token: bool = False,
 ) -> dict:
     """Make an authenticated request to the LCO API.
 
@@ -160,8 +195,12 @@ def _lco_api_request(
     (archive-api.lco.global) authenticate with the same DRF token using the
     ``Token`` scheme. Using ``Bearer`` makes the archive return HTTP 401
     ``{"detail": "No Such User"}``.
+
+    ``require_own_token`` forbids the global-token fallback for an authenticated
+    user (see :func:`_get_lco_api_token`); it is ignored when ``token`` is passed
+    explicitly.
     """
-    token = token or _get_lco_api_token(user_name)
+    token = token or _get_lco_api_token(user_name, require_own_token=require_own_token)
     headers = {"Authorization": "Token " + token, "Content-Type": "application/json"}
     body = json.dumps(data).encode("utf-8") if data is not None else None
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
@@ -185,12 +224,18 @@ def _lco_api_request(
         raise LcoError("LCO API request failed", detail=str(e))
 
 
-def get_proposals(user_name: str | None = None, token: str | None = None) -> dict:
+def get_proposals(
+    user_name: str | None = None,
+    token: str | None = None,
+    *,
+    require_own_token: bool = True,
+) -> dict:
     """Fetch the current user's active proposals."""
     return _lco_api_request(
         "https://observe.lco.global/api/proposals/?state=ACTIVE",
         user_name=user_name,
         token=token,
+        require_own_token=require_own_token,
     )
 
 
@@ -198,26 +243,35 @@ def get_requestgroups(
     proposal: str,
     user_name: str | None = None,
     token: str | None = None,
+    *,
+    require_own_token: bool = True,
 ) -> dict:
     """Fetch request groups for a given proposal."""
     if not proposal:
         raise LcoError("Proposal ID is required", status=400)
     url = f"https://observe.lco.global/api/requestgroups/?proposal={urllib.parse.quote(proposal)}"
-    return _lco_api_request(url, user_name=user_name, token=token)
+    return _lco_api_request(url, user_name=user_name, token=token, require_own_token=require_own_token)
 
 
 def get_requestgroup(
     requestgroup_id: int,
     user_name: str | None = None,
     token: str | None = None,
+    *,
+    require_own_token: bool = True,
 ) -> dict:
-    """Fetch one submitted request group, including current child states."""
+    """Fetch one submitted request group, including current child states.
+
+    The background monitor (:mod:`muscat_db.lco_monitor`) polls this for records
+    it did not necessarily submit under a per-user token, so it opts out of the
+    own-token requirement to keep legacy/global-submitted requests observable.
+    """
     try:
         identifier = int(requestgroup_id)
     except (TypeError, ValueError) as exc:
         raise LcoError("Request-group ID must be numeric", status=400) from exc
     url = f"https://observe.lco.global/api/requestgroups/{identifier}/"
-    return _lco_api_request(url, user_name=user_name, token=token)
+    return _lco_api_request(url, user_name=user_name, token=token, require_own_token=require_own_token)
 
 
 def _query_params(filters: dict) -> str:
@@ -1292,12 +1346,24 @@ def payload_hash(payload: dict) -> str:
 # requests; the dry-run (max_allowable_ipp) validates the final fit.
 _REPEAT_EXPOSE_SETUP_OVERHEAD_S = 180
 
+# LCO's scheduler computes visibility slightly more strictly than our astropy
+# model (acquisition/slew/readout settling plus a marginally higher effective
+# altitude limit). Empirically, for HIP67522 at LSC with max_airmass=2 our model
+# gives ~3.47 h visible vs. LCO's ~3.07 h. So when a window edge is bounded by
+# the target's own rise/set (not by the scheduling boundary), the repeat block is
+# held back by this margin from that edge to keep the dry-run passing. The exact
+# value varies per site/target; 900 s per bounded edge is a safe default.
+_LCO_VISIBILITY_EDGE_MARGIN_S = 900
+
 
 def _repeat_duration(params: dict) -> int | None:
     """Seconds a REPEAT_EXPOSE config should repeat within its observing window.
 
     An explicit ``repeat_duration`` wins. Otherwise derive it from the shortest
-    selected window (so one value fits every window) minus the setup overhead.
+    selected window (so one value fits every window), less the setup overhead.
+    When ``_clip_windows_to_observability`` capped a window's usable span (its
+    LCO-visible span, already shy of the observability edge margin), that cap is
+    applied before the setup overhead is deducted.
     Returns ``None`` when it cannot be determined (no windows / bad timestamps).
     """
     explicit = params.get("repeat_duration")
@@ -1307,8 +1373,9 @@ def _repeat_duration(params: dict) -> int | None:
         except (TypeError, ValueError):
             pass
 
-    spans = []
-    for w in params.get("windows") or []:
+    caps = params.get("_observable_repeat_duration") or {}
+    durations = []
+    for i, w in enumerate(params.get("windows") or []):
         start, end = w.get("start"), w.get("end")
         if not start or not end:
             continue
@@ -1317,10 +1384,14 @@ def _repeat_duration(params: dict) -> int | None:
             t1 = datetime.datetime.fromisoformat(str(end).replace("Z", "+00:00"))
         except ValueError:
             continue
-        spans.append((t1 - t0).total_seconds())
-    if not spans:
+        usable_s = (t1 - t0).total_seconds()
+        cap = caps.get(i)
+        if cap is not None:
+            usable_s = min(usable_s, float(cap))
+        durations.append(int(usable_s) - _REPEAT_EXPOSE_SETUP_OVERHEAD_S)
+    if not durations:
         return None
-    return max(int(min(spans)) - _REPEAT_EXPOSE_SETUP_OVERHEAD_S, 60)
+    return max(min(durations), 60)
 
 
 def _config_type_block(params: dict, default_type: str) -> dict:
@@ -1342,14 +1413,22 @@ def _value_or_default(value, default):
     return default if value in (None, "") else value
 
 
-def _validate_repeat_window_observability(kind: str, params: dict, max_airmass, min_lunar_distance) -> None:
-    """Reject REPEAT_EXPOSE windows that cannot fit within local observability.
+def _clip_windows_to_observability(kind: str, params: dict, max_airmass, min_lunar_distance, max_lunar_phase=1.0) -> None:
+    """Clip each REPEAT_EXPOSE window to the portion observable at the pinned site.
 
-    LCO validates the full configuration duration against the target visibility
-    inside each request window. The scheduler UI may show bare-transit
-    observability separately from padded-baseline observability, so repeat-mode
-    requests need a backend guard before spending an API call or reaching live
-    submission.
+    ``generate_windows`` pads windows around mid-transit with no site awareness,
+    so a window can run past the target's rise/set at the site (e.g. post-egress
+    padding below the airmass limit). When a specific ``site`` is pinned, each
+    window's ``start``/``end`` is clipped to the longest contiguous observable run
+    at that site under the request's own constraints (the airmass/moon/twilight
+    actually submitted); unclipped edges keep their exact timestamps.
+    ``repeat_duration`` (via :func:`_repeat_duration`) is then derived from the
+    clipped span, held back by ``_LCO_VISIBILITY_EDGE_MARGIN_S`` for each edge
+    bounded by the target's own rise/set.
+
+    No pinned site leaves the windows untouched — the scheduler may pick any site
+    on the telescope class, so one site's interval would not apply. A window with
+    no observable time at the site raises.
     """
     if (params.get("type") or "REPEAT_EXPOSE") != "REPEAT_EXPOSE":
         return
@@ -1361,45 +1440,46 @@ def _validate_repeat_window_observability(kind: str, params: dict, max_airmass, 
     try:
         from muscat_db import transit_obs
 
-        obs = transit_obs.classify_transits(
-            float(params["ra"]),
-            float(params["dec"]),
-            windows,
-            kind,
-            duration_hours=1.0,
-            max_airmass=float(max_airmass),
-            twilight=params.get("twilight") or transit_obs.DEFAULT_TWILIGHT,
-            moon_sep_min=float(min_lunar_distance),
-            include_padding=True,
-            sites=[site],
-        )
+        ra = float(params["ra"])
+        dec = float(params["dec"])
+        twilight = params.get("twilight") or transit_obs.DEFAULT_TWILIGHT
+        moon_sep = float(min_lunar_distance)
+        phase = float(max_lunar_phase)
+        airmass = float(max_airmass)
+
+        clipped = []
+        caps: dict[int, int] = {}
+        for idx, window in enumerate(windows):
+            interval = transit_obs.observable_interval(
+                ra, dec, window, site,
+                max_airmass=airmass, twilight=twilight,
+                moon_sep_min=moon_sep, max_lunar_phase=phase,
+            )
+            if interval is None:
+                raise LcoError(
+                    f"Window {idx + 1} is not observable at {site.upper()} — "
+                    "choose a different window, site, or loosen airmass/moon constraints",
+                    status=400,
+                )
+            clipped.append({**window, "start": interval["start"], "end": interval["end"]})
+            # One edge margin per edge the target's own rise/set bounds (not the
+            # scheduling boundary): the LCO-visible span is that much shorter.
+            edges = int(interval["hit_start_limit"]) + int(interval["hit_end_limit"])
+            if edges:
+                try:
+                    start = datetime.datetime.fromisoformat(str(interval["start"]).replace("Z", "+00:00"))
+                    end = datetime.datetime.fromisoformat(str(interval["end"]).replace("Z", "+00:00"))
+                    span_s = (end - start).total_seconds()
+                    caps[idx] = max(int(span_s) - edges * _LCO_VISIBILITY_EDGE_MARGIN_S, 60)
+                except ValueError:
+                    pass
+        params["windows"] = clipped
+        if caps:
+            params["_observable_repeat_duration"] = caps
+    except LcoError:
+        raise
     except Exception:
         return
-
-    for idx, result in enumerate(obs):
-        if result.get("rating") == "full":
-            continue
-        window = windows[idx]
-        span_h = None
-        try:
-            t0 = datetime.datetime.fromisoformat(str(window["start"]).replace("Z", "+00:00"))
-            t1 = datetime.datetime.fromisoformat(str(window["end"]).replace("Z", "+00:00"))
-            span_h = (t1 - t0).total_seconds() / 3600.0
-        except Exception:
-            pass
-        rating = result.get("rating")
-        rating_text = "partially observable" if rating == "partial" else "not observable"
-        detail = (
-            f"Window {idx + 1} is {rating_text} at {site.upper()} when the padded "
-            "start-to-end request window is checked."
-        )
-        if span_h is not None:
-            detail += f" Request window length is {span_h:.2f} h."
-        detail += (
-            " Regenerate windows with 'Include padding in obs check' enabled, reduce pre/post "
-            "padding, choose a fully observable window/site, or loosen airmass/moon constraints."
-        )
-        raise LcoError("Selected LCO window is not fully observable", status=400, detail=detail)
 
 
 def build_requestgroup(kind: str, params: dict, configurations: list[dict] | None = None) -> dict:
@@ -1447,11 +1527,15 @@ def build_requestgroup(kind: str, params: dict, configurations: list[dict] | Non
 
     max_airmass = _value_or_default(params.get("max_airmass"), default_max_airmass)
     min_lunar_distance = _value_or_default(params.get("min_lunar_distance"), default_min_lunar_distance)
-    _validate_repeat_window_observability(kind, params, max_airmass, min_lunar_distance)
+    # LCO max_lunar_phase: max Moon illuminated fraction (0=new .. 1=full) to
+    # schedule under. 1.0 is LCO's default (no phase restriction).
+    max_lunar_phase = _value_or_default(params.get("max_lunar_phase"), 1.0)
+    _clip_windows_to_observability(kind, params, max_airmass, min_lunar_distance, max_lunar_phase)
 
     constraints = {
         "max_airmass": max_airmass,
         "min_lunar_distance": min_lunar_distance,
+        "max_lunar_phase": max_lunar_phase,
     }
 
     configurations = []
@@ -1509,6 +1593,7 @@ def build_requestgroup(kind: str, params: dict, configurations: list[dict] | Non
             "constraints": {
                 "max_airmass": max_airmass,
                 "min_lunar_distance": min_lunar_distance,
+                "max_lunar_phase": max_lunar_phase,
                 "max_seeing": params.get("max_seeing"),
                 "min_transparency": params.get("min_transparency"),
                 "extra_params": {}
@@ -1599,15 +1684,22 @@ def max_allowable_ipp(
     request_group: dict,
     user_name: str | None = None,
     token: str | None = None,
+    *,
+    require_own_token: bool = True,
 ) -> dict:
     """Run the max-allowable-IPP dry-run."""
     url = "https://observe.lco.global/api/requestgroups/max_allowable_ipp/"
-    return _lco_api_request(url, method="POST", data=request_group, user_name=user_name, token=token)
+    return _lco_api_request(
+        url, method="POST", data=request_group,
+        user_name=user_name, token=token, require_own_token=require_own_token,
+    )
 
 def submit_requestgroup(
     request_group: dict,
     user_name: str | None = None,
     token: str | None = None,
+    *,
+    require_own_token: bool = True,
 ) -> dict:
     """Submit a live observation request."""
     if os.environ.get("MUSCAT_LCO_ALLOW_SUBMIT") != "1":
@@ -1617,4 +1709,7 @@ def submit_requestgroup(
             detail="To enable, set MUSCAT_LCO_ALLOW_SUBMIT=1 in the server environment.",
         )
     url = "https://observe.lco.global/api/requestgroups/"
-    return _lco_api_request(url, method="POST", data=request_group, user_name=user_name, token=token)
+    return _lco_api_request(
+        url, method="POST", data=request_group,
+        user_name=user_name, token=token, require_own_token=require_own_token,
+    )

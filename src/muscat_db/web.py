@@ -14,6 +14,10 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import socketio
+
+sio = socketio.AsyncServer(async_mode="asgi")
+
 _DB_LOCK = threading.Lock()
 
 import csv
@@ -47,9 +51,11 @@ from muscat_db import transit_obs
 from muscat_db import fov as fov_opt
 from muscat_db import ephemeris_math
 from muscat_db import ephemeris_import
+from muscat_db import gsheet_ephemeris
 from muscat_db import test_observations
 from muscat_db import lco_monitor
 from muscat_db import http_client
+from muscat_db import chat
 from muscat_db.catalog import (
     _adql_literal,
     _ads_token_for_request,
@@ -59,6 +65,9 @@ from muscat_db.catalog import (
     _harps_coord_membership,
     _harps_data_for_target,
     _HARPS_MATCH_ARCSEC,
+    _lamost_coord_membership,
+    _lamost_rv_data_for_target,
+    _LAMOST_MATCH_ARCSEC,
     _load_jwst_targets,
     _load_jwst_targets_aliases,
     _load_nexsci_catalog,
@@ -71,7 +80,6 @@ from muscat_db.catalog import (
     _nasa_confirmed_toi_membership,
     _nexsci_db_membership,
     _normalize_target_name,
-    _query_target_coordinates,
     _query_target_planets_catalog,
     _query_target_planets_nasa,
     _query_target_planets_toi,
@@ -99,6 +107,8 @@ from muscat_db.database import (
     format_elapsed,
     get_dates as _get_dates,
     get_frames as _get_frames,
+    get_frame_objects as _get_frame_objects,
+    get_exposure_log_for_objects as _get_exposure_log_for_objects,
     get_instruments as _get_instruments,
     get_instruments_summary as _get_instruments_summary,
     get_objects as _get_objects,
@@ -111,9 +121,13 @@ from muscat_db.database import (
     get_ephemeris_view,
     get_last_build_date,
     get_user_ads_token,
+    get_user_eso_credentials,
     get_user_lco_token,
+    get_user_ephem_sheet,
     set_user_ads_token,
+    set_user_eso_credentials,
     set_user_lco_token,
+    set_user_ephem_sheet,
     _normalize_filters,
 )
 from muscat_db.job_store import get_job_store
@@ -177,8 +191,9 @@ async def _lifespan(app: FastAPI):
 
     from muscat_db.config import config_status, missing_required_secret
 
-    summary = ", ".join(f"{name}={state}" for name, state in config_status())
-    print(f"[startup] env config: {summary}")
+    print("[startup] env config:")
+    for name, state in config_status():
+        print(f"  {name}={state}")
     missing = missing_required_secret()
     if missing is not None:
         print(
@@ -190,6 +205,9 @@ async def _lifespan(app: FastAPI):
     from muscat_db import proxy, http_client
     await proxy.startup()
     await http_client.startup()
+    # Let the chat's job-finished hook (which runs in the sync job-poll thread)
+    # schedule broadcasts back onto this event loop.
+    chat.set_event_loop(asyncio.get_running_loop())
     reconcile_task = asyncio.create_task(_job_reconciliation_loop())
     observation_monitor = None
     if os.environ.get("MUSCAT_LCO_MONITOR_ENABLED", "1") == "1":
@@ -211,6 +229,7 @@ async def _lifespan(app: FastAPI):
 
 
 app = FastAPI(title="MuSCAT Observation Log", lifespan=_lifespan)
+sio_app = socketio.ASGIApp(sio, app)
 # The targets page is ~2.8 MB of highly repetitive HTML; gzip shrinks it ~16x,
 # which is the dominant cost when serving over an SSH port-forward tunnel.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -371,6 +390,27 @@ def _render(name: str, **kwargs) -> str:
     return HTMLResponse(tpl.render(**kwargs))
 
 
+def _script_json(obj) -> str:
+    """Serialize ``obj`` for safe embedding inside an inline ``<script>`` block.
+
+    ``json.dumps`` does not escape ``<``, ``>`` or ``&``, so a value containing
+    ``</script>`` (or ``<!--``) would break out of the script element and allow
+    HTML/JS injection (XSS) when the result is emitted via ``{{ ... | safe }}``.
+    Escape those, plus the U+2028/U+2029 JS line separators, to their ``\\uXXXX``
+    forms — which parse back to the identical characters. This mirrors Jinja's
+    ``|tojson`` filter (used by every other template); the TOI/NExSci pages
+    pre-serialize server-side, so they need the same protection applied here.
+    """
+    text = json.dumps(obj, separators=(",", ":"), allow_nan=False)
+    return (
+        text.replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 # Rendering the ~2.85 MB targets page costs ~1.3s. Cache the rendered HTML
 # keyed on the DB mtime so repeat loads are instant until the data changes.
 # Each entry is a multi-MB HTML blob, so the cache is bounded (LRU) to keep
@@ -508,7 +548,7 @@ def target_page(name: str = ""):
     else:
         # Single target view - normalize the input name
         norm_name = _normalize_target_name(name)
-        key = (tpl_mtime, _db_mtime(db), _catalog_source_cache_key(), _HARPS_MATCH_ARCSEC, norm_name)
+        key = (tpl_mtime, _db_mtime(db), _catalog_source_cache_key(), _HARPS_MATCH_ARCSEC, _LAMOST_MATCH_ARCSEC, norm_name)
         cache_key = f"target:{norm_name}"
         cached = _index_cache.get(cache_key)
         if cached is not None and cached[0] == key:
@@ -533,6 +573,7 @@ def target_page(name: str = ""):
             datasets=datasets,
             last_updated=last_updated,
             harps_match_arcsec=_HARPS_MATCH_ARCSEC,
+            lamost_match_arcsec=_LAMOST_MATCH_ARCSEC,
             target_tic_id=target_tic_id,
             exofop_target_id=target_tic_id or norm_name,
             has_jwst_data=has_jwst_data,
@@ -549,13 +590,330 @@ def api_target_harps_rv(name: str = ""):
     if not norm_name:
         return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
     datasets, _last_updated = _get_datasets_for_normalized_target(_db_path(), norm_name)
-    harps_rv = _harps_data_for_target(datasets, norm_name)
+    harps_rv = _harps_data_for_target(norm_name, datasets)
     return JSONResponse({
         "ok": True,
         "target": norm_name,
         "match_arcsec": _HARPS_MATCH_ARCSEC,
         "has_data": bool(harps_rv.get("total_rows")),
         "harps_rv": harps_rv,
+    })
+
+
+@target_router.get("/lamost-rv", response_class=JSONResponse)
+def api_target_lamost_rv(name: str = ""):
+    """Return LAMA_stars.csv (Li+2024) rows matched to the target's coordinates."""
+    norm_name = _normalize_target_name(name)
+    if not norm_name:
+        return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
+    datasets, _last_updated = _get_datasets_for_normalized_target(_db_path(), norm_name)
+    rv_data = _lamost_rv_data_for_target(norm_name, datasets)
+    return JSONResponse({
+        "ok": True,
+        "target": norm_name,
+        "lamost_rv": rv_data,
+    })
+
+
+# ESO Science Archive TAP constants
+_ESO_TOKEN_URL = "https://www.eso.org/sso/oidc/token"
+_ESO_TAP_URL = "https://archive.eso.org/tap_obs/sync"
+
+# LAMOST DR11 TAP constants
+_LAMOST_TAP_URL = "https://www.lamost.org/dr11/v2.0/voservice/tap"
+_LAMOST_ARCHIVE_TABLE = "public.med_combined"
+
+
+@target_router.get("/eso-archive", response_class=JSONResponse)
+async def api_target_eso_archive(name: str = "", request: Request = None):
+    """Query ESO Science Archive TAP for observations of the given target.
+
+    Strategy:
+    1. Try name-based ADQL (LIKE match on target_name).
+    2. If zero rows: resolve RA/Dec via _resolve_archive_coords() and retry with
+       a 1-arcmin cone-search.
+    Auth: obtain a short-lived Bearer token from ESO OIDC if credentials are
+    configured (user > global env), otherwise query anonymously (public data).
+    """
+    norm_name = _normalize_target_name(name)
+    if not norm_name:
+        return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
+
+    # Resolve credentials: per-user > global env fallback > anonymous
+    user = _request_user(request) if request else None
+    eso_username: str | None = None
+    eso_password: str | None = None
+    if user:
+        try:
+            eso_username, eso_password = get_user_eso_credentials(user)
+        except UserSettingsError:
+            pass
+    if not (eso_username and eso_password):
+        eso_username = os.environ.get("ESO_USERNAME") or None
+        eso_password = os.environ.get("ESO_PASSWORD") or None
+
+    # Obtain a Bearer token if credentials are available
+    headers: dict[str, str] = {}
+    auth_used = False
+    if eso_username and eso_password:
+        try:
+            tok_resp = await http_client.get_async_client().get(
+                _ESO_TOKEN_URL,
+                params={
+                    "response_type": "id_token token",
+                    "grant_type": "password",
+                    "client_id": "clientid",
+                    "username": eso_username,
+                    "password": eso_password,
+                },
+                timeout=15.0,
+            )
+            if tok_resp.status_code == 200:
+                tok_data = tok_resp.json()
+                id_token = tok_data.get("id_token", "")
+                if id_token:
+                    # ESO id_token is base64url-encoded; append == for padding
+                    headers["Authorization"] = f"Bearer {id_token}=="
+                    auth_used = True
+                else:
+                    logger.warning("ESO token response missing id_token field: %s", list(tok_data.keys()))
+            else:
+                logger.warning(
+                    "ESO token request returned %s: %s",
+                    tok_resp.status_code,
+                    tok_resp.text[:300],
+                )
+        except Exception as exc:  # network error, timeout, parse failure
+            logger.warning("ESO token acquisition failed: %s", exc)
+
+    # Helper: run a single TAP ADQL query and return raw JSON
+    async def _tap_query(adql: str, timeout: float = 30.0) -> dict:
+        resp = await http_client.get_async_client().get(
+            _ESO_TAP_URL,
+            params={
+                "REQUEST": "doQuery",
+                "LANG": "ADQL",
+                "FORMAT": "json",
+                "QUERY": adql.strip(),
+            },
+            headers=headers,
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # Helper: parse ESO TAP JSON → (column_names, list_of_row_dicts)
+    def _parse_tap(raw: dict) -> tuple[list[str], list[dict]]:
+        cols = [col["name"] for col in raw.get("metadata", [])]
+        rows = [dict(zip(cols, r)) for r in raw.get("data", [])]
+        return cols, rows
+
+    import asyncio as _asyncio
+
+    # --- Build name query ADQL (fast: local alias lookup) ---
+    safe_name = norm_name.replace("'", "''")
+    name_conditions = [f"target_name LIKE '%{safe_name}%'"]
+    try:
+        from muscat_db.catalog import _resolve_all_aliases
+        for alias in await _asyncio.to_thread(_resolve_all_aliases, norm_name):
+            if alias.upper() != norm_name.upper() and alias.strip():
+                safe_alias = alias.replace("'", "''")
+                name_conditions.append(f"target_name LIKE '%{safe_alias}%'")
+    except Exception:
+        pass
+
+    _SELECT = (
+        "SELECT TOP 200 "
+        "target_name, instrument_name, obs_collection, dataproduct_type, "
+        "t_min, t_max, s_fov, proposal_id, obs_release_date, obs_id, "
+        "access_url, s_ra, s_dec "
+        "FROM ivoa.ObsCore "
+    )
+    adql_name = _SELECT + f"WHERE ({' OR '.join(name_conditions)}) ORDER BY t_min DESC"
+
+    # --- Step 1: name-based query (fast path) ---
+    columns: list = []
+    rows: list = []
+    query_method = "name"
+    try:
+        name_data = await _tap_query(adql_name, timeout=30.0)
+        columns, rows = _parse_tap(name_data)
+    except httpx.HTTPStatusError as exc:
+        eso_msg = ""
+        try:
+            eso_msg = exc.response.text[:500]
+        except Exception:
+            pass
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": f"ESO TAP returned HTTP {exc.response.status_code}",
+                "detail": eso_msg,
+            },
+            status_code=502,
+        )
+    except Exception as exc:
+        return JSONResponse(
+            {"ok": False, "error": f"ESO TAP query failed: {type(exc).__name__}: {exc}".rstrip(": ")},
+            status_code=502,
+        )
+
+    # --- Step 2: coordinate cone-search, only when the name query found nothing ---
+    # Lazy on purpose: the spatial CONTAINS() query is far more expensive on ESO's
+    # side than the name query, so we do not issue it on every page load (AGENTS.md:
+    # do not overload external databases). Retry once on timeout with a generous
+    # timeout, and surface a warning instead of silently implying "no observations".
+    cone_warning = ""
+    if not rows:
+        try:
+            resolved = await _asyncio.to_thread(_resolve_archive_coords, norm_name)
+        except Exception as exc:
+            logger.debug("ESO coordinate resolution failed for %s: %s", norm_name, exc)
+            resolved = None
+        if resolved:
+            ra_deg, dec_deg, coord_source = resolved
+            radius_deg = 1.0 / 60.0  # 1 arcmin
+            adql_cone = (
+                _SELECT
+                + "WHERE CONTAINS("
+                + "POINT('ICRS', s_ra, s_dec), "
+                + f"CIRCLE('ICRS', {ra_deg}, {dec_deg}, {radius_deg})"
+                + ") = 1 ORDER BY t_min DESC"
+            )
+            for attempt in range(2):
+                try:
+                    cone_data = await _tap_query(adql_cone, timeout=120.0)
+                    columns, rows = _parse_tap(cone_data)
+                    if rows:
+                        query_method = f"cone ({coord_source}, 1 arcmin)"
+                    cone_warning = ""
+                    break
+                except httpx.TimeoutException:
+                    cone_warning = "ESO cone-search timed out (service slow); results may be incomplete."
+                    logger.warning("ESO cone-search timeout for %s (attempt %d/2)", norm_name, attempt + 1)
+                except Exception as exc2:
+                    cone_warning = f"ESO cone-search failed: {type(exc2).__name__}"
+                    logger.warning("ESO cone-search fallback failed for %s: %s", norm_name, repr(exc2))
+                    break
+
+    payload = {
+        "ok": True,
+        "target": norm_name,
+        "authenticated": auth_used,
+        "query_method": query_method,
+        "total": len(rows),
+        "columns": columns,
+        "rows": rows,
+    }
+    if cone_warning and not rows:
+        payload["warning"] = cone_warning
+    return JSONResponse(payload)
+
+
+# ── LAMOST DR11 TAP helper ──────────────────────────────────────────────
+
+
+def _parse_votable(xml_text: str) -> tuple[list[str], list[dict]]:
+    """Parse a VOTable XML response into (column_names, list_of_row_dicts)."""
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(xml_text)
+    ns = {"v": "http://www.ivoa.net/xml/VOTable/v1.3"}
+    fields = root.findall(".//v:FIELD", ns)
+    cols = [f.get("name") for f in fields]
+    data_rows = root.findall(".//v:TABLEDATA/v:TR", ns)
+    rows = []
+    for tr in data_rows:
+        vals = [td.text or "" for td in tr.findall("v:TD", ns)]
+        if len(vals) == len(cols):
+            rows.append(dict(zip(cols, vals)))
+    return cols, rows
+
+
+@target_router.get("/lamost-archive", response_class=JSONResponse)
+async def api_target_lamost_archive(name: str = "", request: Request = None):
+    """Query LAMOST DR11 MRS TAP for observations near the given target.
+
+    Uses coordinate-based cone search only (LAMOST does not support
+    name-resolution in TAP).  Falls back to the local catalog resolution.
+    """
+    norm_name = _normalize_target_name(name)
+    if not norm_name:
+        return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
+
+    # Resolve RA/Dec from local catalogs
+    try:
+        import asyncio as _asyncio
+        from muscat_db.catalog import _resolve_archive_coords
+        resolved = await _asyncio.to_thread(_resolve_archive_coords, norm_name)
+    except Exception as exc:
+        logger.debug("LAMOST coordinate resolution failed for %s: %s", norm_name, exc)
+        resolved = None
+
+    if not resolved:
+        return JSONResponse({
+            "ok": False,
+            "error": f"Could not resolve coordinates for '{norm_name}'",
+        }, status_code=404)
+
+    ra_deg, dec_deg, coord_source = resolved
+    radius_deg = 1.0 / 60.0  # 1 arcmin
+
+    adql = (
+        "SELECT TOP 200 "
+        "obsid, ra, dec, obsdate, band, snr, designation, planid, spid, fiberid, spec "
+        f"FROM {_LAMOST_ARCHIVE_TABLE} "
+        "WHERE CONTAINS("
+        f"POINT(ra, dec), "
+        f"CIRCLE({ra_deg}, {dec_deg}, {radius_deg})"
+        ") = 1 "
+        "ORDER BY obsdate DESC"
+    )
+
+    # LAMOST TAP is normally sub-second, but the long-lived server occasionally
+    # sees a transient timeout (service blip or connection-pool contention while a
+    # concurrent slow query holds connections). Retry once — a fresh request gets a
+    # new connection. Bounded to a single retry so we never hammer the service.
+    columns: list = []
+    rows: list = []
+    timeout_exc: httpx.TimeoutException | None = None
+    for attempt in range(2):
+        try:
+            resp = await http_client.get_async_client().get(
+                _LAMOST_TAP_URL + "/sync",
+                params={"REQUEST": "doQuery", "LANG": "ADQL", "QUERY": adql},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            columns, rows = _parse_votable(resp.text)
+            timeout_exc = None
+            break
+        except httpx.TimeoutException as exc:
+            timeout_exc = exc
+            logger.warning("LAMOST TAP timeout for %s (attempt %d/2)", norm_name, attempt + 1)
+        except httpx.HTTPStatusError as exc:
+            return JSONResponse({
+                "ok": False,
+                "error": f"LAMOST TAP returned HTTP {exc.response.status_code}",
+            }, status_code=502)
+        except Exception as exc:
+            # Non-empty message even for exceptions that stringify to "" (timeouts).
+            return JSONResponse({
+                "ok": False,
+                "error": f"LAMOST TAP query failed: {type(exc).__name__}: {exc}".rstrip(": "),
+            }, status_code=502)
+    if timeout_exc is not None:
+        return JSONResponse({
+            "ok": False,
+            "error": "LAMOST TAP query timed out after two attempts (service slow or unreachable); please retry.",
+        }, status_code=504)
+
+    return JSONResponse({
+        "ok": True,
+        "target": norm_name,
+        "query_method": f"cone ({coord_source}, 1 arcmin)",
+        "total": len(rows),
+        "columns": columns,
+        "rows": rows,
     })
 
 
@@ -588,30 +946,78 @@ def workflow_redirect():
 
 @app.get("/toi", response_class=HTMLResponse)
 def toi_page():
-    import json
-
     cat = _load_toi_catalog()
     indb, tname = _toi_db_membership(cat["data"], _db_path())
     boyle, n_boyle = _merge_boyle_columns(cat["data"])
     harps, n_harps = _harps_coord_membership(cat["data"])
+    lamost, n_lamost = _lamost_coord_membership(cat["data"])
     nasa_confirmed, nasa_planet_name, n_nasa_confirmed = _nasa_confirmed_toi_membership(cat["data"])
     payload = dict(cat["data"])
     payload.update(boyle)
     payload["indb"] = indb
     payload["tname"] = tname
     payload["has_harps_rv"] = harps
+    payload["has_lamost_rv"] = lamost
     payload["nasa_confirmed"] = nasa_confirmed
     payload["nasa_planet_name"] = nasa_planet_name
     return _render(
         "toi.html",
-        toi_json=json.dumps(payload, separators=(",", ":"), allow_nan=False),
+        toi_json=_script_json(payload),
         n_rows=cat["n"],
         n_indb=sum(indb),
         n_boyle=n_boyle,
         n_harps=n_harps,
+        n_lamost=n_lamost,
         n_nasa_confirmed=n_nasa_confirmed,
         toi_updated=cat["updated"],
     )
+
+
+@app.get("/whoami", response_class=JSONResponse)
+def whoami(request: Request):
+    """Return the current nginx-authenticated user for this request.
+
+    The chat widget calls this to label messages. It cannot rely on the
+    server-rendered ``current_user`` on every page: the index and target pages
+    are served from a globally-cached HTML blob (keyed on DB mtime), so a
+    per-user identity must never be baked into their markup. This endpoint is
+    per-request and uncached, so it is correct on every page and never leaks one
+    user's name into another's cached page. Not placed under ``/api/`` so it
+    doesn't trip the global fetch/loading-bar tracker on every navigation.
+    """
+    return JSONResponse({"user": getattr(request.state, "user", None)})
+
+
+@app.get("/chat/users", response_class=JSONResponse)
+def chat_users(request: Request):
+    """Known usernames for chat @-mention autocomplete. Requires an
+    authenticated request; returns only usernames (no other user data). Not
+    under /api/ so it doesn't trip the global loading-bar fetch tracker."""
+    if not _request_user(request):
+        return JSONResponse({"users": []})
+    try:
+        from muscat_db.database import get_known_chat_usernames
+        from muscat_db import chat_agent
+        users = get_known_chat_usernames()
+        # Surface the codebase assistant so @bot autocompletes, even though it is
+        # never a real (notifiable) chat user.
+        if chat_agent.DISPLAY_NAME not in {u.lower() for u in users}:
+            users = [chat_agent.DISPLAY_NAME, *users]
+        return JSONResponse({"users": users})
+    except Exception:
+        logger.exception("failed to list chat users")
+        return JSONResponse({"users": []})
+
+
+@app.get("/chat/popout", response_class=HTMLResponse)
+def chat_popout_page():
+    """Standalone chat-only window (opened via the widget's pop-out button).
+
+    Reuses the same #chat-window markup, styles.css, and chat.js as the
+    floating widget on every other page; ``chat_popout=True`` just tells
+    base.html to hide the nav/page chrome and let the chat fill the window.
+    """
+    return _render("chat_popout.html", chat_popout=True)
 
 
 @app.get("/api/exofop/check_confirmed")
@@ -858,6 +1264,7 @@ def nexsci_page():
     cat = _load_nexsci_catalog()
     indb, tname = _nexsci_db_membership(cat["data"], _db_path())
     harps, n_harps = _harps_coord_membership(cat["data"])
+    lamost, n_lamost = _lamost_coord_membership(cat["data"])
     jwst_targets = _load_jwst_targets()
     jwst = [1 if p in jwst_targets else 0 for p in cat["data"]["name"]]
     spectra_targets = _load_spectra_targets()
@@ -867,14 +1274,16 @@ def nexsci_page():
     payload["indb"] = indb
     payload["tname"] = tname
     payload["has_harps_rv"] = harps
+    payload["has_lamost_rv"] = lamost
     payload["has_jwst"] = jwst
     payload["has_spectra"] = spectra
     return _render(
         "nexsci.html",
-        nexsci_json=json.dumps(payload, separators=(",", ":"), allow_nan=False),
+        nexsci_json=_script_json(payload),
         n_rows=cat["n"],
         n_indb=sum(indb),
         n_harps=n_harps,
+        n_lamost=n_lamost,
         n_jwst=sum(jwst),
         n_spectra=sum(spectra),
         nexsci_updated=cat["updated"],
@@ -1363,7 +1772,45 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
             outputs = None
         target_params = fit.get_target_parameters(target)
 
+    # Collect all runs for this target across all instruments/dates,
+    # so "Previous Fit" source options are available regardless of which
+    # instrument and date the user currently has selected.
+    all_runs: list[dict] = []
+    seen_run_keys: set = set()
+    if target:
+        import yaml as _yaml
+        for inst_name in INSTRUMENTS:
+            inst_dates = {d["obsdate"] for d in _get_dates(db, inst_name)}
+            inst_dates.update(phot.output_dates(inst_name))
+            for d in sorted(inst_dates, reverse=True):
+                for r in fit.list_fit_runs(inst_name, d, target):
+                    key = (inst_name, d, r.run_id)
+                    if key not in seen_run_keys:
+                        seen_run_keys.add(key)
+                        planets_fitted = "b"
+                        try:
+                            rdir = fit.fit_output_dir(inst_name, d, target, r.run_id or None)
+                            fpath = rdir / "fit.yaml"
+                            if fpath.is_file():
+                                with open(fpath) as f:
+                                    cfg = _yaml.safe_load(f) or {}
+                                planets_fitted = str(cfg.get("planets", "b"))
+                        except Exception:
+                            pass
+                        all_runs.append({
+                            "run_id": r.run_id,
+                            "run_name": r.run_name,
+                            "date": d,
+                            "inst": inst_name,
+                            "planets_fitted": planets_fitted,
+                            "site": r.site,
+                            "telescope": r.telescope,
+                            "mode": r.mode,
+                            "is_legacy": r.is_legacy,
+                        })
+        all_runs.sort(key=lambda r: r["date"], reverse=True)
 
+    runs_json = all_runs
     return _render(
         "transit_fit.html",
         instruments=list(INSTRUMENTS),
@@ -1371,6 +1818,7 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
         sel_site=sel_site, sel_telescope=sel_telescope, sel_mode=sel_mode,
         csv_sites=csv_sites, csv_telescopes=csv_telescopes, csv_modes=csv_modes,
         runs=runs, sel_run=sel_run,
+        runs_json=runs_json,
         dates=dates, targets=targets,
         csvs=csvs, outputs=outputs,
         target_params=target_params,
@@ -1379,7 +1827,7 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
 
 
 @transit_fit_router.get("/query-archive")
-async def transit_fit_query_archive(target: str, source: str = "nasa"):
+async def transit_fit_query_archive(target: str, source: str = "nasa", inst: str = "", date: str = "", run_id: str = ""):
     if not (target or "").strip():
         return JSONResponse({"ok": False, "error": "Target name is required"}, status_code=400)
 
@@ -1621,6 +2069,121 @@ async def transit_fit_query_archive(target: str, source: str = "nasa"):
             if v is None:
                 params[k] = ""
         return {"params": params, "pl_name": pl_name}
+
+    if source == "previous":
+        if not inst or not date:
+            return JSONResponse({"ok": False, "error": "inst and date are required for previous fit source"}, status_code=400)
+
+        import yaml
+        from muscat_db.transit_fit import list_fit_runs, fit_output_dir
+
+        runs = list_fit_runs(inst, date, target)
+        if not runs:
+            return JSONResponse({"ok": False, "error": f"No previous fit runs found for {target} at {inst}/{date}"})
+
+        selected_run_id = run_id or runs[0].run_id
+        matched = [r for r in runs if r.run_id == selected_run_id]
+        if not matched:
+            return JSONResponse({"ok": False, "error": f"Run {selected_run_id!r} not found for {target} at {inst}/{date}"})
+        rdir = fit_output_dir(inst, date, target, selected_run_id or None)
+
+        sys_cfg = {}
+        sys_yaml = rdir / "sys.yaml"
+        if sys_yaml.is_file():
+            with open(sys_yaml) as f:
+                sys_cfg = yaml.safe_load(f) or {}
+
+        summary_rows: dict[str, dict] = {}
+        summary_csv = rdir / "out" / "summary.csv"
+        if summary_csv.is_file():
+            with open(summary_csv, newline="") as f:
+                reader = csv.reader(f)
+                headers = next(reader)
+                headers[0] = "parameter"
+                for row in reader:
+                    if not row:
+                        continue
+                    rd = dict(zip(headers, row))
+                    param = rd.get("parameter", "")
+                    if "[" not in param or not param.endswith("]"):
+                        continue
+                    base, _, idx_str = param[:-1].partition("[")
+                    try:
+                        idx = int(idx_str)
+                    except ValueError:
+                        continue
+                    if idx == 0:
+                        summary_rows[base] = rd
+
+        star_cfg = sys_cfg.get("star", {})
+        planets_cfg = sys_cfg.get("planets", {})
+        pl_key = next(iter(planets_cfg)) if planets_cfg else "b"
+        pl_cfg = planets_cfg.get(pl_key, {})
+
+        def _f(v, default=None):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return default
+
+        ref_time = None
+        log_file = rdir / "timer-fit.log"
+        if log_file.is_file():
+            with open(log_file) as lf:
+                for line in lf:
+                    if "ref. time:" in line:
+                        try:
+                            ref_time = int(line.split("ref. time:")[-1].strip())
+                        except ValueError:
+                            ref_time = None
+                        break
+
+        t0_r = summary_rows.get("t0", {})
+        dur_r = summary_rows.get("dur", {})
+        ror_r = summary_rows.get("ror", {})
+        b_r = summary_rows.get("b", {})
+
+        def _fp(cfg_key, fitted_row):
+            val = _f(fitted_row.get("mean")) if fitted_row else (_f(pl_cfg.get(cfg_key, [None])[0]) if isinstance(pl_cfg.get(cfg_key), list) else None)
+            unc = _f(fitted_row.get("sd")) if fitted_row else (_f(pl_cfg.get(cfg_key, [None, None])[1]) if isinstance(pl_cfg.get(cfg_key), list) else None)
+            return val, unc
+
+        period_pair = pl_cfg.get("period", [None, None])
+
+        def _scalar(key):
+            v = star_cfg.get(key)
+            return _f(v[0]) if isinstance(v, list) and v else None
+
+        def _unc(key):
+            v = star_cfg.get(key)
+            return _f(v[1]) if isinstance(v, list) and len(v) > 1 else None
+
+        params = {
+            "planets": pl_key,
+            "teff": _scalar("teff"),
+            "teff_unc": _unc("teff"),
+            "logg": _scalar("logg"),
+            "logg_unc": _unc("logg"),
+            "feh": _scalar("feh"),
+            "feh_unc": _unc("feh"),
+            "period": _f(period_pair[0]),
+            "period_unc": _f(period_pair[1]),
+            "t0": (_f(t0_r.get("mean")) + ref_time) if (ref_time is not None and t0_r) else _f(t0_r.get("mean")),
+            "t0_unc": _f(t0_r.get("sd")),
+            "dur": _f(dur_r.get("mean")) * 24.0 if dur_r else None,
+            "dur_unc": _f(dur_r.get("sd")) * 24.0 if dur_r else None,
+            "ror": _f(ror_r.get("mean")),
+            "ror_unc": _f(ror_r.get("sd")),
+            "b": _f(b_r.get("mean")),
+            "b_unc": _f(b_r.get("sd")),
+            "st_ref": "Previous Fit",
+            "pl_ref": "Previous Fit",
+        }
+        for k, v in params.items():
+            if v is None:
+                params[k] = ""
+
+        return JSONResponse({"ok": True, "params": params, "pl_name": target, "stored_run_id": selected_run_id})
 
     urlopen_is_mocked = hasattr(_async_get, "called")
 
@@ -2620,6 +3183,150 @@ def api_settings_lco_token(request: Request, payload: dict = Body(...)):
     return JSONResponse({"ok": True, "user_token_configured": bool(token)})
 
 
+@settings_router.get("/ephem-sheet-status", response_class=JSONResponse)
+def api_settings_ephem_sheet_status(request: Request):
+    user = _request_user(request)
+    if not user:
+        return _settings_auth_error()
+    try:
+        cfg = get_user_ephem_sheet(user)
+    except UserSettingsError as exc:
+        return JSONResponse(
+            {"ok": False, "error": "stored ephemeris sheet cannot be read", "detail": str(exc)},
+            status_code=503,
+        )
+    return JSONResponse(
+        {
+            "ok": True,
+            "user": user,
+            "configured": cfg is not None,
+            "ephem_tab": (cfg or {}).get("ephem_tab") or gsheet_ephemeris.DEFAULT_EPHEM_TAB,
+            "tc_tab": (cfg or {}).get("tc_tab") or gsheet_ephemeris.DEFAULT_TC_TAB,
+            "ephem_cols": (cfg or {}).get("ephem_cols") or {},
+            "tc_cols": (cfg or {}).get("tc_cols") or {},
+            "secret_configured": bool(os.environ.get("MUSCAT_DB_SECRET")),
+        }
+    )
+
+
+def _clean_payload_col_map(value) -> dict:
+    """Keep only known-field -> non-empty-header string pairs from a payload."""
+    if not isinstance(value, dict):
+        return {}
+    allowed = set(gsheet_ephemeris.EPHEM_FIELDS) | set(gsheet_ephemeris.TC_FIELDS)
+    cleaned: dict[str, str] = {}
+    for key, header in value.items():
+        key_s = str(key).strip()
+        header_s = str(header or "").strip()
+        if key_s in allowed and header_s:
+            cleaned[key_s] = header_s
+    return cleaned
+
+
+@settings_router.post("/ephem-sheet", response_class=JSONResponse)
+def api_settings_ephem_sheet(request: Request, payload: dict = Body(...)):
+    if not _is_same_origin(request):
+        return _csrf_error()
+    user = _request_user(request)
+    if not user:
+        return _settings_auth_error()
+    url = str(payload.get("url") or "").strip()
+    keep_url = bool(payload.get("keep_url"))
+    ephem_tab = str(payload.get("ephem_tab") or "").strip()
+    tc_tab = str(payload.get("tc_tab") or "").strip()
+    ephem_cols = _clean_payload_col_map(payload.get("ephem_cols"))
+    tc_cols = _clean_payload_col_map(payload.get("tc_cols"))
+    # Editing tabs/columns on an already-saved sheet: keep the stored URL so the
+    # user need not re-enter (and we need not re-expose) it.
+    if not url and keep_url:
+        try:
+            existing = get_user_ephem_sheet(user)
+        except UserSettingsError as exc:
+            return JSONResponse(
+                {"ok": False, "error": "stored ephemeris sheet cannot be read", "detail": str(exc)},
+                status_code=503,
+            )
+        if not existing:
+            return JSONResponse(
+                {"ok": False, "error": "no saved sheet to update; provide a URL"},
+                status_code=400,
+            )
+        url = existing["url"]
+    # Validate the URL/ID up front (SSRF guard) so a bad reference is rejected
+    # at save time rather than silently degrading to "no ephemeris" later.
+    if url:
+        try:
+            gsheet_ephemeris.sheet_id_from(url)
+        except gsheet_ephemeris.GsheetError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    try:
+        set_user_ephem_sheet(user, url, ephem_tab, tc_tab, ephem_cols, tc_cols)
+    except UserSettingsError as exc:
+        return JSONResponse(
+            {"ok": False, "error": "could not save ephemeris sheet", "detail": str(exc)},
+            status_code=503,
+        )
+    return JSONResponse({"ok": True, "configured": bool(url)})
+
+
+@settings_router.post("/ephem-sheet-columns", response_class=JSONResponse)
+def api_settings_ephem_sheet_columns(request: Request, payload: dict = Body(...)):
+    """List each tab's columns so the user can map fields to them.
+
+    Uses the URL from the request when provided (validated), else the user's
+    saved sheet, so an already-configured sheet can be re-inspected without
+    re-exposing the stored URL to the browser.
+    """
+    if not _is_same_origin(request):
+        return _csrf_error()
+    user = _request_user(request)
+    if not user:
+        return _settings_auth_error()
+    url = str(payload.get("url") or "").strip()
+    ephem_tab = str(payload.get("ephem_tab") or "").strip()
+    tc_tab = str(payload.get("tc_tab") or "").strip()
+    if url:
+        try:
+            gsheet_ephemeris.sheet_id_from(url)
+        except gsheet_ephemeris.GsheetError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    else:
+        try:
+            saved = get_user_ephem_sheet(user)
+        except UserSettingsError as exc:
+            return JSONResponse(
+                {"ok": False, "error": "stored ephemeris sheet cannot be read", "detail": str(exc)},
+                status_code=503,
+            )
+        if not saved:
+            return JSONResponse(
+                {"ok": False, "error": "provide a sheet URL first"}, status_code=400
+            )
+        url = saved["url"]
+        ephem_tab = ephem_tab or saved["ephem_tab"]
+        tc_tab = tc_tab or saved["tc_tab"]
+    ephem_tab = ephem_tab or gsheet_ephemeris.DEFAULT_EPHEM_TAB
+    tc_tab = tc_tab or gsheet_ephemeris.DEFAULT_TC_TAB
+    ephem_columns = gsheet_ephemeris.tab_columns(url, ephem_tab)
+    tc_columns = gsheet_ephemeris.tab_columns(url, tc_tab)
+    if not ephem_columns and not tc_columns:
+        return JSONResponse(
+            {"ok": False, "error": "no columns found (is the sheet published and are the tab names correct?)"},
+            status_code=502,
+        )
+    return JSONResponse(
+        {
+            "ok": True,
+            "ephem_tab": ephem_tab,
+            "tc_tab": tc_tab,
+            "ephem_columns": ephem_columns,
+            "tc_columns": tc_columns,
+            "ephem_suggested": gsheet_ephemeris.suggest_ephem_columns(ephem_columns),
+            "tc_suggested": gsheet_ephemeris.suggest_tc_columns(tc_columns),
+        }
+    )
+
+
 @settings_router.get("/ads-token-status", response_class=JSONResponse)
 def api_settings_ads_token_status(request: Request):
     user = _request_user(request)
@@ -2661,6 +3368,104 @@ def api_settings_ads_token(request: Request, payload: dict = Body(...)):
     return JSONResponse({"ok": True, "user_token_configured": bool(token)})
 
 
+@settings_router.get("/eso-credentials-status", response_class=JSONResponse)
+def api_settings_eso_credentials_status(request: Request):
+    user = _request_user(request)
+    if not user:
+        return _settings_auth_error()
+    try:
+        eso_u, eso_p = get_user_eso_credentials(user)
+        user_credentials_configured = eso_u is not None and eso_p is not None
+    except UserSettingsError as exc:
+        return JSONResponse(
+            {"ok": False, "error": "stored ESO credentials cannot be read", "detail": str(exc)},
+            status_code=503,
+        )
+    global_configured = bool(os.environ.get("ESO_USERNAME") and os.environ.get("ESO_PASSWORD"))
+    return JSONResponse(
+        {
+            "ok": True,
+            "user": user,
+            "user_credentials_configured": user_credentials_configured,
+            "global_credentials_configured": global_configured,
+            "secret_configured": bool(os.environ.get("MUSCAT_DB_SECRET")),
+        }
+    )
+
+
+@settings_router.post("/eso-credentials-test", response_class=JSONResponse)
+async def api_settings_eso_credentials_test(payload: dict = Body(...)):
+    """Test ESO credentials against the OIDC token endpoint. Does not save."""
+    eso_u = str(payload.get("username") or "").strip()
+    eso_p = str(payload.get("password") or "").strip()
+    if not eso_u or not eso_p:
+        return JSONResponse({"ok": False, "error": "Username and password are required."}, status_code=400)
+    try:
+        tok_resp = await http_client.get_async_client().get(
+            _ESO_TOKEN_URL,
+            params={
+                "response_type": "id_token token",
+                "grant_type": "password",
+                "client_id": "clientid",
+                "username": eso_u,
+                "password": eso_p,
+            },
+            timeout=15.0,
+        )
+        if tok_resp.status_code == 200:
+            tok_data = tok_resp.json()
+            if tok_data.get("id_token"):
+                return JSONResponse({"ok": True, "authenticated": True})
+            else:
+                return JSONResponse(
+                    {"ok": False, "error": "ESO returned an unexpected response (missing id_token)."},
+                    status_code=502,
+                )
+        elif tok_resp.status_code == 400:
+            return JSONResponse(
+                {"ok": False, "error": "ESO rejected the credentials. Check your username and password."},
+                status_code=401,
+            )
+        else:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": f"ESO authentication failed (HTTP {tok_resp.status_code}).",
+                },
+                status_code=502,
+            )
+    except httpx.TimeoutException:
+        return JSONResponse(
+            {"ok": False, "error": "ESO authentication timed out. Try again later."},
+            status_code=504,
+        )
+    except Exception as exc:
+        return JSONResponse(
+            {"ok": False, "error": f"ESO authentication error: {exc}"},
+            status_code=502,
+        )
+
+
+@settings_router.post("/eso-credentials", response_class=JSONResponse)
+def api_settings_eso_credentials(request: Request, payload: dict = Body(...)):
+    if not _is_same_origin(request):
+        return _csrf_error()
+    user = _request_user(request)
+    if not user:
+        return _settings_auth_error()
+    eso_u = str(payload.get("username") or "").strip()
+    eso_p = str(payload.get("password") or "").strip()
+    try:
+        set_user_eso_credentials(user, eso_u or None, eso_p or None)
+    except UserSettingsError as exc:
+        return JSONResponse(
+            {"ok": False, "error": "could not save ESO credentials", "detail": str(exc)},
+            status_code=503,
+        )
+    configured = bool(eso_u and eso_p)
+    return JSONResponse({"ok": True, "user_credentials_configured": configured})
+
+
 @app.get("/lco")
 def lco_page():
     return RedirectResponse(url="/lco/schedule", status_code=307)
@@ -2699,7 +3504,7 @@ def api_lco_requestgroups(request: Request, proposal: str = ""):
 
 
 @lco_router.post("/windows", response_class=JSONResponse)
-def api_lco_windows(payload: dict = Body(...)):
+def api_lco_windows(request: Request, payload: dict = Body(...)):
     """Generate transit windows from explicit t0/period/duration or a catalog lookup."""
     try:
         t0 = payload.get("t0")
@@ -2707,6 +3512,10 @@ def api_lco_windows(payload: dict = Body(...)):
         duration = payload.get("duration")
         target = (payload.get("target") or "").strip()
         planet = (payload.get("planet") or "").strip().lower()
+        # Planets are keyed by letter everywhere (b, c, …). Accept TOI/TFOP
+        # candidate forms (".01"/"01" -> b) so a request for ".01" matches the
+        # "b" entry the resolvers store.
+        planet = gsheet_ephemeris._planet_label(planet) or planet
         source = (payload.get("source") or "catalog").strip().lower()
 
         if t0 in (None, "") or period in (None, ""):
@@ -2725,6 +3534,31 @@ def api_lco_windows(payload: dict = Body(...)):
                 planets = _query_target_planets_toi(target)
             elif source in ("", "catalog"):
                 planets = _query_target_planets_catalog(target)
+            elif source in ("gsheet", "gsheet_tc"):
+                cfg = _user_ephem_sheet_cfg(request)
+                if not cfg:
+                    return JSONResponse(
+                        {"ok": False, "error": "no ephemeris Google Sheet configured (see Settings)"},
+                        status_code=400,
+                    )
+                if source == "gsheet":
+                    planets = _sheet_ephemeris(target, cfg)
+                else:
+                    # Transit-centers tab -> linear fit; seed epoch assignment
+                    # from the sheet ephemeris tab, then the catalog. Duration is
+                    # backfilled from that same seed since a fit has none.
+                    sheet_ephem = _sheet_ephemeris(target, cfg)
+                    seed_planets = _query_target_planets_catalog(target)
+                    seed_by_planet = {}
+                    for pl in set(sheet_ephem) | set(seed_planets):
+                        seed = sheet_ephem.get(pl) or seed_planets.get(pl) or {}
+                        if seed.get("t0") is not None and seed.get("period"):
+                            seed_by_planet[pl] = seed
+                    planets = _sheet_fit_ephemeris(target, cfg, seed_by_planet)
+                    for pl, entry in planets.items():
+                        seed = sheet_ephem.get(pl) or seed_planets.get(pl) or {}
+                        if entry.get("duration") is None and seed.get("duration") is not None:
+                            entry["duration"] = seed["duration"]
             else:
                 return JSONResponse(
                     {"ok": False, "error": f"click 'Fetch ephemeris' first for the '{source}' source"},
@@ -2783,6 +3617,7 @@ def api_lco_windows(payload: dict = Body(...)):
                     max_airmass=float(payload.get("obs_airmass") or 2.0),
                     twilight=payload.get("twilight") or transit_obs.DEFAULT_TWILIGHT,
                     moon_sep_min=float(payload.get("moon_sep_min") or 0.0),
+                    max_lunar_phase=float(payload.get("max_lunar_phase") or 1.0),
                     include_padding=bool(payload.get("include_padding")),
                     sites=sites,
                     pad_before_min=float(payload.get("pad_before_min") or 0.0),
@@ -2802,6 +3637,31 @@ def api_lco_windows(payload: dict = Body(...)):
         return JSONResponse({"ok": False, "error": f"invalid numeric input: {e}"}, status_code=400)
 
 
+@lco_router.get("/obslog-exposures", response_class=JSONResponse)
+def api_lco_obslog_exposures(target: str):
+    """Past exposure configurations logged for a target (frames obslog).
+
+    Lists every distinct (instrument, filter, readout, defocus, exp time) the
+    target was observed with, newest first, so a recurring observation can reuse
+    a prior exposure time. OBJECT values are matched by normalized name, like
+    the rest of the app.
+    """
+    target = (target or "").strip()
+    if not target:
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    norm = _normalize_target_name(target)
+    db = _db_path()
+    try:
+        objects = [o for o in _get_frame_objects(db) if _normalize_target_name(o) == norm]
+        exposures = _get_exposure_log_for_objects(db, objects)
+    except Exception:
+        logger.debug("obslog exposure lookup failed for %s", target, exc_info=True)
+        return JSONResponse({"ok": False, "error": "obslog lookup failed"}, status_code=500)
+    return JSONResponse(
+        {"ok": True, "target": target, "objects": sorted(set(objects)), "exposures": exposures}
+    )
+
+
 @lco_router.get("/visibility", response_class=JSONResponse)
 def api_lco_visibility(
     ra: float,
@@ -2812,6 +3672,7 @@ def api_lco_visibility(
     obs_airmass: float = 2.0,
     twilight: str = transit_obs.DEFAULT_TWILIGHT,
     moon_sep_min: float = 0.0,
+    max_lunar_phase: float = 1.0,
 ):
     """Time-series for the inline visibility plot of one transit at one site
     (target + moon altitude, twilight, airmass limit, shaded transit interval)."""
@@ -2819,7 +3680,7 @@ def api_lco_visibility(
         series = transit_obs.visibility_series(
             float(ra), float(dec), mid, float(duration), site,
             max_airmass=float(obs_airmass), twilight=twilight,
-            moon_sep_min=float(moon_sep_min),
+            moon_sep_min=float(moon_sep_min), max_lunar_phase=float(max_lunar_phase),
         )
         return JSONResponse({"ok": True, **series})
     except transit_obs.TransitObsError as e:
@@ -2828,11 +3689,40 @@ def api_lco_visibility(
         return JSONResponse({"ok": False, "error": f"visibility unavailable: {e}"}, status_code=500)
 
 
-@lco_router.post("/ipp", response_class=JSONResponse)
-def api_lco_ipp(request: Request, payload: dict = Body(...)):
-    """Build the requestgroup and run the max-allowable-IPP dry-run."""
+@lco_router.post("/build", response_class=JSONResponse)
+def api_lco_build(payload: dict = Body(...)):
+    """Build the LCO requestgroup from the form params without contacting LCO.
+
+    Backs the "Create draft" step: the returned payload is shown in an editable
+    editor so the observer can tweak fields (e.g. exposure/requested time) before
+    the dry-run. No external call is made here.
+    """
     try:
         rg = lco.build_requestgroup(payload.get("kind"), payload)
+        return JSONResponse({"ok": True, "payload": rg, "payload_hash": lco.payload_hash(rg)})
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+
+
+def _requestgroup_from_payload(payload: dict) -> dict:
+    """The edited requestgroup the observer submitted, else one built from params.
+
+    When the draft editor sends an explicit ``requestgroup`` it is dry-run and
+    submitted verbatim (the payload hash then locks submit to exactly what was
+    checked); otherwise fall back to building it from the form params.
+    """
+    edited = payload.get("requestgroup")
+    if isinstance(edited, dict) and edited:
+        return edited
+    return lco.build_requestgroup(payload.get("kind"), payload)
+
+
+@lco_router.post("/ipp", response_class=JSONResponse)
+def api_lco_ipp(request: Request, payload: dict = Body(...)):
+    """Run the max-allowable-IPP dry-run on the edited draft (or a params-built
+    requestgroup when no edited ``requestgroup`` is supplied)."""
+    try:
+        rg = _requestgroup_from_payload(payload)
         ipp = lco.max_allowable_ipp(rg, _request_user(request))
         return JSONResponse(
             {"ok": True, "payload": rg, "payload_hash": lco.payload_hash(rg), "ipp": ipp}
@@ -2898,8 +3788,10 @@ def api_lco_test_plan(payload: dict = Body(...)):
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
-def _test_request(record: dict, params: dict) -> dict:
-    plan = record["plan"]
+def _test_request(record: dict, params: dict, plan_override: dict | None = None) -> dict:
+    # The editable draft may carry small tweaks to the displayed plan; overlay
+    # them on the stored plan (which still holds the guarded internal keys).
+    plan = record["plan"] if not plan_override else {**record["plan"], **plan_override}
     base = {**params, "kind": plan["kind"]}
     base["name"] = str(base.get("name") or f"TEST {plan.get('target') or record['id']}")
     if not base["name"].upper().startswith("TEST"):
@@ -2912,7 +3804,7 @@ def _test_request(record: dict, params: dict) -> dict:
 def api_lco_test_ipp(observation_id: str, request: Request, payload: dict = Body(...)):
     try:
         record = test_observations.get_record(observation_id)
-        rg = _test_request(record, payload)
+        rg = _test_request(record, payload, payload.get("plan_override"))
         ipp = lco.max_allowable_ipp(rg, _request_user(request))
         digest = lco.payload_hash(rg)
         record = test_observations.update_record(observation_id, state="validated", payload_hash=digest)
@@ -2929,7 +3821,7 @@ def api_lco_test_submit(observation_id: str, request: Request, payload: dict = B
         return JSONResponse({"ok": False, "error": "submission requires explicit confirm"}, status_code=400)
     try:
         record = test_observations.get_record(observation_id)
-        rg = _test_request(record, payload)
+        rg = _test_request(record, payload, payload.get("plan_override"))
         digest = lco.payload_hash(rg)
         if not payload.get("dry_run_hash") or payload["dry_run_hash"] != digest or record["payload_hash"] != digest:
             return JSONResponse({"ok": False, "error": "no matching test-observation dry-run; run the dry-run again"}, status_code=409)
@@ -2962,7 +3854,7 @@ def api_lco_submit(request: Request, payload: dict = Body(...)):
             return JSONResponse(
                 {"ok": False, "error": "submission requires explicit confirm"}, status_code=400
             )
-        rg = lco.build_requestgroup(payload.get("kind"), payload)
+        rg = _requestgroup_from_payload(payload)
         expected = payload.get("dry_run_hash")
         if not expected or expected != lco.payload_hash(rg):
             return JSONResponse(
@@ -3524,8 +4416,107 @@ def api_ephemeris_targets():
     return JSONResponse({"ok": True, "targets": targets})
 
 
+def _user_ephem_sheet_cfg(request) -> dict | None:
+    """Return the requesting user's ephemeris sheet config (tab defaults
+    applied), or None when no user / no sheet / unreadable."""
+    user = _request_user(request) if request else None
+    if not user:
+        return None
+    try:
+        cfg = get_user_ephem_sheet(user)
+    except UserSettingsError:
+        logger.debug("could not read ephemeris sheet config for %s", user, exc_info=True)
+        return None
+    if not cfg:
+        return None
+    return {
+        "url": cfg["url"],
+        "ephem_tab": cfg.get("ephem_tab") or gsheet_ephemeris.DEFAULT_EPHEM_TAB,
+        "tc_tab": cfg.get("tc_tab") or gsheet_ephemeris.DEFAULT_TC_TAB,
+        "ephem_cols": cfg.get("ephem_cols") or {},
+        "tc_cols": cfg.get("tc_cols") or {},
+    }
+
+
+def _sheet_ephemeris(target: str, cfg: dict) -> dict:
+    """``{planet: {t0, period, duration, *_unc}}`` from the sheet ephemeris tab."""
+    try:
+        return gsheet_ephemeris.query_target_ephemeris(
+            target, cfg["url"], cfg["ephem_tab"], cfg.get("ephem_cols")
+        )
+    except gsheet_ephemeris.GsheetError:
+        return {}
+
+
+def _sheet_fit_ephemeris(target: str, cfg: dict, seed_by_planet: dict) -> dict:
+    """Linear-fit ``{planet: {t0, period, *_unc}}`` from the sheet transit-centers
+    tab. ``seed_by_planet`` supplies a per-planet ``{t0, period}`` used only to
+    assign integer epochs when the tab has no explicit epoch column; the fit
+    re-derives t0/period from the transit centers."""
+    try:
+        parsed = gsheet_ephemeris.query_target_transit_centers(
+            target, cfg["url"], cfg["tc_tab"], cfg.get("tc_cols")
+        )
+    except gsheet_ephemeris.GsheetError:
+        return {}
+    by_planet: dict[str, list[dict]] = {}
+    for row in parsed.get("rows") or []:
+        by_planet.setdefault(row["planet"], []).append(row)
+
+    results: dict = {}
+    for planet, points in by_planet.items():
+        seed = seed_by_planet.get(planet) or {}
+        t0_seed = seed.get("t0")
+        p_seed = seed.get("period")
+        have_seed = t0_seed is not None and p_seed
+        if not have_seed and any(pt.get("source_epoch") is None for pt in points):
+            # No seed to assign epochs and the tab did not supply them: cannot fit.
+            continue
+        if not have_seed and len(points) < 2:
+            # Without a seed period a single point cannot yield a real fit; skip
+            # rather than echo a fabricated reference period.
+            continue
+        # Reference echoed back only if the fit itself can't run (<2 points).
+        t0_ref = float(t0_seed) if have_seed else float(points[0]["tc"])
+        p_ref = float(p_seed) if have_seed else 1.0
+        epochs, tcs, uncs = [], [], []
+        for pt in points:
+            epoch = pt.get("source_epoch")
+            if epoch is None:
+                epoch = ephemeris_math.assign_epoch(pt["tc"], t0_ref, p_ref)
+            epochs.append(epoch)
+            tcs.append(pt["tc"])
+            uncs.append(pt["tc_unc"])
+        fit_result = ephemeris_math.fit_linear_ephemeris(
+            epochs, tcs, uncs, t0_ref, p_ref, fit_method="unweighted"
+        )
+        entry: dict = {"t0": fit_result["t0_fit"], "period": fit_result["period_fit"]}
+        if fit_result.get("t0_fit_unc"):
+            entry["t0_unc"] = fit_result["t0_fit_unc"]
+        if fit_result.get("period_fit_unc"):
+            entry["period_unc"] = fit_result["period_fit_unc"]
+        results[planet] = entry
+    return results
+
+
+def _target_coordinates(target: str) -> dict | None:
+    """Pointing coordinates for the schedule page: catalog CSVs first, then
+    SIMBAD.
+
+    The ephemeris catalogs (NASA/TOI) are consulted first via
+    ``_resolve_archive_coords``; when the target is in neither, it falls back to
+    SIMBAD name resolution (both cached), so a catalog-less target still gets
+    coordinates instead of an empty RA/Dec field. Returns ``{"ra", "dec",
+    "source"}`` (source one of nasa/toi/simbad) or None when unresolved."""
+    resolved = _resolve_archive_coords(target)
+    if resolved is None:
+        return None
+    ra, dec, source = resolved
+    return {"ra": ra, "dec": dec, "source": source}
+
+
 @ephemeris_router.get("/target-info", response_class=JSONResponse)
-def api_ephemeris_target_info(target: str):
+def api_ephemeris_target_info(target: str, request: Request):
     target = (target or "").strip()
     if not target:
         return JSONResponse({"ok": False, "error": "Target is required"}, status_code=400)
@@ -3656,22 +4647,50 @@ def api_ephemeris_target_info(target: str):
             ),
         })
         
+    # Per-user Google Sheet ephemeris sources (optional). The ephemeris tab
+    # feeds t0/period/duration directly; the transit-centers tab is linear-fit
+    # against the best available seed ephemeris to derive t0/period.
+    sheet_cfg = _user_ephem_sheet_cfg(request)
+    sheet_ephem: dict = {}
+    sheet_fit_ephem: dict = {}
+    if sheet_cfg:
+        sheet_ephem = _sheet_ephemeris(target, sheet_cfg)
+        seed_by_planet: dict = {}
+        for pl in set(sheet_ephem) | seen_planets:
+            seed = (
+                sheet_ephem.get(pl)
+                or ref_ephem.get(pl)
+                or nasa_ephem.get(pl)
+                or toi_ephem.get(pl)
+                or {}
+            )
+            if seed.get("t0") is not None and seed.get("period"):
+                seed_by_planet[pl] = seed
+        sheet_fit_ephem = _sheet_fit_ephemeris(target, sheet_cfg, seed_by_planet)
+        seen_planets.update(sheet_ephem.keys())
+        seen_planets.update(sheet_fit_ephem.keys())
+
     # Ensure all seen planets are initialized in all ephemerides
     for pl in seen_planets:
         ref_ephem.setdefault(pl, {})
         nasa_ephem.setdefault(pl, {})
         toi_ephem.setdefault(pl, {})
-            
+        sheet_ephem.setdefault(pl, {})
+        sheet_fit_ephem.setdefault(pl, {})
+
     planets_sorted = sorted(list(seen_planets))
-    
+
     return JSONResponse({
         "ok": True,
         "target": target,
         "planets": planets_sorted,
-        "coordinates": _query_target_coordinates(target),
+        "coordinates": _target_coordinates(target),
         "reference_ephemeris": ref_ephem,
         "nasa_ephemeris": nasa_ephem,
         "toi_ephemeris": toi_ephem,
+        "sheet_configured": sheet_cfg is not None,
+        "sheet_ephemeris": sheet_ephem,
+        "sheet_fit_ephemeris": sheet_fit_ephem,
         "datasets": datasets_list
     })
 

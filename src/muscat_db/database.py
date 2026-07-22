@@ -10,6 +10,7 @@ import re
 import datetime
 import sqlite3
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -278,6 +279,30 @@ CREATE TABLE IF NOT EXISTS job_concurrency_slots (
     holder_key  TEXT NOT NULL,
     claimed_at  REAL NOT NULL,
     PRIMARY KEY (pipeline, holder_key)
+);
+
+-- App-owned team chat. Kept outside the daily frames/summaries/targets rebuild
+-- set (see _APP_OWNED_TABLES) so conversation history survives daily rescans.
+-- `mentions` is a JSON array of @-mentioned usernames so recipients can be
+-- re-highlighted when history is backfilled. Ephemeral (@test) messages are
+-- never written here.
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id          INTEGER PRIMARY KEY,
+    user_name   TEXT NOT NULL DEFAULT '',
+    text        TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT 'user',
+    created_at  REAL NOT NULL,
+    edited_at   REAL,
+    mentions    TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_created ON chat_messages(created_at);
+
+CREATE TABLE IF NOT EXISTS chat_reactions (
+    message_id  INTEGER NOT NULL,
+    user_name   TEXT NOT NULL,
+    emoji       TEXT NOT NULL,
+    created_at  REAL NOT NULL,
+    PRIMARY KEY (message_id, user_name, emoji)
 );
 """
 
@@ -656,6 +681,8 @@ _APP_OWNED_TABLES = (
     "test_observations",
     "lco_observation_requests",
     "lco_observation_frames",
+    "chat_messages",
+    "chat_reactions",
 )
 
 
@@ -1180,6 +1207,47 @@ def get_frames(db_path: str, instrument: str, obsdate: str, ccd: int) -> list[di
         return [dict(zip(columns, r)) for r in cur.fetchall()]
 
 
+def get_frame_objects(db_path: str) -> list[str]:
+    """Distinct non-empty OBJECT values present in the frames obslog."""
+    with get_conn(db_path) as conn:
+        cur = conn.execute(
+            "SELECT DISTINCT object FROM frames WHERE object IS NOT NULL AND TRIM(object) != ''"
+        )
+        return [r[0] for r in cur.fetchall()]
+
+
+def get_exposure_log_for_objects(db_path: str, objects: list[str]) -> list[dict]:
+    """Distinct past exposure configurations for the given OBJECT values.
+
+    Groups the frames obslog by (instrument, filter, read_mode, focus, exptime)
+    so each row is one recurring setup with its frame count and the obsdate
+    range it was used, newest first. Feeds the schedule page's "Show ObsLog"
+    lookup so a recurring observation can reuse a prior exposure time.
+    """
+    objects = [o for o in objects if o]
+    if not objects:
+        return []
+    placeholders = ",".join("?" for _ in objects)
+    with get_conn(db_path, row_factory=sqlite3.Row) as conn:
+        cur = conn.execute(
+            f"""SELECT instrument,
+                       COALESCE(filter, '')    AS filter,
+                       COALESCE(read_mode, '') AS read_mode,
+                       ROUND(focus * 2) / 2    AS focus,
+                       ROUND(exptime)          AS exptime,
+                       COUNT(*)                AS nframes,
+                       MAX(obsdate)            AS last_date,
+                       MIN(obsdate)            AS first_date
+                  FROM frames
+                 WHERE object IN ({placeholders}) AND exptime IS NOT NULL
+              GROUP BY instrument, COALESCE(filter, ''), COALESCE(read_mode, ''),
+                       ROUND(focus * 2) / 2, ROUND(exptime)
+              ORDER BY last_date DESC, instrument, filter""",
+            objects,
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
 def db_path() -> str:
     import pathlib
     return str(pathlib.Path(os.environ.get("MUSCAT_DB_PATH", "muscat.db")).resolve())
@@ -1341,6 +1409,143 @@ def user_ads_token_configured(username: str | None) -> bool:
         return False
 
 
+_EPHEM_SHEET_KEYS = (
+    "ephem_sheet_url_enc",
+    "ephem_sheet_ephem_tab",
+    "ephem_sheet_tc_tab",
+    "ephem_sheet_ephem_cols",
+    "ephem_sheet_tc_cols",
+)
+
+
+def _clean_col_map(cols: dict | None) -> dict:
+    """Normalize a {field: header} column mapping to non-empty string pairs."""
+    if not isinstance(cols, dict):
+        return {}
+    cleaned: dict[str, str] = {}
+    for key, value in cols.items():
+        key_s = str(key).strip()
+        value_s = str(value or "").strip()
+        if key_s and value_s:
+            cleaned[key_s] = value_s
+    return cleaned
+
+
+def set_user_ephem_sheet(
+    username: str | None,
+    url: str | None,
+    ephem_tab: str | None = None,
+    tc_tab: str | None = None,
+    ephem_cols: dict | None = None,
+    tc_cols: dict | None = None,
+) -> None:
+    """Store a per-user ephemeris Google Sheet (URL encrypted, tabs/columns plain).
+
+    A blank ``url`` clears the sheet configuration entirely. Blank tab names and
+    empty column maps are removed so the resolver falls back to its own defaults
+    (alias auto-detection for columns).
+    """
+    url = (url or "").strip()
+    if not url:
+        update_user_settings(username, {}, remove=list(_EPHEM_SHEET_KEYS))
+        return
+    updates: dict = {"ephem_sheet_url_enc": _encrypt_token(url)}
+    removes: list[str] = []
+    for key, tab in (
+        ("ephem_sheet_ephem_tab", ephem_tab),
+        ("ephem_sheet_tc_tab", tc_tab),
+    ):
+        tab = (tab or "").strip()
+        if tab:
+            updates[key] = tab
+        else:
+            removes.append(key)
+    for key, cols in (
+        ("ephem_sheet_ephem_cols", ephem_cols),
+        ("ephem_sheet_tc_cols", tc_cols),
+    ):
+        cleaned = _clean_col_map(cols)
+        if cleaned:
+            updates[key] = cleaned
+        else:
+            removes.append(key)
+    update_user_settings(username, updates, remove=removes or None)
+
+
+def get_user_ephem_sheet(username: str | None) -> dict | None:
+    """Return the sheet config or None when not configured.
+
+    Keys: ``url``, ``ephem_tab``, ``tc_tab`` (tab names as stored, possibly
+    empty; callers apply defaults) and ``ephem_cols``/``tc_cols`` column maps
+    (possibly empty dicts). Raises :class:`UserSettingsError` if the URL cannot
+    be decrypted.
+    """
+    if not (username or "").strip():
+        return None
+    settings = get_user_settings(username)
+    ciphertext = settings.get("ephem_sheet_url_enc")
+    if not ciphertext:
+        return None
+    ephem_cols = settings.get("ephem_sheet_ephem_cols")
+    tc_cols = settings.get("ephem_sheet_tc_cols")
+    return {
+        "url": _decrypt_token(str(ciphertext)),
+        "ephem_tab": str(settings.get("ephem_sheet_ephem_tab") or "").strip(),
+        "tc_tab": str(settings.get("ephem_sheet_tc_tab") or "").strip(),
+        "ephem_cols": ephem_cols if isinstance(ephem_cols, dict) else {},
+        "tc_cols": tc_cols if isinstance(tc_cols, dict) else {},
+    }
+
+
+def user_ephem_sheet_configured(username: str | None) -> bool:
+    try:
+        return get_user_ephem_sheet(username) is not None
+    except UserSettingsError:
+        return False
+
+
+def set_user_eso_credentials(
+    username: str | None,
+    eso_username: str | None,
+    eso_password: str | None,
+) -> None:
+    """Store ESO archive username and password (each encrypted separately)."""
+    eso_username = (eso_username or "").strip()
+    eso_password = (eso_password or "").strip()
+    updates: dict = {}
+    removes: list[str] = []
+    if eso_username:
+        updates["eso_username_enc"] = _encrypt_token(eso_username)
+    else:
+        removes.append("eso_username_enc")
+    if eso_password:
+        updates["eso_password_enc"] = _encrypt_token(eso_password)
+    else:
+        removes.append("eso_password_enc")
+    update_user_settings(username, updates, remove=removes if removes else None)
+
+
+def get_user_eso_credentials(username: str | None) -> tuple[str | None, str | None]:
+    """Return (eso_username, eso_password) or (None, None) if not configured."""
+    if not (username or "").strip():
+        return None, None
+    settings = get_user_settings(username)
+    eso_u_enc = settings.get("eso_username_enc")
+    eso_p_enc = settings.get("eso_password_enc")
+    eso_u = _decrypt_token(str(eso_u_enc)) if eso_u_enc else None
+    eso_p = _decrypt_token(str(eso_p_enc)) if eso_p_enc else None
+    return eso_u, eso_p
+
+
+def user_eso_credentials_configured(username: str | None) -> bool:
+    """Return True if both ESO username and password are stored for this user."""
+    try:
+        eso_u, eso_p = get_user_eso_credentials(username)
+        return eso_u is not None and eso_p is not None
+    except UserSettingsError:
+        return False
+
+
 def _ensure_jobs_schema(conn: sqlite3.Connection) -> None:
     _apply_schema(conn)
     # Migrations for databases created before these columns existed.
@@ -1423,9 +1628,14 @@ def save_job(
     run_name: str = "",
     user_name: str | None = None,
 ) -> None:
-    import getpass
+    # The "user" is the nginx-authenticated account (X-Forwarded-User), set at
+    # job creation from request.state.user. State-transition callers (sync_jobs,
+    # watchdog, cancel, queue-drain) legitimately omit it, so default to "" and
+    # let the ON CONFLICT clause below preserve the existing user_name instead
+    # of clobbering it with the OS account (getpass.getuser()), which is never
+    # who launched the job through the web UI.
     if user_name is None:
-        user_name = getpass.getuser()
+        user_name = ""
     path = db_path()
     # Run-scoped key so distinct runs of the same target are separate job rows;
     # an empty run_id reproduces the legacy key.
@@ -1590,3 +1800,236 @@ def refresh_target_status(obj: str) -> None:
         clear_all_caches()
     except sqlite3.Error:
         logger.debug("failed to refresh target status for %s", obj, exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Team chat persistence
+#
+# Chat rows are app-owned (see _APP_OWNED_TABLES) so they survive the daily
+# frames/summaries rebuild. Message rendering/escaping happens client-side
+# (DOM text nodes), so text is stored verbatim. Ephemeral @test messages are
+# never persisted and never reach these functions.
+# ---------------------------------------------------------------------------
+
+# Backfill window (days) for the initial history load. Kept configurable so a
+# busy room can be tuned without a code change.
+CHAT_BACKFILL_DAYS = int(os.environ.get("MUSCAT_CHAT_BACKFILL_DAYS", "7"))
+
+_chat_migrated_paths: set[str] = set()
+
+
+def _ensure_chat_schema(conn: sqlite3.Connection, path: str) -> None:
+    """Create the chat tables once per (process, db path). ``_apply_schema``
+    runs every ``CREATE TABLE IF NOT EXISTS`` in SCHEMA, which includes the chat
+    tables, so this doubles as the migration for pre-existing databases."""
+    if path in _chat_migrated_paths:
+        return
+    with _migrate_lock:
+        if path in _chat_migrated_paths:
+            return
+        _apply_schema(conn)
+        _chat_migrated_paths.add(path)
+
+
+def _reactions_by_message(conn: sqlite3.Connection, message_ids: list[int]) -> dict[int, list[dict]]:
+    """Return ``{message_id: [{emoji, count, users:[...]}, ...]}`` for the given ids."""
+    if not message_ids:
+        return {}
+    placeholders = ",".join("?" for _ in message_ids)
+    rows = conn.execute(
+        f"SELECT message_id, emoji, user_name FROM chat_reactions "
+        f"WHERE message_id IN ({placeholders}) ORDER BY created_at",
+        tuple(message_ids),
+    ).fetchall()
+    grouped: dict[int, dict[str, list[str]]] = {}
+    for mid, emoji, user in rows:
+        grouped.setdefault(mid, {}).setdefault(emoji, []).append(user)
+    result: dict[int, list[dict]] = {}
+    for mid, emojis in grouped.items():
+        result[mid] = [
+            {"emoji": e, "count": len(users), "users": users}
+            for e, users in emojis.items()
+        ]
+    return result
+
+
+def _chat_row_to_dict(row: sqlite3.Row, reactions: dict[int, list[dict]]) -> dict:
+    try:
+        mentions = json.loads(row["mentions"] or "[]")
+    except (TypeError, json.JSONDecodeError):
+        mentions = []
+    return {
+        "id": row["id"],
+        "user": row["user_name"],
+        "text": row["text"],
+        "kind": row["kind"],
+        "ts": row["created_at"],
+        "edited": row["edited_at"] is not None,
+        "edited_at": row["edited_at"],
+        "mentions": mentions if isinstance(mentions, list) else [],
+        "reactions": reactions.get(row["id"], []),
+    }
+
+
+def save_chat_message(
+    user_name: str,
+    text: str,
+    mentions: list[str] | None = None,
+    kind: str = "user",
+    created_at: float | None = None,
+) -> dict:
+    """Persist a chat message and return its stored representation (incl. id)."""
+    path = db_path()
+    ts = time.time() if created_at is None else created_at
+    mentions_json = json.dumps(sorted(set(mentions or [])), ensure_ascii=True)
+    with get_conn(path, row_factory=sqlite3.Row) as conn:
+        _ensure_chat_schema(conn, path)
+        cur = conn.execute(
+            "INSERT INTO chat_messages(user_name, text, kind, created_at, mentions) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (user_name, text, kind, ts, mentions_json),
+        )
+        conn.commit()
+        msg_id = cur.lastrowid
+    return {
+        "id": msg_id,
+        "user": user_name,
+        "text": text,
+        "kind": kind,
+        "ts": ts,
+        "edited": False,
+        "edited_at": None,
+        "mentions": sorted(set(mentions or [])),
+        "reactions": [],
+    }
+
+
+def get_recent_chat_messages(days: int | None = None, limit: int = 500) -> list[dict]:
+    """Return persisted messages from the last ``days`` (oldest first), with
+    reactions attached. ``limit`` caps the payload for a very busy window."""
+    path = db_path()
+    window_days = CHAT_BACKFILL_DAYS if days is None else days
+    since = time.time() - window_days * 86400
+    with get_conn(path, row_factory=sqlite3.Row) as conn:
+        _ensure_chat_schema(conn, path)
+        rows = conn.execute(
+            "SELECT * FROM chat_messages WHERE created_at >= ? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (since, limit),
+        ).fetchall()
+        rows = list(reversed(rows))
+        reactions = _reactions_by_message(conn, [r["id"] for r in rows])
+        return [_chat_row_to_dict(r, reactions) for r in rows]
+
+
+def edit_chat_message(msg_id: int, user_name: str, new_text: str) -> dict | None:
+    """Edit a message in place. Author-only: returns the updated message, or
+    ``None`` if the message does not exist or ``user_name`` is not its author."""
+    path = db_path()
+    edited_at = time.time()
+    with get_conn(path, row_factory=sqlite3.Row) as conn:
+        _ensure_chat_schema(conn, path)
+        cur = conn.execute(
+            "UPDATE chat_messages SET text = ?, edited_at = ? "
+            "WHERE id = ? AND user_name = ? AND kind = 'user'",
+            (new_text, edited_at, msg_id, user_name),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            return None
+        row = conn.execute("SELECT * FROM chat_messages WHERE id = ?", (msg_id,)).fetchone()
+        reactions = _reactions_by_message(conn, [msg_id])
+        return _chat_row_to_dict(row, reactions) if row else None
+
+
+def delete_chat_message(msg_id: int, user_name: str) -> bool:
+    """Hard-delete a message and its reactions. Author-only: returns True on
+    success, False if the message is missing or not owned by ``user_name``."""
+    path = db_path()
+    with get_conn(path) as conn:
+        _ensure_chat_schema(conn, path)
+        cur = conn.execute(
+            "DELETE FROM chat_messages WHERE id = ? AND user_name = ? AND kind = 'user'",
+            (msg_id, user_name),
+        )
+        if cur.rowcount:
+            conn.execute("DELETE FROM chat_reactions WHERE message_id = ?", (msg_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def toggle_chat_reaction(msg_id: int, user_name: str, emoji: str) -> dict | None:
+    """Toggle a user's emoji reaction on a message. Returns the message id with
+    its refreshed reaction summary, or ``None`` if the message no longer exists."""
+    path = db_path()
+    with get_conn(path, row_factory=sqlite3.Row) as conn:
+        _ensure_chat_schema(conn, path)
+        exists = conn.execute("SELECT 1 FROM chat_messages WHERE id = ?", (msg_id,)).fetchone()
+        if not exists:
+            return None
+        present = conn.execute(
+            "SELECT 1 FROM chat_reactions WHERE message_id = ? AND user_name = ? AND emoji = ?",
+            (msg_id, user_name, emoji),
+        ).fetchone()
+        if present:
+            conn.execute(
+                "DELETE FROM chat_reactions WHERE message_id = ? AND user_name = ? AND emoji = ?",
+                (msg_id, user_name, emoji),
+            )
+        else:
+            conn.execute(
+                "INSERT OR IGNORE INTO chat_reactions(message_id, user_name, emoji, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (msg_id, user_name, emoji, time.time()),
+            )
+        conn.commit()
+        reactions = _reactions_by_message(conn, [msg_id])
+        return {"id": msg_id, "reactions": reactions.get(msg_id, [])}
+
+
+# Auth accounts that are test/demo/system identities rather than real
+# teammates. They are kept out of the chat @-mention autocomplete and out of
+# mention resolution (so they never appear as suggestions and never get nudged).
+# Override with MUSCAT_CHAT_EXCLUDE_USERS (comma-separated, case-insensitive);
+# an empty value disables the filter entirely. A user who has actually posted a
+# chat message is always kept, even if listed here.
+_DEFAULT_EXCLUDED_CHAT_USERS = frozenset(
+    {"testuser", "trusted-user", "diagnostic", "observer", "alice", "john"}
+)
+
+
+def _excluded_chat_users() -> set[str]:
+    raw = os.environ.get("MUSCAT_CHAT_EXCLUDE_USERS")
+    if raw is None:
+        return set(_DEFAULT_EXCLUDED_CHAT_USERS)
+    return {n.strip().lower() for n in raw.split(",") if n.strip()}
+
+
+def get_known_chat_usernames(limit: int = 200) -> list[str]:
+    """Usernames for @-mention autocomplete: everyone who has authenticated
+    (users table) plus any historical chat authors, de-duplicated and sorted.
+
+    Test/demo/system accounts (see ``_excluded_chat_users``) are dropped unless
+    they have actually posted a chat message."""
+    path = db_path()
+    excluded = _excluded_chat_users()
+    with get_conn(path) as conn:
+        _ensure_chat_schema(conn, path)
+        # Real chat authors are always kept, so exclusion never hides someone
+        # who has demonstrably participated.
+        chatted: set[str] = set()
+        for (u,) in conn.execute(
+            "SELECT DISTINCT user_name FROM chat_messages WHERE kind = 'user'"
+        ):
+            if u and u.strip():
+                chatted.add(u.strip())
+        names = set(chatted)
+        try:
+            for (u,) in conn.execute("SELECT username FROM users"):
+                if u and u.strip() and (
+                    u.strip().lower() not in excluded or u.strip() in chatted
+                ):
+                    names.add(u.strip())
+        except sqlite3.OperationalError:
+            pass
+    return sorted(names, key=str.lower)[:limit]

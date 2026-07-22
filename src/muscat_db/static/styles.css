@@ -641,7 +641,7 @@ details.adv[open] > summary { color: var(--text); margin-bottom: 0.5rem; }
 /* ---------- Run/site selector chips ---------- */
 /* Used as <a> (server-rendered navigation) and as <button> (client-side
    switching), so the font must be inherited rather than the UA button default. */
-.site-chips { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; margin: 0 0 0.75rem; }
+.site-chips { display: flex; align-items: center; justify-content: center; gap: 0.4rem; flex-wrap: wrap; margin: 0 0 0.75rem; }
 .site-chips .site-label { font-size: 0.8rem; color: var(--text-dim); }
 .site-chip {
   background: var(--surface2); color: var(--text);
@@ -674,12 +674,16 @@ details.adv[open] > summary { color: var(--text); margin-bottom: 0.5rem; }
   width: 13px; height: 13px; font-size: 0.65rem; font-weight: bold;
   border-radius: 50%; background: var(--border); color: var(--text-dim);
   cursor: help; margin-left: 4px; vertical-align: middle; border: 1px solid var(--border);
+  text-transform: none; letter-spacing: normal;
 }
 .help-tooltip:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
-/* Instant, styled tooltip bubble. Reads text from the element's title
-   attribute via attr(); white-space: pre-line honors &#10; line breaks. */
+/* Instant, styled tooltip bubble. Reads text from the element's data-tip
+   attribute via attr(); white-space: pre-line honors &#10; line breaks.
+   The title attribute is stripped by JS on DOMContentLoaded so the
+   native browser tooltip does not duplicate the styled bubble. */
 .help-tooltip::after {
-  content: attr(title);
+  content: attr(data-tip);
+  text-transform: none; letter-spacing: normal;
   position: absolute;
   bottom: calc(100% + 8px);
   left: 50%;
@@ -1012,6 +1016,7 @@ dialog {
   border-radius: 12px;
   padding: 1.25rem 1.5rem;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  margin: auto;
 }
 dialog::backdrop {
   background: rgba(0, 0, 0, 0.5);
@@ -1026,3 +1031,573 @@ dialog h3 {
 /* ---------- LCO Schedule page ---------- */
 .muscat-only { display: none; }
 .sinistro-only { display: none; }
+
+/* ---------- Chat Window ---------- */
+#chat-window {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 320px;
+    height: 400px;
+    min-width: 280px;
+    min-height: 280px;
+    max-width: min(640px, calc(100vw - 40px));
+    max-height: min(720px, calc(100vh - 40px));
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background-color: var(--surface);
+    display: flex;
+    flex-direction: column;
+    z-index: 1000;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+    overflow: hidden;
+}
+
+#chat-window.hidden { display: none; }
+
+/* Drag handle: box is anchored bottom/right, so it grows toward the top-left,
+   which is where the grip lives. */
+#chat-resize-handle {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 16px;
+    height: 16px;
+    cursor: nwse-resize;
+    z-index: 5;
+}
+
+#chat-resize-handle::before {
+    content: "";
+    position: absolute;
+    top: 5px;
+    left: 5px;
+    width: 7px;
+    height: 7px;
+    border-left: 2px solid var(--border);
+    border-top: 2px solid var(--border);
+    border-radius: 2px 0 0 0;
+}
+
+#chat-resize-handle:hover::before { border-color: var(--text-dim); }
+
+body.chat-resizing { cursor: nwse-resize !important; user-select: none !important; }
+body.chat-resizing #chat-window { transition: none; }
+
+/* Standalone pop-out window (/chat/popout): fill the whole browser window
+   instead of floating as a corner widget, and drop controls that only make
+   sense inside the floating widget. */
+body.chat-popout nav,
+body.chat-popout #loading-bar,
+body.chat-popout .container,
+body.chat-popout #status-bar {
+    display: none;
+}
+
+body.chat-popout #chat-window {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    max-width: 100%;
+    max-height: 100%;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+}
+
+body.chat-popout #chat-resize-handle,
+body.chat-popout #popout-chat,
+body.chat-popout #minimize-chat {
+    display: none;
+}
+
+#chat-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background-color: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+}
+
+.chat-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.chat-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: var(--red);
+    flex: none;
+    transition: background-color 0.2s ease;
+}
+
+.chat-status-dot.online { background-color: var(--green); }
+
+.chat-online {
+    font-size: 0.72rem;
+    font-weight: 400;
+    color: var(--text-dim);
+}
+
+.chat-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.chat-unread {
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background-color: var(--accent);
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 600;
+    line-height: 18px;
+    text-align: center;
+}
+
+.chat-unread.hidden { display: none; }
+
+#chat-messages {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    overflow-y: auto;
+    min-height: 80px;
+}
+
+.chat-empty {
+    margin: auto;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    line-height: 1.5;
+}
+
+.chat-empty code {
+    background-color: var(--surface2);
+    border-radius: 4px;
+    padding: 1px 4px;
+}
+
+#chat-input {
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px;
+    border-top: 1px solid var(--border);
+}
+
+#message-input {
+    flex-grow: 1;
+    min-width: 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 7px 9px;
+    background-color: var(--input-bg);
+    color: var(--text);
+    font-size: 0.85rem;
+}
+
+#message-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+#send-button {
+    flex: none;
+    padding: 7px 14px;
+    border: 1px solid var(--accent);
+    background-color: var(--accent);
+    color: #fff;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+#send-button:hover { filter: brightness(1.08); }
+
+#popout-chat,
+#minimize-chat {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 1.2rem;
+    line-height: 1;
+    padding: 0 4px;
+}
+
+#popout-chat { font-size: 0.95rem; }
+
+#popout-chat:hover,
+#minimize-chat:hover { color: var(--text); }
+
+/* Minimized: collapse to just the header. The window carries a fixed/min
+   height for the resize feature, so both must be lifted here for it to shrink
+   (JS also clears any inline height set by a drag-resize). */
+#chat-window.minimized {
+    height: auto;
+    min-height: 0;
+}
+
+#chat-window.minimized #chat-messages,
+#chat-window.minimized #chat-input,
+#chat-window.minimized #chat-resize-handle {
+    display: none;
+}
+
+.message {
+    display: flex;
+    flex-direction: column;
+    max-width: 85%;
+    align-self: flex-start;
+}
+
+.message.me { align-self: flex-end; }
+
+.message-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin-bottom: 2px;
+    font-size: 0.68rem;
+}
+
+.message.me .message-meta { flex-direction: row-reverse; }
+
+.message-meta .user {
+    font-weight: 600;
+    color: var(--accent);
+}
+
+.message-meta .time { color: var(--text-dim); }
+
+.message-body {
+    padding: 6px 10px;
+    border-radius: 10px;
+    background-color: var(--surface2);
+    color: var(--text);
+    font-size: 0.85rem;
+    line-height: 1.4;
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+}
+
+.message.me .message-body {
+    background-color: var(--accent);
+    color: #fff;
+}
+
+.message-body .chat-link {
+    color: var(--blue);
+    text-decoration: underline;
+}
+
+.message.me .message-body .chat-link {
+    color: #fff;
+    text-decoration: underline;
+}
+
+@media (max-width: 480px) {
+    #chat-window {
+        right: 10px;
+        left: 10px;
+        bottom: 10px;
+        width: auto !important;
+    }
+    #chat-resize-handle { display: none; }
+}
+
+/* ---------- Chat: rich features ---------- */
+.message-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+.message.me .message-row { flex-direction: row-reverse; }
+
+/* A single static kebab button per message — no hover-reveal, so the row
+   never reflows as the user's cursor moves around the chat. */
+.message-actions {
+    display: flex;
+    gap: 2px;
+    flex: none;
+    position: relative;
+}
+
+.message-actions .act {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 0.8rem;
+    line-height: 1;
+    padding: 2px 3px;
+    border-radius: 4px;
+}
+
+.message-actions .act:hover { color: var(--text); background: var(--surface2); }
+
+.msg-kebab { font-size: 0.9rem; padding: 2px 5px; }
+.msg-kebab.open { color: var(--text); background: var(--surface2); }
+
+.message-menu {
+    position: absolute;
+    top: 100%;
+    z-index: 1100;
+    display: flex;
+    flex-direction: column;
+    min-width: 108px;
+    padding: 4px;
+    margin-top: 2px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+
+.message-menu.hidden { display: none; }
+.message.me .message-menu { right: 0; }
+.message:not(.me) .message-menu { left: 0; }
+
+.message-menu button {
+    display: block;
+    width: 100%;
+    background: none;
+    border: none;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 0.78rem;
+    text-align: left;
+    white-space: nowrap;
+    padding: 5px 8px;
+    border-radius: 5px;
+}
+
+.message-menu button:hover { background: var(--surface2); }
+
+/* Edit/delete only make sense on your own messages. */
+.message:not(.me) .message-menu .edit,
+.message:not(.me) .message-menu .delete { display: none; }
+
+.message-meta .edited { color: var(--text-dim); font-style: italic; }
+
+.message-meta .tag {
+    background: var(--surface2);
+    color: var(--text-dim);
+    border-radius: 4px;
+    padding: 0 4px;
+    text-transform: uppercase;
+    font-size: 0.6rem;
+    letter-spacing: 0.04em;
+}
+
+.message.ephemeral .message-body {
+    border: 1px dashed var(--border);
+    background: transparent;
+    font-style: italic;
+    opacity: 0.85;
+}
+
+.message.mention-me .message-body {
+    box-shadow: inset 3px 0 0 var(--accent2);
+}
+
+/* Codebase assistant (@bot) replies: accent the surface so they read as a
+   distinct participant rather than a teammate. */
+.message.agent .message-body {
+    border-left: 2px solid var(--accent);
+    background: var(--surface2);
+}
+
+.message-meta .tag.agent-tag {
+    background: var(--accent);
+    color: #fff;
+}
+
+/* Private @bot exchange badge — only the asker ever sees these messages. */
+.message-meta .tag.private-tag {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent);
+}
+
+.message.system {
+    align-self: center;
+    max-width: 95%;
+    text-align: center;
+}
+
+.message.system .message-body {
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 0.75rem;
+    font-style: italic;
+    padding: 2px 8px;
+}
+
+.message.system .time { margin-left: 6px; opacity: 0.7; }
+
+/* /me action lines: centered, attributed, understated. */
+.message.action {
+    align-self: center;
+    max-width: 95%;
+    text-align: center;
+}
+
+.message.action .message-body {
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 0.78rem;
+    font-style: italic;
+    padding: 2px 8px;
+}
+
+.message.action .user { color: var(--accent); font-style: normal; }
+.message.action .time { margin-left: 6px; opacity: 0.7; }
+
+/* @help command reference: a left-aligned, monospace, private card. */
+.message.system.help {
+    align-self: stretch;
+    max-width: 100%;
+    text-align: left;
+}
+
+.message.system.help .message-body {
+    white-space: pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-style: normal;
+    font-size: 0.74rem;
+    line-height: 1.55;
+    color: var(--text);
+    background: var(--surface2);
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+
+.chat-mention { color: var(--accent); font-weight: 600; }
+.chat-mention.mention-self { background: var(--accent2); color: #06231d; border-radius: 4px; padding: 0 3px; }
+.message.me .chat-mention { color: #fff; text-decoration: underline; }
+
+.reactions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 3px;
+}
+
+.message.me .reactions { justify-content: flex-end; }
+
+.reaction-chip {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0 6px;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    cursor: pointer;
+    color: var(--text);
+}
+
+.reaction-chip.mine { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); }
+
+.emoji-picker {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    z-index: 1100;
+    display: flex;
+    gap: 2px;
+    padding: 4px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+
+.emoji-picker button {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 1rem;
+    padding: 2px 4px;
+    border-radius: 4px;
+}
+
+.emoji-picker button:hover { background: var(--surface2); }
+
+.edit-input {
+    width: 100%;
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 5px 8px;
+    background: var(--input-bg);
+    color: var(--text);
+    font-size: 0.85rem;
+    resize: vertical;
+}
+
+.chat-typing {
+    min-height: 1rem;
+    padding: 0 12px;
+    font-size: 0.72rem;
+    font-style: italic;
+    color: var(--text-dim);
+}
+
+#chat-window.minimized .chat-typing { display: none; }
+
+.chat-input-wrap {
+    position: relative;
+    flex-grow: 1;
+    min-width: 0;
+    display: flex;
+}
+
+.chat-input-wrap #message-input { width: 100%; }
+
+.chat-autocomplete {
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    right: 0;
+    margin-bottom: 4px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.2);
+    overflow: hidden;
+    z-index: 1100;
+}
+
+.chat-autocomplete.hidden { display: none; }
+
+.ac-item {
+    padding: 6px 10px;
+    font-size: 0.82rem;
+    cursor: pointer;
+    color: var(--text);
+}
+
+.ac-item.active, .ac-item:hover { background: var(--accent); color: #fff; }
+
+#chat-online { cursor: help; }
+

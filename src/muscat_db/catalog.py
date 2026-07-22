@@ -156,6 +156,13 @@ _HARPS_ONLINE_TIMEOUT_S = float(os.environ.get("MUSCAT_HARPS_ONLINE_TIMEOUT_S", 
 _HARPS_BUCKET_DEG = 0.05
 _harps_cache: dict = {}
 
+_LAMOST_STARS_PATH = pathlib.Path(os.environ.get(
+    "MUSCAT_LAMOST_STARS_CSV",
+    str(HERE.parent.parent / "data" / "LAMA_stars.csv"),
+))
+_LAMOST_MATCH_ARCSEC = float(os.environ.get("MUSCAT_LAMOST_MATCH_ARCSEC", "2.0"))
+_LAMOST_BUCKET_DEG = float(os.environ.get("MUSCAT_LAMOST_BUCKET_DEG", "0.02"))
+
 
 def _coord_deg(value, *, is_ra: bool) -> float | None:
     """Parse decimal degrees or sexagesimal coordinates into degrees."""
@@ -420,6 +427,65 @@ def _harps_coord_membership(cat_data: dict) -> tuple[list[int], int]:
     return out, matched
 
 
+def _load_lamost_coords() -> list[tuple[float, float, int]]:
+    """Load LAMA star coordinates and N_obs (RV data-point count) from CSV."""
+    path = _LAMOST_STARS_PATH
+    if not path.is_file():
+        return []
+    out: list[tuple[float, float, int]] = []
+    with open(path, encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            ra = _toi_float(row.get("RAdeg"))
+            dec = _toi_float(row.get("DEdeg"))
+            n_obs = _toi_float(row.get("N_obs"))
+            if ra is not None and dec is not None:
+                out.append((ra, dec, int(n_obs) if n_obs is not None else 1))
+    return out
+
+
+def _lamost_coord_membership(cat_data: dict) -> tuple[list[int], int]:
+    """Return LAMOST RV counts (or 0) for catalog rows positionally matched
+    to LAMA stars."""
+    lamost_coords = _load_lamost_coords()
+    n = len(cat_data.get("ra") or [])
+    out = [0] * n
+    if not lamost_coords:
+        return out, 0
+
+    tol = max(0.0, _LAMOST_MATCH_ARCSEC)
+    if tol <= 0:
+        return out, 0
+    bucket = max(_LAMOST_BUCKET_DEG, tol / 3600.0)
+    ra_bins = max(1, int(math.ceil(360.0 / bucket)))
+
+    index: dict[tuple[int, int], list[tuple[float, float, int]]] = {}
+    for ra, dec, n_obs in lamost_coords:
+        rb = int((ra % 360.0) / bucket) % ra_bins
+        db = int((dec + 90.0) / bucket)
+        index.setdefault((rb, db), []).append((ra, dec, n_obs))
+
+    ras, decs = cat_data.get("ra") or [], cat_data.get("dec") or []
+    matched = 0
+    for i, (ra, dec) in enumerate(zip(ras, decs)):
+        if ra is None or dec is None:
+            continue
+        rb = int((ra % 360.0) / bucket) % ra_bins
+        db = int((dec + 90.0) / bucket)
+        hit_count = 0
+        hit = False
+        for dra in (-1, 0, 1):
+            for ddec in (-1, 0, 1):
+                for hra, hdec, hn_obs in index.get(((rb + dra) % ra_bins, db + ddec), ()):
+                    if _angular_sep_arcsec(float(ra), float(dec), hra, hdec) <= tol:
+                        hit = True
+                        hit_count = max(hit_count, hn_obs)
+        if hit:
+            out[i] = hit_count if hit_count > 0 else 1
+            matched += 1
+    return out, matched
+
+
 def _matching_harps_targets(coords: list[tuple[float, float]]) -> list[dict]:
     if not coords:
         return []
@@ -656,27 +722,65 @@ def _target_catalog_coord_candidates(normalized_name: str) -> list[tuple[float, 
     return coords
 
 
-def _harps_data_for_target(datasets: list[dict], target_name: str | None = None) -> dict:
-    coords = []
-    seen = set()
-    def add_coord(ra_value, dec_value) -> None:
-        ra = _coord_deg(ra_value, is_ra=True)
-        dec = _coord_deg(dec_value, is_ra=False)
-        if ra is None or dec is None:
-            return
+def _header_center_coords(datasets: list[dict]) -> list[tuple[float, float]]:
+    """Deduplicated header pointing centres from a target's datasets.
+
+    Each dataset's ``ra``/``dec`` is the per-target ``coord_repr`` median (see
+    :mod:`muscat_db.coord`) — the representative *centre* of the header pointings,
+    not a raw single-frame value.
+    """
+    coords: list[tuple[float, float]] = []
+    seen: set[tuple[float, float]] = set()
+    for ds in datasets:
+        ra = _coord_deg(ds.get("ra"), is_ra=True)
+        dec = _coord_deg(ds.get("dec"), is_ra=False)
+        if ra is None or dec is None or not (-90.0 <= dec <= 90.0):
+            continue
         key = (round(ra, 8), round(dec, 8))
         if key in seen:
-            return
+            continue
         seen.add(key)
         coords.append((ra, dec))
+    return coords
 
-    for ds in datasets:
-        add_coord(ds.get("ra"), ds.get("dec"))
+
+def _target_crossmatch_coords(
+    target_name: str | None,
+    datasets: list[dict] | None = None,
+) -> list[tuple[float, float]]:
+    """Coordinates used to positionally cross-match a target on the /target page.
+
+    Resolution order — the first tier that yields any coordinate wins:
+
+      1. Local TOI/NExScI catalog CSVs — may return several near-identical rows
+         when a target appears in both catalogs.
+      2. SIMBAD name resolution (cached) when the target is in neither catalog.
+      3. Header pointing centre as a last resort — the per-target ``coord_repr``
+         median RA/Dec carried on each dataset. Ranked last because muscat/muscat2
+         frames have no WCS and can sit arcmin-scale off the true position.
+
+    Returns an empty list when nothing resolves.
+    """
+    if target_name:
+        coords = _target_catalog_coord_candidates(target_name)
+        if coords:
+            return coords
+        # Not in either catalog — fall back to SIMBAD. _resolve_archive_coords is
+        # the shared "catalog then SIMBAD" resolver and caches the SIMBAD lookup.
+        resolved = _resolve_archive_coords(target_name)
+        if resolved is not None:
+            ra, dec = float(resolved[0]), float(resolved[1])
+            if -90.0 <= dec <= 90.0:
+                return [(ra, dec)]
+    # Last resort: the observed header pointing centre.
+    return _header_center_coords(datasets or [])
+
+
+def _harps_data_for_target(
+    target_name: str | None = None, datasets: list[dict] | None = None
+) -> dict:
+    coords = _target_crossmatch_coords(target_name, datasets)
     matches = _matching_harps_targets(coords)
-    if target_name and not matches:
-        for ra, dec in _target_catalog_coord_candidates(target_name):
-            add_coord(ra, dec)
-        matches = _matching_harps_targets(coords)
     if not matches and not coords:
         return {
             "columns": [],
@@ -690,6 +794,169 @@ def _harps_data_for_target(datasets: list[dict], target_name: str | None = None)
             "error": "",
         }
     return _query_harps_rvbank_rows(coords, matches)
+
+
+_LAMOST_SPEC_PATH = pathlib.Path(os.environ.get(
+    "MUSCAT_LAMOST_SPEC_CSV",
+    str(HERE.parent.parent / "data" / "LAMA_spec.csv"),
+))
+
+# Per-epoch columns from LAMA_spec.csv to display.
+# Format: (csv_column, display_name)
+_LAMOST_SPEC_DISPLAY_COLS: list[tuple[str, str]] = [
+    ("BJD",     "BJD"),
+    ("RV_B",    "RV_B (km/s)"),
+    ("e_RV_B",  "e_RV_B"),
+    ("RV_R",    "RV_R (km/s)"),
+    ("e_RV_R",  "e_RV_R"),
+    ("snr_B",   "SNR_B"),
+    ("snr_R",   "SNR_R"),
+    ("Teff",    "Teff (K)"),
+    ("logg",    "logg"),
+    ("Feh",     "[Fe/H]"),
+    ("vsini",   "vsini (km/s)"),
+]
+
+_lamost_rv_cache: dict = {}
+
+
+def _lamost_rv_data_for_target(
+    target_name: str | None = None, datasets: list[dict] | None = None
+) -> dict:
+    """Return per-epoch RV rows from LAMA_spec.csv (Li+2024) for a target.
+
+    Two-pass approach:
+      1. Coordinate-match in LAMA_stars.csv to collect uid(s).
+      2. Linear scan of LAMA_spec.csv filtered by those uid(s).
+
+    Returns a dict with ``columns``, ``rows``, ``total_rows``, ``match_arcsec``,
+    ``sep_arcsec`` (closest star match), and ``n_stars`` (number of matched stars).
+    """
+    empty: dict = {
+        "columns": [],
+        "rows": [],
+        "total_rows": 0,
+        "n_stars": 0,
+        "match_arcsec": _LAMOST_MATCH_ARCSEC,
+        "sep_arcsec": None,
+        "error": "",
+    }
+
+    stars_path = _LAMOST_STARS_PATH
+    spec_path = _LAMOST_SPEC_PATH
+    if not stars_path.is_file():
+        empty["error"] = f"LAMA_stars catalog not found at {stars_path}"
+        return empty
+    if not spec_path.is_file():
+        empty["error"] = f"LAMA_spec catalog not found at {spec_path}"
+        return empty
+
+    # Cross-match on catalog positions (TOI/NExScI), falling back to SIMBAD, then
+    # to the header pointing centre as a last resort (see _target_crossmatch_coords).
+    coords = _target_crossmatch_coords(target_name, datasets)
+    if not coords:
+        return empty
+
+
+    tol = max(0.0, _LAMOST_MATCH_ARCSEC)
+    if tol <= 0:
+        return empty
+
+    try:
+        stars_mtime = stars_path.stat().st_mtime_ns
+        spec_mtime = spec_path.stat().st_mtime_ns
+    except OSError as exc:
+        empty["error"] = str(exc)
+        return empty
+
+    cache_key = (
+        str(stars_path), stars_mtime,
+        str(spec_path), spec_mtime,
+        tuple((round(r, 8), round(d, 8)) for r, d in coords),
+        tol,
+    )
+    cached = _lamost_rv_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # --- Pass 1: find matched uid(s) from LAMA_stars.csv ---
+    matched_uids: set[str] = set()
+    best_sep: float | None = None
+    try:
+        with open(stars_path, encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                ra_row = _toi_float(row.get("RAdeg"))
+                dec_row = _toi_float(row.get("DEdeg"))
+                uid = (row.get("uid") or "").strip()
+                if ra_row is None or dec_row is None or not uid:
+                    continue
+                for cra, cdec in coords:
+                    sep = _angular_sep_arcsec(cra, cdec, ra_row, dec_row)
+                    if sep <= tol:
+                        matched_uids.add(uid)
+                        if best_sep is None or sep < best_sep:
+                            best_sep = sep
+                        break
+    except Exception as exc:
+        logger.warning("failed to read LAMA_stars CSV %s", stars_path, exc_info=True)
+        empty["error"] = str(exc)
+        return empty
+
+    if not matched_uids:
+        result = {**empty, "match_arcsec": tol}
+        _lamost_rv_cache[cache_key] = result
+        return result
+
+    # --- Pass 2: scan LAMA_spec.csv for matched uids ---
+    display_names = [n for _, n in _LAMOST_SPEC_DISPLAY_COLS]
+    columns = display_names
+    rows: list[dict] = []
+    try:
+        with open(spec_path, encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                uid = (row.get("uid") or "").strip()
+                if uid not in matched_uids:
+                    continue
+                r: dict = {}
+                for col_key, display_name in _LAMOST_SPEC_DISPLAY_COLS:
+                    raw = row.get(col_key)
+                    if raw is None or raw == "":
+                        r[display_name] = ""
+                    else:
+                        x = _toi_float(raw)
+                        if x is not None:
+                            # BJD needs fixed-point to avoid scientific notation
+                            r[display_name] = f"{x:.6f}" if col_key == "BJD" else f"{x:.6g}"
+                        else:
+                            r[display_name] = raw.strip()
+
+                rows.append(r)
+    except Exception as exc:
+        logger.warning("failed to read LAMA_spec CSV %s", spec_path, exc_info=True)
+        empty["error"] = str(exc)
+        return empty
+
+    # Sort by BJD ascending
+    def _bjd_key(r: dict) -> float:
+        try:
+            return float(r.get("BJD") or 0)
+        except (ValueError, TypeError):
+            return 0.0
+    rows.sort(key=_bjd_key)
+
+    result = {
+        "columns": columns,
+        "rows": rows,
+        "total_rows": len(rows),
+        "n_stars": len(matched_uids),
+        "match_arcsec": tol,
+        "sep_arcsec": round(best_sep, 3) if best_sep is not None else None,
+        "error": "",
+    }
+    _lamost_rv_cache[cache_key] = result
+    return result
 
 
 def _load_toi_catalog() -> dict:

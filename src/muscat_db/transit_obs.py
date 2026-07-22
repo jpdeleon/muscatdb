@@ -9,8 +9,9 @@ covers the whole transit, but two sites in relay (one covering ingress through
 a handoff, the other the handoff through egress) do -- ``split_gap`` when a
 real gap remains near the handoff, ``split_overlap`` when the two sites' own
 coverage meets or overlaps with no gap. ``partial`` is reserved for the
-single-site case: only one site sees any part of the transit, and it's
-incomplete (only ingress or only egress, say), with no second site to help.
+single-site case where one site sees a transit *contact* (ingress or egress)
+but not the whole transit, with no second site to help; a lone site that sees
+only the mid-transit sliver (neither contact) is rated ``none``.
 
 No new dependency: astropy is already required. The LCO site coordinates are
 frozen below (resolved once from astropy's site registry, sourced against
@@ -131,12 +132,41 @@ def _parse_iso_utc(value: str):
     return Time(s, format="isot", scale="utc")
 
 
-def _observable_mask(target, location, times, alt_min, sun_alt_max, moon_sep_min):
+# Below this illuminated fraction the Moon is treated as dark: the
+# min-lunar-distance cut is skipped, because a near-new Moon adds negligible sky
+# background. The cut is likewise skipped whenever the Moon is below the horizon.
+_MOON_DARK_FRACTION = 0.10
+
+
+def _moon_illuminated_fraction(sun, moon):
+    """Illuminated fraction of the Moon's disc, 0 (new) .. 1 (full).
+
+    Uses the Sun–Moon elongation and their distances (the phase-angle formula
+    behind ``astroplan.moon_illumination``). Both ``sun`` and ``moon`` must be
+    geocentric (as ``get_sun`` / ``get_body("moon", times)`` return) so the
+    elongation is frame-consistent and warning-free.
+    """
+    import numpy as np
+
+    elongation = sun.separation(moon)
+    phase_angle = np.arctan2(
+        sun.distance * np.sin(elongation),
+        moon.distance - sun.distance * np.cos(elongation),
+    )
+    return np.asarray((1.0 + np.cos(phase_angle)) / 2.0, dtype=float)
+
+
+def _observable_mask(target, location, times, alt_min, sun_alt_max,
+                     moon_sep_min, max_lunar_phase=1.0):
     """Boolean array: True where the target is observable at each time.
 
     Observable = target above ``alt_min`` AND Sun below ``sun_alt_max`` AND
-    (if ``moon_sep_min`` > 0) Moon farther than ``moon_sep_min`` from the target.
-    Returns ``(mask, target_alt, moon_alt, sun_alt, moon_sep)`` as numpy arrays.
+    (Moon illuminated fraction <= ``max_lunar_phase``) AND -- only when the Moon
+    is above the horizon and at least ``_MOON_DARK_FRACTION`` illuminated -- the
+    Moon is farther than ``moon_sep_min`` from the target. A below-horizon or
+    near-new (dark) Moon therefore never rejects a window on separation alone.
+    Returns ``(mask, target_alt, moon_alt, sun_alt, moon_sep, moon_illum)`` as
+    numpy arrays.
     """
     import numpy as np
     from astropy.coordinates import AltAz, get_body, get_sun
@@ -144,18 +174,27 @@ def _observable_mask(target, location, times, alt_min, sun_alt_max, moon_sep_min
     altaz = AltAz(obstime=times, location=location)
     target_altaz = target.transform_to(altaz)
     target_alt = target_altaz.alt.deg
-    sun_alt = get_sun(times).transform_to(altaz).alt.deg
+    sun = get_sun(times)
+    sun_alt = sun.transform_to(altaz).alt.deg
     moon_altaz = get_body("moon", times, location).transform_to(altaz)
     moon_alt = moon_altaz.alt.deg
     # Topocentric on-sky separation (both in the same AltAz frame) — the correct
     # quantity for Moon-avoidance and free of frame-mismatch warnings.
     moon_sep = moon_altaz.separation(target_altaz).deg
+    # Illuminated fraction uses geocentric Sun & Moon (frame-consistent, and the
+    # standard phase definition); the sub-degree topocentric parallax is moot.
+    moon_illum = _moon_illuminated_fraction(sun, get_body("moon", times))
 
     mask = (target_alt >= alt_min) & (sun_alt < sun_alt_max)
+    if max_lunar_phase is not None and max_lunar_phase < 1.0:
+        # Mirror LCO's max_lunar_phase: never observe under a brighter Moon.
+        mask = mask & (moon_illum <= max_lunar_phase)
     if moon_sep_min and moon_sep_min > 0:
-        mask = mask & (moon_sep >= moon_sep_min)
+        # Moonlight only matters when the Moon is up and not near-new.
+        enforce = (moon_alt >= 0.0) & (moon_illum >= _MOON_DARK_FRACTION)
+        mask = mask & (~enforce | (moon_sep >= moon_sep_min))
     return (np.asarray(mask), np.asarray(target_alt), np.asarray(moon_alt),
-            np.asarray(sun_alt), np.asarray(moon_sep))
+            np.asarray(sun_alt), np.asarray(moon_sep), np.asarray(moon_illum))
 
 
 def _jd_to_iso_z(jd: float) -> str:
@@ -186,6 +225,129 @@ def _site_coverage_span(mask, offsets, start_jd: float, end_jd: float):
     )
 
 
+def _contact_flags(mask_row, start_jd: float, end_jd: float, mid_jd, half: float):
+    """Return ``(ingress_observed, egress_observed)`` for the bare-transit
+    contacts (``mid ± half``) against one window's per-sample coverage over
+    ``start_jd``..``end_jd``.
+
+    The mid-transit is deliberately not consulted. Falls back to the grid edges
+    when the midpoint is unknown (those edges are the bare-transit contacts by
+    construction when padding is excluded).
+    """
+    n = len(mask_row)
+    if mid_jd is None or end_jd <= start_jd:
+        return bool(mask_row[0]), bool(mask_row[-1])
+
+    def sample_at(jd: float) -> int:
+        frac = (jd - start_jd) / (end_jd - start_jd)
+        frac = min(1.0, max(0.0, frac))
+        return int(round(frac * (n - 1)))
+
+    return bool(mask_row[sample_at(mid_jd - half)]), bool(mask_row[sample_at(mid_jd + half)])
+
+
+def _observes_contact(mask_row, start_jd: float, end_jd: float, mid_jd, half: float) -> bool:
+    """True if a transit contact (ingress or egress) lands on an observable
+    sample; the mid-transit is excluded (see :func:`_contact_flags`)."""
+    ingress_obs, egress_obs = _contact_flags(mask_row, start_jd, end_jd, mid_jd, half)
+    return ingress_obs or egress_obs
+
+
+def _longest_true_run(mask) -> tuple[int, int]:
+    """``(start_idx, end_idx)`` of the longest contiguous ``True`` run in a
+    boolean array. A target rises/sets once within a few-hour window, so its
+    observable samples form a single run; a moon-separation dip can split that
+    run in two, in which case the longer (usable) leg is chosen. Assumes at
+    least one ``True`` sample."""
+    import numpy as np
+
+    arr = np.asarray(mask, dtype=bool)
+    best_start, best_end, best_len = 0, -1, 0
+    i, n = 0, len(arr)
+    while i < n:
+        if not arr[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and arr[j + 1]:
+            j += 1
+        if j - i + 1 > best_len:
+            best_len, best_start, best_end = j - i + 1, i, j
+        i = j + 1
+    return best_start, best_end
+
+
+def observable_interval(
+    ra_deg: float,
+    dec_deg: float,
+    window: dict,
+    site: str,
+    *,
+    max_airmass: float = 2.0,
+    twilight: str = DEFAULT_TWILIGHT,
+    moon_sep_min: float = 30.0,
+    max_lunar_phase: float = 1.0,
+    step_min: float = 1.0,
+) -> dict | None:
+    """Longest contiguous observable sub-interval of one window at one site.
+
+    Samples ``[window['start'], window['end']]`` at ``step_min`` cadence and
+    applies the same observability test as the windows table (target above the
+    airmass-implied altitude, Sun below twilight, Moon phase/separation). Returns
+    the longest contiguous observable run::
+
+        {"start": iso, "end": iso, "fraction": float,
+         "hit_start_limit": bool, "hit_end_limit": bool}
+
+    Unclipped edges keep the window's exact original timestamp; a clipped edge is
+    reported at sample precision. ``hit_start_limit`` / ``hit_end_limit`` are
+    ``True`` when the run is bounded by observability (the target rises/sets
+    inside the window) rather than by the window boundary itself, i.e. that edge
+    should be held back by a visibility safety margin. ``fraction`` is the
+    observable fraction of the whole window span. Returns ``None`` when the
+    target is never observable within the window (caller decides raise vs drop).
+    """
+    import numpy as np
+    import astropy.units as u
+    from astropy.time import Time
+    from astropy.coordinates import SkyCoord
+
+    if site not in LCO_SITES:
+        raise TransitObsError(f"unknown site: {site!r}", 400)
+    win_start = window.get("start")
+    win_end = window.get("end")
+    if not win_start or not win_end:
+        return None
+    t0 = Time(_parse_iso_utc(win_start))
+    t1 = Time(_parse_iso_utc(win_end))
+    span_s = float((t1 - t0).sec)
+    if span_s <= 0:
+        return None
+
+    alt_min = alt_limit_from_airmass(max_airmass)
+    sun_alt_max = twilight_limit(twilight)
+    n = max(2, int(round(span_s / (float(step_min) * 60.0))) + 1)
+    times = t0 + np.linspace(0.0, span_s, n) * u.s
+    target = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg)
+    mask, *_ = _observable_mask(
+        target, _earth_location(site), times, alt_min, sun_alt_max,
+        moon_sep_min, max_lunar_phase,
+    )
+    if not bool(np.asarray(mask).any()):
+        return None
+
+    first, last = _longest_true_run(mask)
+    hit_start = first > 0
+    hit_end = last < n - 1
+    return {
+        "start": times[first].isot + "Z" if hit_start else win_start,
+        "end": times[last].isot + "Z" if hit_end else win_end,
+        "fraction": float(np.asarray(mask).mean()),
+        "hit_start_limit": hit_start,
+        "hit_end_limit": hit_end,
+    }
+
+
 def classify_transits(
     ra_deg: float,
     dec_deg: float,
@@ -195,6 +357,7 @@ def classify_transits(
     max_airmass: float = 2.0,
     twilight: str = DEFAULT_TWILIGHT,
     moon_sep_min: float = 30.0,
+    max_lunar_phase: float = 1.0,
     include_padding: bool = False,
     sites: list[str] | None = None,
     pad_before_min: float = 0.0,
@@ -209,19 +372,24 @@ def classify_transits(
     and ``best_site`` is a full site if any, else the most-covered site.
 
     - ``full``: one site alone covers the whole transit (``frac >= 0.999``).
-    - ``partial``: exactly one site has any coverage at all, and it's
-      incomplete -- only ingress or only egress (or some other sliver) can be
-      observed, with no second site to fill in the rest.
-    - ``split_gap`` / ``split_overlap``: two or more sites each have some
-      coverage. The best pair (highest combined coverage) is always resolved
-      to one of these two ratings -- there is no "still partial" outcome once
-      2+ sites have any coverage. ``split_gap`` means a real gap remains near
-      the handoff (``split_gap_min`` minutes uncovered by either site);
-      ``split_overlap`` means the pair's coverage meets or overlaps with no
-      gap (``split_overlap_min`` minutes covered by both). Both also carry
+    - ``partial``: exactly one site has coverage, that coverage includes a
+      transit contact (ingress or egress) but not the whole transit, and there
+      is no second site to relay with. A lone site that observes only the
+      middle -- neither contact -- is rated ``none`` instead (not useful).
+    - ``split_gap`` / ``split_overlap``: two or more sites have coverage AND the
+      best pair's union spans both contacts (ingress and egress) -- a genuine
+      ingress→egress relay. ``split_gap`` means a real gap remains near the
+      handoff (``split_gap_min`` minutes uncovered by either site);
+      ``split_overlap`` means the pair's coverage meets or overlaps with no gap
+      (``split_overlap_min`` minutes covered by both). Both also carry
       ``split_sites`` (``[early, late]``, chronological) and ``split_windows``
-      (each site's own observable start/end + a ``fragmented`` flag).
-    - ``none``: no site observes any part of the transit.
+      (each site's own observable start/end + a ``fragmented`` flag). If the
+      best pair's union misses a contact (the extra site only contributes a
+      sliver away from the contacts), the transit falls back to the single-site
+      rating: ``partial`` when the best site covers a contact, else ``none``.
+    - ``none``: no site observes a transit contact -- either no site sees any
+      part of the transit, or the only coverage is a single site's mid-transit
+      sliver with neither ingress nor egress.
 
     When ``include_padding=True`` and ``pad_before_min``/``pad_after_min`` are
     given, split entries also get ``ingress_bracket_ok`` / ``egress_bracket_ok``:
@@ -288,7 +456,8 @@ def classify_transits(
     frac = {}
     for site in site_list:
         mask, *_ = _observable_mask(
-            target, _earth_location(site), grid, alt_min, sun_alt_max, moon_sep_min
+            target, _earth_location(site), grid, alt_min, sun_alt_max,
+            moon_sep_min, max_lunar_phase,
         )
         mask2d[site] = mask.reshape(len(windows), n_samp)
         frac[site] = mask2d[site].mean(axis=1)
@@ -309,11 +478,16 @@ def classify_transits(
             continue
 
         if len(partial_sites) < 2:
-            # At most one site sees anything at all: no second site exists to
-            # relay with, so this is genuinely "partial" (or "none").
+            # At most one site sees anything at all: no second site to relay
+            # with. "partial" is reserved for coverage that includes a transit
+            # contact (ingress or egress); a lone site that sees only the middle
+            # -- neither contact -- is not scientifically useful and is rated
+            # "none".
             best = partial_sites[0] if partial_sites else None
-            rating = "partial" if best else "none"
-            results.append({"rating": rating, "sites": partial_sites, "best_site": best})
+            if best and _observes_contact(mask2d[best][i], starts[i], ends[i], mids[i], half):
+                results.append({"rating": "partial", "sites": partial_sites, "best_site": best})
+            else:
+                results.append({"rating": "none", "sites": [], "best_site": None})
             continue
 
         # 2+ sites each have some coverage: always resolve to a two-site relay
@@ -329,6 +503,21 @@ def classify_transits(
                 best_pair = (s1, s2)
         s1, s2 = best_pair
         m1, m2 = mask2d[s1][i], mask2d[s2][i]
+
+        # A genuine relay must span both contacts: the pair's union has to see
+        # ingress AND egress. If it misses one, the "extra" site is only adding
+        # a sliver away from the contacts (e.g. a few minutes in the padding),
+        # so fall back to the single-site rating -- partial when the best site
+        # covers a contact, else none -- matching the one-site branch above.
+        ingress_obs, egress_obs = _contact_flags(m1 | m2, starts[i], ends[i], mids[i], half)
+        if not (ingress_obs and egress_obs):
+            best_single = max(partial_sites, key=lambda s: frac[s][i])
+            if _observes_contact(mask2d[best_single][i], starts[i], ends[i], mids[i], half):
+                results.append({"rating": "partial", "sites": partial_sites, "best_site": best_single})
+            else:
+                results.append({"rating": "none", "sites": [], "best_site": None})
+            continue
+
         span1 = _site_coverage_span(m1, offsets, starts[i], ends[i])
         span2 = _site_coverage_span(m2, offsets, starts[i], ends[i])
         if span1[0] <= span2[0]:
@@ -399,6 +588,7 @@ def visibility_series(
     max_airmass: float = 2.0,
     twilight: str = DEFAULT_TWILIGHT,
     moon_sep_min: float = 30.0,
+    max_lunar_phase: float = 1.0,
 ) -> dict:
     """Time-series for a Plotly visibility plot of one transit at one site.
 
@@ -427,8 +617,8 @@ def visibility_series(
     offsets_h = np.linspace(-_PLOT_HALF_WINDOW_H, _PLOT_HALF_WINDOW_H, n)
     times = mid + offsets_h * u.hour
 
-    mask, target_alt, moon_alt, sun_alt, moon_sep = _observable_mask(
-        target, location, times, alt_min, sun_alt_max, moon_sep_min
+    mask, target_alt, moon_alt, sun_alt, moon_sep, moon_illum = _observable_mask(
+        target, location, times, alt_min, sun_alt_max, moon_sep_min, max_lunar_phase
     )
     half_h = duration_hours / 2.0
     ingress = (mid - half_h * u.hour).isot
@@ -451,11 +641,14 @@ def visibility_series(
         "moon_alt": _round(moon_alt),
         "sun_alt": _round(sun_alt),
         "moon_sep": _round(moon_sep),
+        "moon_illum": [round(float(v), 3) for v in moon_illum],
         "ingress": ingress,
         "egress": egress,
         "alt_limit": round(alt_min, 2),
         "sun_alt_limit": sun_alt_max,
         "moon_sep_min": float(moon_sep_min),
         "moon_sep_mid": round(moon_sep_mid, 1),
+        "max_lunar_phase": float(max_lunar_phase),
+        "moon_dark_floor": _MOON_DARK_FRACTION,
         "observable_fraction": round(float(np.asarray(mask).mean()), 3),
     }

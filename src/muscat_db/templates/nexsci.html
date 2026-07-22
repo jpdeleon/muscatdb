@@ -28,6 +28,7 @@
   — {{ '{:,}'.format(n_rows) }} planets
   · <strong>{{ '{:,}'.format(n_indb) }}</strong> whose host is in muscat-db (★ markers)
   · <strong>{{ '{:,}'.format(n_harps) }}</strong> with HARPS RVBank data
+  · <strong>{{ '{:,}'.format(n_lamost) }}</strong> with LAMOST RV data
   · <strong>{{ '{:,}'.format(n_jwst) }}</strong> in JWST Atmospheric Observation List (NExoList)
   · <strong>{{ '{:,}'.format(n_spectra) }}</strong> with time-series spectra.
   Click a point to open its muscat-db target page, or — if the host is not in muscat-db —
@@ -80,6 +81,8 @@
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="bright" title="Gaia magnitude < 12 (sy_gaiamag)">Bright (G&lt;12)</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="ttv" title="Transit timing variations measured (ttv_flag)">Has TTV</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="obliq" title="Spin-orbit obliquity measured (pl_projobliq)">Has obliquity</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="has_mp" title="Planet mass directly measured (pl_bmassprov = 'Mass')">Has planet mass</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="ecc_gt01" title="Orbital eccentricity &gt; 0.1 (pl_orbeccen)">e &gt; 0.1</span>
 </div>
 
 <div class="chip-bar">
@@ -93,6 +96,7 @@
 <div class="chip-bar">
   <span class="chip-label">External data <span class="logic-indicator" title="Matching all checked flags (AND)">AND</span>:</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="harps" title="Coordinate-matched to the public HARPS RVBank catalog">has HARPS RV</span>
+  <span class="badge instrument-badge nx-chip" data-group="flags" data-key="lamost" title="Coordinate-matched to LAMOST stars with LAMA RVs">has LAMOST RV</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="jwst" title="Only planets with JWST Atmospheric Observation List (NExoList) data">has JWST data</span>
   <span class="badge instrument-badge nx-chip" data-group="flags" data-key="spectra" title="Has time-series spectra available in the Atmospheric Spectroscopy table">has time-series spectra</span>
 </div>
@@ -191,6 +195,7 @@
     { key: 'ra',       label: 'RA (°)',       type: 'num', plot: 'RA (deg)' },
     { key: 'dec',      label: 'Dec (°)',      type: 'num', plot: 'Dec (deg)' },
     { key: 'has_harps_rv', label: 'HARPS RV', type: 'num' },
+    { key: 'has_lamost_rv', label: 'LAMOST RV', type: 'num' },
   ];
   const NUM_COLS = COLS.filter(c => c.type === 'num' && c.plot);
   const colByKey = {};
@@ -346,10 +351,13 @@
     bright:   i => NEXSCI.gmag[i] != null && NEXSCI.gmag[i] < 12,
     ttv:      i => NEXSCI.ttv[i] === 1,
     obliq:    i => NEXSCI.projobliq[i] != null,
+    has_mp:   i => NEXSCI.bmassprov[i] === 'Mass',
+    ecc_gt01: i => NEXSCI.ecc[i] != null && NEXSCI.ecc[i] > 0.1,
     rv:       i => NEXSCI.nrvc[i] != null && NEXSCI.nrvc[i] > 1,
     spec:     i => NEXSCI.nspec[i] != null && NEXSCI.nspec[i] > 1,
     phot:     i => NEXSCI.nphot[i] != null && NEXSCI.nphot[i] > 1,
     harps:    i => !!NEXSCI.has_harps_rv[i],
+    lamost:   i => !!NEXSCI.has_lamost_rv[i],
     jwst:     i => !!NEXSCI.has_jwst[i],
     spectra:  i => !!NEXSCI.has_spectra[i],
   };
@@ -496,6 +504,9 @@
       if (c.key === 'has_harps_rv') {
         return '<td class="num">' + (v ? fmtNum(v) : '—') + '</td>';
       }
+      if (c.key === 'has_lamost_rv') {
+        return '<td class="num">' + (v ? fmtNum(v) : '—') + '</td>';
+      }
       if (c.type === 'num') return '<td class="num">' + fmtNum(v) + '</td>';
       return '<td>' + esc(v || '—') + '</td>';
     });
@@ -571,6 +582,7 @@
     if (showHarpsCount && yk === 'radius') {
       hovertmpl += '%{customdata[1]}';
     }
+    hovertmpl += '%{customdata[2]}';
     hovertmpl += '<extra></extra>';
 
     const isMass = k => k === 'mass' || k === 'massj';
@@ -600,7 +612,9 @@
       a.sym.push(symOf(i)); a.sz.push(sizeOf(i));
       const harpsCount = NEXSCI.has_harps_rv[i] || 0;
       const harpsStr = (showHarpsCount && harpsCount > 0) ? ('<br>HARPS RV: ' + harpsCount + ' datapoints') : '';
-      a.cd.push([i, harpsStr]);
+      const lamostCount = NEXSCI.has_lamost_rv[i] || 0;
+      const lamostStr = (lamostCount > 0) ? ('<br>LAMOST RV: ' + lamostCount + ' datapoints') : '';
+      a.cd.push([i, harpsStr, lamostStr]);
     }
     const newAcc = () => ({ x: [], y: [], text: [], sym: [], sz: [], cd: [], c: [] });
 

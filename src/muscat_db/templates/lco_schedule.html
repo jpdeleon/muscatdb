@@ -24,6 +24,21 @@
     background: transparent; color: var(--text-dim);
     font-weight: 500; opacity: 0.5;
   }
+  /* Tabbed pane for the observation request (science vs test obs). */
+  .lco-tabs { display: flex; gap: 0.25rem; margin-bottom: 0.75rem; border-bottom: 1px solid var(--border); }
+  .lco-tab {
+    appearance: none; background: transparent; border: 1px solid transparent; border-bottom: none;
+    color: var(--text-dim); font: inherit; font-size: 0.85rem; padding: 0.4rem 0.9rem;
+    cursor: pointer; border-radius: 6px 6px 0 0; margin-bottom: -1px;
+  }
+  .lco-tab:hover { color: var(--text); }
+  .lco-tab.active {
+    color: var(--text); background: var(--surface);
+    border-color: var(--border); border-bottom-color: var(--surface);
+  }
+  /* Show ObsLog: rows are clickable to apply a past exposure time. */
+  #obslog-body tr { cursor: pointer; }
+  #obslog-body tr:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 </style>
 
 <details class="lco-section section-fold" open>
@@ -69,11 +84,25 @@
         <option value="astronomical">Astronomical (−18°)</option>
       </select></div>
     <div class="lco-field"><label for="sch-obs-airmass">Max airmass <span class="help-tooltip" title="Maximum airmass for a transit to count as observable. Lower values mean better image quality. 2.0 is typical; 1.5 for high-precision work.">?</span></label><input id="sch-obs-airmass" type="number" step="any" value="2"></div>
-    <div class="lco-field"><label for="sch-moon-sep">Min lunar (deg) <span class="help-tooltip" title="Minimum angular distance from the Moon (degrees) for a transit to count as observable. Higher values avoid moonlight contamination.">?</span></label><input id="sch-moon-sep" type="number" step="any" value="30"></div>
-    <button class="btn" type="button" id="btn-fov" title="Optimize field-of-view pointing for this target">Show FOV</button>
+    <div class="lco-field"><label for="sch-moon-sep">Min lunar (deg) <span class="help-tooltip" title="Minimum angular distance from the Moon (degrees) for a transit to count as observable. Higher values avoid moonlight contamination. Skipped automatically when the Moon is below the horizon or under 10% illuminated.">?</span></label><input id="sch-moon-sep" type="number" step="any" value="30"></div>
+    <div class="lco-field"><label for="sch-max-lunar-phase">Max lunar phase <span class="help-tooltip" title="LCO max_lunar_phase: the maximum Moon illuminated fraction (0 = new, 1 = full) to observe under. 1.0 places no restriction. Windows with the Moon brighter than this are dropped, matching what LCO will schedule.">?</span></label>
+      <select id="sch-max-lunar-phase">
+        <option value="1.0" selected>1.0 (any)</option>
+        <option value="0.9">0.9 (90%)</option>
+        <option value="0.8">0.8 (80%)</option>
+        <option value="0.7">0.7 (70%)</option>
+        <option value="0.6">0.6 (60%)</option>
+        <option value="0.5">0.5 (50%)</option>
+        <option value="0.4">0.4 (40%)</option>
+        <option value="0.3">0.3 (30%)</option>
+        <option value="0.2">0.2 (20%)</option>
+        <option value="0.1">0.1 (10%)</option>
+      </select>
+    </div>
   </div>
   <div class="lco-actions">
     <button class="btn" type="button" id="btn-fetch-ephem">Fetch ephemeris</button>
+    <button class="btn" type="button" id="btn-fov" title="Optimize field-of-view pointing for this target">Show FOV</button>
     <button class="btn primary" type="button" id="btn-gen-windows">Generate windows</button>
     <label class="lco-field" style="flex-direction: row; align-items: center; gap: 0.4rem;">
       <span style="font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase;">Show</span>
@@ -125,28 +154,28 @@
     <div class="lco-field muscat-only"><label for="sch-count">Exp count <span class="help-tooltip" title="Number of exposures per visit. Each exposure covers all 4 bands simultaneously.">?</span></label>
       <input id="sch-count" type="number" min="1" value="1"></div>
     <div class="lco-field sinistro-only"><label for="sch-sin-count">Exp count <span class="help-tooltip" title="Number of exposures per visit.">?</span></label><input id="sch-sin-count" type="number" min="1" value="1"></div>
-    <div class="lco-field"><label>Site <span class="help-tooltip" title="Observing site. For MuSCAT3 choose ogg (Maui) or coj (Siding Spring); for Sinistro choose any LCO 1m node.">?</span></label>
+    <div class="lco-field"><label>Site <span class="help-tooltip" title="Observing site. Auto-filled from the checked window(s): the shared best site when they agree, or left blank when they differ so LCO's scheduler picks an observable 1m node. For MuSCAT3 choose ogg (Maui) or coj (Siding Spring); for Sinistro choose any LCO 1m node, or leave blank to let LCO pick.">?</span></label>
       <div class="muscat-only" style="display: none;">
         <select id="sch-muscat-site">
           <option value="">— select —</option>
-          <option value="ogg">ogg (M3)</option>
-          <option value="coj">coj (M4)</option>
+          <option value="ogg">ogg (MuSCAT3)</option>
+          <option value="coj">coj (MuSCAT4)</option>
         </select>
       </div>
       <div class="sinistro-only" style="display: none;">
         <select id="sch-site">
           <option value="">— select —</option>
-          <option value="ogg">ogg</option>
-          <option value="coj">coj</option>
-          <option value="lsc">lsc</option>
-          <option value="cpt">cpt</option>
-          <option value="tfn">tfn</option>
-          <option value="elp">elp</option>
+          <option value="ogg">ogg (Haleakala)</option>
+          <option value="coj">coj (Siding Spring)</option>
+          <option value="lsc">lsc (Cerro Tololo)</option>
+          <option value="cpt">cpt (Sutherland)</option>
+          <option value="tfn">tfn (Tenerife)</option>
+          <option value="elp">elp (McDonald)</option>
         </select>
       </div>
     </div>
     <div class="lco-field sinistro-only" style="display: none;">
-      <label for="sch-effective-filter">Filter <span class="help-tooltip" title="Sloan-like filter for Sinistro observations.">?</span></label>
+      <label for="sch-effective-filter">Filter <span class="help-tooltip" title="LCO Sinistro filters: Pan-STARRS (rp/gp/ip/up/zs/w) and Bessell (U/B/V/R/I). central_2k_2x2 readout only calibrates up/gp/rp/ip/zs/w.">?</span></label>
       <select id="sch-effective-filter">
         <option value="rp">rp</option>
         <option value="up">up</option>
@@ -155,24 +184,35 @@
         <option value="zs">zs</option>
       </select>
     </div>
+    <div class="lco-field sinistro-only" style="display: none;">
+      <label for="sch-effective-exptime">Exp time (s) <span class="help-tooltip" title="Exposure time in seconds for Sinistro observations.">?</span></label>
+      <input id="sch-effective-exptime" type="text" inputmode="decimal" placeholder="60">
+    </div>
+    <div class="lco-field sinistro-only" style="display: none;">
+      <label for="sch-effective-mode">Readout <span class="help-tooltip" title="Readout mode for Sinistro: 2k 2x2 uses central CCD region; full uses entire frame.">?</span></label>
+      <select id="sch-effective-mode">
+        <option value="central_2k_2x2">2k 2x2</option>
+        <option value="full_frame">full</option>
+      </select>
+    </div>
   </div>
   <div class="lco-msg" id="msg-proposals" style="margin-top: 0.4rem;"></div>
 
   <div class="muscat-only" style="margin-top: 0.6rem;">
-    <div style="font-size: 0.85rem; font-weight: 600; text-transform: lowercase; color: var(--text-dim); margin-bottom: 0.4rem;">Exposure times per band:</div>
+    <div class="lco-subhead">Exposure times per band</div>
     <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 0.5rem 1rem;">
       <div class="lco-field"><label for="sch-exp-g">g (s) <span class="help-tooltip" title="Exposure time in seconds for the g band.">?</span></label><input id="sch-exp-g" type="number" step="any" placeholder="30"></div>
       <div class="lco-field"><label for="sch-exp-r">r (s) <span class="help-tooltip" title="Exposure time in seconds for the r band.">?</span></label><input id="sch-exp-r" type="number" step="any" placeholder="30"></div>
       <div class="lco-field"><label for="sch-exp-i">i (s) <span class="help-tooltip" title="Exposure time in seconds for the i band.">?</span></label><input id="sch-exp-i" type="number" step="any" placeholder="30"></div>
       <div class="lco-field"><label for="sch-exp-z">z (s) <span class="help-tooltip" title="Exposure time in seconds for the z band.">?</span></label><input id="sch-exp-z" type="number" step="any" placeholder="30"></div>
     </div>
-    <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dim); margin-top: 0.6rem; margin-bottom: 0.4rem;">Settings:</div>
+    <div class="lco-subhead">Settings</div>
     <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.5rem 1rem;">
       <div class="lco-field"><label for="sch-exp-mode">Exp mode <span class="help-tooltip" title="Async returns immediately after exposure; Sync blocks until data is available.">?</span></label>
         <select id="sch-exp-mode"><option value="ASYNCHRONOUS" selected>Async</option><option value="SYNCHRONOUS">Sync</option></select></div>
-      <div class="lco-field"><label for="sch-readout">Readout mode <span class="help-tooltip" title="MUSCAT_FAST is faster but noisier; MUSCAT_SLOW is slower but lower read noise.">?</span></label><select id="sch-readout" style="font-size: 0.8rem;"><option value="MUSCAT_FAST">MUSCAT_FAST</option><option value="MUSCAT_SLOW">MUSCAT_SLOW</option></select></div>
+      <div class="lco-field"><label for="sch-readout">Readout mode <span class="help-tooltip" title="MUSCAT_FAST is faster but noisier; MUSCAT_SLOW is slower but lower read noise.">?</span></label><select id="sch-readout"><option value="MUSCAT_FAST">MUSCAT_FAST</option><option value="MUSCAT_SLOW">MUSCAT_SLOW</option></select></div>
     </div>
-    <div style="font-size: 0.85rem; font-weight: 600; text-transform: lowercase; color: var(--text-dim); margin-top: 0.6rem; margin-bottom: 0.4rem;">Narrowband filters:</div>
+    <div class="lco-subhead">Narrowband filters</div>
     <div class="lco-grid" style="grid-template-columns: repeat(auto-fit, minmax(80px, 1fr)); gap: 0.5rem 1rem;">
       <div class="lco-field"><label for="sch-nb-g">gp <span class="help-tooltip" title="gp narrowband filter: in or out of the beam.">?</span></label><select id="sch-nb-g"><option value="out">out</option><option value="in">in</option></select></div>
       <div class="lco-field"><label for="sch-nb-r">rp <span class="help-tooltip" title="rp narrowband filter: in or out of the beam.">?</span></label><select id="sch-nb-r"><option value="out">out</option><option value="in">in</option></select></div>
@@ -202,33 +242,21 @@
       </select>
     </div>
     <div class="lco-field"><label for="sch-defocus">Defocus (mm) <span class="help-tooltip" id="hint-defocus" title="Secondary-mirror offset from focus, in mm, to prevent CCD saturation on bright targets. 0 = focused. Limits: ±8mm for MuSCAT, ±5mm for Sinistro.">?</span></label><input id="sch-defocus" type="number" step="any" value="0" min="-8" max="8"></div>
-    <div class="lco-field sinistro-only"><label for="sch-effective-exptime">Exp time (s) <span class="help-tooltip" title="Exposure time in seconds for Sinistro observations.">?</span></label><input id="sch-effective-exptime" type="text" inputmode="decimal" placeholder="60"></div>
-    <div class="lco-field sinistro-only"><label for="sch-effective-mode">Readout <span class="help-tooltip" title="Readout mode for Sinistro: 2k 2x2 uses central CCD region; full uses entire frame.">?</span></label>
-      <select id="sch-effective-mode">
-        <option value="central_2k_2x2">2k 2x2</option>
-        <option value="full_frame">full</option>
-      </select>
-    </div>
   </div>
   <div class="lco-actions">
     <button class="btn" type="button" id="btn-exp" title="Calculate exposure times for this target">Show Exp</button>
-    <button class="btn" type="button" id="btn-test-observation" title="Plan a guarded closed-loop test observation">Test observation</button>
-    <div class="lco-field" style="max-width: 150px;"><label for="sch-test-budget">Test budget (s) <span class="help-tooltip" title="Maximum cumulative exposure time for the test observation, in seconds. Candidate exposures beyond this budget are dropped from the plan. Excludes acquisition/readout.">?</span></label><input id="sch-test-budget" type="number" min="1" step="1" value="600"></div>
+    <button class="btn" type="button" id="btn-obslog" title="List this target's past exposures from the obs log; click a row to reuse its exposure time (useful for a recurring observation)">Show ObsLog</button>
+    <span class="lco-msg" id="msg-obslog" style="margin: 0;"></span>
+  </div>
+  <div id="obslog-panel" class="lco-table-wrap" style="display: none; margin-top: 0.6rem;">
+    <table class="lco-table" id="obslog-table">
+      <thead><tr><th>Dates (obs)</th><th>Instrument</th><th>Filter</th><th>Readout</th><th>Defocus</th><th>Exp (s)</th><th>Frames</th></tr></thead>
+      <tbody id="obslog-body"></tbody>
+    </table>
+    <p class="lco-note" style="margin-top: 0.4rem;">Click a row to apply its exposure time. Sinistro fills the Exp time field; MuSCAT fills the band matching the row's filter (g/r/i/z).</p>
   </div>
   <p class="lco-note">These scheduling inputs are separate from the archive page.</p>
 </details>
-
-<dialog id="test-observation-dialog" style="max-width: 850px; width: 92%;">
-  <h3>Test observation review</h3>
-  <p class="lco-note">Exposure budget excludes acquisition/readout. Review all removed combinations and warnings before validation.</p>
-  <pre id="test-observation-summary" class="lco-pre" style="max-height: 55vh; overflow: auto; white-space: pre-wrap;"></pre>
-  <div class="lco-msg" id="msg-test-observation"></div>
-  <div class="lco-actions">
-    <button class="btn primary" type="button" id="btn-test-dry-run">Check settings</button>
-    <button class="btn danger" type="button" id="btn-test-submit" disabled>Submit TEST</button>
-    <button class="btn" type="button" id="btn-test-close">Close</button>
-  </div>
-</dialog>
 
 <details class="lco-section section-fold" id="split-section" style="display: none;" open>
   <summary><h3>Split Request (two-site relay)</h3></summary>
@@ -237,23 +265,23 @@
     <div class="lco-field"><label for="sch-site-a">Leg A site (ingress) <span class="help-tooltip" title="LCO site for the ingress leg of a split relay request. Choose a site where ingress is observable.">?</span></label>
       <select id="sch-site-a">
         <option value="">— select —</option>
-        <option value="ogg">ogg</option>
-        <option value="coj">coj</option>
-        <option value="lsc">lsc</option>
-        <option value="cpt">cpt</option>
-        <option value="tfn">tfn</option>
-        <option value="elp">elp</option>
+        <option value="ogg">ogg (Haleakala)</option>
+        <option value="coj">coj (Siding Spring)</option>
+        <option value="lsc">lsc (Cerro Tololo)</option>
+        <option value="cpt">cpt (Sutherland)</option>
+        <option value="tfn">tfn (Tenerife)</option>
+        <option value="elp">elp (McDonald)</option>
       </select>
     </div>
     <div class="lco-field"><label for="sch-site-b">Leg B site (egress) <span class="help-tooltip" title="LCO site for the egress leg of a split relay request. Choose a site where egress is observable.">?</span></label>
       <select id="sch-site-b">
         <option value="">— select —</option>
-        <option value="ogg">ogg</option>
-        <option value="coj">coj</option>
-        <option value="lsc">lsc</option>
-        <option value="cpt">cpt</option>
-        <option value="tfn">tfn</option>
-        <option value="elp">elp</option>
+        <option value="ogg">ogg (Haleakala)</option>
+        <option value="coj">coj (Siding Spring)</option>
+        <option value="lsc">lsc (Cerro Tololo)</option>
+        <option value="cpt">cpt (Sutherland)</option>
+        <option value="tfn">tfn (Tenerife)</option>
+        <option value="elp">elp (McDonald)</option>
       </select>
     </div>
   </div>
@@ -297,17 +325,40 @@
 
 <details class="lco-section section-fold" id="single-submit-section" open>
   <summary><h3>Single site request</h3></summary>
-  <div class="lco-actions">
-    <button class="btn primary" type="button" id="btn-dry-run">Check settings</button>
-    <button class="btn" type="button" id="btn-submit" disabled
-      title="Enabled after a successful dry-run. Requires MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
-      Submit
-    </button>
-    <span class="lco-msg" id="msg-ipp" style="margin: 0;"></span>
+  <div class="lco-tabs" role="tablist">
+    <button type="button" class="lco-tab active" data-tab="science">Science obs</button>
+    <button type="button" class="lco-tab" data-tab="test">Test obs</button>
   </div>
-  <div id="ipp-result" style="margin-top: 0.75rem; display: none;">
-    <div class="lco-note" id="ipp-summary"></div>
-    <pre class="lco-pre" id="payload-pre"></pre>
+
+  <div class="lco-tab-panel" data-panel="science">
+    <div class="lco-actions">
+      <button class="btn primary" type="button" id="btn-create-draft" title="Build the LCO request payload from the form so you can review and edit it before checking settings">Create draft</button>
+      <button class="btn primary" type="button" id="btn-dry-run" style="display: none;">Check settings</button>
+      <button class="btn" type="button" id="btn-submit" disabled style="display: none;"
+        title="Enabled after a successful dry-run of the current draft. Requires MUSCAT_LCO_ALLOW_SUBMIT=1 on the server.">
+        Submit
+      </button>
+      <span class="lco-msg" id="msg-ipp" style="margin: 0;"></span>
+    </div>
+    <div id="ipp-result" style="margin-top: 0.75rem; display: none;">
+      <p class="lco-note" style="margin: 0 0 0.35rem;">Editable LCO request payload — tweak fields (e.g. <code>exposure_time</code>, window start/end) before checking settings. Editing after a check disables Submit until you re-check.</p>
+      <textarea class="lco-pre" id="payload-pre" spellcheck="false" aria-label="LCO request payload"></textarea>
+      <div class="lco-note" id="ipp-summary" style="margin-top: 0.4rem;"></div>
+    </div>
+  </div>
+
+  <div class="lco-tab-panel" data-panel="test" style="display: none;">
+    <div class="lco-actions">
+      <div class="lco-field" style="max-width: 150px;"><label for="sch-test-budget">Test budget (s) <span class="help-tooltip" title="Maximum cumulative exposure time for the test observation, in seconds. Candidate exposures beyond this budget are dropped from the plan. Excludes acquisition/readout.">?</span></label><input id="sch-test-budget" type="number" min="1" step="1" value="600"></div>
+      <button class="btn primary" type="button" id="btn-test-observation" title="Plan a guarded closed-loop test observation and build an editable draft">Create draft</button>
+      <span class="lco-msg" id="msg-test-observation" style="margin: 0;"></span>
+    </div>
+    <p class="lco-note">Plans a guarded closed-loop test observation. Exposure budget excludes acquisition/readout. Review all removed combinations and warnings, and edit the draft below (e.g. exposure/requested time) if needed, before checking settings.</p>
+    <textarea id="test-observation-summary" class="lco-pre" spellcheck="false" aria-label="Test observation draft" style="display: none;"></textarea>
+    <div class="lco-actions" id="test-obs-actions" style="display: none;">
+      <button class="btn primary" type="button" id="btn-test-dry-run">Check settings</button>
+      <button class="btn danger" type="button" id="btn-test-submit" disabled>Submit TEST</button>
+    </div>
   </div>
 </details>
 
@@ -427,7 +478,7 @@
     'sch-sin-count','sch-site','sch-site-a','sch-site-b',
     'sch-type','sch-observation-type','sch-guiding-config','sch-defocus',
     'sch-effective-filter','sch-effective-exptime','sch-effective-mode',
-    'sch-obs-airmass','sch-moon-sep','sch-ipp','sch-test-budget'
+    'sch-obs-airmass','sch-moon-sep','sch-max-lunar-phase','sch-ipp','sch-test-budget'
   ];
 
   var CHECK_IDS = ['sch-include-padding'];
@@ -439,7 +490,7 @@
     'sch-target','sch-planet','sch-source','sch-coords',
     'sch-range-start','sch-range-end','sch-t0','sch-period','sch-duration',
     'sch-pad-before','sch-pad-after','sch-include-padding',
-    'sch-sites','sch-twilight','sch-obs-airmass','sch-moon-sep'
+    'sch-sites','sch-twilight','sch-obs-airmass','sch-moon-sep','sch-max-lunar-phase'
   ];
 
   // Site chosen for the Transit obs column; '' (All sites) => full LCO network.
@@ -475,6 +526,7 @@
     CHECK_IDS.forEach(function (id) { o[id] = chk(id); });
     o['_ephemTarget'] = ephemTarget;
     o['_fieldSources'] = fieldSources;
+    o['_cacheKey'] = exptimeCacheKey();
     return o;
   }
   function saveOptions() {
@@ -492,6 +544,10 @@
     if (!saved) return;
     TEXT_IDS.forEach(function (id) { if (saved[id] !== undefined && saved[id] !== '') setVal(id, saved[id]); });
     CHECK_IDS.forEach(function (id) { if (saved[id] !== undefined) setChk(id, saved[id]); });
+    // Exp times are only valid when restored settings match current settings.
+    if (saved['_cacheKey'] && saved['_cacheKey'] !== exptimeCacheKey()) {
+      clearExptimeFields();
+    }
     if (saved['sch-source']) pendingSource = saved['sch-source'];
     if (typeof saved['_ephemTarget'] === 'string') ephemTarget = saved['_ephemTarget'];
     var savedSrc = saved['_fieldSources'] || {};
@@ -524,7 +580,9 @@
     if (changed) saveOptions();
   }
 
-  var lastSinistroFields = { exptime: '60', mode: 'central_2k_2x2', filter: 'rp' };
+  // exptime starts empty: no default exposure time is assumed -- the user must
+  // enter one before a dry-run/submit. mode/filter keep sensible defaults.
+  var lastSinistroFields = { exptime: '', mode: 'central_2k_2x2', filter: 'rp' };
   var lastScheduleKind = '';
   var lastTargetInfo = null;
   var lastInfoTarget = '';
@@ -667,8 +725,12 @@
     var muscat = k === 'muscat' || k === 'muscat3' || k === 'muscat4';
     var prevMuscat = lastScheduleKind === 'muscat' || lastScheduleKind === 'muscat3' || lastScheduleKind === 'muscat4';
     if (!prevMuscat) rememberSinistroFields();
-    document.querySelectorAll('.muscat-only').forEach(function (e) { e.style.display = muscat ? 'block' : 'none'; });
-    document.querySelectorAll('.sinistro-only').forEach(function (e) { e.style.display = muscat ? 'none' : 'block'; });
+    // .lco-field keeps its flex column layout (label above input); plain
+    // wrappers fall back to block. Forcing 'block' on a .lco-field would
+    // flatten it to label-beside-input, misaligning it with the other fields.
+    function kindDisplay(e) { return e.classList.contains('lco-field') ? 'flex' : 'block'; }
+    document.querySelectorAll('.muscat-only').forEach(function (e) { e.style.display = muscat ? kindDisplay(e) : 'none'; });
+    document.querySelectorAll('.sinistro-only').forEach(function (e) { e.style.display = muscat ? 'none' : kindDisplay(e); });
     updateDefocusLimits();
     var effExp = el('sch-effective-exptime');
     var effMode = el('sch-effective-mode');
@@ -685,15 +747,17 @@
       }
       if (effFilter) {
         effFilter.innerHTML =
-          '<option value="rp">rp</option>' +
-          '<option value="up">up</option>' +
-          '<option value="gp">gp</option>' +
-          '<option value="ip">ip</option>' +
-          '<option value="zs">zs</option>' +
-          '<option value="l">l</option>' +
-          '<option value="m">m</option>' +
-          '<option value="diffuser">diffuser</option>' +
-          '<option value="air">air</option>';
+          '<option value="rp">rp (Pan-STARRS r)</option>' +
+          '<option value="gp">gp (Pan-STARRS g)</option>' +
+          '<option value="ip">ip (Pan-STARRS i)</option>' +
+          '<option value="up">up (SDSS u)</option>' +
+          '<option value="zs">zs (Pan-STARRS z-short)</option>' +
+          '<option value="w">w (Pan-STARRS w)</option>' +
+          '<option value="U">U (Bessell U)</option>' +
+          '<option value="B">B (Bessell B)</option>' +
+          '<option value="V">V (Bessell V)</option>' +
+          '<option value="R">R (Bessell R)</option>' +
+          '<option value="I">I (Bessell I)</option>';
       }
       setVal('sch-effective-exptime', lastSinistroFields.exptime);
       setVal('sch-effective-mode', lastSinistroFields.mode);
@@ -771,9 +835,24 @@
     return d.instrument + ' ' + d.date + ': ' + (d.run_name || d.run_id || 'legacy');
   }
 
+  // Planets are keyed by letter internally (b, c, …). Accept the TOI/TFOP
+  // candidate forms a user may type or import from a sheet — ".01"/"01" -> "b",
+  // ".02"/"02" -> "c" (1-based) — so a ".01" planet resolves to the same entry
+  // the resolvers store under "b". Letters and anything else pass through.
+  function normalizePlanetLabel(p) {
+    p = String(p == null ? '' : p).trim().toLowerCase();
+    if (/^[b-z]$/.test(p)) return p;
+    var n = null;
+    var dotted = p.match(/^\.(\d+)$/);
+    if (dotted) n = parseInt(dotted[1], 10);
+    else if (/^0\d+$/.test(p)) n = parseInt(p, 10);
+    if (n !== null && n >= 1 && n <= 25) return String.fromCharCode(97 + n);
+    return p;
+  }
+
   function populateSourceOptions(info) {
     var sel = el('sch-source');
-    var planet = (val('sch-planet') || 'b').toLowerCase();
+    var planet = normalizePlanetLabel(val('sch-planet') || 'b');
     var prev = pendingSource || sel.value;
     pendingSource = null;
     sel.innerHTML =
@@ -781,6 +860,14 @@
       '<option value="nasa">NASA catalog</option>' +
       '<option value="toi">TOI catalog</option>' +
       '<option value="linear">linear fit</option>';
+    if (info.sheet_configured) {
+      var gs = document.createElement('option');
+      gs.value = 'gsheet'; gs.textContent = 'Google Sheet';
+      sel.appendChild(gs);
+      var gt = document.createElement('option');
+      gt.value = 'gsheet_tc'; gt.textContent = 'Sheet transit centers (linear fit)';
+      sel.appendChild(gt);
+    }
     (info.datasets || []).forEach(function (d, i) {
       if (d.planets_fitted && d.planets_fitted.indexOf(planet) !== -1) {
         var opt = document.createElement('option');
@@ -830,7 +917,7 @@
   }
 
   function applySource(info) {
-    var planet = (val('sch-planet') || 'b').toLowerCase();
+    var planet = normalizePlanetLabel(val('sch-planet') || 'b');
     var source = val('sch-source');
     var ref = (info.reference_ephemeris || {})[planet] || {};
     var nasa = (info.nasa_ephemeris || {})[planet] || {};
@@ -882,6 +969,41 @@
       setFieldSource('sch-period', source.toUpperCase());
       saveOptions();
       msg('msg-windows', source.toUpperCase() + ': t0=' + ephem.t0 + ', P=' + ephem.period + ' d' + (dur != null ? ', dur=' + dur + ' h' : ''), 'ok');
+      return;
+    }
+
+    if (source === 'gsheet') {
+      var g = (info.sheet_ephemeris || {})[planet] || {};
+      if (g.t0 == null || g.period == null) {
+        setVal('sch-t0', ''); setVal('sch-period', '');
+        setFieldSource('sch-t0', ''); setFieldSource('sch-period', '');
+        saveOptions();
+        msg('msg-windows', 'No Google Sheet ephemeris for ' + planet, 'err');
+        return;
+      }
+      setVal('sch-t0', tupleString(g.t0, g.t0_unc));
+      setVal('sch-period', tupleString(g.period, g.period_unc));
+      setFieldSource('sch-t0', 'SHEET'); setFieldSource('sch-period', 'SHEET');
+      if (g.duration != null) { dur = g.duration; setVal('sch-duration', tupleString(g.duration, g.duration_unc)); setFieldSource('sch-duration', 'SHEET'); }
+      saveOptions();
+      msg('msg-windows', 'Google Sheet: t0=' + g.t0 + ', P=' + g.period + ' d' + (dur != null ? ', dur=' + dur + ' h' : ''), 'ok');
+      return;
+    }
+
+    if (source === 'gsheet_tc') {
+      var gt = (info.sheet_fit_ephemeris || {})[planet] || {};
+      if (gt.t0 == null || gt.period == null) {
+        setVal('sch-t0', ''); setVal('sch-period', '');
+        setFieldSource('sch-t0', ''); setFieldSource('sch-period', '');
+        saveOptions();
+        msg('msg-windows', 'No Sheet transit-center fit for ' + planet + ' (needs ≥2 epochs and a seed period)', 'err');
+        return;
+      }
+      setVal('sch-t0', tupleString(gt.t0, gt.t0_unc));
+      setVal('sch-period', tupleString(gt.period, gt.period_unc));
+      setFieldSource('sch-t0', 'SHEET'); setFieldSource('sch-period', 'SHEET');
+      saveOptions();
+      msg('msg-windows', 'Sheet linear fit: t0=' + gt.t0 + ', P=' + gt.period + ' d' + (dur != null ? ', dur=' + dur + ' h' : ''), 'ok');
       return;
     }
 
@@ -1068,8 +1190,9 @@
     var firstWin = selected[0];
     var dateStr = firstWin.mid || firstWin.start;
     var yymmdd = (dateStr || '').substring(2, 10).replace(/-/g, '');
+    var planet = val('sch-planet');
     var kind = val('sch-kind');
-    var name = target + '_' + yymmdd;
+    var name = target + (planet || '') + '_' + yymmdd;
     if (kind === 'muscat3') {
       name += '_M3';
     } else if (kind === 'muscat4') {
@@ -1121,6 +1244,7 @@
     applyWinFilter();
     updateRequestName();
     updateSplitPanel();
+    applyAutoConfig();
   }
 
   // Returns the observability of the single checked window when it's rated
@@ -1216,6 +1340,7 @@
     if (!lastWindows.length && el('windows-table').style.display === 'none') return;
     lastDryRunHash = null;
     el('btn-submit').disabled = true;
+    resetDraftState();
     resetSplitSubmitState();
     clearWindows();
     el('vis-figure').style.display = 'none';
@@ -1235,7 +1360,7 @@
       selected: selectedWindowIndices(),
       dry_run_hash: lastDryRunHash,
       ipp_summary: el('ipp-summary').textContent,
-      payload_pre: el('payload-pre').textContent,
+      payload_pre: el('payload-pre').value,
       ipp_visible: el('ipp-result').style.display !== 'none'
     };
     if (extra) {
@@ -1251,10 +1376,13 @@
     lastWindows = Array.isArray(saved.windows) ? saved.windows : [];
     lastDryRunHash = saved.dry_run_hash || null;
     if (lastWindows.length) renderWindows(saved.selected || []);
-    if (saved.ipp_visible) {
+    if (saved.ipp_visible && saved.payload_pre) {
       el('ipp-result').style.display = '';
       el('ipp-summary').textContent = saved.ipp_summary || '';
-      el('payload-pre').textContent = saved.payload_pre || '';
+      el('payload-pre').value = saved.payload_pre || '';
+      el('btn-dry-run').style.display = '';
+      el('btn-submit').style.display = '';
+      el('btn-submit').disabled = !lastDryRunHash;
     }
   }
 
@@ -1262,6 +1390,76 @@
     if (w.observability && w.observability.best_site) return w.observability.best_site;
     var sites = { muscat: 'ogg', muscat3: 'ogg', muscat4: 'coj', sinistro: 'lsc' };
     return sites[val('sch-kind')] || 'ogg';
+  }
+
+  // The observing site for the imaging request, derived from the checked
+  // windows. Each contributes its best_site (already the first full site for a
+  // window observable at several). One LCO request applies a single site to all
+  // its windows, so a site can only be pinned when every checked window agrees;
+  // a mix (or none) yields '' -- "let LCO's scheduler pick per telescope class".
+  // Returns null when nothing is checked (leave the dropdown alone).
+  function autoSiteFromSelection() {
+    var idxs = selectedWindowIndices();
+    if (!idxs.length) return null;
+    var seen = {};
+    idxs.forEach(function (i) {
+      var o = lastWindows[i] && lastWindows[i].observability;
+      var s = o && o.best_site;
+      if (s) seen[s] = true;
+    });
+    var uniq = Object.keys(seen);
+    return uniq.length === 1 ? uniq[0] : '';
+  }
+
+  // Sites that host 2m telescopes (MuSCAT). 1m-only sites default to Sinistro.
+  var _2M_SITES = { ogg: true, coj: true };
+
+  var lastAutoSite = null;  // value applyAutoConfig last wrote; guards a manual override
+  var lastAutoKind = null;  // value applyAutoConfig last wrote for sch-kind
+
+  function exptimeCacheKey() {
+    var kind = val('sch-kind');
+    var site = kind === 'sinistro' ? val('sch-site') : val('sch-muscat-site');
+    var filter = kind === 'sinistro' ? val('sch-effective-filter') : '';
+    return (val('sch-target') || '') + '|' + (val('sch-planet') || '') + '|' + kind + '|' + (site || '') + '|' + filter;
+  }
+  function clearExptimeFields() {
+    var muscat = val('sch-kind') !== 'sinistro';
+    (muscat ? ['sch-exp-g', 'sch-exp-r', 'sch-exp-i', 'sch-exp-z'] : ['sch-effective-exptime']).forEach(function (id) {
+      setVal(id, '');
+    });
+  }
+
+  function applyAutoConfig() {
+    var site = autoSiteFromSelection();
+    if (site === null || !site) return;
+
+    // Auto-set instrument from site: 1m-only sites get Sinistro, sites with
+    // 2m (ogg, coj) default to MuSCAT. Respect manual override.
+    var desiredKind = _2M_SITES[site] ? 'muscat' : 'sinistro';
+    var kindEl = el('sch-kind');
+    if (kindEl && desiredKind !== kindEl.value && (!kindEl.value || kindEl.value === lastAutoKind)) {
+      kindEl.value = desiredKind;
+      lastAutoKind = desiredKind;
+      applyKind();
+      clearExptimeFields();
+      saveOptions();
+    }
+
+    // Auto-set site for the (possibly changed) instrument.
+    var selId = (val('sch-kind') === 'sinistro') ? 'sch-site' : 'sch-muscat-site';
+    var sel = el(selId);
+    if (!sel) return;
+    if (site) {
+      // The site must be a valid option for the current instrument dropdown.
+      var ok = Array.prototype.some.call(sel.options, function (o) { return o.value === site; });
+      if (!ok) site = '';
+    }
+    if (sel.value && sel.value !== lastAutoSite) return;
+    if (sel.value === site) { lastAutoSite = site; return; }
+    sel.value = site;
+    lastAutoSite = site;
+    saveOptions();
   }
 
   var SITE_COLORS = {
@@ -1292,9 +1490,18 @@
       var d = s.data;
       var color = siteColor(s.site, i);
       var targetAltObservable = d.target_alt.map(function (value, idx) {
+        // Mirror transit_obs._observable_mask: the min-lunar-distance cut only
+        // bites when the Moon is up and >= the dark-Moon floor; a separate phase
+        // cap (LCO max_lunar_phase) drops overly-bright-Moon samples.
+        var illum = d.moon_illum ? d.moon_illum[idx] : 0;
+        var floor = d.moon_dark_floor != null ? d.moon_dark_floor : 0.1;
+        var maxPhase = d.max_lunar_phase != null ? d.max_lunar_phase : 1.0;
+        var enforceSep = d.moon_sep_min > 0 && d.moon_alt[idx] >= 0 && illum >= floor;
+        var distOk = !enforceSep || d.moon_sep[idx] >= d.moon_sep_min;
+        var phaseOk = illum <= maxPhase;
         var isObservable = d.sun_alt[idx] < d.sun_alt_limit &&
                            d.target_alt[idx] >= d.alt_limit &&
-                           d.moon_sep[idx] >= d.moon_sep_min;
+                           distOk && phaseOk;
         return isObservable ? value : null;
       });
       // Per-sample extras for the hover label: [moon_sep, airmass, moon_alt, sun_alt].
@@ -1432,6 +1639,7 @@
     }
   });
   el('sch-planet').addEventListener('change', function () {
+    updateRequestName();
     if (lastTargetInfo && lastInfoTarget === val('sch-target')) {
       populateSourceOptions(lastTargetInfo);
       applySource(lastTargetInfo);
@@ -1456,6 +1664,7 @@
     saveScheduleState();
     updateRequestName();
     updateSplitPanel();
+    applyAutoConfig();
   });
   el('win-filter').addEventListener('change', function () {
     applyWinFilter();
@@ -1467,6 +1676,7 @@
       updateRequestName();
       updateExposureCount();
       updateSplitPanel();
+      applyAutoConfig();
       el('btn-submit').disabled = true;
       lastDryRunHash = null;
     }
@@ -1538,6 +1748,7 @@
       kind: val('sch-kind'), ra: parseCoords().ra, dec: parseCoords().dec,
       obs_airmass: num('sch-obs-airmass') || 2, twilight: val('sch-twilight'),
       moon_sep_min: num('sch-moon-sep') || 0,
+      max_lunar_phase: num('sch-max-lunar-phase') || 1.0,
       include_padding: chk('sch-include-padding'),
       sites: selectedSites()
     };
@@ -1583,7 +1794,8 @@
       var q = new URLSearchParams({
         ra: ra, dec: dec, mid: w.mid, duration: String(dur), site: s,
         obs_airmass: val('sch-obs-airmass') || '2.0', twilight: val('sch-twilight'),
-        moon_sep_min: val('sch-moon-sep') || '30'
+        moon_sep_min: val('sch-moon-sep') || '30',
+        max_lunar_phase: val('sch-max-lunar-phase') || '1.0'
       });
       return fetch('/api/lco/visibility?' + q.toString())
         .then(function (r) { return r.json(); })
@@ -1630,6 +1842,7 @@
       kind: kind, name: val('sch-name'), proposal: val('sch-proposal'),
       target_name: val('sch-target'), ra: coords.ra, dec: coords.dec,
       max_airmass: num('sch-obs-airmass'), min_lunar_distance: num('sch-moon-sep'),
+      max_lunar_phase: num('sch-max-lunar-phase'),
       ipp_value: num('sch-ipp'), windows: selectedWindows(),
       twilight: val('sch-twilight'),
       type: val('sch-type'),
@@ -1712,35 +1925,70 @@
     return messages.length ? messages : null;
   }
 
+  // Science flow: Create draft (build the payload locally, editable) → Check
+  // settings (dry-run the *edited* JSON) → Submit (book exactly what was checked,
+  // hash-locked). "Create draft" only builds — build_requestgroup returns a clear
+  // error for any field it genuinely needs; all payload checking (the LCO
+  // dry-run) is left to "Check settings". Editing the draft after a check
+  // disables Submit until re-check.
+  function parseDraft() {
+    try {
+      var rg = JSON.parse(el('payload-pre').value);
+      if (!rg || typeof rg !== 'object' || Array.isArray(rg)) throw new Error('payload must be a JSON object');
+      return rg;
+    } catch (e) {
+      msg('msg-ipp', 'Draft JSON is invalid: ' + e.message, 'err');
+      return null;
+    }
+  }
+
+  // Collapse the editor + Check/Submit back to just "Create draft".
+  function resetDraftState() {
+    lastDryRunHash = null;
+    el('ipp-result').style.display = 'none';
+    el('payload-pre').value = '';
+    el('ipp-summary').textContent = '';
+    el('btn-dry-run').style.display = 'none';
+    el('btn-submit').style.display = 'none';
+    el('btn-submit').disabled = true;
+  }
+
+  el('btn-create-draft').addEventListener('click', function () {
+    msg('msg-ipp', 'Building draft…');
+    lastDryRunHash = null;
+    el('btn-submit').disabled = true;
+    fetch('/api/lco/build', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildParams()) })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.ok) { msg('msg-ipp', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
+        el('payload-pre').value = JSON.stringify(d.payload, null, 2);
+        el('ipp-summary').textContent = '';
+        el('ipp-result').style.display = '';
+        el('btn-dry-run').style.display = '';
+        el('btn-submit').style.display = '';
+        el('btn-submit').disabled = true;
+        msg('msg-ipp', 'Draft created. Edit if needed, then Check settings.', 'ok');
+        saveScheduleState();
+      }).catch(function (e) { msg('msg-ipp', String(e), 'err'); });
+  });
+
+  // Any edit to the draft invalidates the last dry-run.
+  el('payload-pre').addEventListener('input', function () {
+    if (lastDryRunHash) msg('msg-ipp', 'Draft edited — Check settings again before submitting.');
+    lastDryRunHash = null;
+    el('btn-submit').disabled = true;
+    el('ipp-summary').textContent = '';
+  });
+
   el('btn-dry-run').addEventListener('click', function () {
-    if (!selectedWindows().length) { msg('msg-ipp', 'Generate and select at least one window first', 'err'); return; }
-    // Pre-check the request-level required fields so the user gets a specific
-    // message instead of the backend's generic "missing required parameters".
-    if (!val('sch-target')) { msg('msg-ipp', 'Enter a target', 'err'); return; }
-    var reqCoords = parseCoords();
-    if (reqCoords.ra === null || reqCoords.dec === null) {
-      msg('msg-ipp', 'Enter valid "RA, Dec (deg)" — resolve the target or type coordinates', 'err');
-      return;
-    }
-    if (!val('sch-proposal')) { msg('msg-ipp', 'Select a proposal', 'err'); return; }
-    if (!val('sch-name')) { msg('msg-ipp', 'Request name is empty — reselect a window to auto-fill it', 'err'); return; }
-    var kind = val('sch-kind');
-    if (kind === 'muscat' || kind === 'muscat3' || kind === 'muscat4') {
-      var hasExp = false;
-      ['g', 'r', 'i', 'z'].forEach(function (b) { if (num('sch-exp-' + b) !== null) hasExp = true; });
-      if (!hasExp) { msg('msg-ipp', 'Enter at least one exposure time (g, r, i, or z)', 'err'); return; }
-      if (!val('sch-muscat-site')) { msg('msg-ipp', 'Select a site (ogg or coj)', 'err'); return; }
-    } else if (kind === 'sinistro') {
-      if (!val('sch-site')) { msg('msg-ipp', 'Select a site (ogg, coj, lsc, cpt, tfn, or elp)', 'err'); return; }
-    }
+    var rg = parseDraft();
+    if (!rg) return;
     msg('msg-ipp', 'Running dry-run…');
     lastDryRunHash = null;
     el('btn-submit').disabled = true;
-    fetch('/api/lco/ipp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildParams()) })
+    fetch('/api/lco/ipp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ requestgroup: rg }) })
       .then(function (r) { return r.json(); }).then(function (d) {
         if (!d.ok) { msg('msg-ipp', (d.error || 'failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
         lastDryRunHash = d.payload_hash;
-        el('ipp-result').style.display = '';
         var ipp = d.ipp || {};
         var lcoErrors = formatLcoErrors(ipp);
         if (lcoErrors && lcoErrors.length > 0) {
@@ -1750,14 +1998,13 @@
             lcoErrors.map(function (e) { return e; }).join('<br>') +
             '</div>';
           el('ipp-summary').innerHTML = errorHtml;
-          msg('msg-ipp', 'Validation errors found. Fix them and re-run dry-run.', 'err');
+          msg('msg-ipp', 'Validation errors found. Fix the draft and re-run Check settings.', 'err');
         } else {
           el('btn-submit').disabled = false;
           var allowed = ipp.max_allowable_ipp_value !== undefined ? ipp.max_allowable_ipp_value : (ipp.errors ? 'Error in response' : 'OK');
           el('ipp-summary').textContent = 'Max allowable IPP: ' + allowed + ' · payload hash ' + (d.payload_hash || '').slice(0, 12);
           msg('msg-ipp', 'Dry-run OK. Submit button enabled.', 'ok');
         }
-        el('payload-pre').textContent = JSON.stringify(d.payload, null, 2);
         saveScheduleState();
       }).catch(function (e) { msg('msg-ipp', String(e), 'err'); });
   });
@@ -1824,7 +2071,10 @@
   }
 
   function submitLcoRequest() {
-    var body = buildParams();
+    var rg = parseDraft();
+    if (!rg) return;
+    var body = buildParams();     // metadata for local monitoring
+    body.requestgroup = rg;       // the edited draft is what gets booked
     body.confirm = true;
     body.dry_run_hash = lastDryRunHash;
     msg('msg-ipp', 'Submitting…');
@@ -1880,6 +2130,8 @@
       var hasExp = false;
       ['g', 'r', 'i', 'z'].forEach(function (b) { if (num('sch-exp-' + b) !== null) hasExp = true; });
       if (!hasExp) { msg('msg-split-ipp', 'Enter at least one exposure time (g, r, i, or z)', 'err'); return; }
+    } else if (kind === 'sinistro') {
+      if (num('sch-effective-exptime') === null) { msg('msg-split-ipp', 'Enter an exposure time (s)', 'err'); return; }
     }
     resetSplitSubmitState();
     msg('msg-split-ipp', 'Running dry-run for both legs…');
@@ -2038,6 +2290,89 @@
     window.location.href = url;
   });
 
+  // --- Show ObsLog: this target's past exposures from the frames obslog ------
+  function fmtDefocus(focus) {
+    if (focus === null || focus === undefined || focus === '') return '—';
+    var f = Number(focus);
+    if (!isFinite(f)) return '—';
+    var rounded = Math.round(f * 2) / 2;
+    return rounded.toFixed(1) + ' mm';
+  }
+  function fmtObsDate(yymmdd) {
+    var s = String(yymmdd || '');
+    return /^\d{6}$/.test(s) ? '20' + s.slice(0, 2) + '-' + s.slice(2, 4) + '-' + s.slice(4, 6) : s;
+  }
+  // Map an obslog filter value to a MuSCAT band field (g/r/i/z), else ''.
+  function bandForFilter(filter) {
+    var f = String(filter || '').trim().toLowerCase();
+    if (/^g/.test(f)) return 'g';
+    if (/^r/.test(f)) return 'r';
+    if (/^i/.test(f)) return 'i';
+    if (/^z/.test(f)) return 'z';
+    return '';
+  }
+  function applyObslogExposure(row) {
+    var exp = Math.round(row.exptime);
+    if (val('sch-kind') === 'sinistro') {
+      setVal('sch-effective-exptime', String(exp));
+      saveOptions();
+      msg('msg-obslog', 'Exp time set to ' + exp + ' s (from ' + row.instrument + ' ' + fmtObsDate(row.last_date) + ').', 'ok');
+      return;
+    }
+    var band = bandForFilter(row.filter);
+    if (!band) { msg('msg-obslog', "Filter '" + row.filter + "' doesn't map to a g/r/i/z band; enter the exp time manually.", 'err'); return; }
+    setVal('sch-exp-' + band, String(exp));
+    updateScheduleFields();
+    saveOptions();
+    msg('msg-obslog', band + '-band exp set to ' + exp + ' s (from ' + row.instrument + ' ' + fmtObsDate(row.last_date) + ').', 'ok');
+  }
+  function renderObslog(rows) {
+    var tb = el('obslog-body');
+    tb.innerHTML = '';
+    rows.forEach(function (row) {
+      var tr = document.createElement('tr');
+      tr.title = 'Click to apply this exposure time';
+      var dates = fmtObsDate(row.first_date) + (row.last_date !== row.first_date ? ' … ' + fmtObsDate(row.last_date) : '');
+      tr.innerHTML =
+        '<td>' + dates + '</td>' +
+        '<td>' + escapeHtml(row.instrument) + '</td>' +
+        '<td>' + escapeHtml(row.filter || '—') + '</td>' +
+        '<td>' + escapeHtml(row.read_mode || '—') + '</td>' +
+        '<td>' + fmtDefocus(row.focus) + '</td>' +
+        '<td>' + Math.round(row.exptime) + '</td>' +
+        '<td>' + row.nframes + '</td>';
+      tr.addEventListener('click', function () { applyObslogExposure(row); });
+      tb.appendChild(tr);
+    });
+    el('obslog-panel').style.display = rows.length ? '' : 'none';
+  }
+  el('btn-obslog').addEventListener('click', function () {
+    var target = val('sch-target');
+    if (!target) { msg('msg-obslog', 'Enter a target first', 'err'); return; }
+    msg('msg-obslog', 'Loading obs log…');
+    fetch('/api/lco/obslog-exposures?target=' + encodeURIComponent(target))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { msg('msg-obslog', d.error || 'lookup failed', 'err'); return; }
+        var rows = d.exposures || [];
+        renderObslog(rows);
+        if (!rows.length) { msg('msg-obslog', 'No past exposures found for ' + target + '.', ''); }
+        else { msg('msg-obslog', rows.length + ' past exposure setup(s) for ' + target + '. Click one to apply.', 'ok'); }
+      })
+      .catch(function (e) { msg('msg-obslog', String(e), 'err'); });
+  });
+
+  // --- Observation-request tabs (Science obs / Test obs) --------------------
+  document.querySelectorAll('.lco-tab').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var tab = btn.getAttribute('data-tab');
+      document.querySelectorAll('.lco-tab').forEach(function (b) { b.classList.toggle('active', b === btn); });
+      document.querySelectorAll('.lco-tab-panel').forEach(function (p) {
+        p.style.display = (p.getAttribute('data-panel') === tab) ? '' : 'none';
+      });
+    });
+  });
+
   var currentTestRecord = null;
   var currentTestHash = null;
   function testKind(params) {
@@ -2050,8 +2385,11 @@
     var p = buildParams();
     p.kind = testKind(p);
     if (!p.kind) { showMessageModal('Unsupported test', 'Select MuSCAT site OGG (MuSCAT3), COJ (MuSCAT4), or Sinistro.'); return; }
-    if (!p.target_name || p.ra === null || p.dec === null || !p.windows.length) {
-      showMessageModal('Incomplete schedule', 'Enter a target and coordinates, then select a transit window.'); return;
+    if (!p.target_name || p.ra === null || p.dec === null) {
+      showMessageModal('Incomplete schedule', 'Enter a target and coordinates.'); return;
+    }
+    if (!p.windows.length) {
+      showMessageModal('Incomplete schedule', 'Generate and select a transit window first (Science obs tab).'); return;
     }
     p.exposure_budget_s = num('sch-test-budget') || 600;
     p.defocus_mm = p.defocus;
@@ -2064,21 +2402,37 @@
         if (!d.ok) throw new Error(d.error || 'Could not generate test plan');
         currentTestRecord = d.record; currentTestHash = null;
         el('btn-test-submit').disabled = true;
-        el('test-observation-summary').textContent = JSON.stringify(d.record.plan, null, 2);
-        msg('msg-test-observation', 'Draft generated. Review before checking settings.');
-        el('test-observation-dialog').showModal();
+        var _INTERNAL_PLAN_KEYS = ['fov_candidates', 'removed_combinations', 'provenance', 'capabilities', 'version'];
+        var displayPlan = Object.fromEntries(Object.entries(d.record.plan).filter(function (kv) { return !_INTERNAL_PLAN_KEYS.includes(kv[0]); }));
+        el('test-observation-summary').value = JSON.stringify(displayPlan, null, 2);
+        // Reveal the inline review + validate/submit controls in the Test obs tab.
+        el('test-observation-summary').style.display = '';
+        el('test-obs-actions').style.display = '';
+        msg('msg-test-observation', 'Draft generated. Edit if needed, then Check settings.');
       }).catch(function (e) { showMessageModal('Test plan failed', String(e)); });
   });
-  el('btn-test-close').addEventListener('click', function () { el('test-observation-dialog').close(); });
-  // Clicking the backdrop hits the <dialog> element itself (its content sits
-  // in child elements), so a click whose target is the dialog itself is
-  // outside the visible panel.
-  el('test-observation-dialog').addEventListener('click', function (e) {
-    if (e.target === e.currentTarget) e.currentTarget.close();
+  // The edited plan draft (displayed subset) is overlaid on the stored plan.
+  function parseTestDraft() {
+    try {
+      var plan = JSON.parse(el('test-observation-summary').value);
+      if (!plan || typeof plan !== 'object' || Array.isArray(plan)) throw new Error('draft must be a JSON object');
+      return plan;
+    } catch (e) {
+      msg('msg-test-observation', 'Draft JSON is invalid: ' + e.message, 'err');
+      return null;
+    }
+  }
+  // Editing the draft invalidates the last dry-run.
+  el('test-observation-summary').addEventListener('input', function () {
+    if (currentTestHash) msg('msg-test-observation', 'Draft edited — Check settings again before submitting.');
+    currentTestHash = null;
+    el('btn-test-submit').disabled = true;
   });
   el('btn-test-dry-run').addEventListener('click', function () {
     if (!currentTestRecord) return;
-    var p = buildParams(); p.kind = currentTestRecord.instrument;
+    var override = parseTestDraft();
+    if (!override) return;
+    var p = buildParams(); p.kind = currentTestRecord.instrument; p.plan_override = override;
     msg('msg-test-observation', 'Running guarded LCO dry-run…');
     fetch('/api/lco/test-observations/' + encodeURIComponent(currentTestRecord.id) + '/ipp', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(p) })
       .then(function (r) { return r.json(); }).then(function (d) {
@@ -2089,9 +2443,11 @@
   });
   el('btn-test-submit').addEventListener('click', function () {
     if (!currentTestRecord || !currentTestHash) return;
+    var override = parseTestDraft();
+    if (!override) return;
     showConfirmModal('Submit TEST observation?', 'This books the displayed telescope time and requires server-side live submission to be enabled.', {confirmLabel: 'Submit TEST', confirmClass: 'btn danger'}).then(function (confirmed) {
       if (!confirmed) return;
-      var p = buildParams(); p.kind = currentTestRecord.instrument; p.confirm = true; p.dry_run_hash = currentTestHash;
+      var p = buildParams(); p.kind = currentTestRecord.instrument; p.confirm = true; p.dry_run_hash = currentTestHash; p.plan_override = override;
       fetch('/api/lco/test-observations/' + encodeURIComponent(currentTestRecord.id) + '/submit', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(p) })
         .then(function (r) { return r.json(); }).then(function (d) {
           if (!d.ok) throw new Error(d.error || 'Submission failed');

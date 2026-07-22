@@ -22,8 +22,10 @@ Design notes
   under a project site (``user.github.io/repo/``), a user site, or a custom
   domain with no hard-coded base path. ``--base-path`` can force root-absolute
   links instead.
-* **Live-API pages** (ephemeris, fov, exposure, lco) render as static shells; a
-  banner is injected explaining that live data and actions are disabled.
+* **Live-API pages** (ephemeris, fov, exposure, lco) render as static shells:
+  the top banner marks the whole snapshot, and a per-page "no live data" notice
+  is injected into these pages' content (labelling the big empty plot/viewer
+  boxes) so they read as intentional rather than broken.
 * **Privacy.** ``scrub_notes`` (default on) blanks user-authored target notes and
   job usernames at the data layer before capture, so private text is never
   written to the published site.
@@ -40,6 +42,11 @@ from typing import Callable
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 # ── constants ────────────────────────────────────────────────────────────────
+
+# Maximum number of <tbody> data rows published in the static snapshot for any
+# table.  Keeps large listing pages (targets, obslog, TOI) small and fast while
+# still illustrating every table's structure and column layout.
+_TABLE_ROW_LIMIT = 10
 
 # Pages captured with no query parameters. Order controls nothing here; the
 # navbar defines the visible order. The three parametric parents
@@ -88,6 +95,20 @@ _FIGURE_SUFFIXES: frozenset[str] = frozenset({".gif", ".png"})
 _EXTERNAL_RE = re.compile(r"^(?:[a-z]+:|//|#|data:|mailto:|tel:|javascript:)", re.I)
 
 _BANNER_MARKER = "<!--muscat-static-snapshot-banner-->"
+_NODATA_MARKER = "<!--muscat-static-nolivedata-->"
+
+# Sitedirs whose pages are live-API shells: their plots, tables, and actions are
+# drawn client-side from ``/api/*`` that a static host does not serve, so they
+# render as blank regions. We stamp an explicit "no live data" notice so the
+# snapshot reads as intentional rather than a broken/failed page.
+_LIVE_API_SITEDIRS: frozenset[str] = frozenset(
+    {"ephemeris", "fov", "exposure", "lco/schedule", "lco/archive"}
+)
+
+# Big empty "viewer" boxes (plot / sky viewer) worth labelling in place so they
+# don't look like a failed load. Tolerant: an id that is absent (or already
+# populated) is simply skipped.
+_LIVE_API_EMPTY_BOXES: tuple[str, ...] = ("oc-plot", "aladin-lite-div")
 
 
 @dataclass
@@ -147,6 +168,48 @@ def _inject_banner(html: str) -> str:
         return html
     idx = m.end()
     return html[:idx] + "\n" + _banner_html() + html[idx:]
+
+
+def _no_live_data_html() -> str:
+    """A self-contained "no live data" notice for a live-API shell, plus a small
+    script that labels the big empty viewer boxes so they read as intentional.
+
+    Styles use the page's own CSS variables (with fallbacks) so the notice
+    adapts to the active light/dark theme.
+    """
+    boxes = ",".join(f'"{b}"' for b in _LIVE_API_EMPTY_BOXES)
+    return (
+        f"{_NODATA_MARKER}\n"
+        '<div role="note" class="static-nodata-note" style="margin:1rem 0;'
+        "padding:.8rem 1rem;border:1px dashed var(--border,#8a7a3a);border-radius:8px;"
+        "background:var(--surface,#2a2410);color:var(--text-dim,#c9b98a);"
+        'font:500 .9rem/1.45 system-ui,sans-serif;">'
+        "&#128268; <strong>No live data in this static snapshot.</strong> "
+        "This page is interactive — its plots, tables, and actions load data from "
+        "the live muscat-db server, which is not available here."
+        "</div>\n"
+        "<script>document.addEventListener('DOMContentLoaded',function(){"
+        f"[{boxes}].forEach(function(id){{"
+        "var el=document.getElementById(id);"
+        "if(!el||(el.textContent||'').trim()!=='')return;"
+        "el.style.cssText+=';display:flex;align-items:center;justify-content:center;"
+        "min-height:220px;border:1px dashed var(--border,#8a7a3a);border-radius:8px;"
+        "color:var(--text-dim,#c9b98a);font:500 .95rem system-ui,sans-serif;';"
+        "el.textContent='No live data in static snapshot';"
+        "});});</script>"
+    )
+
+
+def _inject_no_live_data(html: str, sitedir: str) -> str:
+    """On live-API shell pages, insert the "no live data" notice at the top of the
+    main content wrapper (``<div class="container">``)."""
+    if sitedir not in _LIVE_API_SITEDIRS or _NODATA_MARKER in html:
+        return html
+    m = re.search(r'<div class="container"[^>]*>', html, re.I)
+    if not m:
+        return html
+    idx = m.end()
+    return html[:idx] + "\n" + _no_live_data_html() + html[idx:]
 
 
 def _url_to_sitedir(path: str, query: str = "") -> str:
@@ -507,6 +570,115 @@ def _rewrite_link(
     return prefix + trimmed
 
 
+def _truncate_tables(html: str, limit: int = _TABLE_ROW_LIMIT) -> str:
+    """Trim every ``<tbody>`` in *html* to at most *limit* ``<tr>`` rows.
+
+    Uses ``html.parser`` (stdlib) so nested tags inside cells are handled
+    correctly.  A dim "note" row is appended when rows are dropped so readers
+    know the table was truncated.  ``<thead>`` / ``<tfoot>`` rows are never
+    touched.
+    """
+    from html.parser import HTMLParser
+
+    class _TruncatingParser(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=False)
+            self._out: list[str] = []
+            self._in_tbody: int = 0      # nesting depth (tables can nest)
+            self._tbody_tr_count: int = 0
+            self._skip_depth: int | None = None  # tag depth when we started skipping
+            self._depth: int = 0         # total open-tag depth
+            self._tbody_dropped: list[int] = []   # dropped counts per tbody
+
+        # -- HTMLParser callbacks ------------------------------------------
+
+        def handle_starttag(self, tag: str, attrs: list) -> None:
+            self._depth += 1
+            raw = self._raw_tag(tag, attrs)
+            if tag == "tbody":
+                self._in_tbody += 1
+                self._tbody_tr_count = 0
+                self._tbody_dropped.append(0)
+                self._out.append(raw)
+            elif tag == "tr" and self._in_tbody and self._skip_depth is None:
+                if self._tbody_tr_count < limit:
+                    self._tbody_tr_count += 1
+                    self._out.append(raw)
+                else:
+                    # Start skipping this <tr> and everything inside it.
+                    self._skip_depth = self._depth
+                    if self._tbody_dropped:
+                        self._tbody_dropped[-1] += 1
+            elif self._skip_depth is None:
+                self._out.append(raw)
+
+        def handle_endtag(self, tag: str) -> None:
+            if self._skip_depth is not None:
+                if self._depth == self._skip_depth:
+                    # The skipped <tr> is now fully closed.
+                    self._skip_depth = None
+                self._depth -= 1
+                return
+            self._depth -= 1
+            if tag == "tbody" and self._in_tbody:
+                self._in_tbody -= 1
+                dropped = self._tbody_dropped.pop() if self._tbody_dropped else 0
+                if dropped:
+                    self._out.append(
+                        f'<tr class="static-truncated-note">'
+                        f'<td colspan="99" style="text-align:center;opacity:.55;'
+                        f'font-size:.8rem;padding:.35rem;">'
+                        f"\u2026{dropped:,} more row{'s' if dropped != 1 else ''} "
+                        f"not shown in static snapshot"
+                        f"</td></tr>"
+                    )
+            self._out.append(f"</{tag}>")
+
+        def handle_data(self, data: str) -> None:
+            if self._skip_depth is None:
+                self._out.append(data)
+
+        def handle_entityref(self, name: str) -> None:
+            if self._skip_depth is None:
+                self._out.append(f"&{name};")
+
+        def handle_charref(self, name: str) -> None:
+            if self._skip_depth is None:
+                self._out.append(f"&#{name};")
+
+        def handle_comment(self, data: str) -> None:
+            if self._skip_depth is None:
+                self._out.append(f"<!--{data}-->")
+
+        def handle_decl(self, decl: str) -> None:
+            self._out.append(f"<!{decl}>")
+
+        def unknown_decl(self, data: str) -> None:
+            self._out.append(f"<![{data}]>")
+
+        # -- helpers -------------------------------------------------------
+
+        @staticmethod
+        def _raw_tag(tag: str, attrs: list) -> str:
+            parts = [tag]
+            for name, value in attrs:
+                if value is None:
+                    parts.append(name)
+                else:
+                    # Preserve original quoting style isn't available from
+                    # html.parser; double-quotes are always safe.
+                    escaped = value.replace('"', "&quot;")
+                    parts.append(f'{name}="{escaped}"')
+            return "<" + " ".join(parts) + ">"
+
+        def result(self) -> str:
+            return "".join(self._out)
+
+    parser = _TruncatingParser()
+    parser.feed(html)
+    return parser.result()
+
+
 def _rewrite_html(
     html: str,
     sitedir: str,
@@ -514,8 +686,9 @@ def _rewrite_html(
     base_path: str,
     figures: dict[str, str],
 ) -> str:
-    """Rewrite all internal ``href``/``src``/``action`` links in a page and
-    inject the snapshot banner."""
+    """Rewrite all internal ``href``/``src``/``action`` links in a page,
+    truncate tables to ``_TABLE_ROW_LIMIT`` rows, and inject the snapshot banner.
+    """
     prefix = _prefix_for(sitedir, base_path)
 
     def repl(m: re.Match) -> str:
@@ -527,7 +700,9 @@ def _rewrite_html(
         r'(?P<attr>href|src|action)=(?P<q>["\'])(?P<v>[^"\']*)(?P=q)', re.I
     )
     html = pattern.sub(repl, html)
-    return _inject_banner(html)
+    html = _truncate_tables(html)
+    html = _inject_banner(html)
+    return _inject_no_live_data(html, sitedir)
 
 
 # ── orchestration ────────────────────────────────────────────────────────────

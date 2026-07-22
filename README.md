@@ -126,7 +126,9 @@ token encryption), the `MUSCAT_LCO_MONITOR_*` request-monitor settings,
 `MUSCAT_QUICKLOOK_URL`, and `MUSCAT_BOYLE_CATALOG` (optional TOI
 stellar-rotation catalog). Deployment helpers additionally read
 `MUSCAT_HTPASSWD_FILE` and `MUSCAT_NGINX_GROUP`; target-page NASA ADS search
-accepts `ADS_API_TOKEN` with the legacy `ADS_DEV_KEY`/`ADS_TOKEN` aliases.
+accepts `ADS_API_TOKEN` with the legacy `ADS_DEV_KEY`/`ADS_TOKEN` aliases. The
+team-chat assistant reads the `MUSCAT_OLLAMA_*` and `MUSCAT_AGENT_HISTORY_TTL_S`
+settings (see [Codebase chat assistant (@bot)](#codebase-chat-assistant-bot)).
 At startup the server prints the status (`set` / `default` / `unset`) of the
 core variables registered in `config.py`.
 
@@ -399,19 +401,29 @@ muscat-db serve              # http://0.0.0.0:8000
 muscat-db serve --port 8080  # custom port
 ```
 
-### Build the static documentation site (GitHub Pages)
+### Build & publish the static documentation site (GitHub Pages)
 
 Capture a static, navigable snapshot of the web UI (nav pages + representative
-example detail pages, with real figures) for publishing as a GitHub Page. Run on
-the host, where the real `muscat.db` and figure trees live:
+example detail pages, with real figures) and publish it to GitHub Pages. Build
+on the host, where the real `muscat.db` and figure trees live:
 
 ```bash
-muscat-db build-static-site --out site          # scrubs notes/usernames by default
-cd site && python -m http.server 8080           # preview exactly as Pages serves it
+# Preview locally, exactly as Pages serves it:
+muscat-db build-static-site --out /tmp/site      # scrubs notes/usernames by default
+cd /tmp/site && python -m http.server 8080
+
+# Build and publish in one step:
+scripts/deploy_static_site.sh
 ```
 
-Commit the generated `site/` tree; `.github/workflows/pages.yml` publishes it.
-See [docs/gh-page.md](docs/gh-page.md) for the design, privacy notes, and options.
+The snapshot is **not** committed to `main`/`test` (it is gitignored) so that
+regenerated binary figures never accumulate in the repository history.
+`scripts/deploy_static_site.sh` builds the populated site on the host and
+force-pushes it as a single orphan commit to the `pages` branch;
+`.github/workflows/pages.yml` then deploys that branch (Pages source: GitHub
+Actions). The script refuses to publish a data-less build whose navbar would
+404. See [docs/gh-page.md](docs/gh-page.md) for the design, privacy notes, and
+options.
 
 ## Web Frontend
 
@@ -466,6 +478,50 @@ Calibration and engineering frames (`DARK*`, `FLAT*`, `BIAS*`, `MOVIE`, `FOCUS_A
 
 Fonts, icons, theme, and search are local or inlined. The **Guide** page loads
 Mermaid from jsDelivr to render detailed workflow diagrams for each pipeline stage.
+
+## Codebase chat assistant (@bot)
+
+Team chat embeds a read-only codebase assistant. Address it with
+`@bot <question>` (the trigger name is configurable via
+`MUSCAT_CHAT_AGENT_NAME`) and it answers questions about this codebase — its
+data model, workflows, configuration, and how the pieces fit together. The
+question, grounded context, and a short window of recent chat are sent to a
+Gemma model on an [ollama](https://ollama.com) server (`/api/chat`,
+non-streaming), and the reply is posted back into chat.
+
+- **Read-only by design.** The request never carries a `tools`/`functions`
+  field, so the model cannot request an action, and the reply is treated as
+  inert text (only stored and broadcast, never executed). The assistant can
+  explain what a human would change and where, but cannot edit files, run jobs,
+  or touch the database.
+- **Grounding.** Every reply is grounded in the project's own `CLAUDE.md` plus
+  the `src/muscat_db/` module map. When a question is about a specific pipeline
+  stage, the matching engine repository's own docs (`README.md` + `CLAUDE.md`)
+  are folded in as extra read-only context: **photometry → prose2**, **transit
+  fit → timer**, **TTV fit → harmonic**. Topic routing recognises both English
+  and Japanese phrasing (e.g. 測光, トランジットフィット, トランジット時刻変動),
+  and the model replies in the asker's language. Repo paths resolve from
+  `MUSCAT_PROSE_PROJECT`, `MUSCAT_TIMER_PROJECT`, and `MUSCAT_HARMONIC_PROJECT`
+  (defaults under `../ext_tools`).
+- **Concurrency.** Up to `MUSCAT_OLLAMA_MAX_CONCURRENT` (default 2) questions
+  are answered at once on the single-worker server; a further concurrent
+  request gets an ephemeral "busy" note instead of queueing.
+- **Shared context and auto-clear.** Team chat is one shared room, so the
+  assistant sees the last 8 turns of the *shared* conversation (each prefixed
+  with the speaker's name), not a private per-user session. Context clears
+  itself after an idle gap of `MUSCAT_AGENT_HISTORY_TTL_S` (default 900 s), and
+  posting `@bot /reset` (or `/clear`) drops it immediately via a persisted
+  system divider.
+- **Context window.** ollama otherwise defaults to a ~4096-token window
+  regardless of the model's capacity (gemma4 supports 128k), silently
+  truncating the prompt; the assistant requests an explicit
+  `MUSCAT_OLLAMA_NUM_CTX` (default 8192).
+- **Connectivity.** ollama on `muscat-ut4` binds `127.0.0.1` (no auth), so
+  `scripts/ollama_tunnel.sh` forwards it over SSH to a local port (run it under
+  the `ollama-tunnel` tmux session for auto-reconnect). Point
+  `MUSCAT_OLLAMA_URL` at the local tunnel end (`http://127.0.0.1:11434`); the
+  model tag is `MUSCAT_OLLAMA_MODEL` (default `gemma4:latest`) and the
+  per-request timeout is `MUSCAT_OLLAMA_TIMEOUT_S`.
 
 ## API Documentation
 

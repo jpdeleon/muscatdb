@@ -230,43 +230,117 @@ class LcoTest(unittest.TestCase):
         self.assertEqual(config["repeat_duration"], 17591)
         self.assertEqual(config["instrument_configs"][0]["exposure_count"], 1)
 
-    @patch("muscat_db.transit_obs.classify_transits")
-    def test_muscat_repeat_expose_rejects_padded_partial_window(self, mock_classify):
-        mock_classify.return_value = [{"rating": "partial", "sites": ["ogg"], "best_site": "ogg"}]
+    @patch("muscat_db.transit_obs.observable_interval")
+    def test_repeat_expose_clips_window_to_observable(self, mock_interval):
+        """A window running past the target's set is clipped to the observable
+        run, and repeat_duration is held back one edge margin for the set edge."""
+        mock_interval.return_value = {
+            "start": "2026-07-26T23:47:44Z",   # unchanged (target already up)
+            "end": "2026-07-27T03:14:44Z",     # clipped: target sets below limit
+            "fraction": 0.55,
+            "hit_start_limit": False,
+            "hit_end_limit": True,
+        }
+        params = {
+            "name": "n", "proposal": "p", "target_name": "HIP67522",
+            "ra": 207.52600, "dec": -40.83590, "kind": "sinistro",
+            "site": "lsc", "max_airmass": 2.0, "min_lunar_distance": 30,
+            "twilight": "nautical", "filter": "rp", "exposure_time": 60,
+            "readout_mode": "central_2k_2x2", "type": "REPEAT_EXPOSE",
+            "windows": [{"start": "2026-07-26T23:47:44Z", "end": "2026-07-27T06:08:44Z"}],
+        }
+        req = lco.build_requestgroup("sinistro", params)["requests"][0]
+        # Window boundary clipped to the observable end, not the padded 06:08.
+        self.assertEqual(req["windows"][0]["start"], "2026-07-26T23:47:44Z")
+        self.assertEqual(req["windows"][0]["end"], "2026-07-27T03:14:44Z")
+        # observable_interval called with the pinned site + submitted constraints.
+        args, kwargs = mock_interval.call_args
+        self.assertEqual(args[3], "lsc")
+        self.assertEqual(kwargs["max_airmass"], 2.0)
+        self.assertEqual(kwargs["twilight"], "nautical")
+        self.assertEqual(kwargs["moon_sep_min"], 30.0)
+        # repeat_duration = clipped span (12420 s) - one edge margin (900) - setup (180).
+        config = req["configurations"][0]
+        self.assertEqual(config["type"], "REPEAT_EXPOSE")
+        self.assertEqual(config["repeat_duration"], 12420 - 900 - 180)
+
+    @patch("muscat_db.transit_obs.observable_interval")
+    def test_repeat_expose_full_window_not_clipped(self, mock_interval):
+        """A fully observable window keeps its boundaries and takes no edge-margin
+        deduction (neither edge is bounded by the target's rise/set)."""
+        mock_interval.return_value = {
+            "start": "2026-07-04T07:00:00Z", "end": "2026-07-04T10:00:00Z",
+            "fraction": 1.0, "hit_start_limit": False, "hit_end_limit": False,
+        }
         params = {
             "name": "n", "proposal": "p", "target_name": "t",
-            "ra": 261.82914, "dec": -25.92151, "kind": "muscat",
-            "site": "ogg", "max_airmass": 2.0, "min_lunar_distance": 30,
-            "twilight": "nautical",
-            "exposure_times": {"g": 30, "r": 30, "i": 30, "z": 30},
+            "ra": 10.0, "dec": -5.0, "kind": "sinistro",
+            "site": "lsc", "max_airmass": 2.0, "min_lunar_distance": 30,
+            "filter": "rp", "exposure_time": 60, "readout_mode": "central_2k_2x2",
             "type": "REPEAT_EXPOSE",
-            "windows": [{"start": "2026-07-18T05:30:12Z", "end": "2026-07-18T10:26:24Z"}],
+            "windows": [{"start": "2026-07-04T07:00:00Z", "end": "2026-07-04T10:00:00Z"}],
+        }
+        req = lco.build_requestgroup("sinistro", params)["requests"][0]
+        self.assertEqual(req["windows"][0]["end"], "2026-07-04T10:00:00Z")
+        # 3 h window (10800 s) minus only the 180 s setup overhead — no edge margin.
+        self.assertEqual(req["configurations"][0]["repeat_duration"], 10800 - 180)
+
+    @patch("muscat_db.transit_obs.observable_interval")
+    def test_repeat_expose_raises_when_window_unobservable(self, mock_interval):
+        """No observable time at the pinned site raises a clear 400."""
+        mock_interval.return_value = None
+        params = {
+            "name": "n", "proposal": "p", "target_name": "t",
+            "ra": 10.0, "dec": -5.0, "kind": "sinistro",
+            "site": "cpt", "filter": "rp", "exposure_time": 60,
+            "readout_mode": "central_2k_2x2", "type": "REPEAT_EXPOSE",
+            "windows": [{"start": "2026-07-04T07:00:00Z", "end": "2026-07-04T10:00:00Z"}],
         }
         with self.assertRaises(lco.LcoError) as cm:
-            lco.build_requestgroup("muscat", params)
+            lco.build_requestgroup("sinistro", params)
         self.assertEqual(cm.exception.status, 400)
-        self.assertIn("not fully observable", cm.exception.message)
-        self.assertIn("Include padding", cm.exception.detail)
-        mock_classify.assert_called_once()
-        _, kwargs = mock_classify.call_args
-        self.assertTrue(kwargs["include_padding"])
-        self.assertEqual(kwargs["sites"], ["ogg"])
-        self.assertEqual(kwargs["twilight"], "nautical")
+        self.assertIn("not observable at CPT", cm.exception.message)
 
-    @patch("muscat_db.transit_obs.classify_transits")
-    def test_muscat_repeat_expose_accepts_padded_full_window(self, mock_classify):
-        mock_classify.return_value = [{"rating": "full", "sites": ["ogg"], "best_site": "ogg"}]
+    @patch("muscat_db.transit_obs.observable_interval")
+    def test_repeat_expose_no_site_skips_clip(self, mock_interval):
+        """With no site pinned the scheduler may pick any site, so no clip runs."""
         params = {
             "name": "n", "proposal": "p", "target_name": "t",
-            "ra": 261.82914, "dec": -25.92151, "kind": "muscat",
-            "site": "ogg", "max_airmass": 2.0, "min_lunar_distance": 30,
-            "exposure_times": {"g": 30, "r": 30, "i": 30, "z": 30},
+            "ra": 10.0, "dec": -5.0, "kind": "sinistro",
+            "filter": "rp", "exposure_time": 60, "readout_mode": "central_2k_2x2",
             "type": "REPEAT_EXPOSE",
-            "windows": [{"start": "2026-07-18T05:30:12Z", "end": "2026-07-18T10:26:24Z"}],
+            "windows": [{"start": "2026-07-04T07:00:00Z", "end": "2026-07-04T10:00:00Z"}],
         }
-        config = lco.build_requestgroup("muscat", params)["requests"][0]["configurations"][0]
-        self.assertEqual(config["type"], "REPEAT_EXPOSE")
-        self.assertEqual(config["instrument_configs"][0]["exposure_count"], 1)
+        req = lco.build_requestgroup("sinistro", params)["requests"][0]
+        mock_interval.assert_not_called()
+        self.assertEqual(req["windows"][0]["end"], "2026-07-04T10:00:00Z")
+        self.assertEqual(req["configurations"][0]["repeat_duration"], 10800 - 180)
+
+    def test_repeat_expose_clips_hip67522_real_observability(self):
+        """Regression (real astropy): the HIP67522 draft window (23:47->06:08) is
+        clipped to the real observable end at LSC (~03:14 under airmass 2.0), not
+        the padded end. Guards the user-reported over-long window."""
+        params = {
+            "name": "HIP67522b_lsc", "proposal": "p", "target_name": "HIP67522",
+            "ra": 207.52600, "dec": -40.83590, "kind": "sinistro",
+            "site": "lsc", "max_airmass": 2.0, "min_lunar_distance": 30,
+            "twilight": "nautical", "filter": "rp", "exposure_time": 60,
+            "readout_mode": "central_2k_2x2", "type": "REPEAT_EXPOSE",
+            "windows": [{
+                "start": "2026-07-26T23:47:44.419201Z",
+                "end": "2026-07-27T06:08:44.419201Z",
+            }],
+        }
+        req = lco.build_requestgroup("sinistro", params)["requests"][0]
+        win = req["windows"][0]
+        end = datetime.datetime.fromisoformat(win["end"].replace("Z", "+00:00"))
+        # Observable end at LSC under airmass 2.0 is ~03:14 UTC; far short of 06:08.
+        self.assertGreater(end, datetime.datetime(2026, 7, 27, 3, 10, tzinfo=datetime.timezone.utc))
+        self.assertLess(end, datetime.datetime(2026, 7, 27, 3, 20, tzinfo=datetime.timezone.utc))
+        # Start stays at the (observable) window start.
+        self.assertTrue(win["start"].startswith("2026-07-26T23:47:44"))
+        # repeat_duration is well under the full 6.35 h padded span.
+        self.assertLess(req["configurations"][0]["repeat_duration"], 4 * 3600)
 
     def test_muscat_expose_type_omits_repeat_duration(self):
         params = {
@@ -326,6 +400,115 @@ class LcoTest(unittest.TestCase):
                 state = lco.config_state("alice")
                 self.assertTrue(state["user_token_configured"])
                 self.assertEqual(state["token_source"], "user")
+        finally:
+            os.unlink(path)
+
+    def test_portal_call_refuses_global_fallback_for_authenticated_user(self):
+        """An nginx-authenticated user without a saved token must not borrow the
+        operator's global LCO_API_TOKEN for identity-bearing portal calls."""
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "MUSCAT_DB_PATH": path,
+                    "MUSCAT_DB_SECRET": "test-secret",
+                    "LCO_API_TOKEN": "global-token",
+                },
+            ):
+                set_user_lco_token("alice", "alice-token")
+                # Own token is honored regardless of the flag.
+                self.assertEqual(
+                    lco._get_lco_api_token("alice", require_own_token=True),
+                    "alice-token",
+                )
+                # Authenticated user with no saved token is refused (not global).
+                with self.assertRaises(lco.LcoError) as cm:
+                    lco._get_lco_api_token("bob", require_own_token=True)
+                self.assertEqual(cm.exception.status, 403)
+                # Unauthenticated/CLI callers keep the global fallback even when
+                # the identity-bearing flag is set.
+                self.assertEqual(
+                    lco._get_lco_api_token(None, require_own_token=True),
+                    "global-token",
+                )
+        finally:
+            os.unlink(path)
+
+    def test_get_proposals_refuses_global_for_authenticated_user_without_token(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "MUSCAT_DB_PATH": path,
+                    "MUSCAT_DB_SECRET": "test-secret",
+                    "LCO_API_TOKEN": "global-token",
+                },
+            ):
+                with patch("urllib.request.urlopen") as mock_urlopen:
+                    with self.assertRaises(lco.LcoError) as cm:
+                        lco.get_proposals("bob")
+                    self.assertEqual(cm.exception.status, 403)
+                    mock_urlopen.assert_not_called()
+        finally:
+            os.unlink(path)
+
+    def test_archive_search_still_falls_back_for_authenticated_user(self):
+        """Read-only archive access is not identity-bearing, so it keeps the
+        global fallback for an authenticated user without a saved token."""
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "MUSCAT_DB_PATH": path,
+                    "MUSCAT_DB_SECRET": "test-secret",
+                    "LCO_API_TOKEN": "global-token",
+                },
+            ):
+                with patch("urllib.request.urlopen") as mock_urlopen:
+                    mock_response = MagicMock()
+                    mock_response.status = 200
+                    mock_response.read.return_value = b'{"results": []}'
+                    mock_urlopen.return_value.__enter__.return_value = mock_response
+                    lco.archive_search({"OBJECT": "WASP-12"}, user_name="bob")
+                    request = mock_urlopen.call_args[0][0]
+                    self.assertEqual(
+                        request.get_header("Authorization"), "Token global-token"
+                    )
+        finally:
+            os.unlink(path)
+
+    def test_config_state_authenticated_user_ignores_global_token(self):
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "MUSCAT_DB_PATH": path,
+                    "MUSCAT_DB_SECRET": "test-secret",
+                    "LCO_API_TOKEN": "global-token",
+                    "MUSCAT_LCO_DIR": os.path.dirname(path),
+                    "MUSCAT_LCO_ALLOW_SUBMIT": "1",
+                },
+            ):
+                # Authenticated user without their own token: global does not count.
+                state = lco.config_state("bob")
+                self.assertTrue(state["global_token_configured"])
+                self.assertFalse(state["user_token_configured"])
+                self.assertFalse(state["token_configured"])
+                self.assertIsNone(state["token_source"])
+                self.assertFalse(state["submit_allowed"])
+                # Unauthenticated/CLI caller: global token is a valid source.
+                anon = lco.config_state(None)
+                self.assertTrue(anon["token_configured"])
+                self.assertEqual(anon["token_source"], "global")
+                self.assertTrue(anon["submit_allowed"])
         finally:
             os.unlink(path)
 

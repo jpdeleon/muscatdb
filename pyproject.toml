@@ -15,6 +15,9 @@ dependencies = [
     "python-dotenv>=1.0",
     "pyarrow>=17",
     "httpx>=0.28",
+    "scipy>=1.18.0",
+    "flask-socketio>=5.3.6",
+    "python-socketio>=5.11.2",
 ]
 
 [project.scripts]

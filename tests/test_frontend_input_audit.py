@@ -251,7 +251,7 @@ def test_lco_prediction_inputs_invalidate_generated_windows():
         "sch-range-start", "sch-range-end", "sch-t0", "sch-period",
         "sch-duration", "sch-pad-before", "sch-pad-after",
         "sch-include-padding", "sch-sites", "sch-twilight",
-        "sch-obs-airmass", "sch-moon-sep",
+        "sch-obs-airmass", "sch-moon-sep", "sch-max-lunar-phase",
     }
     assert registered == expected
     assert "win-filter" not in registered
