@@ -161,7 +161,7 @@
       </div>
     </div>
     <div class="lco-field sinistro-only" style="display: none;">
-      <label for="sch-effective-filter">Filter <span class="help-tooltip" title="Sloan-like filter for Sinistro observations.">?</span></label>
+      <label for="sch-effective-filter">Filter <span class="help-tooltip" title="LCO Sinistro filters: Pan-STARRS (rp/gp/ip/up/zs/w) and Bessell (U/B/V/R/I). central_2k_2x2 readout only calibrates up/gp/rp/ip/zs/w.">?</span></label>
       <select id="sch-effective-filter">
         <option value="rp">rp</option>
         <option value="up">up</option>
@@ -723,15 +723,17 @@
       }
       if (effFilter) {
         effFilter.innerHTML =
-          '<option value="rp">rp</option>' +
-          '<option value="up">up</option>' +
-          '<option value="gp">gp</option>' +
-          '<option value="ip">ip</option>' +
-          '<option value="zs">zs</option>' +
-          '<option value="l">l</option>' +
-          '<option value="m">m</option>' +
-          '<option value="diffuser">diffuser</option>' +
-          '<option value="air">air</option>';
+          '<option value="rp">rp (Pan-STARRS r)</option>' +
+          '<option value="gp">gp (Pan-STARRS g)</option>' +
+          '<option value="ip">ip (Pan-STARRS i)</option>' +
+          '<option value="up">up (SDSS u)</option>' +
+          '<option value="zs">zs (Pan-STARRS z-short)</option>' +
+          '<option value="w">w (Pan-STARRS w)</option>' +
+          '<option value="U">U (Bessell U)</option>' +
+          '<option value="B">B (Bessell B)</option>' +
+          '<option value="V">V (Bessell V)</option>' +
+          '<option value="R">R (Bessell R)</option>' +
+          '<option value="I">I (Bessell I)</option>';
       }
       setVal('sch-effective-exptime', lastSinistroFields.exptime);
       setVal('sch-effective-mode', lastSinistroFields.mode);
