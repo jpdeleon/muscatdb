@@ -119,15 +119,15 @@
         <div class="fov-field">
           <label for="fov-mag-mode">Mag filter mode <span class="help-tooltip" title="Filter comparison candidates by magnitude, either with absolute limits or relative to the target's G-band magnitude.">?</span></label>
           <select id="fov-mag-mode">
+            <option value="relative" selected>Delta Gmag (relative)</option>
             <option value="absolute">Absolute limits</option>
-            <option value="relative">Delta Gmag (relative)</option>
           </select>
         </div>
-        <div class="fov-field" id="fov-mag-range-field">
+        <div class="fov-field" id="fov-mag-range-field" style="display: none;">
           <label for="fov-mag-range">Gmag range (min, max) <span class="help-tooltip" title="Brighter and faint Gmag limits for comparison candidates, separated by a comma (min, max).">?</span></label>
           <input id="fov-mag-range" type="text" placeholder="e.g. 10, 18" value="10, 18">
         </div>
-        <div class="fov-field" id="fov-mag-delta-field" style="display: none;">
+        <div class="fov-field" id="fov-mag-delta-field">
           <label for="fov-mag-delta">Delta Gmag <span class="help-tooltip" title="Keep comps within this delta magnitude of the target (target G ± delta).">?</span></label>
           <input id="fov-mag-delta" type="number" step="any" value="3">
         </div>
@@ -220,24 +220,62 @@
     </p>
 
     <h4>3. Score every star as a comparison candidate</h4>
-    <p>Each catalog star (other than the target) gets a usefulness weight:</p>
-    <ul>
-      <li><strong>Magnitude:</strong> peaks for stars a touch fainter than the
-        target (&Delta;G &asymp; +0.3 mag is ideal) and falls off smoothly on
-        either side. Stars brighter than the target by more than 1 mag are
-        penalized hard, since a bright comparison caps the exposure time
-        needed to avoid saturating it &mdash; which shortens the target's own
-        exposure and hurts its SNR.</li>
-      <li><strong>Color:</strong> stars with a similar Gaia BP&minus;RP color
-        to the target get a bonus, since similar colors track atmospheric
-        extinction more alike and make for cleaner differential photometry.</li>
-      <li><strong>Crowding:</strong> a star with a comparably bright neighbor
-        within 12&Prime; is downweighted, since a close neighbor blends into
-        the same aperture.</li>
-      <li>Your <strong>Gmag range</strong> (or <strong>delta-Gmag</strong>) and
-        <strong>margin</strong> settings are then applied, and anything below a
-        minimum usefulness floor is dropped entirely.</li>
-    </ul>
+    <p>Each catalog star (other than the target) gets a usefulness weight.</p>
+
+    <div style="background:var(--surface-alt); border-radius:6px; padding:0.8rem 1rem; margin-bottom:1rem; font-size:0.83rem; line-height:1.7;">
+
+      <div style="margin-bottom:0.5rem;"><strong>Magnitude term</strong> &mdash;
+        a Gaussian centred on the ideal offset, with a hard floor for stars bright
+        enough to limit the exposure:</div>
+
+      <div style="font-family: 'Times New Roman', serif; text-align:center; margin:0.2rem 0 0.4rem; font-size:0.95rem;">
+        <em>w</em><sub>mag</sub> = exp( &minus;&frac12; ((&Delta;G &minus; 0.3) / 1.2)<sup>2</sup> )
+        &nbsp;where&nbsp; &Delta;G = G<sub>star</sub> &minus; G<sub>target</sub>
+      </div>
+
+      <div style="font-family: 'Times New Roman', serif; text-align:center; margin:0.2rem 0 0.6rem; font-size:0.9rem;">
+        if &Delta;G &lt; &minus;1.0 &rarr; <em>w</em><sub>mag</sub> &times;= 0.3
+      </div>
+
+      <div style="margin-bottom:0.5rem;"><strong>Color term</strong> &mdash;
+        a second Gaussian rewarding stars whose Gaia BP&minus;RP colour is close to
+        the target's:</div>
+
+      <div style="font-family: 'Times New Roman', serif; text-align:center; margin:0.2rem 0 0.4rem; font-size:0.95rem;">
+        <em>w</em><sub>color</sub> = exp( &minus;&frac12; (&Delta;(BP&minus;RP) / 0.6)<sup>2</sup> )
+        &nbsp;where&nbsp; &Delta;(BP&minus;RP) = (BP&minus;RP)<sub>star</sub> &minus; (BP&minus;RP)<sub>target</sub>
+      </div>
+
+      <div style="margin-bottom:0.5rem;"><strong>Combined weight</strong></div>
+
+      <div style="font-family: 'Times New Roman', serif; text-align:center; margin:0.2rem 0 0.6rem; font-size:0.95rem;">
+        <em>w</em> = <em>w</em><sub>mag</sub> &times; <em>w</em><sub>color</sub>
+      </div>
+
+      <div style="margin-bottom:0.5rem;"><strong>Crowding penalty</strong> &mdash;
+        a star with a comparably bright neighbour within 12″ is downweighted:</div>
+
+      <div style="font-family: 'Times New Roman', serif; text-align:center; margin:0.2rem 0 0.4rem; font-size:0.95rem;">
+        if &exist; neighbour within 12″ with |&Delta;G<sub>neighbour</sub>| &le; 2.0 &rarr; <em>w</em> &times;= 0.4
+      </div>
+
+      <div style="margin-bottom:0.3rem;"><strong>Floor</strong></div>
+
+      <div style="font-family: 'Times New Roman', serif; text-align:center; margin:0.2rem 0 0; font-size:0.95rem;">
+        if <em>w</em> &lt; 0.05 &rarr; <em>w</em> = 0 (dropped)
+      </div>
+    </div>
+
+    <p>
+      Your <strong>Gmag range</strong> (or <strong>delta-Gmag</strong>) and
+      <strong>margin</strong> settings are then applied, and anything below the
+      usefulness floor is dropped entirely.
+    </p>
+    <p>
+      If an <strong>"avoid brighter than"</strong> limit is set, any star
+      brighter than it (other than the target) becomes a hard constraint in
+      the next step: no pointing may place it inside the footprint.
+    </p>
     <p>
       If an <strong>"avoid brighter than"</strong> limit is set, any star
       brighter than it (other than the target) becomes a hard constraint in
@@ -709,7 +747,7 @@
       dec: sp.get('dec') || (stored?.dec || ''),
       margin: sp.get('margin') || (stored?.margin || '60'),
       compMargin: sp.get('cmarg') || (stored?.compMargin || ''),
-      magMode: sp.get('magmode') || (stored?.magMode || 'absolute'),
+      magMode: sp.get('magmode') || (stored?.magMode || 'relative'),
       magRange: magRange,
       magDelta: sp.get('magdelta') || (stored?.magDelta || '3'),
       avoidMag: sp.get('avoidmag') || (stored?.avoidMag || ''),
