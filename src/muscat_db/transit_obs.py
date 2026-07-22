@@ -132,12 +132,41 @@ def _parse_iso_utc(value: str):
     return Time(s, format="isot", scale="utc")
 
 
-def _observable_mask(target, location, times, alt_min, sun_alt_max, moon_sep_min):
+# Below this illuminated fraction the Moon is treated as dark: the
+# min-lunar-distance cut is skipped, because a near-new Moon adds negligible sky
+# background. The cut is likewise skipped whenever the Moon is below the horizon.
+_MOON_DARK_FRACTION = 0.10
+
+
+def _moon_illuminated_fraction(sun, moon):
+    """Illuminated fraction of the Moon's disc, 0 (new) .. 1 (full).
+
+    Uses the Sun–Moon elongation and their distances (the phase-angle formula
+    behind ``astroplan.moon_illumination``). Both ``sun`` and ``moon`` must be
+    geocentric (as ``get_sun`` / ``get_body("moon", times)`` return) so the
+    elongation is frame-consistent and warning-free.
+    """
+    import numpy as np
+
+    elongation = sun.separation(moon)
+    phase_angle = np.arctan2(
+        sun.distance * np.sin(elongation),
+        moon.distance - sun.distance * np.cos(elongation),
+    )
+    return np.asarray((1.0 + np.cos(phase_angle)) / 2.0, dtype=float)
+
+
+def _observable_mask(target, location, times, alt_min, sun_alt_max,
+                     moon_sep_min, max_lunar_phase=1.0):
     """Boolean array: True where the target is observable at each time.
 
     Observable = target above ``alt_min`` AND Sun below ``sun_alt_max`` AND
-    (if ``moon_sep_min`` > 0) Moon farther than ``moon_sep_min`` from the target.
-    Returns ``(mask, target_alt, moon_alt, sun_alt, moon_sep)`` as numpy arrays.
+    (Moon illuminated fraction <= ``max_lunar_phase``) AND -- only when the Moon
+    is above the horizon and at least ``_MOON_DARK_FRACTION`` illuminated -- the
+    Moon is farther than ``moon_sep_min`` from the target. A below-horizon or
+    near-new (dark) Moon therefore never rejects a window on separation alone.
+    Returns ``(mask, target_alt, moon_alt, sun_alt, moon_sep, moon_illum)`` as
+    numpy arrays.
     """
     import numpy as np
     from astropy.coordinates import AltAz, get_body, get_sun
@@ -145,18 +174,27 @@ def _observable_mask(target, location, times, alt_min, sun_alt_max, moon_sep_min
     altaz = AltAz(obstime=times, location=location)
     target_altaz = target.transform_to(altaz)
     target_alt = target_altaz.alt.deg
-    sun_alt = get_sun(times).transform_to(altaz).alt.deg
+    sun = get_sun(times)
+    sun_alt = sun.transform_to(altaz).alt.deg
     moon_altaz = get_body("moon", times, location).transform_to(altaz)
     moon_alt = moon_altaz.alt.deg
     # Topocentric on-sky separation (both in the same AltAz frame) — the correct
     # quantity for Moon-avoidance and free of frame-mismatch warnings.
     moon_sep = moon_altaz.separation(target_altaz).deg
+    # Illuminated fraction uses geocentric Sun & Moon (frame-consistent, and the
+    # standard phase definition); the sub-degree topocentric parallax is moot.
+    moon_illum = _moon_illuminated_fraction(sun, get_body("moon", times))
 
     mask = (target_alt >= alt_min) & (sun_alt < sun_alt_max)
+    if max_lunar_phase is not None and max_lunar_phase < 1.0:
+        # Mirror LCO's max_lunar_phase: never observe under a brighter Moon.
+        mask = mask & (moon_illum <= max_lunar_phase)
     if moon_sep_min and moon_sep_min > 0:
-        mask = mask & (moon_sep >= moon_sep_min)
+        # Moonlight only matters when the Moon is up and not near-new.
+        enforce = (moon_alt >= 0.0) & (moon_illum >= _MOON_DARK_FRACTION)
+        mask = mask & (~enforce | (moon_sep >= moon_sep_min))
     return (np.asarray(mask), np.asarray(target_alt), np.asarray(moon_alt),
-            np.asarray(sun_alt), np.asarray(moon_sep))
+            np.asarray(sun_alt), np.asarray(moon_sep), np.asarray(moon_illum))
 
 
 def _jd_to_iso_z(jd: float) -> str:
@@ -224,6 +262,7 @@ def classify_transits(
     max_airmass: float = 2.0,
     twilight: str = DEFAULT_TWILIGHT,
     moon_sep_min: float = 30.0,
+    max_lunar_phase: float = 1.0,
     include_padding: bool = False,
     sites: list[str] | None = None,
     pad_before_min: float = 0.0,
@@ -322,7 +361,8 @@ def classify_transits(
     frac = {}
     for site in site_list:
         mask, *_ = _observable_mask(
-            target, _earth_location(site), grid, alt_min, sun_alt_max, moon_sep_min
+            target, _earth_location(site), grid, alt_min, sun_alt_max,
+            moon_sep_min, max_lunar_phase,
         )
         mask2d[site] = mask.reshape(len(windows), n_samp)
         frac[site] = mask2d[site].mean(axis=1)
@@ -453,6 +493,7 @@ def visibility_series(
     max_airmass: float = 2.0,
     twilight: str = DEFAULT_TWILIGHT,
     moon_sep_min: float = 30.0,
+    max_lunar_phase: float = 1.0,
 ) -> dict:
     """Time-series for a Plotly visibility plot of one transit at one site.
 
@@ -481,8 +522,8 @@ def visibility_series(
     offsets_h = np.linspace(-_PLOT_HALF_WINDOW_H, _PLOT_HALF_WINDOW_H, n)
     times = mid + offsets_h * u.hour
 
-    mask, target_alt, moon_alt, sun_alt, moon_sep = _observable_mask(
-        target, location, times, alt_min, sun_alt_max, moon_sep_min
+    mask, target_alt, moon_alt, sun_alt, moon_sep, moon_illum = _observable_mask(
+        target, location, times, alt_min, sun_alt_max, moon_sep_min, max_lunar_phase
     )
     half_h = duration_hours / 2.0
     ingress = (mid - half_h * u.hour).isot
@@ -505,11 +546,14 @@ def visibility_series(
         "moon_alt": _round(moon_alt),
         "sun_alt": _round(sun_alt),
         "moon_sep": _round(moon_sep),
+        "moon_illum": [round(float(v), 3) for v in moon_illum],
         "ingress": ingress,
         "egress": egress,
         "alt_limit": round(alt_min, 2),
         "sun_alt_limit": sun_alt_max,
         "moon_sep_min": float(moon_sep_min),
         "moon_sep_mid": round(moon_sep_mid, 1),
+        "max_lunar_phase": float(max_lunar_phase),
+        "moon_dark_floor": _MOON_DARK_FRACTION,
         "observable_fraction": round(float(np.asarray(mask).mean()), 3),
     }

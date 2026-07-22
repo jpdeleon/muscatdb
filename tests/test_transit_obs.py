@@ -82,10 +82,34 @@ def test_classify_returns_one_aligned_entry_per_window():
             assert r["best_site"] in r["sites"]
 
 
-def test_classify_moon_constraint_forces_none():
-    # No sample can be 180 deg from the Moon, so a 180 deg minimum rejects all.
-    res = T.classify_transits(97.64, 29.67, _windows(4), "muscat", 2.5, moon_sep_min=180.0)
+def test_classify_moon_phase_cap_forces_none():
+    # max_lunar_phase=0 admits only a perfectly new (0% illuminated) Moon, which
+    # never holds across a real window, so every window is rejected. (A 180 deg
+    # min-separation no longer forces none: it is skipped whenever the Moon is
+    # below the horizon or < 10% illuminated.)
+    res = T.classify_transits(97.64, 29.67, _windows(4), "muscat", 2.5, max_lunar_phase=0.0)
     assert all(r["rating"] == "none" for r in res)
+
+
+def test_observable_mask_separation_cut_and_phase_cap():
+    from astropy.time import Time
+    from astropy.coordinates import SkyCoord, get_body
+
+    loc = T._earth_location("lsc")
+    # Full-moon night, Moon well above the horizon at LSC; target sits on the Moon.
+    t = Time(["2024-01-25T04:00:00"])
+    moon = get_body("moon", Time("2024-01-25T04:00:00"))
+    tgt = SkyCoord(moon.ra, moon.dec)
+
+    mask, _talt, malt, _salt, msep, illum = T._observable_mask(
+        tgt, loc, t, 20.0, -12.0, moon_sep_min=30.0)
+    assert malt[0] > 0 and illum[0] > 0.9 and msep[0] < 5.0  # Moon up, bright, on-target
+    assert not bool(mask[0])  # rejected by the min-separation cut
+
+    # No separation cut, but the phase cap drops the bright Moon.
+    mask_phase, *_ = T._observable_mask(
+        tgt, loc, t, 20.0, -12.0, moon_sep_min=0.0, max_lunar_phase=0.5)
+    assert not bool(mask_phase[0])
 
 
 def test_classify_is_monotonic_in_strictness():
@@ -167,14 +191,15 @@ def _patch_site_masks(monkeypatch, site_true_ranges):
 
     monkeypatch.setattr(T, "_earth_location", lambda site: site)
 
-    def fake_observable_mask(target, location, times, alt_min, sun_alt_max, moon_sep_min):
+    def fake_observable_mask(target, location, times, alt_min, sun_alt_max,
+                             moon_sep_min, max_lunar_phase=1.0):
         n = len(times)
         mask = np.zeros(n, dtype=bool)
         rng = site_true_ranges.get(location)
         if rng:
             mask[rng[0]:rng[1]] = True
         zeros = np.zeros(n)
-        return mask, zeros, zeros, zeros, zeros
+        return mask, zeros, zeros, zeros, zeros, zeros
 
     monkeypatch.setattr(T, "_observable_mask", fake_observable_mask)
 

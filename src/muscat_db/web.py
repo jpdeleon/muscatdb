@@ -3463,6 +3463,7 @@ def api_lco_windows(request: Request, payload: dict = Body(...)):
                     max_airmass=float(payload.get("obs_airmass") or 2.0),
                     twilight=payload.get("twilight") or transit_obs.DEFAULT_TWILIGHT,
                     moon_sep_min=float(payload.get("moon_sep_min") or 0.0),
+                    max_lunar_phase=float(payload.get("max_lunar_phase") or 1.0),
                     include_padding=bool(payload.get("include_padding")),
                     sites=sites,
                     pad_before_min=float(payload.get("pad_before_min") or 0.0),
@@ -3517,6 +3518,7 @@ def api_lco_visibility(
     obs_airmass: float = 2.0,
     twilight: str = transit_obs.DEFAULT_TWILIGHT,
     moon_sep_min: float = 0.0,
+    max_lunar_phase: float = 1.0,
 ):
     """Time-series for the inline visibility plot of one transit at one site
     (target + moon altitude, twilight, airmass limit, shaded transit interval)."""
@@ -3524,7 +3526,7 @@ def api_lco_visibility(
         series = transit_obs.visibility_series(
             float(ra), float(dec), mid, float(duration), site,
             max_airmass=float(obs_airmass), twilight=twilight,
-            moon_sep_min=float(moon_sep_min),
+            moon_sep_min=float(moon_sep_min), max_lunar_phase=float(max_lunar_phase),
         )
         return JSONResponse({"ok": True, **series})
     except transit_obs.TransitObsError as e:

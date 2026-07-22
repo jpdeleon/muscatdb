@@ -84,7 +84,21 @@
         <option value="astronomical">Astronomical (−18°)</option>
       </select></div>
     <div class="lco-field"><label for="sch-obs-airmass">Max airmass <span class="help-tooltip" title="Maximum airmass for a transit to count as observable. Lower values mean better image quality. 2.0 is typical; 1.5 for high-precision work.">?</span></label><input id="sch-obs-airmass" type="number" step="any" value="2"></div>
-    <div class="lco-field"><label for="sch-moon-sep">Min lunar (deg) <span class="help-tooltip" title="Minimum angular distance from the Moon (degrees) for a transit to count as observable. Higher values avoid moonlight contamination.">?</span></label><input id="sch-moon-sep" type="number" step="any" value="30"></div>
+    <div class="lco-field"><label for="sch-moon-sep">Min lunar (deg) <span class="help-tooltip" title="Minimum angular distance from the Moon (degrees) for a transit to count as observable. Higher values avoid moonlight contamination. Skipped automatically when the Moon is below the horizon or under 10% illuminated.">?</span></label><input id="sch-moon-sep" type="number" step="any" value="30"></div>
+    <div class="lco-field"><label for="sch-max-lunar-phase">Max lunar phase <span class="help-tooltip" title="LCO max_lunar_phase: the maximum Moon illuminated fraction (0 = new, 1 = full) to observe under. 1.0 places no restriction. Windows with the Moon brighter than this are dropped, matching what LCO will schedule.">?</span></label>
+      <select id="sch-max-lunar-phase">
+        <option value="1.0" selected>1.0 (any)</option>
+        <option value="0.9">0.9 (90%)</option>
+        <option value="0.8">0.8 (80%)</option>
+        <option value="0.7">0.7 (70%)</option>
+        <option value="0.6">0.6 (60%)</option>
+        <option value="0.5">0.5 (50%)</option>
+        <option value="0.4">0.4 (40%)</option>
+        <option value="0.3">0.3 (30%)</option>
+        <option value="0.2">0.2 (20%)</option>
+        <option value="0.1">0.1 (10%)</option>
+      </select>
+    </div>
   </div>
   <div class="lco-actions">
     <button class="btn" type="button" id="btn-fetch-ephem">Fetch ephemeris</button>
@@ -462,7 +476,7 @@
     'sch-sin-count','sch-site','sch-site-a','sch-site-b',
     'sch-type','sch-observation-type','sch-guiding-config','sch-defocus',
     'sch-effective-filter','sch-effective-exptime','sch-effective-mode',
-    'sch-obs-airmass','sch-moon-sep','sch-ipp','sch-test-budget'
+    'sch-obs-airmass','sch-moon-sep','sch-max-lunar-phase','sch-ipp','sch-test-budget'
   ];
 
   var CHECK_IDS = ['sch-include-padding'];
@@ -474,7 +488,7 @@
     'sch-target','sch-planet','sch-source','sch-coords',
     'sch-range-start','sch-range-end','sch-t0','sch-period','sch-duration',
     'sch-pad-before','sch-pad-after','sch-include-padding',
-    'sch-sites','sch-twilight','sch-obs-airmass','sch-moon-sep'
+    'sch-sites','sch-twilight','sch-obs-airmass','sch-moon-sep','sch-max-lunar-phase'
   ];
 
   // Site chosen for the Transit obs column; '' (All sites) => full LCO network.
@@ -1470,9 +1484,18 @@
       var d = s.data;
       var color = siteColor(s.site, i);
       var targetAltObservable = d.target_alt.map(function (value, idx) {
+        // Mirror transit_obs._observable_mask: the min-lunar-distance cut only
+        // bites when the Moon is up and >= the dark-Moon floor; a separate phase
+        // cap (LCO max_lunar_phase) drops overly-bright-Moon samples.
+        var illum = d.moon_illum ? d.moon_illum[idx] : 0;
+        var floor = d.moon_dark_floor != null ? d.moon_dark_floor : 0.1;
+        var maxPhase = d.max_lunar_phase != null ? d.max_lunar_phase : 1.0;
+        var enforceSep = d.moon_sep_min > 0 && d.moon_alt[idx] >= 0 && illum >= floor;
+        var distOk = !enforceSep || d.moon_sep[idx] >= d.moon_sep_min;
+        var phaseOk = illum <= maxPhase;
         var isObservable = d.sun_alt[idx] < d.sun_alt_limit &&
                            d.target_alt[idx] >= d.alt_limit &&
-                           d.moon_sep[idx] >= d.moon_sep_min;
+                           distOk && phaseOk;
         return isObservable ? value : null;
       });
       // Per-sample extras for the hover label: [moon_sep, airmass, moon_alt, sun_alt].
@@ -1719,6 +1742,7 @@
       kind: val('sch-kind'), ra: parseCoords().ra, dec: parseCoords().dec,
       obs_airmass: num('sch-obs-airmass') || 2, twilight: val('sch-twilight'),
       moon_sep_min: num('sch-moon-sep') || 0,
+      max_lunar_phase: num('sch-max-lunar-phase') || 1.0,
       include_padding: chk('sch-include-padding'),
       sites: selectedSites()
     };
@@ -1764,7 +1788,8 @@
       var q = new URLSearchParams({
         ra: ra, dec: dec, mid: w.mid, duration: String(dur), site: s,
         obs_airmass: val('sch-obs-airmass') || '2.0', twilight: val('sch-twilight'),
-        moon_sep_min: val('sch-moon-sep') || '30'
+        moon_sep_min: val('sch-moon-sep') || '30',
+        max_lunar_phase: val('sch-max-lunar-phase') || '1.0'
       });
       return fetch('/api/lco/visibility?' + q.toString())
         .then(function (r) { return r.json(); })
@@ -1811,6 +1836,7 @@
       kind: kind, name: val('sch-name'), proposal: val('sch-proposal'),
       target_name: val('sch-target'), ra: coords.ra, dec: coords.dec,
       max_airmass: num('sch-obs-airmass'), min_lunar_distance: num('sch-moon-sep'),
+      max_lunar_phase: num('sch-max-lunar-phase'),
       ipp_value: num('sch-ipp'), windows: selectedWindows(),
       twilight: val('sch-twilight'),
       type: val('sch-type'),

@@ -1396,7 +1396,7 @@ def _value_or_default(value, default):
     return default if value in (None, "") else value
 
 
-def _validate_repeat_window_observability(kind: str, params: dict, max_airmass, min_lunar_distance) -> None:
+def _validate_repeat_window_observability(kind: str, params: dict, max_airmass, min_lunar_distance, max_lunar_phase=1.0) -> None:
     """Reject REPEAT_EXPOSE windows that cannot fit within local observability.
 
     LCO validates the full configuration duration against the target visibility
@@ -1424,6 +1424,7 @@ def _validate_repeat_window_observability(kind: str, params: dict, max_airmass, 
             max_airmass=float(max_airmass),
             twilight=params.get("twilight") or transit_obs.DEFAULT_TWILIGHT,
             moon_sep_min=float(min_lunar_distance),
+            max_lunar_phase=float(max_lunar_phase),
             include_padding=True,
             sites=[site],
         )
@@ -1501,11 +1502,15 @@ def build_requestgroup(kind: str, params: dict, configurations: list[dict] | Non
 
     max_airmass = _value_or_default(params.get("max_airmass"), default_max_airmass)
     min_lunar_distance = _value_or_default(params.get("min_lunar_distance"), default_min_lunar_distance)
-    _validate_repeat_window_observability(kind, params, max_airmass, min_lunar_distance)
+    # LCO max_lunar_phase: max Moon illuminated fraction (0=new .. 1=full) to
+    # schedule under. 1.0 is LCO's default (no phase restriction).
+    max_lunar_phase = _value_or_default(params.get("max_lunar_phase"), 1.0)
+    _validate_repeat_window_observability(kind, params, max_airmass, min_lunar_distance, max_lunar_phase)
 
     constraints = {
         "max_airmass": max_airmass,
         "min_lunar_distance": min_lunar_distance,
+        "max_lunar_phase": max_lunar_phase,
     }
 
     configurations = []
@@ -1563,6 +1568,7 @@ def build_requestgroup(kind: str, params: dict, configurations: list[dict] | Non
             "constraints": {
                 "max_airmass": max_airmass,
                 "min_lunar_distance": min_lunar_distance,
+                "max_lunar_phase": max_lunar_phase,
                 "max_seeing": params.get("max_seeing"),
                 "min_transparency": params.get("min_transparency"),
                 "extra_params": {}
