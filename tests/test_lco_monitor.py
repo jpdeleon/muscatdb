@@ -86,6 +86,21 @@ def test_record_submission_persists_each_child_and_waits_for_window(monitor_db):
     assert "dry_run_hash" not in stored
 
 
+def test_get_request_payload_matches_request_or_group_id(monitor_db):
+    result, payload = _submission(request_id=101, requestgroup_id=10)
+    lco_monitor.record_submission(result, payload, "alice", path=monitor_db, now=1_700_000_000)
+
+    by_request = lco_monitor.get_request_payload(101, path=monitor_db)
+    by_group = lco_monitor.get_request_payload(10, path=monitor_db)
+    assert by_request is not None and by_group is not None
+    # Returns the stored (cleaned) form params, not the transient submit fields.
+    assert by_request["target_name"] == "TOI-123"
+    assert by_request["kind"] == "muscat3"
+    assert "confirm" not in by_request and "dry_run_hash" not in by_request
+    assert by_group == by_request
+    assert lco_monitor.get_request_payload(999999, path=monitor_db) is None
+
+
 def test_record_submission_rejects_response_without_child_request_ids(monitor_db):
     result, payload = _submission()
     result["requests"] = []
