@@ -55,8 +55,8 @@ _DOWNLOAD_INSTRUMENT_DIRS = {
 }
 _DOWNLOAD_HOSTS = frozenset({
     "archive-api.lco.global",
-    "archive-lco-global.s3.amazonaws.com",
 })
+_DOWNLOAD_S3_PREFIX = "archive-lco-global.s3"
 
 # Secondary-mirror defocus offset limits (mm), from LCO's live instrument
 # capabilities schema (observe.lco.global/api/instruments/): the InstrumentConfig
@@ -755,11 +755,12 @@ def _validate_download_url(url: str) -> str:
         ) from exc
     if (
         parsed.scheme != "https"
-        or host not in _DOWNLOAD_HOSTS
         or port not in (None, 443)
         or parsed.username is not None
         or parsed.password is not None
     ):
+        raise LcoError("refusing to download from untrusted URL", status=400, detail=url)
+    if host not in _DOWNLOAD_HOSTS and not host.startswith(_DOWNLOAD_S3_PREFIX):
         raise LcoError("refusing to download from untrusted URL", status=400, detail=url)
 
     try:
@@ -1147,7 +1148,10 @@ def _run_archive_download_job(job_id: str) -> None:
             funpack_paths = _funpack_paths(results)
             current["funpack_total"] = len(funpack_paths)
             auto_ingest = bool(current.get("auto_ingest"))
-        download_failed = any(result.get("status") == "error" for result in results)
+        error_results = [r for r in results if r.get("status") == "error"]
+        download_failed = len(error_results) > 0
+        ok_results = [r for r in results if r.get("status") == "downloaded"]
+        exists_results = [r for r in results if r.get("status") == "exists"]
         funpack_failed = False
         if funpack_paths:
             max_workers = min(_ARCHIVE_FUNPACK_WORKERS, len(funpack_paths))
@@ -1184,7 +1188,20 @@ def _run_archive_download_job(job_id: str) -> None:
                 current["phase"] = "done"
                 current["state"] = "error" if processing_failed else "done"
                 if download_failed:
-                    current["error"] = "One or more FITS downloads failed"
+                    failed_names = [r.get("filename", "?") for r in error_results[:5]]
+                    detail = ", ".join(
+                        f"{name}: {r.get('error', '?')}"
+                        for name, r in zip(failed_names, error_results[:5])
+                    )
+                    n_ok = len(ok_results)
+                    n_ex = len(exists_results)
+                    n_er = len(error_results)
+                    remainder = n_er - len(failed_names)
+                    if remainder > 0:
+                        detail += f" (and {remainder} more)"
+                    current["error"] = (
+                        f"{n_ok} downloaded, {n_ex} existing, {n_er} failed — {detail}"
+                    )
                 elif funpack_failed:
                     current["error"] = "One or more funpack commands failed"
                 current["finished_at"] = time.time()

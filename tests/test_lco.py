@@ -653,7 +653,11 @@ class FrameDestSecurityTest(unittest.TestCase):
         public_dns = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]
         with patch("muscat_db.lco.socket.getaddrinfo", return_value=public_dns):
             for ok in ("https://archive-api.lco.global/frames/1/",
-                       "https://archive-lco-global.s3.amazonaws.com/x?sig=1"):
+                       "https://archive-lco-global.s3.amazonaws.com/x?sig=1",
+                       "https://archive-lco-global.s3.us-west-2.amazonaws.com/x?sig=1",
+                       "https://archive-lco-global.s3.dualstack.us-west-2.amazonaws.com/x?sig=1",
+                       "https://archive-lco-global.s3-fips.us-west-2.amazonaws.com/x?sig=1",
+                       "https://archive-lco-global.s3.ap-southeast-2.amazonaws.com/x"):
                 self.assertEqual(lco._validate_download_url(ok), ok)
 
     def test_url_rejects_allowed_hostname_resolving_to_non_public_address(self):
