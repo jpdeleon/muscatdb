@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Guard — secrets not configured
-        if: ${{ secrets.DEPLOY_SSH_KEY == '' || secrets.DEPLOY_HOST == '' || secrets.DEPLOY_USER == '' }}
+        if: ${{ !secrets.DEPLOY_SSH_KEY || !secrets.DEPLOY_HOST || !secrets.DEPLOY_USER }}
         run: |
           echo "::notice::DEPLOY_SSH_KEY, DEPLOY_HOST, or DEPLOY_USER not set — skipping deploy"
           exit 0
