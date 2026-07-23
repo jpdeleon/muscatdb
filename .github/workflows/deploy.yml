@@ -16,14 +16,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Guard — secrets not configured
-        if: ${{ !secrets.DEPLOY_SSH_KEY || !secrets.DEPLOY_HOST || !secrets.DEPLOY_USER }}
+      - name: Check deploy secrets
+        id: check
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          echo "::notice::DEPLOY_SSH_KEY, DEPLOY_HOST, or DEPLOY_USER not set — skipping deploy"
-          exit 0
+          if [ -z "$DEPLOY_SSH_KEY" ] || [ -z "$DEPLOY_HOST" ] || [ -z "$DEPLOY_USER" ]; then
+            echo "::notice::DEPLOY_SSH_KEY, DEPLOY_HOST, or DEPLOY_USER not set — skipping deploy"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install SSH key
-        if: ${{ secrets.DEPLOY_SSH_KEY != '' }}
+        if: steps.check.outputs.configured == 'true'
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
@@ -31,7 +39,7 @@ jobs:
           ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Pull and restart
-        if: ${{ secrets.DEPLOY_SSH_KEY != '' }}
+        if: steps.check.outputs.configured == 'true'
         run: |
           ssh -i ~/.ssh/deploy_key "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" << 'EOF'
             set -e
