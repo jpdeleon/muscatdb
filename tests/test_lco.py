@@ -611,10 +611,8 @@ class FrameDestSecurityTest(unittest.TestCase):
 
     def test_valid_frame_resolves_under_root(self):
         dest = lco.frame_dest("sinistro", "230101", "cpt1m010-fa16-20230101-0123-e91.fits.fz")
-        self.assertEqual(
-            str(dest),
-            "/tmp/lco-root/Sinistro/230101/cpt1m010-fa16-20230101-0123-e91.fits.fz",
-        )
+        expected = Path("/tmp/lco-root/Sinistro/230101/cpt1m010-fa16-20230101-0123-e91.fits.fz").resolve()
+        self.assertEqual(dest, expected)
 
     def test_instrument_directory_uses_case_sensitive_data_mapping(self):
         cases = {
