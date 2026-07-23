@@ -6,14 +6,23 @@
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 1rem 1.25rem;
+    padding: 0;
     margin-bottom: 1rem;
+    overflow: hidden;
   }
+  .settings-section.collapsed > *:not(h3) { display: none; }
   .settings-section h3 {
-    margin-bottom: 0.8rem;
+    margin: 0;
+    padding: 0.7rem 1.25rem;
     font-size: 0.95rem;
     color: var(--text);
+    cursor: pointer;
+    user-select: none;
   }
+  .settings-section h3::before { content: '▶ '; font-size: 0.7rem; }
+  .settings-section:not(.collapsed) h3::before { content: '▼ '; }
+  .settings-section h3:hover { background: var(--bg-hover); }
+  .settings-body { padding: 0 1.25rem 1rem; }
   .settings-actions {
     display: flex;
     gap: 0.6rem;
@@ -35,101 +44,114 @@
 </style>
 <h1>Settings</h1>
 
-<div class="settings-section">
+<div class="settings-section collapsed">
   <h3>LCO API Token</h3>
-  <div class="opt-grid">
-    <div class="opt">
-      <label for="lco-token">Token</label>
-      <input id="lco-token" type="password" autocomplete="off" spellcheck="false" placeholder="Paste token from LCO profile">
-      <span class="hint">Get a token from <a href="https://observe.lco.global/accounts/profile" target="_blank" rel="noopener">observe.lco.global/accounts/profile</a>.</span>
+  <div class="settings-body">
+    <div class="opt-grid">
+      <div class="opt">
+        <label for="lco-token">Token</label>
+        <input id="lco-token" type="password" autocomplete="off" spellcheck="false" placeholder="Paste token from LCO profile">
+        <span class="hint">Get a token from <a href="https://observe.lco.global/accounts/profile" target="_blank" rel="noopener">observe.lco.global/accounts/profile</a>.</span>
+      </div>
     </div>
+    <div class="settings-actions">
+      <button class="btn primary" type="button" id="save-lco-token">Save token</button>
+      <button class="btn" type="button" id="clear-lco-token">Clear user token</button>
+      <span class="lco-msg" id="lco-token-msg"></span>
+    </div>
+    <p class="settings-note" id="lco-token-status">Checking token status...</p>
   </div>
-  <div class="settings-actions">
-    <button class="btn primary" type="button" id="save-lco-token">Save token</button>
-    <button class="btn" type="button" id="clear-lco-token">Clear user token</button>
-    <span class="lco-msg" id="lco-token-msg"></span>
-  </div>
-  <p class="settings-note" id="lco-token-status">Checking token status...</p>
 </div>
 
-<div class="settings-section">
+<div class="settings-section collapsed">
   <h3>ADS API Token</h3>
-  <div class="opt-grid">
-    <div class="opt">
-      <label for="ads-token">Token</label>
-      <input id="ads-token" type="password" autocomplete="off" spellcheck="false" placeholder="Paste token from ADS settings">
-      <span class="hint">Get a token from <a href="https://ui.adsabs.harvard.edu/user/settings/token" target="_blank" rel="noopener">ui.adsabs.harvard.edu/user/settings/token</a>.</span>
+  <div class="settings-body">
+    <div class="opt-grid">
+      <div class="opt">
+        <label for="ads-token">Token</label>
+        <input id="ads-token" type="password" autocomplete="off" spellcheck="false" placeholder="Paste token from ADS settings">
+        <span class="hint">Get a token from <a href="https://ui.adsabs.harvard.edu/user/settings/token" target="_blank" rel="noopener">ui.adsabs.harvard.edu/user/settings/token</a>.</span>
+      </div>
     </div>
+    <div class="settings-actions">
+      <button class="btn primary" type="button" id="save-ads-token">Save token</button>
+      <button class="btn" type="button" id="clear-ads-token">Clear user token</button>
+      <span class="lco-msg" id="ads-token-msg"></span>
+    </div>
+    <p class="settings-note" id="ads-token-status">Checking token status...</p>
   </div>
-  <div class="settings-actions">
-    <button class="btn primary" type="button" id="save-ads-token">Save token</button>
-    <button class="btn" type="button" id="clear-ads-token">Clear user token</button>
-    <span class="lco-msg" id="ads-token-msg"></span>
-  </div>
-  <p class="settings-note" id="ads-token-status">Checking token status...</p>
 </div>
 
-<div class="settings-section">
+<div class="settings-section collapsed">
   <h3>ESO Archive Credentials</h3>
-  <div class="opt-grid">
-    <div class="opt">
-      <label for="eso-username">ESO Username</label>
-      <input id="eso-username" type="text" autocomplete="off" spellcheck="false" placeholder="Your ESO portal username">
+  <div class="settings-body">
+    <div class="opt-grid">
+      <div class="opt">
+        <label for="eso-username">ESO Username</label>
+        <input id="eso-username" type="text" autocomplete="off" spellcheck="false" placeholder="Your ESO portal username">
+      </div>
+      <div class="opt">
+        <label for="eso-password">ESO Password</label>
+        <input id="eso-password" type="password" autocomplete="off" spellcheck="false" placeholder="Your ESO portal password">
+        <span class="hint">Credentials are encrypted and stored server-side. Used to authenticate ESO TAP queries (includes proprietary data). Anonymous queries work without credentials. <a href="https://www.eso.org/sso/login" target="_blank" rel="noopener">Go to ESO login page</a>.</span>
+      </div>
     </div>
-    <div class="opt">
-      <label for="eso-password">ESO Password</label>
-      <input id="eso-password" type="password" autocomplete="off" spellcheck="false" placeholder="Your ESO portal password">
-      <span class="hint">Credentials are encrypted and stored server-side. Used to authenticate ESO TAP queries (includes proprietary data). Anonymous queries work without credentials. <a href="https://www.eso.org/sso/login" target="_blank" rel="noopener">Go to ESO login page</a>.</span>
+    <div class="settings-actions">
+      <button class="btn" type="button" id="test-eso-credentials">Test &amp; Save</button>
+      <button class="btn" type="button" id="clear-eso-credentials">Clear credentials</button>
+      <span class="lco-msg" id="eso-credentials-msg"></span>
     </div>
+    <p class="settings-note" id="eso-credentials-status">Checking credentials status...</p>
   </div>
-  <div class="settings-actions">
-    <button class="btn" type="button" id="test-eso-credentials">Test &amp; Save</button>
-    <button class="btn" type="button" id="clear-eso-credentials">Clear credentials</button>
-    <span class="lco-msg" id="eso-credentials-msg"></span>
-  </div>
-  <p class="settings-note" id="eso-credentials-status">Checking credentials status...</p>
 </div>
 
-<div class="settings-section">
+<div class="settings-section collapsed">
   <h3>Ephemeris Google Sheet</h3>
-  <div class="opt-grid">
-    <div class="opt">
-      <label for="ephem-sheet-url">Sheet URL or ID</label>
-      <input id="ephem-sheet-url" type="text" autocomplete="off" spellcheck="false" placeholder="https://docs.google.com/spreadsheets/d/…">
-      <span class="hint">Publish the sheet (File → Share → Publish to web, or "anyone with the link"). Only docs.google.com links are accepted; the URL is encrypted server-side. Adds "Google Sheet" ephemeris sources on the <a href="/lco/schedule">LCO schedule</a> page.</span>
+  <div class="settings-body">
+    <div class="opt-grid">
+      <div class="opt">
+        <label for="ephem-sheet-url">Sheet URL or ID</label>
+        <input id="ephem-sheet-url" type="text" autocomplete="off" spellcheck="false" placeholder="https://docs.google.com/spreadsheets/d/…">
+        <span class="hint">Publish the sheet (File → Share → Publish to web, or "anyone with the link"). Only docs.google.com links are accepted; the URL is encrypted server-side. Adds "Google Sheet" ephemeris sources on the <a href="/lco/schedule">LCO schedule</a> page.</span>
+      </div>
+      <div class="opt">
+        <label for="ephem-sheet-ephem-tab">Ephemeris tab</label>
+        <input id="ephem-sheet-ephem-tab" type="text" autocomplete="off" spellcheck="false" placeholder="ephemeris">
+        <span class="hint">Tab with columns target, t0, period, duration (+ optional uncertainties).</span>
+      </div>
+      <div class="opt">
+        <label for="ephem-sheet-tc-tab">Transit-centers tab</label>
+        <input id="ephem-sheet-tc-tab" type="text" autocomplete="off" spellcheck="false" placeholder="tc">
+        <span class="hint">Tab with columns target, planet, epoch, tc, tc_unc (linear-fit source).</span>
+      </div>
     </div>
-    <div class="opt">
-      <label for="ephem-sheet-ephem-tab">Ephemeris tab</label>
-      <input id="ephem-sheet-ephem-tab" type="text" autocomplete="off" spellcheck="false" placeholder="ephemeris">
-      <span class="hint">Tab with columns target, t0, period, duration (+ optional uncertainties).</span>
+    <div class="settings-actions" style="margin-top: 0.5rem;">
+      <button class="btn" type="button" id="load-ephem-sheet-columns">Load columns</button>
+      <span class="lco-msg" id="ephem-sheet-cols-msg"></span>
     </div>
-    <div class="opt">
-      <label for="ephem-sheet-tc-tab">Transit-centers tab</label>
-      <input id="ephem-sheet-tc-tab" type="text" autocomplete="off" spellcheck="false" placeholder="tc">
-      <span class="hint">Tab with columns target, planet, epoch, tc, tc_unc (linear-fit source).</span>
+    <div id="ephem-sheet-cols-wrap" style="display: none; margin-top: 0.4rem;">
+      <p class="settings-note" style="margin-top: 0;">Map each field to a column from your sheet, or leave “(auto-detect)”. Uncertainty and epoch fields are optional.</p>
+      <h4 class="col-map-title">Ephemeris tab columns</h4>
+      <div class="opt-grid" id="ephem-sheet-ephem-cols"></div>
+      <h4 class="col-map-title">Transit-center tab columns</h4>
+      <div class="opt-grid" id="ephem-sheet-tc-cols"></div>
     </div>
+    <div class="settings-actions" style="margin-top: 0.6rem;">
+      <button class="btn primary" type="button" id="save-ephem-sheet">Save sheet</button>
+      <button class="btn" type="button" id="clear-ephem-sheet">Clear sheet</button>
+      <span class="lco-msg" id="ephem-sheet-msg"></span>
+    </div>
+    <p class="settings-note" id="ephem-sheet-status">Checking sheet status...</p>
   </div>
-  <div class="settings-actions" style="margin-top: 0.5rem;">
-    <button class="btn" type="button" id="load-ephem-sheet-columns">Load columns</button>
-    <span class="lco-msg" id="ephem-sheet-cols-msg"></span>
-  </div>
-  <div id="ephem-sheet-cols-wrap" style="display: none; margin-top: 0.4rem;">
-    <p class="settings-note" style="margin-top: 0;">Map each field to a column from your sheet, or leave “(auto-detect)”. Uncertainty and epoch fields are optional.</p>
-    <h4 class="col-map-title">Ephemeris tab columns</h4>
-    <div class="opt-grid" id="ephem-sheet-ephem-cols"></div>
-    <h4 class="col-map-title">Transit-center tab columns</h4>
-    <div class="opt-grid" id="ephem-sheet-tc-cols"></div>
-  </div>
-  <div class="settings-actions" style="margin-top: 0.6rem;">
-    <button class="btn primary" type="button" id="save-ephem-sheet">Save sheet</button>
-    <button class="btn" type="button" id="clear-ephem-sheet">Clear sheet</button>
-    <span class="lco-msg" id="ephem-sheet-msg"></span>
-  </div>
-  <p class="settings-note" id="ephem-sheet-status">Checking sheet status...</p>
 </div>
 
 <script>
 (function () {
+  document.querySelectorAll('.settings-section h3').forEach(function (h3) {
+    h3.addEventListener('click', function () {
+      this.parentElement.classList.toggle('collapsed');
+    });
+  });
   function setupTokenSettings(prefix, label) {
   var tokenInput = document.getElementById(prefix + '-token');
   var saveBtn = document.getElementById('save-' + prefix + '-token');
