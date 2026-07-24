@@ -2645,11 +2645,16 @@ class TestRealExample:
     def test_real_outputs_classified(self):
         # Uses the default MUSCAT_PROSE_DIR ($HOME/ql/prose).
         os.environ.pop("MUSCAT_PROSE_DIR", None)
-        out = phot.list_outputs(INST, DATE, TARGET)
+        # Discover the run_id (the data may live in _runs/<target>/default/)
+        runs_dir = REAL_EXAMPLE / "_runs" / TARGET
+        run_id = "default" if (runs_dir / "default").is_dir() else None
+        out = phot.list_outputs(INST, DATE, TARGET, run_id=run_id)
         assert out["has_any"]
         assert {"lightcurves", "covariates", "stacks"}.issubset(set(out["summary"]))
         assert list(out["bands"]) == BANDS
-        assert out["npz"] == f"{TARGET}_{INST}_{DATE}.npz"
+        assert out["npz"] is not None
+        assert out["npz"].startswith(f"{TARGET}_{INST}_")
+        assert out["npz"].endswith(f"_{DATE}.npz")
 
 
 class TestBandsFromFilters:

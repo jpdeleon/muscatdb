@@ -298,7 +298,8 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     kind        TEXT NOT NULL DEFAULT 'user',
     created_at  REAL NOT NULL,
     edited_at   REAL,
-    mentions    TEXT NOT NULL DEFAULT '[]'
+    mentions    TEXT NOT NULL DEFAULT '[]',
+    visible_to  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_created ON chat_messages(created_at);
 
@@ -319,6 +320,8 @@ _MIGRATIONS = [
     "ALTER TABLE summaries ADD COLUMN telescope TEXT",
     # 2026-07-24: user override for normalized target names
     "ALTER TABLE target_overrides ADD COLUMN norm_name TEXT",
+    # 2026-07-24: scope chat messages to specific users (e.g. job-finished)
+    "ALTER TABLE chat_messages ADD COLUMN visible_to TEXT",
     # 2026-07-25: bound download retries so one unavailable frame cannot block a
     # request from ever completing
     "ALTER TABLE lco_observation_frames ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
@@ -1748,6 +1751,16 @@ def save_job(
     clear_all_caches()
 
 
+def get_job_user_name(job_key: str) -> str:
+    """Return the ``user_name`` stored for *job_key*, or ``""`` if not found."""
+    path = db_path()
+    with get_conn(path) as conn:
+        row = conn.execute(
+            "SELECT user_name FROM jobs WHERE key = ?", (job_key,)
+        ).fetchone()
+    return row[0] if row else ""
+
+
 def get_persisted_jobs() -> list[dict]:
     path = db_path()
     with get_conn(path) as conn:
@@ -1952,6 +1965,7 @@ def _chat_row_to_dict(row: sqlite3.Row, reactions: dict[int, list[dict]]) -> dic
         "edited_at": row["edited_at"],
         "mentions": mentions if isinstance(mentions, list) else [],
         "reactions": reactions.get(row["id"], []),
+        "visible_to": row["visible_to"] if "visible_to" in row.keys() else None,
     }
 
 
@@ -1961,6 +1975,7 @@ def save_chat_message(
     mentions: list[str] | None = None,
     kind: str = "user",
     created_at: float | None = None,
+    visible_to: str | None = None,
 ) -> dict:
     """Persist a chat message and return its stored representation (incl. id)."""
     path = db_path()
@@ -1969,9 +1984,9 @@ def save_chat_message(
     with get_conn(path, row_factory=sqlite3.Row) as conn:
         _ensure_chat_schema(conn, path)
         cur = conn.execute(
-            "INSERT INTO chat_messages(user_name, text, kind, created_at, mentions) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (user_name, text, kind, ts, mentions_json),
+            "INSERT INTO chat_messages(user_name, text, kind, created_at, mentions, visible_to) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (user_name, text, kind, ts, mentions_json, visible_to),
         )
         conn.commit()
         msg_id = cur.lastrowid
@@ -1985,22 +2000,34 @@ def save_chat_message(
         "edited_at": None,
         "mentions": sorted(set(mentions or [])),
         "reactions": [],
+        "visible_to": visible_to,
     }
 
 
-def get_recent_chat_messages(days: int | None = None, limit: int = 500) -> list[dict]:
+def get_recent_chat_messages(days: int | None = None, limit: int = 500, user: str | None = None) -> list[dict]:
     """Return persisted messages from the last ``days`` (oldest first), with
-    reactions attached. ``limit`` caps the payload for a very busy window."""
+    reactions attached. ``limit`` caps the payload for a very busy window.
+    When ``user`` is given, messages with a ``visible_to`` restriction are
+    filtered to only those addressed to that user (plus all public messages)."""
     path = db_path()
     window_days = CHAT_BACKFILL_DAYS if days is None else days
     since = time.time() - window_days * 86400
     with get_conn(path, row_factory=sqlite3.Row) as conn:
         _ensure_chat_schema(conn, path)
-        rows = conn.execute(
-            "SELECT * FROM chat_messages WHERE created_at >= ? "
-            "ORDER BY created_at DESC LIMIT ?",
-            (since, limit),
-        ).fetchall()
+        if user:
+            rows = conn.execute(
+                "SELECT * FROM chat_messages WHERE created_at >= ? "
+                "AND (visible_to IS NULL OR visible_to = ?) "
+                "ORDER BY created_at DESC LIMIT ?",
+                (since, user, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM chat_messages WHERE created_at >= ? "
+                "AND visible_to IS NULL "
+                "ORDER BY created_at DESC LIMIT ?",
+                (since, limit),
+            ).fetchall()
         rows = list(reversed(rows))
         reactions = _reactions_by_message(conn, [r["id"] for r in rows])
         return [_chat_row_to_dict(r, reactions) for r in rows]

@@ -26,13 +26,13 @@
   }
   /* Tabbed pane for the observation request (science vs test obs). */
   .lco-tabs { display: flex; gap: 0.25rem; margin-bottom: 0.75rem; border-bottom: 1px solid var(--border); }
-  .lco-tab {
+  .lco-tabs .lco-tab {
     appearance: none; background: transparent; border: 1px solid transparent; border-bottom: none;
     color: var(--text-dim); font: inherit; font-size: 0.85rem; padding: 0.4rem 0.9rem;
     cursor: pointer; border-radius: 6px 6px 0 0; margin-bottom: -1px;
   }
-  .lco-tab:hover { color: var(--text); }
-  .lco-tab.active {
+  .lco-tabs .lco-tab:hover { color: var(--text); }
+  .lco-tabs .lco-tab.active {
     color: var(--text); background: var(--surface);
     border-color: var(--border); border-bottom-color: var(--surface);
   }

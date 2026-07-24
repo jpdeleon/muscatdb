@@ -8,6 +8,7 @@ without needing the 3 GB production ``muscat.db`` or any figures on disk.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -88,8 +89,13 @@ def test_no_absolute_internal_links_remain(tiny_db, tmp_path):
     out = tmp_path / "site"
     build_site(out, db_path=tiny_db, n_examples=1, include_figures=False, log=lambda _m: None)
 
+    # Strip <script> blocks before checking: the rewriter only processes HTML
+    # attributes, not string literals inside inline JS that construct links at
+    # runtime (e.g. href="/target?name=" + ...).
+    _SCRIPT_RE = re.compile(r"<script\b[^>]*>.*?</script>", re.S | re.I)
+
     for page in out.rglob("index.html"):
-        html = _read(page)
+        html = _SCRIPT_RE.sub("", _read(page))
         # Root-absolute internal links must all have been relativized. External
         # (https:, //), data: URIs, and fragments are left untouched.
         assert 'href="/' not in html, f"absolute href in {page}"
