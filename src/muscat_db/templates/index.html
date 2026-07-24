@@ -71,7 +71,10 @@
         data-note="{{ t.note|default('', true) }}"
         data-search="{{ t.object }} {{ t.norm_name }} {{ t.ra }} {{ t.declination }} {{ t.filters|join(' ') }} {{ t.instruments|join(' ') }} {{ display_dates|trim }} {{ t.note|default('', true) }}">
       <td><strong>{{ t.object }}</strong></td>
-      <td><a href="/target?name={{ t.norm_name | urlencode }}" style="text-decoration:none;"><strong>{{ t.norm_name }}</strong></a></td>
+      <td class="norm-name-cell" data-object="{{ t.object }}" data-norm-name="{{ t.norm_name }}">
+        <a href="/target?name={{ t.norm_name | urlencode }}" style="text-decoration:none;"><strong>{{ t.norm_name }}</strong></a>
+        <span class="norm-name-edit-hint" title="Click to edit normalized name">&#9998;</span>
+      </td>
       <td class="mono" style="white-space:nowrap; vertical-align:top;">
         {% for d in t.dates %}
           {% set inst = t.date_to_inst.get(d, t.instruments[0] if t.instruments else '') %}
@@ -446,6 +449,70 @@
       pendingMove = null;
       document.getElementById('move-confirm-overlay').classList.remove('visible');
     };
+
+    // ── inline norm-name editor ──────────────────────────────────────────
+    document.querySelectorAll('.norm-name-cell').forEach(cell => {
+      cell.addEventListener('click', function(e) {
+        if (e.target.closest('a') && !e.target.closest('.norm-name-edit-hint')) return;
+        if (cell.classList.contains('editing')) return;
+        openNormNameEditor(cell);
+      });
+    });
+
+    function openNormNameEditor(cell) {
+      const obj = cell.dataset.object;
+      const current = cell.dataset.normName;
+      cell.classList.add('editing');
+      cell.innerHTML = '';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = current;
+      input.className = 'norm-name-input';
+      input.placeholder = 'Normalized name…';
+      const actions = document.createElement('div');
+      actions.className = 'note-actions';
+      const save = document.createElement('button');
+      save.className = 'save'; save.textContent = 'Save';
+      const cancel = document.createElement('button');
+      cancel.textContent = 'Cancel';
+      actions.append(save, cancel);
+      cell.append(input, actions);
+      input.focus(); input.select();
+
+      function close(value) {
+        cell.classList.remove('editing');
+        cell.innerHTML =
+          '<a href="/target?name=' + encodeURIComponent(value) + '" style="text-decoration:none;"><strong>' + escapeHtml(value) + '</strong></a>' +
+          '<span class="norm-name-edit-hint" title="Click to edit normalized name">&#9998;</span>';
+        cell.dataset.normName = value;
+      }
+      function escapeHtml(s) {
+        return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      }
+
+      async function commit() {
+        const value = input.value.trim();
+        try {
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/norm-name', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({norm_name: value}),
+          });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          close(value);
+        } catch (err) {
+          showMessageModal('Error', 'Save failed: ' + err.message);
+        }
+      }
+
+      save.addEventListener('click', commit);
+      cancel.addEventListener('click', () => close(current));
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); commit(); }
+        else if (e.key === 'Escape') { e.preventDefault(); close(current); }
+      });
+    }
+
     filter();
   })();
 </script>

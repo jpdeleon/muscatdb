@@ -115,7 +115,9 @@ from muscat_db.database import (
     get_summaries as _get_summaries,
     get_targets as _get_targets,
     get_identified_overrides as _get_identified_overrides,
+    get_norm_name_overrides as _get_norm_name_overrides,
     set_identified as _set_identified,
+    set_norm_name_override as _set_norm_name_override,
     set_note as _set_note,
     save_ephemeris_view,
     get_ephemeris_view,
@@ -431,12 +433,13 @@ def index():
 
     targets = _get_targets(db)
 
-    # Apply user overrides on top of computed is_identified
+    # Apply user overrides on top of computed is_identified and norm_name
     overrides = _get_identified_overrides(db)
+    norm_overrides = _get_norm_name_overrides(db)
     for t in targets:
         if t["object"] in overrides:
             t["is_identified"] = overrides[t["object"]]
-        t["norm_name"] = _normalize_target_name(t["object"])
+        t["norm_name"] = _normalize_target_name(t["object"], norm_overrides)
 
     # Sum each raw OBJECT's dataset-date count across every other raw name
     # that normalizes to the same target, so the Ndataset column can show
@@ -463,10 +466,11 @@ def _get_datasets_for_normalized_target(db: str, normalized_name: str) -> tuple[
     Returns (datasets_list, last_updated_date).
     """
     targets = _get_targets(db)
+    norm_overrides = _get_norm_name_overrides(db)
 
     matching_objects = [
         t["object"] for t in targets
-        if _normalize_target_name(t["object"]) == normalized_name
+        if _normalize_target_name(t["object"], norm_overrides) == normalized_name
     ]
     if not matching_objects:
         return [], get_last_build_date(db)
@@ -498,7 +502,7 @@ def _get_datasets_for_normalized_target(db: str, normalized_name: str) -> tuple[
 
     datasets = []
     for target in targets:
-        if _normalize_target_name(target["object"]) != normalized_name:
+        if _normalize_target_name(target["object"], norm_overrides) != normalized_name:
             continue
 
         obj_name = target["object"]
@@ -3696,10 +3700,11 @@ def api_lco_obslog_exposures(target: str):
     target = (target or "").strip()
     if not target:
         return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
-    norm = _normalize_target_name(target)
     db = _db_path()
+    norm_overrides = _get_norm_name_overrides(db)
+    norm = _normalize_target_name(target, norm_overrides)
     try:
-        objects = [o for o in _get_frame_objects(db) if _normalize_target_name(o) == norm]
+        objects = [o for o in _get_frame_objects(db) if _normalize_target_name(o, norm_overrides) == norm]
         exposures = _get_exposure_log_for_objects(db, objects)
     except Exception:
         logger.debug("obslog exposure lookup failed for %s", target, exc_info=True)
@@ -4459,7 +4464,8 @@ def api_ephemeris_targets():
         orphan_fits = fit._discover_orphan_fits(existing_keys)
         all_jobs.extend(orphan_fits)
         completed = [j for j in all_jobs if j["type"] == "transit_fit" and j["state"] == "done"]
-        targets = sorted({_normalize_target_name(j["target"]) for j in completed if j.get("target")})
+        norm_overrides = _get_norm_name_overrides(_db_path())
+        targets = sorted({_normalize_target_name(j["target"], norm_overrides) for j in completed if j.get("target")})
     return JSONResponse({"ok": True, "targets": targets})
 
 
@@ -4575,7 +4581,8 @@ def api_ephemeris_target_info(target: str, request: Request):
         orphan_fits = fit._discover_orphan_fits(existing_keys)
         all_jobs.extend(orphan_fits)
         
-        norm_t = _normalize_target_name(target)
+        norm_overrides = _get_norm_name_overrides(_db_path())
+        norm_t = _normalize_target_name(target, norm_overrides)
         # A job can stay "done" in the DB after its fit outputs are deleted from
         # disk (e.g. a re-run under a new run_id, or manual cleanup). Only surface
         # datasets whose outputs still exist so the ephemeris table never links to
@@ -4585,7 +4592,7 @@ def api_ephemeris_target_info(target: str, request: Request):
             if j["type"] == "transit_fit"
             and j["state"] == "done"
             and _is_full_transit_fit_job(j)
-            and _normalize_target_name(j["target"]) == norm_t
+            and _normalize_target_name(j["target"], norm_overrides) == norm_t
             and fit.get_fit_outputs(
                 j["instrument"], j["obsdate"], j["target"], (j.get("run_id") or "") or None
             ).get("has_any")
@@ -4813,10 +4820,11 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
         })
 
     # Build checked lookup: (target_normalized, inst, date, run_id) -> checked_bool
+    norm_overrides = _get_norm_name_overrides(_db_path())
     checked_lookup = {}
     for d in req_datasets:
         tgt = d.get("target")
-        norm_t = _normalize_target_name(tgt) if tgt else None
+        norm_t = _normalize_target_name(tgt, norm_overrides) if tgt else None
         key = (norm_t, d.get("instrument"), d.get("date"), d.get("run_id") or "")
         checked_lookup[key] = bool(d.get("checked"))
 
@@ -4825,7 +4833,7 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
         inst = job["instrument"]
         date = job["obsdate"]
         run_id = job.get("run_id") or ""
-        norm_tgt = _normalize_target_name(job["target"])
+        norm_tgt = _normalize_target_name(job["target"], norm_overrides)
         exact_key = (norm_tgt, inst, date, run_id)
         if exact_key in checked_lookup:
             return checked_lookup[exact_key]
@@ -4851,13 +4859,13 @@ def api_ephemeris_calculate(payload: dict = Body(...)):
         completed = []
         seen_keys = set()
         for target in targets:
-            norm_t = _normalize_target_name(target)
+            norm_t = _normalize_target_name(target, norm_overrides)
             for j in all_jobs:
                 if (
                     j["type"] == "transit_fit"
                     and j["state"] == "done"
                     and _is_full_transit_fit_job(j)
-                    and _normalize_target_name(j["target"]) == norm_t
+                    and _normalize_target_name(j["target"], norm_overrides) == norm_t
                     and requested_dataset_state(j) is not None
                 ):
                     if j["key"] not in seen_keys:
@@ -5668,6 +5676,15 @@ def api_set_identified(obj: str, payload: dict = Body(...)):
         raise HTTPException(400, "is_identified must be 0 or 1")
     _set_identified(_db_path(), obj, val)
     return JSONResponse({"ok": True, "object": obj, "is_identified": bool(val)})
+
+
+@target_router.put("/{obj}/norm-name")
+def api_set_norm_name(obj: str, payload: dict = Body(...)):
+    norm_name = (payload.get("norm_name") or "").strip()
+    if len(norm_name) > 200:
+        raise HTTPException(400, "norm_name too long (max 200 chars)")
+    _set_norm_name_override(_db_path(), obj, norm_name)
+    return JSONResponse({"ok": True, "object": obj, "norm_name": norm_name})
 
 
 @app.get("/{instrument}", response_class=HTMLResponse)

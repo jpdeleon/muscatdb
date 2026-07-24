@@ -1561,7 +1561,10 @@ _DECORATED_TOI_OBJECT_RE = re.compile(
 
 
 # Helper to normalize target names for comparison
-def _normalize_target_name(t: str) -> str:
+def _normalize_target_name(t: str, overrides: dict[str, str] | None = None) -> str:
+    # Check user override first
+    if overrides and t in overrides:
+        return overrides[t]
     # Parse recognized TOI spellings before removing punctuation.  Otherwise a
     # malformed value such as ``TOI06209-01`` would be reinterpreted as TOI
     # 620901 after the hyphen is discarded.  TOI comparison keys represent the

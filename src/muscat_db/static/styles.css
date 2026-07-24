@@ -342,6 +342,27 @@ tr.filter-row th input::placeholder { color: var(--text-dim); font-style: italic
 .note-cell .note-actions button.del  { border-color: var(--red);     color: var(--red); margin-left: auto; }
 .note-cell .note-actions button:hover { filter: brightness(1.2); }
 
+/* ---------- Editable norm-name cells ---------- */
+.norm-name-cell { cursor: pointer; position: relative; }
+.norm-name-cell .norm-name-edit-hint { opacity: 0; font-size: 0.7rem; margin-left: 0.3rem; transition: opacity 0.15s; }
+.norm-name-cell:hover .norm-name-edit-hint { opacity: 0.5; }
+.norm-name-cell .norm-name-edit-hint:hover { opacity: 1; }
+.norm-name-cell.editing { padding: 0.25rem; overflow: visible; white-space: normal; }
+.norm-name-cell .norm-name-input {
+  width: 100%; min-height: 1.8rem;
+  background: var(--input-bg); color: var(--text);
+  border: 1px solid var(--accent); border-radius: 4px;
+  padding: 0.25rem 0.4rem; font: inherit;
+}
+.norm-name-cell .note-actions { margin-top: 0.25rem; display: flex; gap: 0.35rem; }
+.norm-name-cell .note-actions button {
+  background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.2rem 0.55rem; font-size: 0.75rem; cursor: pointer;
+}
+.norm-name-cell .note-actions button.save { border-color: var(--accent2); color: var(--accent2); }
+.norm-name-cell .note-actions button:hover { filter: brightness(1.2); }
+
 /* ---------- Theme toggle ---------- */
 .theme-toggle {
   background: var(--surface2);

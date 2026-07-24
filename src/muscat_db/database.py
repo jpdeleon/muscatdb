@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS target_notes (
 CREATE TABLE IF NOT EXISTS target_overrides (
     object        TEXT PRIMARY KEY,
     is_identified INTEGER NOT NULL,
+    norm_name     TEXT,
     updated_at    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -312,6 +313,8 @@ CREATE TABLE IF NOT EXISTS chat_reactions (
 _MIGRATIONS = [
     # 2026-07-12: group simultaneous multi-telescope sinistro nights separately
     "ALTER TABLE summaries ADD COLUMN telescope TEXT",
+    # 2026-07-24: user override for normalized target names
+    "ALTER TABLE target_overrides ADD COLUMN norm_name TEXT",
 ]
 
 
@@ -1193,6 +1196,38 @@ def get_identified_overrides(db_path: str) -> dict[str, bool]:
         _apply_schema(conn)
         cur = conn.execute("SELECT object, is_identified FROM target_overrides")
         return {row[0]: bool(row[1]) for row in cur.fetchall()}
+
+
+def set_norm_name_override(db_path: str, obj: str, norm_name: str) -> None:
+    """Set a user override for the normalized target name. Empty/None clears."""
+    norm_name = (norm_name or "").strip() or None
+    with get_conn(db_path) as conn:
+        _apply_schema(conn)
+        if norm_name is None:
+            conn.execute(
+                """UPDATE target_overrides SET norm_name = NULL, updated_at = CURRENT_TIMESTAMP
+                   WHERE object = ?""",
+                (obj,),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO target_overrides(object, is_identified, norm_name, updated_at)
+                   VALUES (?, 1, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(object) DO UPDATE
+                     SET norm_name = excluded.norm_name, updated_at = CURRENT_TIMESTAMP""",
+                (obj, norm_name),
+            )
+        conn.commit()
+    clear_all_caches()
+
+
+def get_norm_name_overrides(db_path: str) -> dict[str, str]:
+    with get_conn(db_path) as conn:
+        _apply_schema(conn)
+        cur = conn.execute(
+            "SELECT object, norm_name FROM target_overrides WHERE norm_name IS NOT NULL"
+        )
+        return {row[0]: row[1] for row in cur.fetchall()}
 
 
 def get_frames(db_path: str, instrument: str, obsdate: str, ccd: int) -> list[dict]:
