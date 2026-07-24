@@ -1102,7 +1102,7 @@ def _targets_from_conn(conn: sqlite3.Connection) -> list[dict]:
                   t.is_identified, COALESCE(n.note, ''), COALESCE(t.inst_dates, ''),
                   COALESCE(t.phot_status, 'none'), COALESCE(t.fit_status, 'none')
            FROM targets t
-           LEFT JOIN target_notes n ON n.object = t.object
+           LEFT JOIN target_notes n ON n.object = t.object AND n.obsdate = '' AND n.instrument = ''
            ORDER BY t.object COLLATE NOCASE"""
     )
     result = []
