@@ -156,7 +156,7 @@ _MODULE = "prose.scripts.run_photometry"
 
 _DATE_RE = re.compile(r"^\d{6}$")
 # A served filename is a single path segment of safe characters only.
-_NAME_RE = re.compile(r"^[A-Za-z0-9._+:\-]+$")
+_NAME_RE = re.compile(r"^[A-Za-z0-9._+:\-()]+$")
 
 # Summary (multi-band) plot suffixes -> short key used by the template.
 _SUMMARY_SUFFIX = {
