@@ -736,6 +736,8 @@
 
     function openEditor(cell) {
       const obj = cell.dataset.object;
+      const obsdate = cell.dataset.obsdate || '';
+      const instrument = cell.dataset.instrument || '';
       const current = cell.querySelector('.note-text').textContent;
       cell.classList.add('editing');
       cell.innerHTML = '';
@@ -771,7 +773,7 @@
           const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({note: value}),
+            body: JSON.stringify({note: value, obsdate: obsdate, instrument: instrument}),
           });
           if (!res.ok) throw new Error('HTTP ' + res.status);
           close(value);
@@ -781,7 +783,11 @@
       }
       async function destroy() {
         try {
-          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {method: 'DELETE'});
+          const res = await fetch('/api/targets/' + encodeURIComponent(obj) + '/note', {
+            method: 'DELETE',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({obsdate: obsdate, instrument: instrument}),
+          });
           if (!res.ok) throw new Error('HTTP ' + res.status);
           close('');
         } catch (err) {

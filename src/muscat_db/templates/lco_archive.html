@@ -201,7 +201,11 @@
         }
         var summary = downloadSummary(results);
         if (d.state === 'error') {
-          msg('msg-download', 'Download failed after ' + results.length + '/' + (d.frames_total || 0) + ' frames: ' + (d.error || 'unknown error'), 'err');
+          msg(
+            'msg-download',
+            summary.ok + '/' + (d.frames_total || 0) + ' downloaded, ' + summary.exists + ' already present, ' + summary.errors + ' failed: ' + (d.error || 'unknown error') + summary.savedTo,
+            'err'
+          );
           return;
         }
         msg(
