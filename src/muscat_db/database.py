@@ -105,9 +105,12 @@ CREATE TABLE IF NOT EXISTS targets (
 );
 
 CREATE TABLE IF NOT EXISTS target_notes (
-    object     TEXT PRIMARY KEY,
+    object     TEXT NOT NULL,
+    obsdate    TEXT NOT NULL DEFAULT '',
+    instrument TEXT NOT NULL DEFAULT '',
     note       TEXT NOT NULL,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (object, obsdate, instrument)
 );
 
 CREATE TABLE IF NOT EXISTS target_overrides (
@@ -318,8 +321,38 @@ _MIGRATIONS = [
 ]
 
 
+def _migrate_target_notes(conn: sqlite3.Connection) -> None:
+    """Recreate target_notes with per-dataset primary key if needed."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(target_notes)").fetchall()}
+    if "obsdate" in cols:
+        return  # already migrated
+    # Preserve existing rows
+    try:
+        rows = conn.execute("SELECT object, note, updated_at FROM target_notes").fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    conn.execute("DROP TABLE IF EXISTS target_notes")
+    conn.execute("""
+        CREATE TABLE target_notes (
+            object     TEXT NOT NULL,
+            obsdate    TEXT NOT NULL DEFAULT '',
+            instrument TEXT NOT NULL DEFAULT '',
+            note       TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (object, obsdate, instrument)
+        )
+    """)
+    for obj, note, updated in rows:
+        conn.execute(
+            "INSERT INTO target_notes(object, obsdate, instrument, note, updated_at) VALUES (?, '', '', ?, ?)",
+            (obj, note, updated),
+        )
+    conn.commit()
+
+
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     """Apply any pending schema migrations idempotently."""
+    _migrate_target_notes(conn)
     for sql in _MIGRATIONS:
         try:
             conn.execute(sql)
@@ -1150,29 +1183,41 @@ def _parse_inst_dates(s: str) -> dict[str, str]:
     return out
 
 
-def set_note(db_path: str, obj: str, note: str) -> None:
-    """Upsert a per-target note. Empty/whitespace `note` deletes the row."""
+def set_note(db_path: str, obj: str, note: str,
+             obsdate: str = "", instrument: str = "") -> None:
+    """Upsert a per-target or per-dataset note. Empty `note` deletes the row."""
     note = (note or "").strip()
+    obsdate = (obsdate or "").strip()
+    instrument = (instrument or "").strip()
     with get_conn(db_path) as conn:
         _apply_schema(conn)
         if not note:
-            conn.execute("DELETE FROM target_notes WHERE object = ?", (obj,))
+            conn.execute(
+                "DELETE FROM target_notes WHERE object = ? AND obsdate = ? AND instrument = ?",
+                (obj, obsdate, instrument),
+            )
         else:
             conn.execute(
-                """INSERT INTO target_notes(object, note, updated_at)
-                   VALUES (?, ?, CURRENT_TIMESTAMP)
-                   ON CONFLICT(object) DO UPDATE
+                """INSERT INTO target_notes(object, obsdate, instrument, note, updated_at)
+                   VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(object, obsdate, instrument) DO UPDATE
                      SET note = excluded.note, updated_at = CURRENT_TIMESTAMP""",
-                (obj, note),
+                (obj, obsdate, instrument, note),
             )
         conn.commit()
     clear_all_caches()
 
 
-def delete_note(db_path: str, obj: str) -> None:
+def delete_note(db_path: str, obj: str,
+                obsdate: str = "", instrument: str = "") -> None:
+    obsdate = (obsdate or "").strip()
+    instrument = (instrument or "").strip()
     with get_conn(db_path) as conn:
         _apply_schema(conn)
-        conn.execute("DELETE FROM target_notes WHERE object = ?", (obj,))
+        conn.execute(
+            "DELETE FROM target_notes WHERE object = ? AND obsdate = ? AND instrument = ?",
+            (obj, obsdate, instrument),
+        )
         conn.commit()
     clear_all_caches()
 

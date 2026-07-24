@@ -99,7 +99,7 @@
                 <span style="color: var(--red);" title="No transit fit">N</span>
               {% endif %}
             </td>
-            <td class="note-cell" data-object="{{ dataset.object }}" style="white-space:normal;">
+            <td class="note-cell" data-object="{{ dataset.object }}" data-obsdate="{{ dataset.date }}" data-instrument="{{ dataset.instrument }}" style="white-space:normal;">
               <span class="note-text">{{ dataset.note }}</span>
               <span class="note-placeholder" {% if dataset.note %}style="display:none;"{% endif %}>+ add note</span>
             </td>

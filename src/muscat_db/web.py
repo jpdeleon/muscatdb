@@ -475,9 +475,12 @@ def _get_datasets_for_normalized_target(db: str, normalized_name: str) -> tuple[
     if not matching_objects:
         return [], get_last_build_date(db)
 
-    # Query per-(inst, date, object) stats from the obslog (summaries table).
+    # Query per-(inst, date, object) stats from the obslog (summaries table)
+    # and per-dataset notes from target_notes.
     placeholders = ",".join("?" for _ in matching_objects)
     obs_stats: dict[tuple, dict] = {}
+    dataset_notes: dict[tuple, str] = {}
+    object_notes: dict[str, str] = {}
     with get_conn(db) as conn:
         cur = conn.execute(
             f"""SELECT instrument, obsdate, object,
@@ -499,6 +502,19 @@ def _get_datasets_for_normalized_target(db: str, normalized_name: str) -> tuple[
                 "airmass_min": row[5],
                 "airmass_max": row[6],
             }
+        # Fetch notes: per-dataset (obsdate+instrument set) and per-object (both empty)
+        cur = conn.execute(
+            f"""SELECT object, obsdate, instrument, note FROM target_notes
+                WHERE object IN ({placeholders})""",
+            matching_objects,
+        )
+        for obj, od, inst, note in cur.fetchall():
+            if od and inst:
+                dataset_notes[(obj, od, inst)] = note
+            elif not note:
+                pass
+            else:
+                object_notes[obj] = note
 
     datasets = []
     for target in targets:
@@ -519,6 +535,8 @@ def _get_datasets_for_normalized_target(db: str, normalized_name: str) -> tuple[
             fit_status = "full" if fit.has_fit_outputs(inst, date, obj_name) else "none"
 
             stats = obs_stats.get((inst, date, obj_name), {})
+            note = dataset_notes.get((obj_name, date, inst),
+                                     object_notes.get(obj_name, ""))
             dataset = {
                 "object": obj_name,
                 "date": date,
@@ -532,7 +550,7 @@ def _get_datasets_for_normalized_target(db: str, normalized_name: str) -> tuple[
                 "dec": target["declination"],
                 "phot": phot_status,
                 "fit": fit_status,
-                "note": target["note"],
+                "note": note,
             }
             datasets.append(dataset)
 
@@ -5659,13 +5677,18 @@ def api_set_note(obj: str, payload: dict = Body(...)):
     note = (payload.get("note") or "").strip()
     if len(note) > 2000:
         raise HTTPException(400, "note too long (max 2000 chars)")
-    _set_note(_db_path(), obj, note)
-    return JSONResponse({"ok": True, "object": obj, "note": note})
+    obsdate = (payload.get("obsdate") or "").strip()
+    instrument = (payload.get("instrument") or "").strip()
+    _set_note(_db_path(), obj, note, obsdate=obsdate, instrument=instrument)
+    return JSONResponse({"ok": True, "object": obj, "note": note,
+                         "obsdate": obsdate, "instrument": instrument})
 
 
 @target_router.delete("/{obj}/note")
-def api_delete_note(obj: str):
-    _delete_note(_db_path(), obj)
+def api_delete_note(obj: str, payload: dict = Body(default=None)):
+    obsdate = (payload.get("obsdate") or "") if payload else ""
+    instrument = (payload.get("instrument") or "") if payload else ""
+    _delete_note(_db_path(), obj, obsdate=obsdate, instrument=instrument)
     return JSONResponse({"ok": True, "object": obj})
 
 
