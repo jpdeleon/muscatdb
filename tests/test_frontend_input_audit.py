@@ -221,7 +221,9 @@ def test_lco_schedule_inputs_registered_for_persistence():
     controls = _control_ids(html, "sch-") | _control_ids(html, "win-")
     # 'win-all' is a derived "select all windows" toggle, recomputed on every
     # render from the row checkboxes; persisting it would be meaningless.
-    excluded = {"win-all"}
+    # 'sch-clone-id' is a one-shot action trigger (enter an id -> clone into the
+    # form): it must NOT persist/restore, so it is deliberately unregistered.
+    excluded = {"win-all", "sch-clone-id"}
     missing = controls - registered - excluded
     assert not missing, (
         f"lco_schedule.html inputs not registered in TEXT_IDS/CHECK_IDS "

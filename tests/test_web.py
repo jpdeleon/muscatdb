@@ -1494,6 +1494,87 @@ def test_lco_config_exposes_download_root_path(monkeypatch):
     assert body["download_root"] == "/data"
 
 
+def test_lco_clone_local_first(monkeypatch):
+    """A locally-known id clones from the stored params without touching LCO."""
+    stored = {
+        "kind": "muscat", "target_name": "TOI-1", "ra": 1.0, "dec": 2.0,
+        "exposure_times": {"g": 30, "r": 60},
+        "windows": [{"start": "2020-01-01T00:00:00Z", "end": "2020-01-01T01:00:00Z"}],
+    }
+    monkeypatch.setattr("muscat_db.lco_monitor.get_request_payload", lambda ident: dict(stored))
+
+    def must_not_call(*args, **kwargs):
+        raise AssertionError("LCO must not be contacted when the id is known locally")
+
+    monkeypatch.setattr("muscat_db.lco.get_requestgroup", must_not_call)
+    body = TestClient(app).get("/api/lco/clone/101").json()
+    assert body["ok"] is True
+    assert body["source"] == "local"
+    assert body["params"]["target_name"] == "TOI-1"
+    # Windows are date-specific and dropped so the observer regenerates them.
+    assert "windows" not in body["params"]
+
+
+def test_lco_clone_falls_back_to_lco(monkeypatch):
+    rg = {
+        "name": "n", "proposal": "P", "ipp_value": 1.0, "observation_type": "NORMAL",
+        "requests": [{
+            "target": {"name": "TOI-9", "ra": 5.0, "dec": 6.0},
+            "location": {"telescope_class": "2m0", "site": "ogg"},
+            "instrument_type": "2M0-SCICAM-MUSCAT",
+            "windows": [{"start": "2020-01-01T00:00:00Z", "end": "2020-01-01T01:00:00Z"}],
+            "configurations": [{
+                "type": "REPEAT_EXPOSE",
+                "guiding_config": {"mode": "OFF"},
+                "constraints": {"max_airmass": 2, "min_lunar_distance": 30},
+                "instrument_configs": [{
+                    "mode": "MUSCAT_FAST", "exposure_count": 1,
+                    "optical_elements": {f"narrowband_{b}_position": "out" for b in "griz"},
+                    "extra_params": {"exposure_mode": "ASYNCHRONOUS",
+                                     "exposure_time_g": 20, "exposure_time_r": 25,
+                                     "exposure_time_i": 30, "exposure_time_z": 35},
+                }],
+            }],
+        }],
+    }
+    monkeypatch.setattr("muscat_db.lco_monitor.get_request_payload", lambda ident: None)
+    monkeypatch.setattr("muscat_db.lco.get_requestgroup", lambda ident, user=None: rg)
+    body = TestClient(app).get("/api/lco/clone/555").json()
+    assert body["ok"] is True
+    assert body["source"] == "lco"
+    assert body["params"]["kind"] == "muscat"
+    assert body["params"]["site"] == "ogg"
+    assert body["params"]["exposure_times"] == {"g": 20, "r": 25, "i": 30, "z": 35}
+    assert "windows" not in body["params"]
+
+
+def test_lco_clone_resolves_request_id_to_group(monkeypatch):
+    """A 404 from the requestgroups endpoint falls back to the request endpoint,
+    which carries the parent group id."""
+    from muscat_db import lco
+
+    monkeypatch.setattr("muscat_db.lco_monitor.get_request_payload", lambda ident: None)
+
+    def fake_group(ident, user=None):
+        if int(ident) == 700:  # the request id is not a group id
+            raise lco.LcoError("not found", status=404)
+        assert int(ident) == 42  # resolved parent group
+        return {"requests": [{"instrument_type": "1M0-SCICAM-SINISTRO", "target": {"name": "T"},
+                              "configurations": [{"instrument_configs": [{"optical_elements": {"filter": "rp"}}]}]}]}
+
+    monkeypatch.setattr("muscat_db.lco.get_requestgroup", fake_group)
+    monkeypatch.setattr("muscat_db.lco.get_request", lambda ident, user=None: {"request_group": 42})
+    body = TestClient(app).get("/api/lco/clone/700").json()
+    assert body["ok"] is True and body["source"] == "lco"
+    assert body["params"]["kind"] == "sinistro"
+
+
+def test_lco_clone_rejects_non_numeric():
+    r = TestClient(app).get("/api/lco/clone/not-a-number")
+    assert r.status_code == 400
+    assert r.json()["ok"] is False
+
+
 def test_lco_proposals_proxied(monkeypatch):
     monkeypatch.setattr("muscat_db.lco.get_proposals",
                         lambda token=None: {"results": [{"id": "TEST2026A"}], "count": 1})

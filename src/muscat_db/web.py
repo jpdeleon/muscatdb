@@ -3503,6 +3503,53 @@ def api_lco_requestgroups(request: Request, proposal: str = ""):
         return _lco_error_response(e)
 
 
+def _resolve_lco_requestgroup(identifier: int, user: str | None) -> dict:
+    """Fetch an LCO requestgroup, resolving a request id to its parent group.
+
+    Tries the requestgroups endpoint first; if that id is actually a child
+    request id (404), fetches the request and follows its parent group id.
+    """
+    try:
+        return lco.get_requestgroup(identifier, user)
+    except lco.LcoError as e:
+        if e.status != 404:
+            raise
+    request_obj = lco.get_request(identifier, user)
+    group_id = request_obj.get("request_group") or request_obj.get("request_group_id")
+    if not group_id:
+        raise lco.LcoError("Could not resolve parent request group for that id", status=404)
+    return lco.get_requestgroup(group_id, user)
+
+
+@lco_router.get("/clone/{ident}", response_class=JSONResponse)
+def api_lco_clone(ident: str, request: Request):
+    """Return schedule-form params cloned from an existing request.
+
+    Local monitor DB first (exact stored params, no round-trip); otherwise fetch
+    from LCO and reverse-map. Windows are dropped so the observer regenerates
+    them for a new epoch. Accepts a request id or a requestgroup id.
+    """
+    try:
+        identifier = int(ident)
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "Request ID must be numeric"}, status_code=400)
+    try:
+        params = lco_monitor.get_request_payload(identifier)
+        source = "local"
+        if params is None:
+            rg = _resolve_lco_requestgroup(identifier, _request_user(request))
+            params = lco.requestgroup_to_params(rg)
+            source = "lco"
+        # Windows are date-specific and regenerated for a new epoch; ``requests``
+        # is local monitoring bookkeeping (carries the old windows too), not a
+        # form field. Drop both so a clone starts from a clean, future-dated slate.
+        params.pop("windows", None)
+        params.pop("requests", None)
+        return JSONResponse({"ok": True, "params": params, "source": source})
+    except lco.LcoError as e:
+        return _lco_error_response(e)
+
+
 @lco_router.post("/windows", response_class=JSONResponse)
 def api_lco_windows(request: Request, payload: dict = Body(...)):
     """Generate transit windows from explicit t0/period/duration or a catalog lookup."""

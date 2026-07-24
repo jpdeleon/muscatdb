@@ -41,6 +41,17 @@
   #obslog-body tr:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 </style>
 
+<div class="lco-section" style="display: flex; align-items: flex-end; gap: 0.7rem; flex-wrap: wrap;">
+  <div class="lco-field" style="max-width: 260px;">
+    <label for="sch-clone-id">Clone existing request
+      <span class="help-tooltip" title="Enter an LCO request or requestgroup ID to copy its instrument, exposures, filters, and constraints into the form below. Windows are not copied — the target's ephemeris is fetched so you can generate windows for a new date. Also available per-row in Submitted Request Monitoring.">?</span>
+    </label>
+    <input id="sch-clone-id" type="text" inputmode="numeric" placeholder="LCO request / group ID">
+  </div>
+  <button class="btn" type="button" id="btn-clone">Clone into form</button>
+  <span class="lco-msg" id="msg-clone" style="margin: 0;"></span>
+</div>
+
 <details class="lco-section section-fold" open>
   <summary><h3>Target &amp; Transit Windows</h3></summary>
   <div class="lco-grid">
@@ -367,8 +378,8 @@
   <p class="lco-note">Accepted requests are checked after their observing window. Final BANZAI products are downloaded incrementally; scan and database ingestion start after every raw frame has a level-91 counterpart.</p>
   <div class="lco-table-wrap">
     <table class="lco-table" id="monitor-table">
-      <thead><tr><th>Request</th><th>Target</th><th>Instrument</th><th>LCO state</th><th>Pipeline</th><th>Frames</th><th>Last update</th><th>Detail</th></tr></thead>
-      <tbody id="monitor-body"><tr><td colspan="8" style="color: var(--text-dim); text-align: center;">Loading…</td></tr></tbody>
+      <thead><tr><th>Request</th><th>Target</th><th>Instrument</th><th>LCO state</th><th>Pipeline</th><th>Frames</th><th>Last update</th><th>Detail</th><th>Action</th></tr></thead>
+      <tbody id="monitor-body"><tr><td colspan="9" style="color: var(--text-dim); text-align: center;">Loading…</td></tr></tbody>
     </table>
   </div>
 </details>
@@ -2050,7 +2061,7 @@
       if (!body || !d.ok) return;
       var rows = d.requests || [];
       if (!rows.length) {
-        body.innerHTML = '<tr><td colspan="8" style="color: var(--text-dim); text-align: center;">No scheduler requests are being monitored yet.</td></tr>';
+        body.innerHTML = '<tr><td colspan="9" style="color: var(--text-dim); text-align: center;">No scheduler requests are being monitored yet.</td></tr>';
         return;
       }
       body.innerHTML = rows.map(function (row) {
@@ -2065,10 +2076,85 @@
           '<td>' + escapeHtml(row.monitor_state || '—') + '</td>' +
           '<td>' + frames + '</td>' +
           '<td>' + escapeHtml(monitorDate(row.updated_at)) + '</td>' +
-          '<td>' + detail + '</td></tr>';
+          '<td>' + detail + '</td>' +
+          '<td><button class="btn" type="button" data-clone-id="' + escapeHtml(row.request_id) + '">Clone</button></td></tr>';
       }).join('');
     }).catch(function () {});
   }
+
+  // Fill the schedule form from params cloned off an existing request (inverse
+  // of buildParams). Kind is set first so applyKind() reveals the right branch
+  // before branch-specific fields are written (applyKind resets some of them).
+  function applyClonedParams(p) {
+    if (!p || typeof p !== 'object') return;
+    // A clone replaces the form wholesale, so everything derived from the
+    // previous state (generated windows, the draft editor, dry-run hashes) is
+    // stale. The usual invalidation listeners fire on user input only, and
+    // setVal fires no events, so invalidate explicitly. Without this a prior
+    // passed dry-run would leave Submit enabled for the old draft.
+    invalidateGeneratedWindows();
+    resetDraftState();
+    resetSplitSubmitState();
+    var muscat = p.kind !== 'sinistro';
+    setSelectValue('sch-kind', muscat ? 'muscat' : 'sinistro');
+    applyKind();
+    if (p.proposal != null && p.proposal !== '') setSelectValue('sch-proposal', String(p.proposal));
+    if (p.target_name != null) setVal('sch-target', p.target_name);
+    if (p.ra != null && p.dec != null) setVal('sch-coords', p.ra + ', ' + p.dec);
+    if (p.max_airmass != null) setVal('sch-obs-airmass', p.max_airmass);
+    if (p.min_lunar_distance != null) setVal('sch-moon-sep', p.min_lunar_distance);
+    if (p.max_lunar_phase != null) setSelectValue('sch-max-lunar-phase', Number(p.max_lunar_phase).toFixed(1));
+    if (p.type) setSelectValue('sch-type', p.type);
+    if (p.observation_type) setSelectValue('sch-observation-type', p.observation_type);
+    if (p.guiding_config) setSelectValue('sch-guiding-config', p.guiding_config);
+    if (p.ipp_value != null) setVal('sch-ipp', p.ipp_value);
+    if (p.defocus != null) setVal('sch-defocus', p.defocus);
+    if (muscat) {
+      var et = p.exposure_times || {};
+      ['g', 'r', 'i', 'z'].forEach(function (b) { if (et[b] != null) setVal('sch-exp-' + b, et[b]); });
+      if (p.exposure_mode) setSelectValue('sch-exp-mode', p.exposure_mode);
+      if (p.readout_mode) setSelectValue('sch-readout', p.readout_mode);
+      if (p.exposure_count != null) setVal('sch-count', p.exposure_count);
+      var nb = p.narrowband || {};
+      ['g', 'r', 'i', 'z'].forEach(function (b) { if (nb[b] != null) setSelectValue('sch-nb-' + b, nb[b]); });
+      if (p.site) setSelectValue('sch-muscat-site', p.site);
+    } else {
+      if (p.filter) setSelectValue('sch-effective-filter', p.filter);
+      if (p.exposure_time != null) setVal('sch-effective-exptime', p.exposure_time);
+      if (p.readout_mode) setSelectValue('sch-effective-mode', p.readout_mode);
+      if (p.exposure_count != null) setVal('sch-sin-count', p.exposure_count);
+      if (p.site) setSelectValue('sch-site', p.site);
+    }
+    updateDefocusLimits();
+    updateScheduleFields();
+    updateGenWindowsButtonState();
+    saveOptions();
+    // Fetch the target's ephemeris so the user can generate fresh windows.
+    // isInitialLoad keeps the cloned coords from being overwritten by the catalog.
+    refreshTargetFields({ silent: true, isInitialLoad: true });
+  }
+
+  function cloneRequest(id) {
+    id = String(id || '').trim();
+    if (!id) { msg('msg-clone', 'Enter an LCO request or group ID', 'err'); return; }
+    msg('msg-clone', 'Loading request ' + id + '…');
+    fetch('/api/lco/clone/' + encodeURIComponent(id)).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d.ok) { msg('msg-clone', (d.error || 'clone failed') + (d.detail ? ' — ' + d.detail : ''), 'err'); return; }
+      applyClonedParams(d.params || {});
+      msg('msg-clone', 'Loaded from ' + (d.source === 'local' ? 'local record' : 'LCO') + ' — fetch ephemeris and generate windows, then submit', 'ok');
+      var target = el('sch-target');
+      if (target && target.scrollIntoView) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }).catch(function (e) { msg('msg-clone', String(e), 'err'); });
+  }
+
+  el('btn-clone').addEventListener('click', function () { cloneRequest(val('sch-clone-id')); });
+  el('sch-clone-id').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); cloneRequest(val('sch-clone-id')); }
+  });
+  el('monitor-body').addEventListener('click', function (e) {
+    var btn = e.target && e.target.closest ? e.target.closest('[data-clone-id]') : null;
+    if (btn) cloneRequest(btn.getAttribute('data-clone-id'));
+  });
 
   function submitLcoRequest() {
     var rg = parseDraft();

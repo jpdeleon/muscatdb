@@ -274,6 +274,27 @@ def get_requestgroup(
     return _lco_api_request(url, user_name=user_name, token=token, require_own_token=require_own_token)
 
 
+def get_request(
+    request_id: int,
+    user_name: str | None = None,
+    token: str | None = None,
+    *,
+    require_own_token: bool = True,
+) -> dict:
+    """Fetch one child Request, used to resolve a request id to its parent group.
+
+    A user copying an ID from an LCO "Request Detail" page has the *request* id,
+    not the requestgroup id. This endpoint carries the parent group id
+    (``request_group``) so a clone can fall back from requestgroups to requests.
+    """
+    try:
+        identifier = int(request_id)
+    except (TypeError, ValueError) as exc:
+        raise LcoError("Request ID must be numeric", status=400) from exc
+    url = f"https://observe.lco.global/api/requests/{identifier}/"
+    return _lco_api_request(url, user_name=user_name, token=token, require_own_token=require_own_token)
+
+
 def _query_params(filters: dict) -> str:
     """Encode API filters without dropping meaningful zero/false values."""
     return urllib.parse.urlencode(
@@ -1480,6 +1501,85 @@ def _clip_windows_to_observability(kind: str, params: dict, max_airmass, min_lun
         raise
     except Exception:
         return
+
+
+_INSTRUMENT_TYPE_TO_KIND = {
+    "2M0-SCICAM-MUSCAT": "muscat",
+    "1M0-SCICAM-SINISTRO": "sinistro",
+}
+
+
+def requestgroup_to_params(rg: dict) -> dict:
+    """Reverse :func:`build_requestgroup`: an LCO requestgroup -> form params.
+
+    Used to clone an existing observation into the schedule form. Windows are
+    intentionally omitted: they are date-specific and a clone regenerates them
+    for a new epoch. Unknown/missing fields are simply left out so the frontend
+    falls back to its own defaults.
+    """
+    if not isinstance(rg, dict):
+        raise LcoError("Requestgroup payload must be an object", status=400)
+    requests = rg.get("requests") or []
+    if not requests or not isinstance(requests[0], dict):
+        raise LcoError("Requestgroup has no requests to clone", status=400)
+    request = requests[0]
+    configs = request.get("configurations") or []
+    config = configs[0] if configs and isinstance(configs[0], dict) else {}
+    inst_configs = config.get("instrument_configs") or []
+    ic = inst_configs[0] if inst_configs and isinstance(inst_configs[0], dict) else {}
+    extra = ic.get("extra_params") or {}
+    optical = ic.get("optical_elements") or {}
+
+    instrument_type = request.get("instrument_type") or config.get("instrument_type") or ""
+    kind = _INSTRUMENT_TYPE_TO_KIND.get(instrument_type)
+    if kind is None:
+        raise LcoError(f"Unsupported instrument type for cloning: {instrument_type}", status=400)
+
+    target = request.get("target") or {}
+    # Config-level constraints are the richest; fall back to request-level.
+    constraints = config.get("constraints") or request.get("constraints") or {}
+    guiding = config.get("guiding_config") or {}
+
+    params: dict = {
+        "kind": kind,
+        "name": rg.get("name"),
+        "proposal": rg.get("proposal"),
+        "ipp_value": rg.get("ipp_value"),
+        "observation_type": rg.get("observation_type"),
+        "target_name": target.get("name"),
+        "ra": target.get("ra"),
+        "dec": target.get("dec"),
+        "type": config.get("type"),
+        "guiding_config": guiding.get("mode"),
+        "max_airmass": constraints.get("max_airmass"),
+        "min_lunar_distance": constraints.get("min_lunar_distance"),
+        "max_lunar_phase": constraints.get("max_lunar_phase", 1.0),
+        "readout_mode": ic.get("mode"),
+        "exposure_count": ic.get("exposure_count"),
+        "defocus": extra.get("defocus", 0),
+    }
+    location = request.get("location") or {}
+    if location.get("site"):
+        params["site"] = location["site"]
+
+    if kind == "muscat":
+        params["exposure_times"] = {
+            b: extra.get(f"exposure_time_{b}") for b in ("g", "r", "i", "z")
+            if extra.get(f"exposure_time_{b}") is not None
+        }
+        if extra.get("exposure_mode") is not None:
+            params["exposure_mode"] = extra["exposure_mode"]
+        params["narrowband"] = {
+            b: optical.get(f"narrowband_{b}_position", "out") for b in ("g", "r", "i", "z")
+        }
+    else:  # sinistro
+        if optical.get("filter") is not None:
+            params["filter"] = optical["filter"]
+        if ic.get("exposure_time") is not None:
+            params["exposure_time"] = ic["exposure_time"]
+
+    # Drop keys that came back None so the frontend uses its own defaults.
+    return {k: v for k, v in params.items() if v is not None}
 
 
 def build_requestgroup(kind: str, params: dict, configurations: list[dict] | None = None) -> dict:

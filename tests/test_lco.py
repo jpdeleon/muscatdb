@@ -1048,5 +1048,107 @@ class ArchiveDownloadJobTest(unittest.TestCase):
         submit.assert_called_once()
 
 
+# The requestgroup submission from an accepted 2m0 MuSCAT request (the shape LCO
+# returns from get_requestgroup and the portal submits), used to exercise the
+# reverse-mapper that backs the clone feature.
+_EXAMPLE_MUSCAT_RG = {
+    "name": "TOI-1410_260716",
+    "proposal": "CON2025B-002",
+    "ipp_value": 1.1,
+    "operator": "SINGLE",
+    "observation_type": "NORMAL",
+    "requests": [
+        {
+            "target": {"name": "TOI-1410", "type": "ICRS", "ra": 334.88285, "dec": 42.56031},
+            "constraints": {"max_airmass": 2, "min_lunar_distance": 30},
+            "location": {"telescope_class": "2m0", "site": "ogg"},
+            "windows": [{"start": "2026-07-16T10:09:28.721461Z", "end": "2026-07-16T12:36:12.209101Z"}],
+            "instrument_type": "2M0-SCICAM-MUSCAT",
+            "configurations": [
+                {
+                    "type": "REPEAT_EXPOSE",
+                    "repeat_duration": 8623,
+                    "instrument_type": "2M0-SCICAM-MUSCAT",
+                    "instrument_configs": [
+                        {
+                            "exposure_time": 180,
+                            "exposure_count": 1,
+                            "mode": "MUSCAT_FAST",
+                            "optical_elements": {
+                                "narrowband_g_position": "in",
+                                "narrowband_i_position": "in",
+                                "narrowband_r_position": "in",
+                                "narrowband_z_position": "in",
+                            },
+                            "extra_params": {
+                                "bin_x": 1, "bin_y": 1, "offset_ra": 0, "offset_dec": 0,
+                                "exposure_mode": "ASYNCHRONOUS",
+                                "exposure_time_g": 30, "exposure_time_i": 40,
+                                "exposure_time_r": 180, "exposure_time_z": 35,
+                            },
+                        }
+                    ],
+                    "acquisition_config": {"mode": "OFF"},
+                    "guiding_config": {"mode": "OFF", "optional": True},
+                    "constraints": {
+                        "max_airmass": 2, "min_lunar_distance": 30,
+                        "max_seeing": None, "min_transparency": None, "extra_params": {},
+                    },
+                    "target": {"name": "TOI-1410", "type": "ICRS", "ra": 334.88285, "dec": 42.56031},
+                }
+            ],
+        }
+    ],
+}
+
+
+class RequestgroupToParamsTest(unittest.TestCase):
+    def test_muscat_example_reverse_maps(self):
+        p = lco.requestgroup_to_params(_EXAMPLE_MUSCAT_RG)
+        self.assertEqual(p["kind"], "muscat")
+        self.assertEqual(p["site"], "ogg")
+        self.assertEqual(p["target_name"], "TOI-1410")
+        self.assertEqual(p["ra"], 334.88285)
+        self.assertEqual(p["dec"], 42.56031)
+        self.assertEqual(p["proposal"], "CON2025B-002")
+        self.assertEqual(p["ipp_value"], 1.1)
+        self.assertEqual(p["type"], "REPEAT_EXPOSE")
+        self.assertEqual(p["observation_type"], "NORMAL")
+        self.assertEqual(p["guiding_config"], "OFF")
+        self.assertEqual(p["readout_mode"], "MUSCAT_FAST")
+        self.assertEqual(p["exposure_mode"], "ASYNCHRONOUS")
+        self.assertEqual(p["max_airmass"], 2)
+        self.assertEqual(p["min_lunar_distance"], 30)
+        self.assertEqual(p["exposure_times"], {"g": 30, "r": 180, "i": 40, "z": 35})
+        self.assertEqual(p["narrowband"], {"g": "in", "r": "in", "i": "in", "z": "in"})
+        # Windows are date-specific and intentionally dropped for a clone.
+        self.assertNotIn("windows", p)
+
+    def test_rejects_requestgroup_without_requests(self):
+        with self.assertRaises(lco.LcoError):
+            lco.requestgroup_to_params({"name": "x", "requests": []})
+
+    def test_rejects_unknown_instrument_type(self):
+        rg = {"requests": [{"instrument_type": "0M4-SCICAM-QHY600", "configurations": [{}]}]}
+        with self.assertRaises(lco.LcoError):
+            lco.requestgroup_to_params(rg)
+
+    def test_sinistro_roundtrip_through_build(self):
+        base = {
+            "kind": "sinistro",
+            "name": "n", "proposal": "P", "target_name": "T", "ra": 10.0, "dec": 20.0,
+            "type": "EXPOSE", "filter": "ip", "exposure_time": 60, "exposure_count": 3,
+            "readout_mode": "full_frame", "guiding_config": "ON",
+            "max_airmass": 1.6, "min_lunar_distance": 30, "defocus": 0,
+            "windows": [{"start": "2027-01-01T10:00:00Z", "end": "2027-01-01T12:00:00Z"}],
+        }
+        rg = lco.build_requestgroup("sinistro", base)  # no site -> no observability clip
+        back = lco.requestgroup_to_params(rg)
+        for key in ("kind", "filter", "exposure_time", "exposure_count",
+                    "readout_mode", "guiding_config", "type",
+                    "max_airmass", "min_lunar_distance"):
+            self.assertEqual(back[key], base[key], key)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -193,6 +193,35 @@ def list_requests(path: str | None = None, limit: int = 200) -> list[dict]:
         return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
+def get_request_payload(identifier: int, path: str | None = None) -> dict | None:
+    """Stored form params for a locally-submitted request, for cloning.
+
+    Matches on either the child ``request_id`` or the parent ``requestgroup_id``
+    (a user may enter either). ``payload_json`` was persisted by
+    :func:`record_submission` as the cleaned form params, so it is returned
+    verbatim (the schedule form's ``buildParams`` shape). Returns ``None`` when
+    the id is unknown locally, so the caller can fall back to the LCO API.
+    """
+    try:
+        ident = int(identifier)
+    except (TypeError, ValueError):
+        return None
+    with get_conn(path or db_path(), row_factory=None) as conn:
+        row = conn.execute(
+            """SELECT payload_json FROM lco_observation_requests
+               WHERE request_id=? OR requestgroup_id=?
+               ORDER BY created_at DESC LIMIT 1""",
+            (ident, ident),
+        ).fetchone()
+    if not row or not row[0]:
+        return None
+    try:
+        params = json.loads(row[0])
+    except (ValueError, TypeError):
+        return None
+    return params if isinstance(params, dict) else None
+
+
 def _frame_identity(frame: dict) -> str:
     basename = str(frame.get("basename") or frame.get("filename") or "")
     if basename:
