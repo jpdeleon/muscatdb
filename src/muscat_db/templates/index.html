@@ -462,6 +462,14 @@
     function openNormNameEditor(cell) {
       const obj = cell.dataset.object;
       const current = cell.dataset.normName;
+      // Capture the link target before clearing the cell. The server-rendered
+      // anchor is the one the static-site builder rewrites, so reusing its href
+      // keeps the rebuilt link correct under a base path instead of hard-coding
+      // an absolute "/target" the builder cannot see inside this script.
+      const existingLink = cell.querySelector('a');
+      const linkBase = existingLink
+        ? existingLink.getAttribute('href').split('?')[0]
+        : 'target';
       cell.classList.add('editing');
       cell.innerHTML = '';
       const input = document.createElement('input');
@@ -481,13 +489,21 @@
 
       function close(value) {
         cell.classList.remove('editing');
-        cell.innerHTML =
-          '<a href="/target?name=' + encodeURIComponent(value) + '" style="text-decoration:none;"><strong>' + escapeHtml(value) + '</strong></a>' +
-          '<span class="norm-name-edit-hint" title="Click to edit normalized name">&#9998;</span>';
+        // Built from DOM nodes rather than an HTML string: textContent escapes
+        // the name for us (no hand-rolled escaper to keep in sync), and the
+        // href stays relative to whatever the page already links to.
+        const link = document.createElement('a');
+        link.setAttribute('href', linkBase + '?name=' + encodeURIComponent(value));
+        link.style.textDecoration = 'none';
+        const label = document.createElement('strong');
+        label.textContent = value;
+        link.append(label);
+        const hint = document.createElement('span');
+        hint.className = 'norm-name-edit-hint';
+        hint.title = 'Click to edit normalized name';
+        hint.textContent = '✎';
+        cell.replaceChildren(link, hint);
         cell.dataset.normName = value;
-      }
-      function escapeHtml(s) {
-        return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
       }
 
       async function commit() {
