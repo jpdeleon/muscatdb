@@ -1226,6 +1226,31 @@ def _compact_archive_frames(frames: list[dict]) -> list[dict]:
     return [{key: frame[key] for key in keys if key in frame} for frame in frames]
 
 
+def _archive_payload_bytes(compact_frames: list[dict]) -> int:
+    """Serialized size of an already-compacted frame list."""
+    return len(
+        json.dumps(compact_frames, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    )
+
+
+def download_batch(frames: list[dict]) -> list[dict]:
+    """The longest leading run of *frames* that :func:`start_archive_download` accepts.
+
+    Bulk callers (the observation monitor) routinely hold more pending frames
+    than one download call permits: a four-channel MuSCAT night yields far more
+    final products than the per-call frame cap. Passing the whole set raises 413
+    on every retry, which wedges that request forever, so such callers queue this
+    prefix and pick the remainder up on their next pass.
+    """
+    batch = [frame for frame in frames if isinstance(frame, dict)][:_ARCHIVE_DOWNLOAD_MAX_FRAMES]
+    # Long presigned archive URLs can breach the byte cap before the frame cap.
+    # Halve until it fits; a lone oversized frame is returned as-is so the caller
+    # still gets the real 413 rather than an empty, silently-skipped batch.
+    while len(batch) > 1 and _archive_payload_bytes(_compact_archive_frames(batch)) > _ARCHIVE_DOWNLOAD_MAX_PAYLOAD_BYTES:
+        batch = batch[: len(batch) // 2]
+    return batch
+
+
 def start_archive_download(
     frames: list[dict], overwrite: bool = False, auto_ingest: bool = False,
     user_name: str | None = None,
@@ -1241,7 +1266,7 @@ def start_archive_download(
     if any(not isinstance(frame, dict) for frame in frames):
         raise LcoError("each frame must be an object", status=400)
     compact_frames = _compact_archive_frames(frames)
-    payload_bytes = len(json.dumps(compact_frames, separators=(",", ":"), ensure_ascii=True).encode("utf-8"))
+    payload_bytes = _archive_payload_bytes(compact_frames)
     if payload_bytes > _ARCHIVE_DOWNLOAD_MAX_PAYLOAD_BYTES:
         raise LcoError(
             f"Frame payload exceeds {_ARCHIVE_DOWNLOAD_MAX_PAYLOAD_BYTES} bytes",

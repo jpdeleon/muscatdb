@@ -298,10 +298,18 @@ def _error_delay(error_count: int) -> float:
 
 
 def _download_rows(conn, request_id: int) -> list[dict]:
+    """Frames still needing download, capped at one queueable batch.
+
+    A request can hold thousands of final products, but a single
+    ``start_archive_download`` call accepts only ``_ARCHIVE_DOWNLOAD_MAX_FRAMES``.
+    Selecting them all would 413 on every retry and never progress, so read at
+    most one batch; the stable ``filename`` ordering means successive polls walk
+    the remainder as each batch is marked downloaded.
+    """
     cursor = conn.execute(
         "SELECT frame_id, metadata_json FROM lco_observation_frames "
-        "WHERE request_id=? AND state IN ('pending','error') ORDER BY filename",
-        (request_id,),
+        "WHERE request_id=? AND state IN ('pending','error') ORDER BY filename LIMIT ?",
+        (request_id, lco._ARCHIVE_DOWNLOAD_MAX_FRAMES),
     )
     return [{"frame_id": row[0], "metadata": json.loads(row[1])} for row in cursor.fetchall()]
 
@@ -546,7 +554,9 @@ def process_request(request: dict, *, path: str | None = None, now: float | None
 
         if pending:
             snapshot = lco.start_archive_download(
-                [row["metadata"] for row in pending], overwrite=False, auto_ingest=False
+                lco.download_batch([row["metadata"] for row in pending]),
+                overwrite=False,
+                auto_ingest=False,
             )
             with get_conn(path) as conn:
                 conn.execute(
@@ -557,22 +567,34 @@ def process_request(request: dict, *, path: str | None = None, now: float | None
                 conn.commit()
             return
 
+        terminal = request_state in TERMINAL_REQUEST_STATES
         reduction_complete = bool(raw_ids) and raw_ids.issubset(reduced_ids)
-        if request_state in TERMINAL_REQUEST_STATES and reduction_complete:
+        grace_expired = (
+            terminal_seen is not None and now - float(terminal_seen) >= _NO_DATA_GRACE_S
+        )
+        if terminal and reduction_complete:
             _process_datasets(request_id, path=path, now=now)
-        elif (
-            request_state in TERMINAL_REQUEST_STATES
-            and not raw_ids
-            and terminal_seen is not None
-            and now - float(terminal_seen) >= _NO_DATA_GRACE_S
-        ):
-            with get_conn(path) as conn:
-                conn.execute(
-                    "UPDATE lco_observation_requests SET monitor_state='terminal_no_data', completed_at=?, "
-                    "updated_at=?, next_poll_at=? WHERE request_id=?",
-                    (now, now, now, request_id),
+        elif terminal and grace_expired:
+            # BANZAI does not always emit a final product for every raw frame --
+            # QC rejections are routine -- so holding out for a complete set
+            # polls this request forever and never ingests the frames that did
+            # reduce. Once the grace window has passed, settle on what exists:
+            # ingest the downloaded products, or record that none arrived.
+            if downloaded:
+                logger.info(
+                    "LCO request %s terminal with a partial reduction (%s/%s raw frames "
+                    "reduced); ingesting %s downloaded frames",
+                    request_id, reduced_count, raw_count, downloaded,
                 )
-                conn.commit()
+                _process_datasets(request_id, path=path, now=now)
+            else:
+                with get_conn(path) as conn:
+                    conn.execute(
+                        "UPDATE lco_observation_requests SET monitor_state='terminal_no_data', completed_at=?, "
+                        "updated_at=?, next_poll_at=? WHERE request_id=?",
+                        (now, now, now, request_id),
+                    )
+                    conn.commit()
     except Exception as exc:
         logger.warning("LCO request %s monitoring step failed: %s", request_id, exc)
         _mark_error(request_id, exc, path=path, now=now)
