@@ -150,6 +150,62 @@ def test_extract_identity_anonymous_when_no_header(monkeypatch):
     assert chat._extract_identity(env) is None
 
 
+def test_connect_refuses_anonymous_when_auth_required(monkeypatch):
+    """socket.io must fail closed like the HTTP middleware.
+
+    /socket.io is served by an ASGI wrapper mounted in front of the app, so it
+    never passes through the auth middleware. Without this gate a peer reaching
+    the loopback port directly is handed the whole chat history and can post.
+    """
+    import asyncio
+
+    monkeypatch.setenv("MUSCAT_REQUIRE_AUTH", "1")
+    monkeypatch.delenv("MUSCAT_PROXY_SECRET", raising=False)
+    monkeypatch.setenv("MUSCAT_PROXY_SECRET_FILE", "/nonexistent-secret")
+
+    def must_not_read_history():
+        raise AssertionError("chat history must not be loaded for a refused connection")
+
+    monkeypatch.setattr(chat.db, "get_recent_chat_messages", must_not_read_history)
+    env = {"asgi.scope": {"client": ("127.0.0.1", 5)}}  # no forwarded user
+    with pytest.raises(ConnectionRefusedError):
+        asyncio.run(chat.connect("sid-anon", env))
+
+
+def test_connect_allows_anonymous_when_auth_not_required(monkeypatch):
+    """The default single-user/dev deployment keeps working unauthenticated."""
+    import asyncio
+
+    monkeypatch.delenv("MUSCAT_REQUIRE_AUTH", raising=False)
+    monkeypatch.delenv("MUSCAT_PROXY_SECRET", raising=False)
+    monkeypatch.setenv("MUSCAT_PROXY_SECRET_FILE", "/nonexistent-secret")
+    monkeypatch.setattr(chat.db, "get_recent_chat_messages", lambda: [])
+
+    emitted = []
+    monkeypatch.setattr(chat.sio, "save_session", _async_noop)
+    monkeypatch.setattr(chat.sio, "enter_room", _async_noop)
+    monkeypatch.setattr(
+        chat.sio, "emit", lambda *a, **k: _record_async(emitted, *a, **k)
+    )
+    env = {"asgi.scope": {"client": ("127.0.0.1", 5)}}
+    asyncio.run(chat.connect("sid-open", env))
+    assert any(event == "history" for event, *_ in emitted)
+    chat._users_by_sid.pop("sid-open", None)
+
+
+async def _async_noop(*args, **kwargs):
+    return None
+
+
+def _record_async(sink, event, *args, **kwargs):
+    sink.append((event, args, kwargs))
+
+    async def _done():
+        return None
+
+    return _done()
+
+
 # --------------------------------------------------------------------------
 # Job-finished system message hook
 # --------------------------------------------------------------------------

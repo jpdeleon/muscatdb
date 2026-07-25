@@ -165,6 +165,19 @@ def count_running_full(registry: dict[str, PipelineJob]) -> int:
     )
 
 
+def count_running_test(registry: dict[str, PipelineJob]) -> int:
+    """Number of currently-running test jobs in *registry*.
+
+    Full jobs hold a durable cross-process slot, but test runs are admitted
+    directly, so without a ceiling of their own a caller can vary the run key
+    (target / run name) to spawn unbounded detached pipelines on the shared
+    host. Callers gate on this while holding the pipeline lock.
+    """
+    return sum(
+        1 for j in registry.values() if j.run_type != "full" and j.proc.poll() is None
+    )
+
+
 # --------------------------- finalizing state machine ---------------------------
 
 

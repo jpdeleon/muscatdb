@@ -23,7 +23,7 @@ from collections import deque
 
 from . import chat_agent
 from . import jobs
-from .auth import PROXY_SECRET_HEADER, trusted_forwarded_user
+from .auth import PROXY_SECRET_HEADER, authentication_required, trusted_forwarded_user
 from . import database as db
 from .web import sio
 
@@ -160,6 +160,14 @@ async def connect(sid, environ):
     if _LOOP is None:
         _LOOP = asyncio.get_running_loop()
     user = _extract_identity(environ)
+    # Fail closed exactly like the HTTP middleware. socket.io is mounted as an
+    # ASGI wrapper *in front of* the app, so /socket.io never passes through
+    # that middleware: without this, a peer bypassing nginx (straight to the
+    # loopback port) is handed the whole persisted chat history and can post as
+    # "Anonymous", even with MUSCAT_REQUIRE_AUTH set.
+    if user is None and authentication_required():
+        logger.warning("rejected unauthenticated chat connection %s", sid)
+        raise ConnectionRefusedError("authentication required")
     await sio.save_session(sid, {"user": user})
     _users_by_sid[sid] = user
     if user:

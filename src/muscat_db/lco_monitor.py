@@ -40,6 +40,10 @@ _DOWNLOAD_CHECK_S = max(2.0, float(os.environ.get("MUSCAT_LCO_MONITOR_DOWNLOAD_C
 _NO_DATA_GRACE_S = max(300.0, float(os.environ.get("MUSCAT_LCO_MONITOR_NO_DATA_GRACE_S", "86400")))
 _LEASE_S = max(30.0, float(os.environ.get("MUSCAT_LCO_MONITOR_LEASE_S", "90")))
 _SCAN_WORKERS = max(1, int(os.environ.get("MUSCAT_LCO_MONITOR_SCAN_WORKERS", "1")))
+# Download attempts allowed per frame before it is abandoned. Without a bound, a
+# frame the archive never serves is re-queued on every poll and keeps the request
+# from ever reaching a terminal state.
+_MAX_FRAME_ATTEMPTS = max(1, int(os.environ.get("MUSCAT_LCO_MONITOR_MAX_FRAME_ATTEMPTS", "5")))
 
 
 def _json(value: Any) -> str:
@@ -347,10 +351,16 @@ def _finish_download(request: dict, snapshot: dict, *, path: str, now: float) ->
                 (now, request["request_id"], filename),
             )
         for filename, error in errors.items():
+            # Count the attempt, and stop retrying a frame that has burned
+            # through its budget: 'abandoned' is excluded from _download_rows, so
+            # one permanently unavailable product can no longer keep `pending`
+            # non-empty and block the request from ever completing.
             conn.execute(
-                "UPDATE lco_observation_frames SET state='error', error=?, updated_at=? "
+                "UPDATE lco_observation_frames "
+                "SET state=CASE WHEN attempts + 1 >= ? THEN 'abandoned' ELSE 'error' END, "
+                "    attempts=attempts + 1, error=?, updated_at=? "
                 "WHERE request_id=? AND filename=?",
-                (error, now, request["request_id"], filename),
+                (_MAX_FRAME_ATTEMPTS, error, now, request["request_id"], filename),
             )
         downloaded = conn.execute(
             "SELECT COUNT(*) FROM lco_observation_frames WHERE request_id=? AND state='downloaded'",
@@ -402,8 +412,12 @@ def _process_datasets(request_id: int, *, path: str, now: float) -> None:
         ingest_date(path, instrument, obsdate)
 
     with get_conn(path) as conn:
+        # Only frames that actually downloaded become 'ingested'; an abandoned
+        # frame keeps its state and error so the gap stays visible after the
+        # request completes rather than being relabelled as ingested.
         conn.execute(
-            "UPDATE lco_observation_frames SET state='ingested', error='', updated_at=? WHERE request_id=?",
+            "UPDATE lco_observation_frames SET state='ingested', error='', updated_at=? "
+            "WHERE request_id=? AND state='downloaded'",
             (now, request_id),
         )
         conn.execute(

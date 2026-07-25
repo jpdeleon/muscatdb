@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 
 from muscat_db import lco, lco_monitor
-from muscat_db.database import SCHEMA
+from muscat_db.database import SCHEMA, get_conn as get_conn_for
 
 
 @pytest.fixture
@@ -384,6 +384,48 @@ def test_terminal_request_with_partial_reduction_ingests_after_grace(
     assert settled["reduced_frame_count"] == 2
     assert scanned == [("muscat3", "260720")]
     assert ingested == [("muscat3", "260720")]
+
+
+def test_frame_download_is_abandoned_after_repeated_failures(
+    monitor_db, tmp_path, monkeypatch
+):
+    """A frame the archive never serves must stop blocking the request.
+
+    _download_rows re-selects 'error' frames, so without a retry budget one
+    permanently unavailable product keeps `pending` non-empty forever and the
+    request can never reach a terminal state.
+    """
+    monkeypatch.setenv("MUSCAT_LCO_DIR", str(tmp_path))
+    monkeypatch.setattr(lco_monitor, "_MAX_FRAME_ATTEMPTS", 3)
+    result, payload = _submission(state="COMPLETED")
+    lco_monitor.record_submission(result, payload, None, path=monitor_db, now=100)
+    reduced = _frame(91, 1)
+    now = 200
+    with get_conn_for(monitor_db) as conn:
+        lco_monitor._upsert_reduced_frames(conn, 101, [reduced], now)
+        conn.commit()
+
+    snapshot = {
+        "state": "done",
+        "results": [
+            {"filename": reduced["filename"], "status": "error", "error": "404 not found"}
+        ],
+        "funpack_results": [],
+    }
+    request = _row(monitor_db)
+    for attempt in range(1, 4):
+        lco_monitor._finish_download(request, snapshot, path=monitor_db, now=now + attempt)
+        with sqlite3.connect(monitor_db) as conn:
+            state, attempts = conn.execute(
+                "SELECT state, attempts FROM lco_observation_frames WHERE request_id=101"
+            ).fetchone()
+        assert attempts == attempt
+        # Retryable until the budget is spent, then abandoned for good.
+        assert state == ("abandoned" if attempt >= 3 else "error")
+
+    # An abandoned frame is no longer re-queued, so the request can finish.
+    with get_conn_for(monitor_db) as conn:
+        assert lco_monitor._download_rows(conn, 101) == []
 
 
 def test_monitor_errors_back_off_and_remain_retryable(monitor_db, monkeypatch):

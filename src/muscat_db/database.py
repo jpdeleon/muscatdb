@@ -244,6 +244,7 @@ CREATE TABLE IF NOT EXISTS lco_observation_frames (
     obsdate         TEXT NOT NULL,
     state           TEXT NOT NULL DEFAULT 'pending',
     error           TEXT NOT NULL DEFAULT '',
+    attempts        INTEGER NOT NULL DEFAULT 0,
     metadata_json   TEXT NOT NULL,
     updated_at      REAL NOT NULL,
     PRIMARY KEY (request_id, frame_id),
@@ -318,6 +319,9 @@ _MIGRATIONS = [
     "ALTER TABLE summaries ADD COLUMN telescope TEXT",
     # 2026-07-24: user override for normalized target names
     "ALTER TABLE target_overrides ADD COLUMN norm_name TEXT",
+    # 2026-07-25: bound download retries so one unavailable frame cannot block a
+    # request from ever completing
+    "ALTER TABLE lco_observation_frames ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
 ]
 
 

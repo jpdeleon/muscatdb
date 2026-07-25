@@ -202,6 +202,55 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("MUSCAT_OLLAMA_MAX_CONCURRENT", "2", "Concurrent chat-assistant requests before callers get a 'busy' note"),
     EnvVar("MUSCAT_OLLAMA_NUM_CTX", "8192", "Context window (tokens) requested from ollama; caps prompt+history+reply"),
     EnvVar("MUSCAT_AGENT_HISTORY_TTL_S", "900", "Idle-gap auto-clear: drop @bot history older than this (seconds; 0 disables)"),
+
+    # --- authentication / reverse proxy -------------------------------------
+    EnvVar("MUSCAT_REQUIRE_AUTH", "0", "Set to 1 to reject any request or chat connection that bypassed nginx auth"),
+    EnvVar("MUSCAT_PROXY_SECRET", "", "Shared secret nginx presents so X-Forwarded-User can be trusted", secret=True),
+    EnvVar("MUSCAT_PROXY_SECRET_FILE", "/etc/muscat-db/proxy-secret", "File holding the proxy secret when not passed by env"),
+    EnvVar("MUSCAT_HTPASSWD_FILE", "", "htpasswd file managed by the CLI user commands"),
+    EnvVar("MUSCAT_NGINX_GROUP", "www-data", "Group given read access to the htpasswd file"),
+
+    # --- job concurrency and finalizing grace windows ------------------------
+    EnvVar("MUSCAT_MAX_TEST_JOBS", "4", "Concurrent test runs allowed per pipeline (full runs use durable slots)"),
+    EnvVar("MUSCAT_PHOT_FINALIZE_GRACE_TERMINAL_S", "2", "Photometry finalizing grace once a terminal log marker is seen (seconds)"),
+    EnvVar("MUSCAT_FIT_FINALIZE_GRACE_S", "8", "Transit-fit finalizing grace after parent exit (seconds)"),
+    EnvVar("MUSCAT_FIT_FINALIZE_GRACE_TERMINAL_S", "2", "Transit-fit finalizing grace once a terminal log marker is seen (seconds)"),
+    EnvVar("MUSCAT_TTV_FINALIZE_GRACE_S", "8", "TTV-fit finalizing grace after parent exit (seconds)"),
+    EnvVar("MUSCAT_TTV_FINALIZE_GRACE_TERMINAL_S", "2", "TTV-fit finalizing grace once a terminal log marker is seen (seconds)"),
+    EnvVar("CONDA_EXE", None, "conda executable used to locate the prose/timer environments"),
+
+    # --- LCO archive download / monitor -------------------------------------
+    EnvVar("MUSCAT_LCO_DOWNLOAD_TIMEOUT_S", "120", "Per-frame archive download timeout (seconds)"),
+    EnvVar("MUSCAT_LCO_FUNPACK_TIMEOUT_S", "300", "funpack timeout per downloaded frame (seconds)"),
+    EnvVar("MUSCAT_LCO_ARCHIVE_DOWNLOAD_JOB_TTL_S", "86400", "How long finished archive-download jobs stay queryable (seconds)"),
+    EnvVar("MUSCAT_LCO_MONITOR_MAX_FRAME_ATTEMPTS", "5", "Download attempts per frame before it is abandoned so the request can finish"),
+    EnvVar("MUSCAT_ARCHIVE_TIMEOUT_S", "15.0", "Default outbound HTTP timeout for external catalog/archive calls (seconds)"),
+
+    # --- caches --------------------------------------------------------------
+    EnvVar("MUSCAT_CATALOG_CACHE_MAX", "512", "Max entries in the in-process catalog lookup cache"),
+    EnvVar("MUSCAT_GAIA_CACHE_MAX", "512", "Max entries in the in-process Gaia cone-search cache"),
+    EnvVar("MUSCAT_INDEX_CACHE_MAX", "64", "Max entries in the index-page render cache"),
+
+    # --- chat ----------------------------------------------------------------
+    EnvVar("MUSCAT_CHAT_BACKFILL_DAYS", "7", "How much chat history a new connection receives (days)"),
+    EnvVar("MUSCAT_CHAT_EXCLUDE_USERS", None, "Comma-separated users hidden from chat presence/history"),
+
+    # --- external catalogs (ADS, HARPS, LAMOST, TOI) -------------------------
+    EnvVar("ADS_TOKEN", None, "NASA ADS API token for literature lookups", secret=True),
+    EnvVar("ADS_DEV_KEY", None, "Fallback NASA ADS key when ADS_TOKEN is unset", secret=True),
+    EnvVar("MUSCAT_HARPS_RVBANK_CSV", "data/HARPS_RVBank_ver02.csv", "Local HARPS RVBank CSV"),
+    EnvVar("MUSCAT_HARPS_RVBANK_ZIP", "data/HARPS_RVBank_ver02.csv.zip", "Zipped HARPS RVBank fallback"),
+    EnvVar("MUSCAT_HARPS_RVBANK_URL", "https://raw.githubusercontent.com/3fon3fonov/HARPS_RVBank/master/HARPS_RVBank_ver02.csv", "Source URL when the local HARPS RVBank copy is absent"),
+    EnvVar("MUSCAT_HARPS_TARGETS_CSV", "data/HARPS_RVBank_targets.csv", "Local HARPS target list"),
+    EnvVar("MUSCAT_HARPS_MATCH_ARCSEC", "5.0", "HARPS cross-match radius (arcsec)"),
+    EnvVar("MUSCAT_HARPS_ONLINE_TIMEOUT_S", "60", "Timeout for fetching the HARPS RVBank (seconds)"),
+    EnvVar("MUSCAT_HARPS_TARGET_TABLE_MAX_ROWS", "2000", "Row cap when parsing the HARPS target table"),
+    EnvVar("MUSCAT_LAMOST_STARS_CSV", "data/LAMA_stars.csv", "Local LAMOST stellar-parameter CSV"),
+    EnvVar("MUSCAT_LAMOST_SPEC_CSV", "data/LAMA_spec.csv", "Local LAMOST spectra CSV"),
+    EnvVar("MUSCAT_LAMOST_MATCH_ARCSEC", "2.0", "LAMOST cross-match radius (arcsec)"),
+    EnvVar("MUSCAT_LAMOST_BUCKET_DEG", "0.02", "Spatial bucket size for the LAMOST index (degrees)"),
+    EnvVar("MUSCAT_TOI_CONFIRMED_PERIOD_REL_TOL", "0.01", "Relative period tolerance when matching a TOI to a confirmed planet"),
+    EnvVar("MUSCAT_TOI_CONFIRMED_PERIOD_ABS_TOL_D", "0.001", "Absolute period tolerance for the same match (days)"),
 )
 
 
