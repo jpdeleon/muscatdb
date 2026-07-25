@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from muscat_db import lco_monitor
+from muscat_db import lco, lco_monitor
 from muscat_db.database import SCHEMA
 
 
@@ -243,6 +243,147 @@ def test_terminal_unobserved_request_waits_for_archive_lag_grace(monitor_db, mon
 
     lco_monitor.process_request(first, path=monitor_db, now=200 + lco_monitor._NO_DATA_GRACE_S)
     assert _row(monitor_db)["monitor_state"] == "terminal_no_data"
+
+
+def test_monitor_queues_downloads_one_acceptable_batch_at_a_time(
+    monitor_db, tmp_path, monkeypatch
+):
+    """More pending frames than one download call accepts must not wedge.
+
+    start_archive_download rejects an oversized batch with 413, which the outer
+    handler turns into a retry of the identical batch -- forever. A request must
+    instead queue a batch that fits and pick up the rest on the next pass.
+    """
+    monkeypatch.setenv("MUSCAT_LCO_DIR", str(tmp_path))
+    monkeypatch.setattr("muscat_db.lco._ARCHIVE_DOWNLOAD_MAX_FRAMES", 3)
+    result, payload = _submission(state="COMPLETED")
+    lco_monitor.record_submission(result, payload, None, path=monitor_db, now=100)
+    frames = [_frame(91, i) for i in range(1, 6)]  # 5 final products, cap is 3
+    raws = [_frame(0, i) for i in range(1, 6)]
+
+    monkeypatch.setattr("muscat_db.lco.get_requestgroup", lambda *args, **kwargs: result)
+    monkeypatch.setattr(
+        "muscat_db.lco.archive_search_all",
+        lambda filters, user_name=None: {
+            "count": 5,
+            "results": raws if int(filters["reduction_level"]) == 0 else frames,
+            "truncated": False,
+        },
+    )
+    queued = []
+
+    def fake_start(batch, overwrite=False, auto_ingest=False):
+        # Mirror the real guard so an oversized batch fails here the way it would
+        # in production, instead of passing silently.
+        if len(batch) > lco._ARCHIVE_DOWNLOAD_MAX_FRAMES:
+            raise lco.LcoError("too many frames", status=413)
+        queued.append(list(batch))
+        return {"job_id": "download-1", "state": "pending"}
+
+    monkeypatch.setattr("muscat_db.lco.start_archive_download", fake_start)
+    lco_monitor.process_request(_row(monitor_db), path=monitor_db, now=200)
+
+    row = _row(monitor_db)
+    assert row["monitor_state"] == "downloading"
+    assert row["last_error"] in ("", None)  # no 413 recorded
+    assert len(queued) == 1 and len(queued[0]) == 3
+    with sqlite3.connect(monitor_db) as conn:
+        still_pending = conn.execute(
+            "SELECT COUNT(*) FROM lco_observation_frames WHERE request_id=101 AND state='pending'"
+        ).fetchone()[0]
+    assert still_pending == 5  # nothing downloaded yet; the other 2 wait their turn
+
+
+def test_download_batch_respects_frame_and_payload_caps(monkeypatch):
+    monkeypatch.setattr("muscat_db.lco._ARCHIVE_DOWNLOAD_MAX_FRAMES", 3)
+    frames = [{"filename": f"f{i}.fits.fz", "url": "https://archive/x"} for i in range(10)]
+    assert len(lco.download_batch(frames)) == 3
+
+    # A byte cap tighter than the frame cap trims further, and never to nothing.
+    monkeypatch.setattr("muscat_db.lco._ARCHIVE_DOWNLOAD_MAX_PAYLOAD_BYTES", 80)
+    trimmed = lco.download_batch(frames)
+    assert 1 <= len(trimmed) < 3
+
+
+def test_terminal_request_with_partial_reduction_ingests_after_grace(
+    monitor_db, tmp_path, monkeypatch
+):
+    """BANZAI may never reduce every raw frame (QC drops are routine).
+
+    Such a request satisfies neither the all-reduced completion branch nor the
+    no-data branch, so before this it polled forever and never ingested the
+    frames that did reduce.
+    """
+    monkeypatch.setenv("MUSCAT_LCO_DIR", str(tmp_path))
+    result, payload = _submission(state="COMPLETED")
+    lco_monitor.record_submission(result, payload, None, path=monitor_db, now=100)
+    raws = [_frame(0, i) for i in range(1, 4)]     # 3 raw frames
+    reduced = [_frame(91, i) for i in range(1, 3)]  # only 2 ever reduce
+
+    monkeypatch.setattr("muscat_db.lco.get_requestgroup", lambda *args, **kwargs: result)
+    monkeypatch.setattr(
+        "muscat_db.lco.archive_search_all",
+        lambda filters, user_name=None: {
+            "count": 3,
+            "results": raws if int(filters["reduction_level"]) == 0 else reduced,
+            "truncated": False,
+        },
+    )
+    monkeypatch.setattr(
+        "muscat_db.lco.start_archive_download",
+        lambda batch, overwrite=False, auto_ingest=False: {"job_id": "dl-1", "state": "pending"},
+    )
+    lco_monitor.process_request(_row(monitor_db), path=monitor_db, now=200)
+    assert _row(monitor_db)["terminal_seen_at"] == 200
+
+    # The two available products download successfully.
+    monkeypatch.setattr(
+        "muscat_db.lco.archive_download_status",
+        lambda job_id: {
+            "state": "done",
+            "results": [
+                {
+                    "filename": f["filename"],
+                    "status": "downloaded",
+                    "dest": str(tmp_path / "MuSCAT3" / "260720" / f["filename"]),
+                }
+                for f in reduced
+            ],
+            "funpack_results": [
+                {"filename": f["filename"], "status": "unpacked"} for f in reduced
+            ],
+        },
+    )
+    monkeypatch.setattr("muscat_db.lco.download_root", lambda: tmp_path)
+    scanned, ingested = [], []
+    monkeypatch.setattr(
+        "muscat_db.scanner.scan_date",
+        lambda instrument, obsdate, max_workers=None, data_root=None: (
+            scanned.append((instrument, obsdate)) or {"total": 2, "per_ccd": {3: 2}}
+        ),
+    )
+    monkeypatch.setattr(
+        "muscat_db.database.ingest_date",
+        lambda path, instrument, obsdate: ingested.append((instrument, obsdate)) or 2,
+    )
+
+    # Still inside the grace window: hold, in case the last product is just late.
+    lco_monitor.process_request(_row(monitor_db), path=monitor_db, now=220)
+    waiting = _row(monitor_db)
+    assert waiting["monitor_state"] == "monitoring"
+    assert waiting["downloaded_count"] == 2
+    assert not ingested
+
+    # Past the grace window: settle on what actually arrived.
+    lco_monitor.process_request(
+        waiting, path=monitor_db, now=200 + lco_monitor._NO_DATA_GRACE_S + 1
+    )
+    settled = _row(monitor_db)
+    assert settled["monitor_state"] == "complete"
+    assert settled["raw_frame_count"] == 3
+    assert settled["reduced_frame_count"] == 2
+    assert scanned == [("muscat3", "260720")]
+    assert ingested == [("muscat3", "260720")]
 
 
 def test_monitor_errors_back_off_and_remain_retryable(monitor_db, monkeypatch):
