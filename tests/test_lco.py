@@ -10,6 +10,7 @@ import shutil
 import tempfile
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 from muscat_db import lco
@@ -448,11 +449,11 @@ class LcoTest(unittest.TestCase):
                     "LCO_API_TOKEN": "global-token",
                 },
             ):
-                with patch("urllib.request.urlopen") as mock_urlopen:
+                with patch("muscat_db.lco._API_OPENER") as mock_opener:
                     with self.assertRaises(lco.LcoError) as cm:
                         lco.get_proposals("bob")
                     self.assertEqual(cm.exception.status, 403)
-                    mock_urlopen.assert_not_called()
+                    mock_opener.open.assert_not_called()
         finally:
             os.unlink(path)
 
@@ -470,13 +471,13 @@ class LcoTest(unittest.TestCase):
                     "LCO_API_TOKEN": "global-token",
                 },
             ):
-                with patch("urllib.request.urlopen") as mock_urlopen:
+                with patch("muscat_db.lco._API_OPENER") as mock_opener:
                     mock_response = MagicMock()
                     mock_response.status = 200
                     mock_response.read.return_value = b'{"results": []}'
-                    mock_urlopen.return_value.__enter__.return_value = mock_response
+                    mock_opener.open.return_value.__enter__.return_value = mock_response
                     lco.archive_search({"OBJECT": "WASP-12"}, user_name="bob")
-                    request = mock_urlopen.call_args[0][0]
+                    request = mock_opener.open.call_args[0][0]
                     self.assertEqual(
                         request.get_header("Authorization"), "Token global-token"
                     )
@@ -513,24 +514,24 @@ class LcoTest(unittest.TestCase):
             os.unlink(path)
 
     @patch.dict(os.environ, {"LCO_API_TOKEN": "test-token"})
-    @patch("urllib.request.urlopen")
+    @patch("muscat_db.lco._API_OPENER")
     def test_get_proposals_ok(self, mock_urlopen):
         mock_response = MagicMock()
         mock_response.status = 200
         mock_response.read.return_value = b'{"results": [{"id": "LCO2026A-001"}]}'
-        mock_urlopen.return_value.__enter__.return_value = mock_response
+        mock_urlopen.open.return_value.__enter__.return_value = mock_response
 
         result = lco.get_proposals()
         self.assertIn("results", result)
         self.assertEqual(len(result["results"]), 1)
 
     @patch.dict(os.environ, {"LCO_API_TOKEN": "test-token"})
-    @patch("urllib.request.urlopen")
+    @patch("muscat_db.lco._API_OPENER")
     def test_archive_search_ok(self, mock_urlopen):
         mock_response = MagicMock()
         mock_response.status = 200
         mock_response.read.return_value = b'{"results": [{"filename": "test.fits"}]}'
-        mock_urlopen.return_value.__enter__.return_value = mock_response
+        mock_urlopen.open.return_value.__enter__.return_value = mock_response
 
         result = lco.archive_search({"OBJECT": "WASP-12"})
         self.assertIn("results", result)
@@ -539,20 +540,20 @@ class LcoTest(unittest.TestCase):
         # Regression: the LCO Science Archive authenticates with the DRF
         # "Token" scheme, not "Bearer". Using Bearer returns HTTP 401
         # {"detail": "No Such User"}.
-        request = mock_urlopen.call_args[0][0]
+        request = mock_urlopen.open.call_args[0][0]
         self.assertEqual(request.get_header("Authorization"), "Token test-token")
 
     @patch.dict(os.environ, {"LCO_API_TOKEN": "test-token"})
-    @patch("urllib.request.urlopen")
+    @patch("muscat_db.lco._API_OPENER")
     def test_archive_search_preserves_raw_reduction_level_zero(self, mock_urlopen):
         mock_response = MagicMock()
         mock_response.status = 200
         mock_response.read.return_value = b'{"count": 0, "results": []}'
-        mock_urlopen.return_value.__enter__.return_value = mock_response
+        mock_urlopen.open.return_value.__enter__.return_value = mock_response
 
         lco.archive_search({"request_id": 123, "reduction_level": 0})
 
-        url = mock_urlopen.call_args.args[0].full_url
+        url = mock_urlopen.open.call_args.args[0].full_url
         self.assertIn("request_id=123", url)
         self.assertIn("reduction_level=0", url)
 
@@ -1156,3 +1157,25 @@ class RequestgroupToParamsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ApiRedirectTest(unittest.TestCase):
+    """The API token must not follow a redirect off the LCO API hosts."""
+
+    def _redirect_to(self, newurl):
+        handler = lco._ValidatedApiRedirectHandler()
+        req = urllib.request.Request("https://observe.lco.global/api/proposals/")
+        return handler.redirect_request(req, io.BytesIO(b""), 302, "Found", {}, newurl)
+
+    def test_same_host_redirect_is_followed(self):
+        out = self._redirect_to("https://observe.lco.global/api/proposals/?page=2")
+        self.assertIsNotNone(out)
+
+    def test_cross_host_redirect_is_refused(self):
+        with self.assertRaises(lco.LcoError) as cm:
+            self._redirect_to("https://evil.example.com/collect")
+        self.assertEqual(cm.exception.status, 502)
+
+    def test_downgrade_to_http_is_refused(self):
+        with self.assertRaises(lco.LcoError):
+            self._redirect_to("http://observe.lco.global/api/proposals/")

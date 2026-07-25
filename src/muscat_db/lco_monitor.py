@@ -44,6 +44,9 @@ _SCAN_WORKERS = max(1, int(os.environ.get("MUSCAT_LCO_MONITOR_SCAN_WORKERS", "1"
 # frame the archive never serves is re-queued on every poll and keeps the request
 # from ever reaching a terminal state.
 _MAX_FRAME_ATTEMPTS = max(1, int(os.environ.get("MUSCAT_LCO_MONITOR_MAX_FRAME_ATTEMPTS", "5")))
+# Download-slot bucket for monitor-initiated downloads, kept out of the shared
+# "anonymous" bucket used by unauthenticated interactive downloads.
+_MONITOR_DOWNLOAD_USER = "lco-monitor"
 
 
 def _json(value: Any) -> str:
@@ -567,10 +570,16 @@ def process_request(request: dict, *, path: str | None = None, now: float | None
             conn.commit()
 
         if pending:
+            # Download under a dedicated key rather than the default "anonymous"
+            # bucket: that bucket's small per-user cap is meant for interactive
+            # submissions, and every monitored request sharing it means a third
+            # concurrent download 429s into error backoff for no reason. These
+            # are server-initiated, not one person's interactive downloads.
             snapshot = lco.start_archive_download(
                 lco.download_batch([row["metadata"] for row in pending]),
                 overwrite=False,
                 auto_ingest=False,
+                user_name=_MONITOR_DOWNLOAD_USER,
             )
             with get_conn(path) as conn:
                 conn.execute(

@@ -140,7 +140,7 @@ def test_monitor_downloads_final_frames_then_scans_and_ingests(monitor_db, tmp_p
     )
     queued = []
 
-    def fake_start(frames, overwrite=False, auto_ingest=False):
+    def fake_start(frames, overwrite=False, auto_ingest=False, user_name=None):
         assert auto_ingest is False
         queued.extend(frames)
         return {"job_id": "download-1", "state": "pending"}
@@ -218,7 +218,7 @@ def test_monitor_downloads_incrementally_and_waits_for_every_raw_frame(
     monkeypatch.setattr("muscat_db.lco.archive_search_all", lambda *args, **kwargs: next(pages))
     monkeypatch.setattr(
         "muscat_db.lco.start_archive_download",
-        lambda frames, overwrite=False, auto_ingest=False: {"job_id": "one", "state": "pending"},
+        lambda frames, overwrite=False, auto_ingest=False, user_name=None: {"job_id": "one", "state": "pending"},
     )
 
     lco_monitor.process_request(_row(monitor_db), path=monitor_db, now=200)
@@ -272,7 +272,7 @@ def test_monitor_queues_downloads_one_acceptable_batch_at_a_time(
     )
     queued = []
 
-    def fake_start(batch, overwrite=False, auto_ingest=False):
+    def fake_start(batch, overwrite=False, auto_ingest=False, user_name=None):
         # Mirror the real guard so an oversized batch fails here the way it would
         # in production, instead of passing silently.
         if len(batch) > lco._ARCHIVE_DOWNLOAD_MAX_FRAMES:
@@ -331,7 +331,7 @@ def test_terminal_request_with_partial_reduction_ingests_after_grace(
     )
     monkeypatch.setattr(
         "muscat_db.lco.start_archive_download",
-        lambda batch, overwrite=False, auto_ingest=False: {"job_id": "dl-1", "state": "pending"},
+        lambda batch, overwrite=False, auto_ingest=False, user_name=None: {"job_id": "dl-1", "state": "pending"},
     )
     lco_monitor.process_request(_row(monitor_db), path=monitor_db, now=200)
     assert _row(monitor_db)["terminal_seen_at"] == 200
@@ -426,6 +426,35 @@ def test_frame_download_is_abandoned_after_repeated_failures(
     # An abandoned frame is no longer re-queued, so the request can finish.
     with get_conn_for(monitor_db) as conn:
         assert lco_monitor._download_rows(conn, 101) == []
+
+
+def test_monitor_downloads_use_a_dedicated_slot_bucket(monitor_db, tmp_path, monkeypatch):
+    """Server-initiated downloads must not share the interactive 'anonymous'
+    bucket, whose small per-user cap would 429 the third concurrent request into
+    error backoff for no reason."""
+    monkeypatch.setenv("MUSCAT_LCO_DIR", str(tmp_path))
+    result, payload = _submission(state="COMPLETED")
+    lco_monitor.record_submission(result, payload, None, path=monitor_db, now=100)
+    raws, reduced = [_frame(0, 1)], [_frame(91, 1)]
+    monkeypatch.setattr("muscat_db.lco.get_requestgroup", lambda *a, **k: result)
+    monkeypatch.setattr(
+        "muscat_db.lco.archive_search_all",
+        lambda filters, user_name=None: {
+            "count": 1,
+            "results": raws if int(filters["reduction_level"]) == 0 else reduced,
+            "truncated": False,
+        },
+    )
+    seen = {}
+
+    def fake_start(batch, overwrite=False, auto_ingest=False, user_name=None):
+        seen["user_name"] = user_name
+        return {"job_id": "dl", "state": "pending"}
+
+    monkeypatch.setattr("muscat_db.lco.start_archive_download", fake_start)
+    lco_monitor.process_request(_row(monitor_db), path=monitor_db, now=200)
+    assert seen["user_name"] == lco_monitor._MONITOR_DOWNLOAD_USER
+    assert seen["user_name"] != "anonymous"
 
 
 def test_monitor_errors_back_off_and_remain_retryable(monitor_db, monkeypatch):
