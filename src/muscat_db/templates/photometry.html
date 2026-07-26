@@ -809,8 +809,9 @@
   document.querySelectorAll('.fig-grid.sortable').forEach(makeSortable);
 
   // ----- options form -----
-  function val(id) { var e = document.getElementById(id); return e ? e.value : ''; }
-  function chk(id) { var e = document.getElementById(id); return e ? e.checked : false; }
+  // valRaw, not val: these values are passed through to pipeline arguments and
+  // have never been trimmed here. See static/js/dom.js.
+  var val = MuscatDom.valRaw, chk = MuscatDom.chk;
   function collectOptions() {
     var bands = Array.prototype.slice.call(document.querySelectorAll('input[name="band"]:checked'))
       .map(function (c) { return c.value; });

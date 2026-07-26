@@ -828,8 +828,9 @@
   var errEl     = document.getElementById('opt-error');
   var poller = window.MuscatJobPolling.createTimeoutPoller(poll);
 
-  function val(id) { var e = document.getElementById(id); return e ? e.value : ''; }
-  function chk(id) { var e = document.getElementById(id); return e ? e.checked : false; }
+  // valRaw, not val: these values are passed through to pipeline arguments and
+  // have never been trimmed here. See static/js/dom.js.
+  var val = MuscatDom.valRaw, chk = MuscatDom.chk;
 
   // Round a numeric value (or numeric string) to `sf` significant figures for
   // display, returning a clean string. Blanks and non-numeric values pass
