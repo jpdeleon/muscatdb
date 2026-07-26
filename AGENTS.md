@@ -53,8 +53,11 @@ If agent restarts the muscat-db by itself, make sure do it inside tmux session m
 * consider CPU parallelization with a JIT compiler such as Numba, porting the inner loop into Cython, or implementing a CUDA GPU function with Numba or CuPy
 
 ## git branch
-* keep only main and test branch. PR comes from test branch and only gets merged to main
-* before creating a new branch, request permission to delete stale branches
+* work goes on a feature branch off test, which PRs into test. never PR a feature branch straight into main
+* features accumulate on test, then test is merged into main as a release
+* no direct pushes to test or main. everything goes through a PR
+* merged branches are deleted automatically, so short-lived feature branches are expected
+* never rename the head branch of an open PR. GitHub closes the PR instead of retargeting it, so pick the name before opening
 
 ## Photometry job lifecycle
 The pipeline is launched with `start_new_session=True` and prose spawns multiprocessing workers (SequenceParallel) that keep appending to the per-target log (`_webrun_<digest>.log`) **after** the tracked parent process has exited. Do not declare a job terminal the instant `job.proc.poll()` returns: `_resolve_job_state` keeps it in a non-terminal `finalizing` state until the log mtime has been quiescent for `_FINALIZE_GRACE_S` (env `MUSCAT_PHOT_FINALIZE_GRACE_S`), so the photometry page's live log keeps streaming the trailing output instead of freezing at parent-exit. `finalizing` is a live-view-only state; `sync_jobs` persists it to the DB as `running` so the Jobs page (which reads state from the DB) stays consistent. Cancelled jobs bypass the grace window and go terminal immediately.
