@@ -1340,7 +1340,10 @@ Job = jobs.PipelineJob
 
 _JOBS: dict[str, Job] = {}
 _LOCK = threading.Lock()
-_MAX_FULL_JOBS = 1
+# Concurrent full runs allowed across every process sharing this database. Set to
+# 0 on a secondary instance (e.g. staging) so it never competes with production
+# for the shared host: full runs are then refused outright, leaving test runs.
+_MAX_FULL_JOBS = max(0, int(os.environ.get("MUSCAT_MAX_FULL_JOBS", "1")))
 # Test runs are admitted without a durable slot, so they need a ceiling of their
 # own or a caller varying the run key can spawn unbounded pipelines. Env-tunable
 # for hosts with more cores than the 24-core production server.
@@ -1534,6 +1537,16 @@ def start_run(
             return {
                 "ok": False,
                 "error": f"{_MAX_TEST_JOBS} test runs are already in progress; wait for one to finish",
+            }
+
+        # A zero cap disables full runs entirely. Refuse instead of falling through
+        # to the queue below: with no slot ever claimable the queued row would
+        # never drain, so the job would sit pending forever with no explanation.
+        if run_type == "full" and _MAX_FULL_JOBS == 0:
+            logger.info(f"start_run: refusing full run for {key}; full runs disabled on this instance")
+            return {
+                "ok": False,
+                "error": "full runs are disabled on this instance (MUSCAT_MAX_FULL_JOBS=0); run a test instead",
             }
 
         # Claim a cross-process concurrency slot for full jobs (test jobs are

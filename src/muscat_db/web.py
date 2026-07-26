@@ -339,6 +339,19 @@ def _static_url(name: str) -> str:
 jinja.globals["static_url"] = _static_url
 
 
+def _is_static_site() -> bool:
+    """True while rendering pages for the static documentation build.
+
+    Read at render time rather than import time: ``static_site.build`` sets the
+    variable after this module is imported. Used to omit live-only features that
+    cannot work from a file-served snapshot (chat needs a socket.io server).
+    """
+    return os.environ.get("MUSCAT_STATIC_SITE") == "1"
+
+
+jinja.globals["is_static_site"] = _is_static_site
+
+
 def _datetime_from_timestamp(ts: int) -> str:
     dt = datetime.datetime.fromtimestamp(ts)
     now = datetime.datetime.now()
