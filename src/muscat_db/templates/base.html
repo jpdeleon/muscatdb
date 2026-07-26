@@ -884,6 +884,10 @@
   })();
 </script>
 {% block scripts %}{% endblock %}
+{# Chat needs a live socket.io server, so it is omitted from the static docs
+   build: on a file-served snapshot the widget would sit on "Connecting…"
+   forever and log connection errors. #}
+{% if not is_static_site() %}
 <div id="chat-window" class="hidden" data-current-user="{{ current_user or '' }}"{% if chat_popout %} data-popout="1"{% endif %}>
     <div id="chat-resize-handle" title="Drag to resize" aria-hidden="true"></div>
     <div id="chat-header">
@@ -912,5 +916,6 @@
 </div>
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script src="{{ static_url('js/chat.js') }}"></script>
+{% endif %}
 </body>
 </html>

@@ -205,6 +205,7 @@ ENV_VARS: tuple[EnvVar, ...] = (
 
     # --- authentication / reverse proxy -------------------------------------
     EnvVar("MUSCAT_REQUIRE_AUTH", "0", "Set to 1 to reject any request or chat connection that bypassed nginx auth"),
+    EnvVar("MUSCAT_STATIC_SITE", "0", "Set to 1 by the static-site build so templates omit live-only features (chat)"),
     EnvVar("MUSCAT_PROXY_SECRET", "", "Shared secret nginx presents so X-Forwarded-User can be trusted", secret=True),
     EnvVar("MUSCAT_PROXY_SECRET_FILE", "/etc/muscat-db/proxy-secret", "File holding the proxy secret when not passed by env"),
     EnvVar("MUSCAT_HTPASSWD_FILE", "", "htpasswd file managed by the CLI user commands"),

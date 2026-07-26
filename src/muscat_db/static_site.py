@@ -245,11 +245,13 @@ def _prepare_env(db_path: str) -> None:
     All captured routes are GET, so CSRF never triggers; we only need to ensure
     authentication is not *required* (which would 401 every page). The LCO
     observation monitor is disabled so the build never spins up a background
-    network-polling thread.
+    network-polling thread. ``MUSCAT_STATIC_SITE`` tells the templates to omit
+    live-only features (chat) that cannot work from a file-served snapshot.
     """
     os.environ["MUSCAT_DB_PATH"] = str(Path(db_path).resolve())
     os.environ["MUSCAT_REQUIRE_AUTH"] = "0"
     os.environ["MUSCAT_LCO_MONITOR_ENABLED"] = "0"
+    os.environ["MUSCAT_STATIC_SITE"] = "1"
     os.environ.pop("MUSCAT_PROXY_SECRET", None)
 
 
@@ -752,6 +754,7 @@ def build_site(
     resolved_db = db_path or os.environ.get("MUSCAT_DB_PATH", "muscat.db")
     out = Path(out_dir)
     _validate_output_dir(out, resolved_db)
+    _prior_static_site = os.environ.get("MUSCAT_STATIC_SITE")
     _prepare_env(resolved_db)
 
     # Import the app only after the environment is set so module-level config
@@ -804,8 +807,14 @@ def build_site(
     finally:
         # Always leave the web module in its pristine state so the scrub
         # overrides never leak into a later in-process caller (e.g. the test
-        # suite sharing the interpreter).
+        # suite sharing the interpreter). MUSCAT_STATIC_SITE is restored for the
+        # same reason and matters more: left set, it strips chat from every page
+        # a later caller renders in this process.
         _restore(web)
+        if _prior_static_site is None:
+            os.environ.pop("MUSCAT_STATIC_SITE", None)
+        else:
+            os.environ["MUSCAT_STATIC_SITE"] = _prior_static_site
 
     _copy_static(web, out)
     (out / ".nojekyll").write_text("", encoding="utf-8")
