@@ -8,6 +8,7 @@ without needing the 3 GB production ``muscat.db`` or any figures on disk.
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 from pathlib import Path
@@ -83,6 +84,47 @@ def test_builds_core_pages_and_scaffolding(tiny_db, tmp_path):
     # Pages-required scaffolding.
     assert (out / ".nojekyll").is_file()
     assert (out / "static" / "styles.css").is_file()
+
+
+def test_chat_widget_omitted_from_static_build(tiny_db, tmp_path):
+    """Chat needs a live socket.io server, which a file-served snapshot has not.
+
+    Left in, the widget sits on "Connecting…" forever and logs connection errors
+    on every page of the public docs site.
+    """
+    out = tmp_path / "site"
+    build_site(out, db_path=tiny_db, n_examples=1, include_figures=False, log=lambda _m: None)
+
+    pages = list(out.rglob("index.html"))
+    assert pages, "build produced no pages"
+    for page in pages:
+        html = _read(page)
+        assert 'id="chat-window"' not in html, f"chat markup in {page}"
+        assert "js/chat.js" not in html, f"chat script in {page}"
+        assert "socket.io" not in html, f"socket.io client in {page}"
+
+
+def test_static_site_flag_does_not_leak_after_a_build(tiny_db, tmp_path, monkeypatch):
+    """A build must not leave the flag set for later in-process callers.
+
+    It changes every rendered page, so a leak would silently strip chat from
+    anything rendered afterwards in the same interpreter (the test suite, or a
+    process that builds the site and then serves).
+    """
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("MUSCAT_STATIC_SITE", raising=False)
+    build_site(
+        tmp_path / "site", db_path=tiny_db, n_examples=1,
+        include_figures=False, log=lambda _m: None,
+    )
+    assert "MUSCAT_STATIC_SITE" not in os.environ
+
+    from muscat_db.web import app
+
+    html = TestClient(app).get("/logs").text
+    assert 'id="chat-window"' in html, "chat missing from the live app after a build"
+    assert "js/chat.js" in html
 
 
 def test_no_absolute_internal_links_remain(tiny_db, tmp_path):
