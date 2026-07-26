@@ -391,22 +391,11 @@
   "use strict";
   var OPT_KEY = 'lco:schedule:options';
   var STATE_KEY = 'lco:schedule:state';
-  function el(id) { return document.getElementById(id); }
-  function val(id) { var e = el(id); return e ? e.value.trim() : ''; }
-  function num(id) { var v = val(id); return v === '' ? null : Number(v); }
-  function chk(id) { var e = el(id); return e ? !!e.checked : false; }
-  function setVal(id, v) { var e = el(id); if (e && v !== undefined && v !== null) e.value = v; }
-  function setChk(id, v) { var e = el(id); if (e) e.checked = !!v; }
-  function msg(id, text, kind) {
-    var e = el(id); if (!e) return;
-    e.textContent = text || '';
-    e.className = 'lco-msg' + (kind ? ' ' + kind : '');
-  }
-  function escapeHtml(text) {
-    return String(text).replace(/[&<>"']/g, function (ch) {
-      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch];
-    });
-  }
+  var el = MuscatDom.el, val = MuscatDom.val, num = MuscatDom.num;
+  var chk = MuscatDom.chk, setVal = MuscatDom.setVal;
+  var setChk = MuscatDom.setChk;
+  var msg = MuscatDom.msg;
+  var escapeHtml = MuscatDom.escapeHtml;
   function msgHtml(id, html, kind) {
     var e = el(id); if (!e) return;
     e.innerHTML = html || '';

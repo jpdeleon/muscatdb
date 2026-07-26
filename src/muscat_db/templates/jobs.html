@@ -308,14 +308,7 @@
   var activeInst = '';
   var activeRecent = '';
 
-  function escapeHtml(value) {
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
+  const escapeHtml = MuscatDom.escapeHtml;
 
   function addInstFilterIfMissing(inst) {
     if (!inst) return;

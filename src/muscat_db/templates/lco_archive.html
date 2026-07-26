@@ -77,16 +77,10 @@
   var CURRENT_YEAR = (new Date()).getFullYear();
   var OPT_KEY = 'lco:archive:options';
   var STATE_KEY = 'lco:archive:state';
-  function el(id) { return document.getElementById(id); }
-  function val(id) { var e = el(id); return e ? e.value.trim() : ''; }
-  function chk(id) { var e = el(id); return e ? !!e.checked : false; }
-  function setVal(id, v) { var e = el(id); if (e && v !== undefined && v !== null) e.value = v; }
+  var el = MuscatDom.el, val = MuscatDom.val;
+  var chk = MuscatDom.chk, setVal = MuscatDom.setVal;
   function setChk(id, v) { var e = el(id); if (e) e.checked = !!v; }
-  function msg(id, text, kind) {
-    var e = el(id); if (!e) return;
-    e.textContent = text || '';
-    e.className = 'lco-msg' + (kind ? ' ' + kind : '');
-  }
+  var msg = MuscatDom.msg;
 
   function applyDateBounds() {
     var maxDate = CURRENT_YEAR + '-12-31';
