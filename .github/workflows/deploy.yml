@@ -53,6 +53,6 @@ jobs:
             uv sync --dev
             tmux send-keys -t "$TMUX_SESSION" "" C-c || true
             sleep 2
-            tmux send-keys -t "$TMUX_SESSION" "uv run uvicorn muscat_db.web:app --host 127.0.0.1 --port 8001 --reload" Enter || \
-              tmux new-session -d -s "$TMUX_SESSION" "uv run uvicorn muscat_db.web:app --host 127.0.0.1 --port 8001 --reload"
+            tmux send-keys -t "$TMUX_SESSION" "uv run uvicorn muscat_db.web:sio_app --host 127.0.0.1 --port 8001 --reload" Enter || \
+              tmux new-session -d -s "$TMUX_SESSION" "uv run uvicorn muscat_db.web:sio_app --host 127.0.0.1 --port 8001 --reload"
           EOF
