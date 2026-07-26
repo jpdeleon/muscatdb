@@ -1074,6 +1074,55 @@ class TestStartRun:
             with phot._LOCK:
                 phot._JOBS.clear()
 
+    def test_test_runs_are_capped(self, monkeypatch, tmp_path):
+        """Test runs take no durable slot, so they need their own ceiling.
+
+        Without it a caller can vary the run key (target / run name) to spawn
+        unbounded detached pipelines on the shared host.
+        """
+        from dataclasses import replace
+        from muscat_db.instruments import INSTRUMENTS
+
+        class RunningProc:
+            pid = 4321
+
+            def poll(self):
+                return None
+
+        def must_not_launch(*_args, **_kwargs):
+            pytest.fail("a capped test run must not spawn a pipeline")
+
+        raw_root = tmp_path / "raw"
+        (raw_root / DATE).mkdir(parents=True)
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path / "out"))
+        patched = dict(INSTRUMENTS)
+        patched[INST] = replace(INSTRUMENTS[INST], data_subdir=str(raw_root))
+        monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
+        monkeypatch.setattr(phot, "_MAX_TEST_JOBS", 2)
+        monkeypatch.setattr("subprocess.Popen", must_not_launch)
+
+        log_path = tmp_path / "running.log"
+        logf = log_path.open("w")
+        try:
+            with phot._LOCK:
+                phot._JOBS.clear()
+                for i in range(2):  # two test runs already in flight
+                    key = phot.job_key(INST, DATE, f"T{i}", "default")
+                    phot._JOBS[key] = phot.Job(
+                        key=key, inst=INST, date=DATE, target=f"T{i}",
+                        cmd=["prose"], proc=RunningProc(), logf=logf, log_path=log_path,
+                        run_type="test", run_id="default", run_name="default",
+                    )
+            result = phot.start_run(
+                INST, DATE, TARGET, options={"overwrite": False}, test_run=True
+            )
+            assert result["ok"] is False
+            assert "test runs are already in progress" in result["error"]
+        finally:
+            logf.close()
+            with phot._LOCK:
+                phot._JOBS.clear()
+
     def test_job_status_reports_persisted_error_when_job_gone(
         self, monkeypatch, tmp_path
     ):

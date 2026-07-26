@@ -1341,6 +1341,10 @@ Job = jobs.PipelineJob
 _JOBS: dict[str, Job] = {}
 _LOCK = threading.Lock()
 _MAX_FULL_JOBS = 1
+# Test runs are admitted without a durable slot, so they need a ceiling of their
+# own or a caller varying the run key can spawn unbounded pipelines. Env-tunable
+# for hosts with more cores than the 24-core production server.
+_MAX_TEST_JOBS = max(1, int(os.environ.get("MUSCAT_MAX_TEST_JOBS", "4")))
 _PROSE_PRODUCT_SUFFIXES = {".csv", ".npz", ".png", ".gif"}
 _TARGET_PRODUCT_SUFFIXES = _PROSE_PRODUCT_SUFFIXES | {".txt"}
 
@@ -1354,6 +1358,11 @@ _MAX_RUNTIME_S = int(os.environ.get("MUSCAT_PHOT_MAX_RUNTIME_S", 3 * 60 * 60))
 def _count_running_full() -> int:
     """Number of currently-running full (non-test) photometry jobs."""
     return jobs.count_running_full(_JOBS)
+
+
+def _count_running_test() -> int:
+    """Number of currently-running test photometry jobs."""
+    return jobs.count_running_test(_JOBS)
 
 
 def job_key(inst: str, date: str, target: str, run_id: str = "") -> str:
@@ -1516,8 +1525,19 @@ def start_run(
                 "error": "reduction products already exist for this target; enable 'Overwrite existing products' to replace",
             }
 
+        # Test runs take no durable slot, so cap them here instead: refuse rather
+        # than queue, since a test run is a short interactive check and the
+        # caller should retry once one finishes. Checked under _LOCK, after the
+        # reuse-existing path above so re-running a live job is unaffected.
+        if run_type != "full" and _count_running_test() >= _MAX_TEST_JOBS:
+            logger.info(f"start_run: refusing test run for {key}; {_MAX_TEST_JOBS} already running")
+            return {
+                "ok": False,
+                "error": f"{_MAX_TEST_JOBS} test runs are already in progress; wait for one to finish",
+            }
+
         # Claim a cross-process concurrency slot for full jobs (test jobs are
-        # never capacity-gated). Not yet claimed here just means queue below.
+        # capped above instead). Not yet claimed here just means queue below.
         claimed_slot = False
         if run_type == "full":
             claimed_slot = get_job_store().claim_slot("photometry", key, _MAX_FULL_JOBS)

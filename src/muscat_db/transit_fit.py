@@ -142,6 +142,9 @@ TransitFitJob = jobs.PipelineJob
 _FIT_JOBS: dict[str, TransitFitJob] = {}
 _FIT_LOCK = threading.Lock()
 _MAX_FULL_JOBS = 1
+# See photometry._MAX_TEST_JOBS: test runs take no durable slot, so they need a
+# ceiling of their own to stay bounded.
+_MAX_TEST_JOBS = max(1, int(os.environ.get("MUSCAT_MAX_TEST_JOBS", "4")))
 
 # Finalizing grace-window settings (env-tunable), mirroring photometry so the
 # transit-fit live log keeps streaming the worker output timer emits after the
@@ -167,6 +170,11 @@ def _finalize_config() -> jobs.FinalizeConfig:
 def _count_running_full() -> int:
     """Number of currently-running full (non-test) transit fit jobs."""
     return jobs.count_running_full(_FIT_JOBS)
+
+
+def _count_running_test() -> int:
+    """Number of currently-running test transit fit jobs."""
+    return jobs.count_running_test(_FIT_JOBS)
 
 
 def fit_job_key(inst: str, date: str, target: str, run_id: str = "") -> str:
@@ -1288,8 +1296,16 @@ def start_fit(
         if existing is not None and existing.proc.poll() is None:
             return {"ok": True, "key": key, "already_running": True, "run_id": run_id}
 
+        # Test runs take no durable slot, so cap them here instead (refuse, not
+        # queue: a test fit is a short interactive check).
+        if run_type != "full" and _count_running_test() >= _MAX_TEST_JOBS:
+            return {
+                "ok": False,
+                "error": f"{_MAX_TEST_JOBS} test runs are already in progress; wait for one to finish",
+            }
+
         # Claim a cross-process concurrency slot for full jobs (test jobs are
-        # never capacity-gated). Not yet claimed here just means queue below.
+        # capped above instead). Not yet claimed here just means queue below.
         claimed_slot = False
         if run_type == "full":
             claimed_slot = get_job_store().claim_slot("transit_fit", key, _MAX_FULL_JOBS)

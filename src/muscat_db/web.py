@@ -392,6 +392,16 @@ def _render(name: str, **kwargs) -> str:
     return HTMLResponse(tpl.render(**kwargs))
 
 
+def _float_or_none(val):
+    """Parse a catalog CSV cell to float, treating blanks/junk as missing."""
+    if not val or val.strip() == "":
+        return None
+    try:
+        return float(val)
+    except ValueError:
+        return None
+
+
 def _script_json(obj) -> str:
     """Serialize ``obj`` for safe embedding inside an inline ``<script>`` block.
 
@@ -1947,13 +1957,7 @@ async def transit_fit_query_archive(target: str, source: str = "nasa", inst: str
                     
         if not best_row:
             return None
-            
-        def _float_or_none(val):
-            if not val or val.strip() == "":
-                return None
-            try: return float(val)
-            except ValueError: return None
-            
+
         toi_val = best_row.get("toi", "")
         toi_display = f"TOI-{toi_val}" if toi_val else target
         
@@ -2054,13 +2058,7 @@ async def transit_fit_query_archive(target: str, source: str = "nasa", inst: str
         header = [h.strip('"') for h in next(csv.reader([header_line]))]
         row_values = next(csv.reader([best_row_line]))
         best_row = dict(zip(header, row_values))
-            
-        def _float_or_none(val):
-            if not val or val.strip() == "":
-                return None
-            try: return float(val)
-            except ValueError: return None
-            
+
         pl_name = best_row.get("pl_name", "")
         planets = "b"
         if pl_name and len(pl_name) > 2 and pl_name[-2] == " ":
