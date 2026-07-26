@@ -26,13 +26,13 @@
   }
   /* Tabbed pane for the observation request (science vs test obs). */
   .lco-tabs { display: flex; gap: 0.25rem; margin-bottom: 0.75rem; border-bottom: 1px solid var(--border); }
-  .lco-tab {
+  .lco-tabs .lco-tab {
     appearance: none; background: transparent; border: 1px solid transparent; border-bottom: none;
     color: var(--text-dim); font: inherit; font-size: 0.85rem; padding: 0.4rem 0.9rem;
     cursor: pointer; border-radius: 6px 6px 0 0; margin-bottom: -1px;
   }
-  .lco-tab:hover { color: var(--text); }
-  .lco-tab.active {
+  .lco-tabs .lco-tab:hover { color: var(--text); }
+  .lco-tabs .lco-tab.active {
     color: var(--text); background: var(--surface);
     border-color: var(--border); border-bottom-color: var(--surface);
   }
@@ -927,7 +927,18 @@
     return null;
   }
 
-  function applySource(info) {
+  function applySource(info, opts) {
+    opts = opts || {};
+    // On the initial page load the restored t0/period already belong to the
+    // restored target, and may be values the observer typed by hand (the input
+    // listener below tags those 'manual'). Overwriting them from the catalog
+    // silently discards that correction; worse, setVal() fires no events, so the
+    // restored windows and any passed dry-run would keep referring to the old
+    // ephemeris while the fields show the new one. populateCoordinates guards
+    // coordinates exactly this way -- do the same here.
+    if (opts.isInitialLoad && val('sch-t0') && val('sch-period')) {
+      return;
+    }
     var planet = normalizePlanetLabel(val('sch-planet') || 'b');
     var source = val('sch-source');
     var ref = (info.reference_ephemeris || {})[planet] || {};
@@ -1088,7 +1099,7 @@
       } catch (e) {
         coordErr = String(e.message || e);
       }
-      applySource(info);
+      applySource(info, opts);
       if (coordErr) msg('msg-windows', coordErr, 'err');
     }).catch(function (e) {
       msg('msg-windows', String(e), 'err');
@@ -2128,6 +2139,14 @@
     updateDefocusLimits();
     updateScheduleFields();
     updateGenWindowsButtonState();
+    // The clone brings its own target, so any t0/period/duration on screen
+    // belongs to the previous one. Clear them (but keep the cloned coordinates)
+    // so the fetch below repopulates them for the cloned target rather than
+    // being short-circuited by applySource's initial-load guard.
+    ['sch-t0', 'sch-period', 'sch-duration'].forEach(function (id) {
+      setVal(id, '');
+      setFieldSource(id, '');
+    });
     saveOptions();
     // Fetch the target's ephemeris so the user can generate fresh windows.
     // isInitialLoad keeps the cloned coords from being overwritten by the catalog.

@@ -173,8 +173,10 @@ async def connect(sid, environ):
     if user:
         await sio.enter_room(sid, f"user:{user}")
     # Backfill recent history to this client only (never persisted here).
+    # When the user is authenticated, scoped messages (e.g. job-finished
+    # notifications) are included only for their owner.
     try:
-        history = db.get_recent_chat_messages()
+        history = db.get_recent_chat_messages(user=user)
     except Exception:
         logger.exception("failed to load chat history")
         history = []
@@ -480,22 +482,39 @@ async def _run_agent(sid: str, user: str | None, question: str) -> None:
 
 
 # ----- job-finished system messages ----------------------------------------
+def _job_user_name(job_key: str) -> str | None:
+    """Look up the user_name stored for a job key, or None if unknown."""
+    try:
+        row = db.get_job_user_name(job_key)
+        return row or None
+    except Exception:
+        logger.debug("failed to look up job user_name for %s", job_key, exc_info=True)
+        return None
+
+
 def on_job_finished(job_key: str, type_: str = "", target: str = "", inst: str = "",
                     date: str = "", state: str = "", **_) -> None:
     """jobs.fire_job_finished hook (runs in the job-sync thread). Persists a
-    system message and schedules its broadcast onto the server event loop."""
+    system message scoped to the job's owner and schedules its delivery."""
     label = {"photometry": "Photometry", "transit_fit": "Transit fit"}.get(type_, type_ or "Job")
     verb = {"done": "finished", "error": "failed", "cancelled": "was cancelled"}.get(state, state)
     where = " ".join(p for p in (inst, date) if p)
     text = f"{label} for {target} ({where}) {verb}".strip()
+    owner = _job_user_name(job_key)
     try:
-        msg = db.save_chat_message("system", text, kind="system")
+        msg = db.save_chat_message("system", text, kind="system", visible_to=owner)
     except Exception:
         logger.exception("failed to persist job-finished chat message")
         return
     if _LOOP is None:
         return
-    asyncio.run_coroutine_threadsafe(sio.emit("message", {**msg, "sid": None}), _LOOP)
+    payload = {**msg, "sid": None}
+    if owner:
+        asyncio.run_coroutine_threadsafe(
+            sio.emit("message", payload, room=f"user:{owner}"), _LOOP
+        )
+    else:
+        asyncio.run_coroutine_threadsafe(sio.emit("message", payload), _LOOP)
 
 
 # Register once at import so both pipelines' sync loops notify chat.

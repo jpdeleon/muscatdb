@@ -58,6 +58,14 @@ _DOWNLOAD_HOSTS = frozenset({
 })
 _DOWNLOAD_S3_PREFIX = "archive-lco-global.s3"
 
+# Hosts the API token may be presented to. Every API URL this module builds is
+# already fixed to one of these; the allowlist exists so a redirect cannot carry
+# the Authorization header somewhere else.
+_API_HOSTS = frozenset({
+    "observe.lco.global",
+    "archive-api.lco.global",
+})
+
 # Secondary-mirror defocus offset limits (mm), from LCO's live instrument
 # capabilities schema (observe.lco.global/api/instruments/): the InstrumentConfig
 # "defocus" extra_param is capped at +/-8mm for 2M0-SCICAM-MUSCAT and +/-5mm for
@@ -181,6 +189,30 @@ def config_state(user_name: str | None = None) -> dict:
     }
 
 
+class _ValidatedApiRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Keep the API token from following a redirect off the LCO API hosts.
+
+    urllib replays request headers on every hop, so a redirect issued by (or
+    injected into) an API response would hand ``Authorization: Token <secret>``
+    to the destination. The archive-download path already validates each hop via
+    :class:`_ValidatedArchiveRedirectHandler`; this closes the same gap for the
+    portal/archive API calls.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parsed = urllib.parse.urlparse(newurl or "")
+        if parsed.scheme != "https" or (parsed.hostname or "").lower() not in _API_HOSTS:
+            raise LcoError(
+                "refusing to follow LCO API redirect to an untrusted URL",
+                status=502,
+                detail=newurl,
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_API_OPENER = urllib.request.build_opener(_ValidatedApiRedirectHandler)
+
+
 def _lco_api_request(
     url: str,
     method: str = "GET",
@@ -206,7 +238,7 @@ def _lco_api_request(
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
 
     try:
-        with urllib.request.urlopen(req, timeout=15) as response:
+        with _API_OPENER.open(req, timeout=15) as response:
             if 200 <= response.status < 300:
                 return json.loads(response.read().decode())
             raise LcoError(
@@ -220,6 +252,8 @@ def _lco_api_request(
         except Exception:
             detail = str(e)
         raise LcoError(f"LCO API request failed with HTTP {e.code}", status=e.code, detail=detail)
+    except LcoError:
+        raise
     except Exception as e:
         raise LcoError("LCO API request failed", detail=str(e))
 
@@ -1541,7 +1575,17 @@ def _clip_windows_to_observability(kind: str, params: dict, max_airmass, min_lun
             params["_observable_repeat_duration"] = caps
     except LcoError:
         raise
-    except Exception:
+    except (ImportError, TypeError, ValueError, KeyError) as exc:
+        # Falling through leaves the windows unclipped, so _repeat_duration is
+        # derived from the full padded span and can overrun the target's actual
+        # visibility -- LCO then rejects the request with a message that points
+        # nowhere near this function. Degrading is still better than blocking the
+        # submission, but it must not be silent.
+        logger.warning(
+            "observability clipping unavailable for %s at %s (%s: %s); "
+            "submitting unclipped windows",
+            params.get("target_name") or "?", site.upper(), type(exc).__name__, exc,
+        )
         return
 
 
