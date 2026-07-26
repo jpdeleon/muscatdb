@@ -290,3 +290,178 @@ def test_gaia_to_griz_transform_returns_none_without_color():
 
 def test_gaia_to_griz_transform_returns_none_for_nan_color():
     assert exposure.gaia_to_griz_transform(11.2, float("nan")) is None
+
+
+# ---------------------------------------------------------------------------
+# Coefficient store and lookup
+#
+# get_coeff drives every predicted exposure time, so its fallback chain (exact
+# DB match -> nearest calibrated focus -> scaled MuSCAT3 empirical values) is
+# worth pinning down: a silent change here shifts science output rather than
+# raising.
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def exposure_db(monkeypatch, tmp_path):
+    """Point the coefficient store at a throwaway database."""
+    path = str(tmp_path / "exposure.db")
+    monkeypatch.setenv("MUSCAT_DB_PATH", path)
+    exposure._EXPOSURE_SCHEMA_PATHS.discard(path)
+    return path
+
+
+def test_save_and_load_coeff_roundtrip(exposure_db):
+    exposure.save_coeff("muscat3", "g", 0.0, coef=5.5, fwhm_pix=4.0, n_frames=12)
+    coeffs = exposure.load_coeffs("muscat3")
+    assert coeffs[("g", 0.0)] == (5.5, 4.0, 12)
+
+
+def test_save_coeff_bins_focus_to_half_mm(exposure_db):
+    """Focus is binned to 0.5 mm, so nearby values share one calibration point."""
+    exposure.save_coeff("muscat3", "g", 1.3, coef=5.0, fwhm_pix=4.0, n_frames=1)
+    exposure.save_coeff("muscat3", "g", 1.4, coef=6.0, fwhm_pix=5.0, n_frames=2)
+    coeffs = exposure.load_coeffs("muscat3")
+    # 1.3 and 1.4 both bin to 1.5, so the later write replaces the earlier.
+    assert list(coeffs) == [("g", 1.5)]
+    assert coeffs[("g", 1.5)] == (6.0, 5.0, 2)
+    # 1.2 bins to 1.0 instead, so it is a distinct calibration point.
+    exposure.save_coeff("muscat3", "g", 1.2, coef=4.0, fwhm_pix=3.0, n_frames=3)
+    assert sorted(exposure.load_coeffs("muscat3")) == [("g", 1.0), ("g", 1.5)]
+
+
+def test_get_coeff_prefers_an_exact_calibrated_match(exposure_db):
+    exposure.save_coeff("muscat3", "r", 0.0, coef=7.7, fwhm_pix=3.3, n_frames=5)
+    assert exposure.get_coeff("muscat3", "r", 0.0) == (7.7, 3.3)
+
+
+def test_get_coeff_falls_back_to_the_nearest_calibrated_focus(exposure_db):
+    exposure.save_coeff("muscat3", "r", 0.0, coef=1.0, fwhm_pix=3.0, n_frames=1)
+    exposure.save_coeff("muscat3", "r", 4.0, coef=2.0, fwhm_pix=6.0, n_frames=1)
+    # 3.5 is nearer 4.0 than 0.0, so the 4.0 calibration wins.
+    assert exposure.get_coeff("muscat3", "r", 3.5) == (2.0, 6.0)
+
+
+def test_get_coeff_falls_back_to_empirical_values_when_uncalibrated(exposure_db):
+    """No DB entry for the band: the scaled MuSCAT3 curve is used instead."""
+    assert exposure.load_coeffs("muscat3") == {}
+    assert exposure.get_coeff("muscat3", "g", 0.0) == exposure._scale_coef("muscat3", "g", 0.0)
+
+
+def test_get_coeff_does_not_borrow_another_bands_calibration(exposure_db):
+    exposure.save_coeff("muscat3", "g", 0.0, coef=9.9, fwhm_pix=1.1, n_frames=3)
+    assert exposure.get_coeff("muscat3", "z", 0.0) != (9.9, 1.1)
+
+
+def test_scale_coef_is_identity_for_muscat3(exposure_db):
+    """MuSCAT3 is the reference instrument, so scaling must not move its values."""
+    scaled = exposure._scale_coef("muscat3", "g", 0.0)
+    assert scaled == pytest.approx(exposure._muscat3_coef("g", 0.0))
+
+
+def test_scale_coef_lowers_the_peak_for_a_smaller_telescope(exposure_db):
+    """Sinistro is a 1m against MuSCAT3's 2m: less collecting area, fainter peak.
+
+    coef is a log10 quantity, so 'fainter' means numerically smaller.
+    """
+    m3_coef, _ = exposure._scale_coef("muscat3", "g", 0.0)
+    sin_coef, _ = exposure._scale_coef("sinistro", "g", 0.0)
+    assert sin_coef < m3_coef
+
+
+def test_calibration_status_groups_by_band(exposure_db):
+    exposure.save_coeff("muscat3", "g", 0.0, coef=1.0, fwhm_pix=3.0, n_frames=10)
+    exposure.save_coeff("muscat3", "g", 2.0, coef=1.1, fwhm_pix=3.1, n_frames=5)
+    exposure.save_coeff("muscat3", "r", 0.0, coef=1.2, fwhm_pix=3.2, n_frames=7)
+
+    status = exposure.calibration_status("muscat3")
+    assert status["n_bands"] == 2
+    by_band = {b["band"]: b for b in status["bands"]}
+    assert by_band["g"]["n_focus"] == 2
+    assert by_band["g"]["n_frames"] == 15
+    assert by_band["r"]["n_focus"] == 1
+
+
+def test_calibration_status_empty_for_uncalibrated_instrument(exposure_db):
+    assert exposure.calibration_status("sinistro") == {"n_bands": 0, "bands": []}
+
+
+def test_calibration_job_raises_for_unknown_id(exposure_db):
+    with pytest.raises(KeyError):
+        exposure.calibration_job("no-such-job")
+
+
+def _seed_job(job_id: str, instrument: str = "muscat3", state: str = "pending", started_at: float = 0.0):
+    """Insert a job row directly: _write_calibration_job only UPDATEs."""
+    import json as _json
+
+    conn = exposure._conn()
+    conn.execute(
+        """INSERT INTO exposure_jobs(id, instrument, state, progress, started_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (job_id, instrument, state, _json.dumps({}), started_at, started_at),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_only_one_calibration_job_per_instrument(exposure_db):
+    """exposure_jobs is UNIQUE on instrument, so an instrument cannot have two."""
+    import sqlite3
+
+    _seed_job("job-1", instrument="muscat3")
+    with pytest.raises(sqlite3.IntegrityError):
+        _seed_job("job-2", instrument="muscat3")
+
+
+def test_calibration_jobs_lists_newest_first(exposure_db):
+    _seed_job("job-a", instrument="muscat3", started_at=100.0)
+    _seed_job("job-b", instrument="muscat4", started_at=200.0)
+    exposure._write_calibration_job("job-a", "done", {"phase": "finished"})
+    exposure._write_calibration_job("job-b", "running", {"phase": "measuring"})
+    jobs = exposure.calibration_jobs()
+    assert [j["job_id"] for j in jobs] == ["job-b", "job-a"]   # newest first
+    assert exposure.calibration_job("job-b")["progress"] == {"phase": "measuring"}
+
+
+def test_cancel_calibration_without_a_worker_raises(exposure_db):
+    """Cancelling a job whose worker lives in another process must not pretend
+    to have cancelled it."""
+    _seed_job("job-x")
+    exposure._write_calibration_job("job-x", "running", {"phase": "measuring"})
+    with pytest.raises(RuntimeError, match="not available in this process"):
+        exposure.cancel_calibration("job-x")
+
+
+def test_cancel_calibration_is_a_noop_for_a_finished_job(exposure_db):
+    _seed_job("job-y")
+    exposure._write_calibration_job("job-y", "done", {"phase": "finished"})
+    assert exposure.cancel_calibration("job-y")["state"] == "done"
+
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+def test_band_from_filter_maps_known_aliases():
+    # Canonical names are the Pan-STARRS forms, so bare letters normalise up.
+    assert exposure._band_from_filter("g") == "gp"
+    assert exposure._band_from_filter("gp") == "gp"
+    assert exposure._band_from_filter("z_s") == "zs"
+    assert exposure._band_from_filter("rp*diffuser") == "rp"
+    assert exposure._band_from_filter("not-a-filter") is None
+
+
+def test_fits_exists_finds_each_supported_suffix(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from muscat_db.instruments import INSTRUMENTS
+
+    root = tmp_path / "raw"
+    (root / "260101").mkdir(parents=True)
+    patched = dict(INSTRUMENTS)
+    patched["muscat3"] = replace(INSTRUMENTS["muscat3"], data_subdir=str(root))
+    monkeypatch.setattr("muscat_db.exposure.INSTRUMENTS", patched)
+
+    for stem, suffix in (("a", ".fits"), ("b", ".fits.fz"), ("c", ".fz")):
+        (root / "260101" / f"{stem}{suffix}").write_bytes(b"")
+        assert exposure._fits_exists("muscat3", "260101", stem) is not None
+
+    assert exposure._fits_exists("muscat3", "260101", "missing") is None
+    assert exposure._fits_exists("not-an-instrument", "260101", "a") is None
