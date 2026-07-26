@@ -229,7 +229,9 @@ TTVFitJob = jobs.PipelineJob
 
 _TTV_JOBS: dict[str, TTVFitJob] = {}
 _TTV_LOCK = threading.Lock()
-_MAX_FULL_JOBS = 1
+# See photometry._MAX_FULL_JOBS: 0 disables full runs so a secondary instance
+# never competes with production for the shared host.
+_MAX_FULL_JOBS = max(0, int(os.environ.get("MUSCAT_MAX_FULL_JOBS", "1")))
 
 _FINALIZE_GRACE_S = int(os.environ.get("MUSCAT_TTV_FINALIZE_GRACE_S", 8))
 _FINALIZE_GRACE_TERMINAL_S = int(os.environ.get("MUSCAT_TTV_FINALIZE_GRACE_TERMINAL_S", 2))
@@ -420,6 +422,15 @@ def start_ttv_fit(
         existing = _TTV_JOBS.get(key)
         if existing is not None and existing.proc.poll() is None:
             return {"ok": True, "key": key, "already_running": True}
+
+        # Every ttv_fit job is "full" (no test-run concept here), so a zero cap
+        # disables this pipeline outright. Refuse rather than queue a row that can
+        # never drain (see photometry.start_run).
+        if _MAX_FULL_JOBS == 0:
+            return {
+                "ok": False,
+                "error": "full runs are disabled on this instance (MUSCAT_MAX_FULL_JOBS=0)",
+            }
 
         # Every ttv_fit job is "full" (no test-run concept here), so always
         # claim a cross-process concurrency slot before launching.
