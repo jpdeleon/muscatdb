@@ -141,7 +141,9 @@ TransitFitJob = jobs.PipelineJob
 
 _FIT_JOBS: dict[str, TransitFitJob] = {}
 _FIT_LOCK = threading.Lock()
-_MAX_FULL_JOBS = 1
+# See photometry._MAX_FULL_JOBS: 0 disables full runs so a secondary instance
+# never competes with production for the shared host.
+_MAX_FULL_JOBS = max(0, int(os.environ.get("MUSCAT_MAX_FULL_JOBS", "1")))
 # See photometry._MAX_TEST_JOBS: test runs take no durable slot, so they need a
 # ceiling of their own to stay bounded.
 _MAX_TEST_JOBS = max(1, int(os.environ.get("MUSCAT_MAX_TEST_JOBS", "4")))
@@ -1302,6 +1304,14 @@ def start_fit(
             return {
                 "ok": False,
                 "error": f"{_MAX_TEST_JOBS} test runs are already in progress; wait for one to finish",
+            }
+
+        # A zero cap disables full fits entirely; refuse rather than queue a row
+        # that can never drain (see photometry.start_run).
+        if run_type == "full" and _MAX_FULL_JOBS == 0:
+            return {
+                "ok": False,
+                "error": "full runs are disabled on this instance (MUSCAT_MAX_FULL_JOBS=0); run a test instead",
             }
 
         # Claim a cross-process concurrency slot for full jobs (test jobs are

@@ -211,6 +211,7 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("MUSCAT_NGINX_GROUP", "www-data", "Group given read access to the htpasswd file"),
 
     # --- job concurrency and finalizing grace windows ------------------------
+    EnvVar("MUSCAT_MAX_FULL_JOBS", "1", "Concurrent full runs allowed per pipeline across all processes sharing the database; 0 disables full runs (use on a staging instance so it cannot compete with production)"),
     EnvVar("MUSCAT_MAX_TEST_JOBS", "4", "Concurrent test runs allowed per pipeline (full runs use durable slots)"),
     EnvVar("MUSCAT_PHOT_FINALIZE_GRACE_TERMINAL_S", "2", "Photometry finalizing grace once a terminal log marker is seen (seconds)"),
     EnvVar("MUSCAT_FIT_FINALIZE_GRACE_S", "8", "Transit-fit finalizing grace after parent exit (seconds)"),

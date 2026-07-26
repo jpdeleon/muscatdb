@@ -1074,6 +1074,48 @@ class TestStartRun:
             with phot._LOCK:
                 phot._JOBS.clear()
 
+    def test_full_runs_refused_when_cap_is_zero(self, monkeypatch, tmp_path):
+        """A zero cap must refuse, not queue.
+
+        With MUSCAT_MAX_FULL_JOBS=0 no slot can ever be claimed, so falling
+        through to the queue would leave the job pending forever with nothing to
+        drain it. A staging instance sets 0 to stay off the shared host.
+        """
+        from dataclasses import replace
+        from muscat_db.instruments import INSTRUMENTS
+
+        def must_not_launch(*_args, **_kwargs):
+            pytest.fail("a disabled full run must not spawn a pipeline")
+
+        class NoQueueStore:
+            def enqueue(self, **_kwargs):
+                pytest.fail("a disabled full run must be refused, not queued")
+
+            def claim_slot(self, *_a, **_k):
+                return False
+
+        raw_root = tmp_path / "raw"
+        (raw_root / DATE).mkdir(parents=True)
+        monkeypatch.setenv("MUSCAT_PROSE_DIR", str(tmp_path / "out"))
+        patched = dict(INSTRUMENTS)
+        patched[INST] = replace(INSTRUMENTS[INST], data_subdir=str(raw_root))
+        monkeypatch.setattr("muscat_db.photometry.INSTRUMENTS", patched)
+        monkeypatch.setattr(phot, "_MAX_FULL_JOBS", 0)
+        monkeypatch.setattr(phot, "get_job_store", lambda: NoQueueStore())
+        monkeypatch.setattr("subprocess.Popen", must_not_launch)
+
+        with phot._LOCK:
+            phot._JOBS.clear()
+        try:
+            result = phot.start_run(
+                INST, DATE, TARGET, options={"overwrite": False}, test_run=False
+            )
+            assert result["ok"] is False
+            assert "MUSCAT_MAX_FULL_JOBS=0" in result["error"]
+        finally:
+            with phot._LOCK:
+                phot._JOBS.clear()
+
     def test_test_runs_are_capped(self, monkeypatch, tmp_path):
         """Test runs take no durable slot, so they need their own ceiling.
 
