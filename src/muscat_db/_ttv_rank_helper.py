@@ -28,13 +28,13 @@ _RANK_COLS = ("sigma", "gain_total", "gain_ttv", "greedy_rank", "greedy_gain")
 
 
 def _planet_key(key: str) -> str:
-    """Planet letter for one ``[T14]`` entry, accepting either spelling.
+    """Planet letter for one ``[T14]`` entry, tolerating the historical spelling.
 
-    ``scan_transits`` indexes its duration mapping by bare planet letter, but the
-    two writers disagree: muscat-db's ephemeris page emits ``t14_b = ...`` while
-    harmonic's own configs use ``b = ...``. Passing the prefixed form straight
-    through raises ``KeyError`` on every run this application has written, so the
-    prefix is stripped here rather than relying on the caller's config style.
+    ``scan_transits`` indexes its duration mapping by bare planet letter, which
+    is now what the ephemeris page writes. Runs created before that carry
+    ``t14_b = ...`` in their saved ``config.ini``, and those files are read in
+    place rather than rewritten, so the prefix is still accepted here. Drop this
+    only once no run directory on disk uses the old form.
     """
     key = key.strip().lower()
     return key[4:] if key.startswith("t14_") else key
