@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import math
 import os
 import pathlib
 import shlex
@@ -812,6 +813,42 @@ def get_ttv_outputs(target: str, run_name: str = "") -> dict:
     return _get_ttv_outputs_mtime(target, run_name, mtime)
 
 
+#: Keys harmonic's ``delta_bic`` always provides. ``_read_fit_stats`` upstream
+#: treats a file missing any of them as absent, so mirror that here.
+_DBIC_KEYS = ("delta_bic", "evidence", "chi2_lin", "chi2_harm", "k_lin", "k_harm", "n_data")
+
+
+def _finite(value):
+    """Replace a non-finite float with ``None``.
+
+    harmonic writes ``fit_stats.json`` with ``json.dump`` defaults, so a
+    non-finite ``tau_max`` is emitted as a bare ``NaN`` token. Python parses
+    that, but it is not valid JSON: passed through to the browser it makes
+    ``JSON.parse`` reject the entire response, not just the one field.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def read_fit_stats(rdir: pathlib.Path) -> dict | None:
+    """ΔBIC statistics harmonic persisted for a run, or ``None``.
+
+    Absence is the normal case rather than an error: harmonic only writes this
+    file when it actually samples (``flatchain is None or clobber``), so a run
+    that was resumed without ``--clobber``, or that predates the feature, has
+    none. Callers offer a recompute instead.
+    """
+    path = rdir / "fit_stats.json"
+    try:
+        stats = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(stats, dict) or any(key not in stats for key in _DBIC_KEYS):
+        return None
+    return {key: _finite(value) for key, value in stats.items()}
+
+
 @_ttv_outputs_cache
 def _get_ttv_outputs_mtime(
     target: str, run_name: str, _cache_mtime: float
@@ -824,6 +861,7 @@ def _get_ttv_outputs_mtime(
         "has_config_ini": False,
         "has_samples": False,
         "has_model": False,
+        "fit_stats": None,
         "extra_files": [],
         "input_snapshot": None,
     }
@@ -855,6 +893,7 @@ def _get_ttv_outputs_mtime(
         (rdir / name).is_file()
         for name in ("samples.csv.gz", "data.csv", "config.ini", "fit_config.json")
     )
+    outputs["fit_stats"] = read_fit_stats(rdir)
 
     for p in sorted(rdir.glob("*.png")):
         if p.is_file():
@@ -879,7 +918,7 @@ def _get_ttv_outputs_mtime(
             continue
         if p.suffix.lower() == ".png" or p.name in _linked:
             continue
-        if p.name in ("harmonic.log", "data.csv", "config.ini", "meta.yaml", "args.txt", "fit_config.json"):
+        if p.name in ("harmonic.log", "data.csv", "config.ini", "meta.yaml", "args.txt", "fit_config.json", "fit_stats.json"):
             outputs["extra_files"].append(p.name)
             outputs["has_any"] = True
 
@@ -972,6 +1011,149 @@ def _get_ttv_model_cached(
     except (json.JSONDecodeError, TypeError):
         return {"ok": False, "error": "TTV model returned invalid output"}
     result.update({"ok": True, "run_name": slugify_run_name(run_name), "end_date": end_date})
+    return result
+
+
+def compute_delta_bic(target: str, run_name: str = "") -> dict:
+    """Recompute ΔBIC for a saved run that has no stored ``fit_stats.json``.
+
+    Reads the stored file when it exists so the common case costs nothing;
+    otherwise runs harmonic, which recovers ΔBIC from the deterministic
+    least-squares optimum without re-sampling.
+    """
+    try:
+        rdir = ttv_output_dir(target, run_name)
+    except ValueError:
+        return {"ok": False, "error": "invalid target"}
+
+    stored = read_fit_stats(rdir)
+    if stored is not None:
+        return {"ok": True, "run_name": slugify_run_name(run_name), "stats": stored, "recomputed": False}
+
+    required = ("samples.csv.gz", "data.csv", "config.ini", "fit_config.json")
+    if not rdir.is_dir() or not all((rdir / name).is_file() for name in required):
+        return {"ok": False, "error": "saved run has no complete TTV model output"}
+    try:
+        version = max((rdir / name).stat().st_mtime_ns for name in required)
+    except OSError:
+        return {"ok": False, "error": "could not inspect saved TTV model output"}
+    return _compute_delta_bic_cached(target, run_name, version)
+
+
+@_ttv_model_cache
+def _compute_delta_bic_cached(target: str, run_name: str, _version: int) -> dict:
+    rdir = ttv_output_dir(target, run_name)
+    harmonic_python = _conda_env_python("harmonic")
+    if not harmonic_python:
+        return {"ok": False, "error": "harmonic conda environment is unavailable"}
+    helper = pathlib.Path(__file__).with_name("_ttv_dbic_helper.py")
+    env = os.environ.copy()
+    matplotlib_config = pathlib.Path.home() / "temp" / "matplotlib"
+    try:
+        matplotlib_config.mkdir(parents=True, exist_ok=True)
+        env.setdefault("MPLCONFIGDIR", str(matplotlib_config))
+    except OSError:
+        pass
+    try:
+        completed = subprocess.run(
+            [harmonic_python, str(helper), str(rdir)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("delta-BIC recompute failed for %s/%s: %s", target, run_name, exc)
+        return {"ok": False, "error": "delta-BIC computation failed"}
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()
+        logger.warning(
+            "delta-BIC recompute failed for %s/%s: %s",
+            target,
+            run_name,
+            detail[-1] if detail else f"exit {completed.returncode}",
+        )
+        return {"ok": False, "error": "delta-BIC computation failed"}
+    try:
+        stats = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return {"ok": False, "error": "delta-BIC returned invalid output"}
+    if not isinstance(stats, dict) or any(key not in stats for key in _DBIC_KEYS):
+        return {"ok": False, "error": "delta-BIC returned invalid output"}
+    return {"ok": True, "run_name": slugify_run_name(run_name), "stats": stats, "recomputed": True}
+
+
+def get_ttv_ranking(
+    target: str, run_name: str = "", start: str = "", end: str = "", rank_by: str = "total"
+) -> dict:
+    """Information gain per predicted transit, for choosing what to observe.
+
+    The greedy ranking costs a matrix pseudo-inverse per candidate, so the window
+    is the caller's date range rather than the model's full extent.
+    """
+    if rank_by not in ("total", "ttv"):
+        return {"ok": False, "error": "rank_by must be 'total' or 'ttv'"}
+    try:
+        rdir = ttv_output_dir(target, run_name)
+    except ValueError:
+        return {"ok": False, "error": "invalid target"}
+    try:
+        datetime.date.fromisoformat(start)
+        datetime.date.fromisoformat(end)
+    except ValueError:
+        return {"ok": False, "error": "start and end must be YYYY-MM-DD"}
+
+    required = ("samples.csv.gz", "data.csv", "config.ini", "fit_config.json")
+    if not rdir.is_dir() or not all((rdir / name).is_file() for name in required):
+        return {"ok": False, "error": "saved run has no complete TTV model output"}
+    try:
+        version = max((rdir / name).stat().st_mtime_ns for name in required)
+    except OSError:
+        return {"ok": False, "error": "could not inspect saved TTV model output"}
+    return _get_ttv_ranking_cached(target, run_name, start, end, rank_by, version)
+
+
+@_ttv_model_cache
+def _get_ttv_ranking_cached(
+    target: str, run_name: str, start: str, end: str, rank_by: str, _version: int
+) -> dict:
+    rdir = ttv_output_dir(target, run_name)
+    harmonic_python = _conda_env_python("harmonic")
+    if not harmonic_python:
+        return {"ok": False, "error": "harmonic conda environment is unavailable"}
+    helper = pathlib.Path(__file__).with_name("_ttv_rank_helper.py")
+    command = [
+        harmonic_python, str(helper), str(rdir),
+        "--start", f"{start} 00:00:00", "--end", f"{end} 23:59:59",
+        "--rank-by", rank_by,
+    ]
+    env = os.environ.copy()
+    matplotlib_config = pathlib.Path.home() / "temp" / "matplotlib"
+    try:
+        matplotlib_config.mkdir(parents=True, exist_ok=True)
+        env.setdefault("MPLCONFIGDIR", str(matplotlib_config))
+    except OSError:
+        pass
+    try:
+        completed = subprocess.run(
+            command, capture_output=True, text=True, timeout=300, check=False, env=env
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("TTV ranking failed for %s/%s: %s", target, run_name, exc)
+        return {"ok": False, "error": "TTV ranking failed"}
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()
+        logger.warning(
+            "TTV ranking failed for %s/%s: %s",
+            target, run_name, detail[-1] if detail else f"exit {completed.returncode}",
+        )
+        return {"ok": False, "error": "TTV ranking failed"}
+    try:
+        result = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return {"ok": False, "error": "TTV ranking returned invalid output"}
+    result.update({"ok": True, "run_name": slugify_run_name(run_name)})
     return result
 
 

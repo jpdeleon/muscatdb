@@ -320,3 +320,170 @@ def test_online_usernames_excludes_anonymous(monkeypatch):
     monkeypatch.setattr(chat, "_users_by_sid",
                         {"s1": "alice", "s2": "alice", "s3": None, "s4": "bob"})
     assert chat._online_usernames() == {"alice", "bob"}   # de-duped, no anonymous
+
+
+# --------------------------------------------------------------------------
+# socket.io handlers
+#
+# The tests above cover the database layer beneath these handlers. The handlers
+# themselves are what receive untrusted client input, so they need their own
+# coverage: they are where malformed payloads are rejected, where identity is
+# resolved, and where author-only edit/delete is enforced before the DB is
+# reached at all.
+# --------------------------------------------------------------------------
+class _FakeSio:
+    """Records emits so a handler can be driven without a socket.io server."""
+
+    def __init__(self):
+        self.emits = []
+
+    async def emit(self, event, payload=None, **kwargs):
+        self.emits.append((event, payload, kwargs))
+
+    def events(self):
+        return [event for event, _payload, _kw in self.emits]
+
+
+@pytest.fixture
+def sio_harness(monkeypatch):
+    fake = _FakeSio()
+    monkeypatch.setattr(chat, "sio", fake)
+    monkeypatch.setattr(chat, "_rate", {})
+    monkeypatch.setattr(chat, "_users_by_sid", {})
+    return fake
+
+
+def _as_user(monkeypatch, name):
+    async def _session_user(_sid):
+        return name
+
+    monkeypatch.setattr(chat, "_session_user", _session_user)
+
+
+@pytest.mark.parametrize("payload", [None, "text", 42, ["a"], {"text": 123}, {"text": "   "}])
+def test_message_ignores_malformed_payloads(sio_harness, monkeypatch, payload):
+    """Malformed input must be dropped silently, never persisted."""
+    import asyncio
+
+    _as_user(monkeypatch, "alice")
+    monkeypatch.setattr(
+        chat.db, "save_chat_message",
+        lambda *a, **k: pytest.fail("malformed payload must not be persisted"),
+    )
+    asyncio.run(chat.message("sid-1", payload))
+    assert sio_harness.emits == []
+
+
+def test_message_rate_limit_drops_the_burst(sio_harness, monkeypatch):
+    import asyncio
+
+    _as_user(monkeypatch, "alice")
+    saved = []
+    monkeypatch.setattr(
+        chat.db, "save_chat_message",
+        lambda user, text, **k: saved.append(text) or {"id": len(saved), "user": user, "text": text},
+    )
+    for i in range(chat._RATE_MAX + 5):
+        asyncio.run(chat.message("sid-1", {"text": f"m{i}"}))
+    assert len(saved) == chat._RATE_MAX, "rate limit did not cap the burst"
+
+
+def test_test_prefixed_message_is_ephemeral_and_never_persisted(sio_harness, monkeypatch):
+    """@test broadcasts live but must never reach the database."""
+    import asyncio
+
+    _as_user(monkeypatch, "alice")
+    monkeypatch.setattr(
+        chat.db, "save_chat_message",
+        lambda *a, **k: pytest.fail("an @test message must not be persisted"),
+    )
+    asyncio.run(chat.message("sid-1", {"text": "@test hello"}))
+
+    assert sio_harness.events() == ["message"]
+    _event, payload, _kw = sio_harness.emits[0]
+    assert payload["ephemeral"] is True
+    assert payload["id"] is None
+    assert payload["text"] == "hello"
+
+
+def test_message_notifies_each_mentioned_user(sio_harness, monkeypatch):
+    import asyncio
+
+    _as_user(monkeypatch, "alice")
+    monkeypatch.setattr(chat, "_known_users_map", lambda: {"bob": "bob", "carol": "carol"})
+    monkeypatch.setattr(
+        chat.db, "save_chat_message",
+        lambda user, text, **k: {"id": 1, "user": user, "text": text},
+    )
+    asyncio.run(chat.message("sid-1", {"text": "@bob @carol look at this"}))
+
+    rooms = [kw.get("room") for event, _p, kw in sio_harness.emits if event == "mention"]
+    assert sorted(rooms) == ["user:bob", "user:carol"]
+
+
+def test_edit_and_delete_require_an_identity(sio_harness, monkeypatch):
+    """Anonymous connections must not reach the database at all."""
+    import asyncio
+
+    _as_user(monkeypatch, None)
+    monkeypatch.setattr(
+        chat.db, "edit_chat_message",
+        lambda *a, **k: pytest.fail("anonymous edit must not reach the database"),
+    )
+    monkeypatch.setattr(
+        chat.db, "delete_chat_message",
+        lambda *a, **k: pytest.fail("anonymous delete must not reach the database"),
+    )
+    asyncio.run(chat.edit_message("sid-1", {"id": 1, "text": "hi"}))
+    asyncio.run(chat.delete_message("sid-1", {"id": 1}))
+    assert sio_harness.emits == []
+
+
+def test_edit_rejected_for_another_users_message(sio_harness, monkeypatch):
+    """The DB returns None when the editor is not the author; the handler must
+    report that back rather than broadcasting an edit."""
+    import asyncio
+
+    _as_user(monkeypatch, "mallory")
+    monkeypatch.setattr(chat.db, "edit_chat_message", lambda *a, **k: None)
+    asyncio.run(chat.edit_message("sid-1", {"id": 7, "text": "changed"}))
+
+    assert sio_harness.events() == ["chat_error"]
+    assert "not allowed" in sio_harness.emits[0][1]["error"]
+
+
+def test_delete_rejected_for_another_users_message(sio_harness, monkeypatch):
+    import asyncio
+
+    _as_user(monkeypatch, "mallory")
+    monkeypatch.setattr(chat.db, "delete_chat_message", lambda *a, **k: False)
+    asyncio.run(chat.delete_message("sid-1", {"id": 7}))
+
+    assert sio_harness.events() == ["chat_error"]
+
+
+def test_successful_edit_and_delete_broadcast(sio_harness, monkeypatch):
+    import asyncio
+
+    _as_user(monkeypatch, "alice")
+    monkeypatch.setattr(chat.db, "edit_chat_message", lambda mid, u, t: {"id": mid, "text": t})
+    monkeypatch.setattr(chat.db, "delete_chat_message", lambda mid, u: True)
+    asyncio.run(chat.edit_message("sid-1", {"id": 3, "text": "fixed"}))
+    asyncio.run(chat.delete_message("sid-1", {"id": 3}))
+
+    assert sio_harness.events() == ["message_edited", "message_deleted"]
+
+
+def test_reaction_requires_identity_and_valid_emoji(sio_harness, monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(
+        chat.db, "toggle_chat_reaction",
+        lambda *a, **k: pytest.fail("must not reach the database"),
+    )
+    _as_user(monkeypatch, None)
+    asyncio.run(chat.toggle_reaction("sid-1", {"id": 1, "emoji": "👍"}))
+    _as_user(monkeypatch, "alice")
+    asyncio.run(chat.toggle_reaction("sid-1", {"id": 1, "emoji": "   "}))
+    asyncio.run(chat.toggle_reaction("sid-1", {"id": "notanint", "emoji": "👍"}))
+    assert sio_harness.emits == []
