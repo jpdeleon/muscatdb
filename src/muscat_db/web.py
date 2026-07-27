@@ -5766,6 +5766,19 @@ def ttv_fit_model(target: str = "", run_name: str = "", end_date: str = ""):
     return JSONResponse(result, status_code=200 if result.get("ok") else 400)
 
 
+@ttv_fit_router.get("/delta-bic", response_class=JSONResponse)
+def ttv_fit_delta_bic(target: str = "", run_name: str = ""):
+    """ΔBIC for a run: the stored value when harmonic wrote one, else recomputed.
+
+    Recomputing runs harmonic, so this is a separate call rather than part of
+    /outputs, which the page polls.
+    """
+    if not target:
+        return JSONResponse({"ok": False, "error": "target is required"}, status_code=400)
+    result = ttv.compute_delta_bic(target.strip(), run_name)
+    return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+
+
 @ttv_fit_router.post("/start", response_class=JSONResponse)
 def api_start_ttv_fit(request: Request, payload: dict = Body(...)):
     target = (payload.get("target") or "").strip()
