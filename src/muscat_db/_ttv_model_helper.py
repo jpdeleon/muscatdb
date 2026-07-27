@@ -106,6 +106,11 @@ def evaluate(run_dir: Path, end_bjd: float | None) -> dict:
         "points": points,
         "chi2": chi2,
         "sample_count": int(len(ttv.flatchain)),
+        # Offset from the fit's time system to BJD (2454833 for a BKJD fit, 0
+        # otherwise). The ``tc`` values above are deliberately left in the fit's
+        # own system so the O-C plot stays consistent with data.csv; consumers
+        # that need absolute BJD, such as scheduling, add this themselves.
+        "t_offset": float(config.get("t_offset") or 0.0),
     }
 
 
