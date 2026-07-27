@@ -24,6 +24,13 @@
     background: transparent; color: var(--text-dim);
     font-weight: 500; opacity: 0.5;
   }
+  /* t0/period are greyed while a TTV model is the ephemeris source: the server
+     ignores them (scheduling follows the model's predicted mid-times), so they
+     are shown for reference but not editable. */
+  input.ephem-ignored {
+    opacity: 0.55; background: var(--surface2);
+    color: var(--text-dim); cursor: not-allowed;
+  }
   /* Tabbed pane for the observation request (science vs test obs). */
   .lco-tabs { display: flex; gap: 0.25rem; margin-bottom: 0.75rem; border-bottom: 1px solid var(--border); }
   .lco-tabs .lco-tab {
@@ -435,6 +442,22 @@
       b.textContent = '—';
       b.className = 'ephem-src none';
     }
+  }
+
+  // A TTV model source makes the server ignore t0/period (windows come from the
+  // model's predicted mid-times). Grey those fields and make them read-only so
+  // that is obvious, rather than leaving editable-looking inputs that imply a
+  // linear ephemeris drives the schedule.
+  var EPHEM_IGNORED_TITLE = "Ignored — scheduling uses the TTV model's predicted mid-times";
+  function setEphemIgnored(on) {
+    ['sch-t0', 'sch-period'].forEach(function (id) {
+      var input = el(id);
+      if (!input) return;
+      input.readOnly = on;
+      input.classList.toggle('ephem-ignored', on);
+      if (on) { input.title = EPHEM_IGNORED_TITLE; }
+      else { input.removeAttribute('title'); }
+    });
   }
   function clearEphemFields() {
     EPHEM_FIELDS.forEach(function (id) { setVal(id, ''); setFieldSource(id, ''); });
@@ -932,6 +955,11 @@
 
   function applySource(info, opts) {
     opts = opts || {};
+    var source = val('sch-source');
+    // Grey t0/period whenever a TTV model is the source (server ignores them);
+    // runs before the initial-load guard below so a restored TTV source is
+    // reflected on first paint too.
+    setEphemIgnored(source.indexOf('ttv:') === 0);
     // On the initial page load the restored t0/period already belong to the
     // restored target, and may be values the observer typed by hand (the input
     // listener below tags those 'manual'). Overwriting them from the catalog
@@ -943,7 +971,6 @@
       return;
     }
     var planet = normalizePlanetLabel(val('sch-planet') || 'b');
-    var source = val('sch-source');
     var ref = (info.reference_ephemeris || {})[planet] || {};
     var nasa = (info.nasa_ephemeris || {})[planet] || {};
     var toi = (info.toi_ephemeris || {})[planet] || {};
