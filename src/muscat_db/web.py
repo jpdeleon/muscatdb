@@ -3583,6 +3583,117 @@ def api_lco_clone(ident: str, request: Request):
         return _lco_error_response(e)
 
 
+def _ttv_windows(payload: dict, duration_h: float) -> dict:
+    """Scheduling windows built from a harmonic TTV model's predicted mid-times.
+
+    ``generate_windows`` extrapolates ``t0 + epoch * period``, which is exactly
+    the assumption a TTV fit exists to reject: routing a TTV ephemeris through it
+    would collapse it back to a straight line and discard the signal. So the
+    predicted transit centres are used directly, padded the same way, and emitted
+    with the same window keys the rest of the pipeline consumes
+    (``classify_transits``, ``_clip_windows_to_observability``, ``_repeat_duration``).
+    """
+    target = (payload.get("target") or "").strip()
+    run_name = (payload.get("ttv_run") or "").strip()
+    planet = (payload.get("planet") or "b").strip().lower() or "b"
+    start_dt = payload.get("range_start")
+    end_dt = payload.get("range_end")
+    if not start_dt or not end_dt:
+        return {"ok": False, "error": "date range is required"}
+
+    # Ask the model to extend through the end of the requested range, otherwise
+    # it only covers the epochs the fit itself spans.
+    model = ttv.get_ttv_model(target, run_name, str(end_dt))
+    if not model.get("ok"):
+        return model
+
+    points = (model.get("points") or {}).get(planet) or []
+    if not points:
+        return {"ok": False, "error": f"TTV model has no predicted transits for planet {planet}"}
+
+    # The model's tc is in the fit's own time system; t_offset carries it to BJD.
+    t_offset = float(model.get("t_offset") or 0.0)
+    pad_before = float(payload.get("pad_before_min") or 0)
+    pad_after = float(payload.get("pad_after_min") or 0)
+    half = duration_h / 2.0
+
+    start_jd = _iso_date_to_jd(str(start_dt), end_of_day=False)
+    end_jd = _iso_date_to_jd(str(end_dt), end_of_day=True)
+
+    windows = []
+    for point in points:
+        try:
+            mid_bjd = float(point["tc"]) + t_offset
+            epoch_abs = int(point["epoch"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (start_jd <= mid_bjd <= end_jd):
+            continue
+        start_jd_win = mid_bjd - (half / 24.0) - (pad_before / 1440.0)
+        end_jd_win = mid_bjd + (half / 24.0) + (pad_after / 1440.0)
+        windows.append({
+            "epoch": 0,  # replaced below, once the first in-range epoch is known
+            "epoch_abs": epoch_abs,
+            "mid_bjd": mid_bjd,
+            "mid": transit_obs._jd_to_iso_z(mid_bjd),
+            "start": transit_obs._jd_to_iso_z(start_jd_win),
+            "end": transit_obs._jd_to_iso_z(end_jd_win),
+        })
+        if len(windows) > 1000:
+            break
+
+    # Match generate_windows: displayed epoch is relative to the first in range.
+    if windows:
+        first = windows[0]["epoch_abs"]
+        for w in windows:
+            w["epoch"] = w["epoch_abs"] - first
+
+    return {"ok": True, "windows": windows, "planet": planet,
+            "ttv_run": model.get("run_name", ""), "duration": duration_h}
+
+
+def _attach_observability(result: dict, payload: dict, duration_h: float) -> None:
+    """Classify each window's observability across the LCO sites, in place.
+
+    Degrades gracefully: a failure here records ``obs_error`` and leaves the
+    windows intact, since an unobservable-looking table is worse than no ratings.
+    The table is site-driven rather than instrument-driven, so ``kind`` is
+    deliberately passed as ``None``; an explicit ``sites`` list narrows it, and
+    omitting it evaluates the whole network.
+    """
+    windows = result.get("windows") or []
+    ra = payload.get("ra")
+    dec = payload.get("dec")
+    if not windows or ra in (None, "") or dec in (None, ""):
+        return
+    try:
+        obs = transit_obs.classify_transits(
+            float(ra), float(dec), windows, None, duration_h,
+            max_airmass=float(payload.get("obs_airmass") or 2.0),
+            twilight=payload.get("twilight") or transit_obs.DEFAULT_TWILIGHT,
+            moon_sep_min=float(payload.get("moon_sep_min") or 0.0),
+            max_lunar_phase=float(payload.get("max_lunar_phase") or 1.0),
+            include_padding=bool(payload.get("include_padding")),
+            sites=payload.get("sites") or None,
+            pad_before_min=float(payload.get("pad_before_min") or 0.0),
+            pad_after_min=float(payload.get("pad_after_min") or 0.0),
+        )
+        for w, o in zip(windows, obs):
+            w["observability"] = o
+    except transit_obs.TransitObsError as e:
+        result["obs_error"] = str(e)
+    except Exception as e:  # never let astropy break window listing
+        result["obs_error"] = f"observability unavailable: {e}"
+
+
+def _iso_date_to_jd(day: str, end_of_day: bool) -> float:
+    """``YYYY-MM-DD`` to JD, at the start or end of that UTC day."""
+    parsed = datetime.date.fromisoformat(day)
+    moment = datetime.time.max if end_of_day else datetime.time.min
+    stamp = datetime.datetime.combine(parsed, moment, tzinfo=datetime.timezone.utc)
+    return stamp.timestamp() / 86400.0 + 2440587.5
+
+
 @lco_router.post("/windows", response_class=JSONResponse)
 def api_lco_windows(request: Request, payload: dict = Body(...)):
     """Generate transit windows from explicit t0/period/duration or a catalog lookup."""
@@ -3597,6 +3708,22 @@ def api_lco_windows(request: Request, payload: dict = Body(...)):
         # "b" entry the resolvers store.
         planet = gsheet_ephemeris._planet_label(planet) or planet
         source = (payload.get("source") or "catalog").strip().lower()
+
+        # Checked before the t0/period shortcut below: the page always posts a
+        # t0/period pair (a linearisation of the TTV fit, shown for reference), so
+        # deferring to that shortcut would silently schedule the straight line
+        # instead of the TTV model.
+        if source == "ttv":
+            if duration in (None, ""):
+                return JSONResponse(
+                    {"ok": False, "error": "transit duration (hours) is required"},
+                    status_code=400,
+                )
+            result = _ttv_windows(payload, float(duration))
+            if not result.get("ok"):
+                return JSONResponse(result, status_code=400)
+            _attach_observability(result, payload, float(duration))
+            return JSONResponse(result)
 
         if t0 in (None, "") or period in (None, ""):
             if not target:
@@ -3681,34 +3808,7 @@ def api_lco_windows(request: Request, payload: dict = Body(...)):
             "duration": float(duration),
         }
 
-        # Optional: classify each transit's observability across the instrument's
-        # LCO sites when coordinates + instrument kind are supplied. Degrades
-        # gracefully (windows still returned) if astropy/observability fails.
-        ra = payload.get("ra")
-        dec = payload.get("dec")
-        # The windows table is site-driven, independent of the imaging instrument:
-        # an explicit ``sites`` list restricts the check; empty/omitted evaluates
-        # the full LCO network (kind is intentionally not used as a fallback here).
-        sites = payload.get("sites") or None
-        if windows and ra not in (None, "") and dec not in (None, ""):
-            try:
-                obs = transit_obs.classify_transits(
-                    float(ra), float(dec), windows, None, float(duration),
-                    max_airmass=float(payload.get("obs_airmass") or 2.0),
-                    twilight=payload.get("twilight") or transit_obs.DEFAULT_TWILIGHT,
-                    moon_sep_min=float(payload.get("moon_sep_min") or 0.0),
-                    max_lunar_phase=float(payload.get("max_lunar_phase") or 1.0),
-                    include_padding=bool(payload.get("include_padding")),
-                    sites=sites,
-                    pad_before_min=float(payload.get("pad_before_min") or 0.0),
-                    pad_after_min=float(payload.get("pad_after_min") or 0.0),
-                )
-                for w, o in zip(windows, obs):
-                    w["observability"] = o
-            except transit_obs.TransitObsError as e:
-                result["obs_error"] = str(e)
-            except Exception as e:  # never let plotting/astropy break window listing
-                result["obs_error"] = f"observability unavailable: {e}"
+        _attach_observability(result, payload, float(duration))
 
         return JSONResponse(result)
     except lco.LcoError as e:
@@ -4774,7 +4874,13 @@ def api_ephemeris_target_info(target: str, request: Request):
         "sheet_configured": sheet_cfg is not None,
         "sheet_ephemeris": sheet_ephem,
         "sheet_fit_ephemeris": sheet_fit_ephem,
-        "datasets": datasets_list
+        "datasets": datasets_list,
+        # Completed TTV runs, so the schedule page can offer scheduling from the
+        # TTV model rather than a linear ephemeris.
+        "ttv_runs": [
+            run for run in ttv.list_ttv_runs(target)
+            if ttv.get_ttv_outputs(target, run.get("run_name", "")).get("has_model")
+        ],
     })
 
 

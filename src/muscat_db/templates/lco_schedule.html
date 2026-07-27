@@ -860,6 +860,15 @@
       '<option value="nasa">NASA catalog</option>' +
       '<option value="toi">TOI catalog</option>' +
       '<option value="linear">linear fit</option>';
+    // One option per completed TTV run: scheduling from a TTV model uses that
+    // run's predicted mid-times rather than a linear ephemeris, so the run has
+    // to be part of the selection.
+    (info.ttv_runs || []).forEach(function (r) {
+      var opt = document.createElement('option');
+      opt.value = 'ttv:' + (r.run_name || '');
+      opt.textContent = 'TTV model: ' + (r.run_name || 'default');
+      sel.appendChild(opt);
+    });
     if (info.sheet_configured) {
       var gs = document.createElement('option');
       gs.value = 'gsheet'; gs.textContent = 'Google Sheet';
@@ -942,6 +951,25 @@
     else if (nasa.duration != null) { dur = nasa.duration; durUnc = nasa.duration_unc; durSrc = 'NASA'; }
     else if (toi.duration != null) { dur = toi.duration; durUnc = toi.duration_unc; durSrc = 'TOI'; }
     if (dur != null) { setVal('sch-duration', tupleString(dur, durUnc)); setFieldSource('sch-duration', durSrc); }
+
+    if (source.indexOf('ttv:') === 0) {
+      // A TTV model supplies mid-times, not a t0/period pair, but the form still
+      // requires one and the table's "Mid unc" column reads it. Fill it from the
+      // same ephemeris the Auto source would pick, labelled with its real origin
+      // so it is not mistaken for the TTV fit's own output.
+      var seed = autoEphemerisForPlanet(info, planet);
+      if (seed) {
+        setVal('sch-t0', tupleString(seed.data.t0, seed.data.t0_unc));
+        setVal('sch-period', tupleString(seed.data.period, seed.data.period_unc));
+        setFieldSource('sch-t0', seed.label);
+        setFieldSource('sch-period', seed.label);
+      }
+      saveOptions();
+      msg('msg-windows',
+          'Windows will follow the TTV model (' + (source.slice(4) || 'default') +
+          '); t0/period shown for reference only', 'ok');
+      return;
+    }
 
     if (!source) {
       var auto = autoEphemerisForPlanet(info, planet);
@@ -1751,8 +1779,15 @@
     if (!periodTuple.ok) { msg('msg-windows', 'Period must be "mean" or "mean,uncertainty"', 'err'); return; }
     if (!durationTuple.ok) { msg('msg-windows', 'Duration must be "mean" or "mean,uncertainty"', 'err'); return; }
     msg('msg-windows', 'Generating…');
+    // "ttv:<run>" selects a specific TTV run. The server takes mid-times from
+    // that model; t0/period still go along because the form requires them and
+    // the table shows them, but the server ignores them for this source.
+    var rawSource = val('sch-source');
+    var isTtv = rawSource.indexOf('ttv:') === 0;
     var body = {
-      target: val('sch-target'), planet: val('sch-planet'), source: val('sch-source'),
+      target: val('sch-target'), planet: val('sch-planet'),
+      source: isTtv ? 'ttv' : rawSource,
+      ttv_run: isTtv ? rawSource.slice(4) : '',
       t0: t0Tuple.mean, period: periodTuple.mean, duration: durationTuple.mean,
       range_start: val('sch-range-start'), range_end: val('sch-range-end'),
       pad_before_min: num('sch-pad-before') || 0, pad_after_min: num('sch-pad-after') || 0,
