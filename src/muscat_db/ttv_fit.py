@@ -1084,6 +1084,79 @@ def _compute_delta_bic_cached(target: str, run_name: str, _version: int) -> dict
     return {"ok": True, "run_name": slugify_run_name(run_name), "stats": stats, "recomputed": True}
 
 
+def get_ttv_ranking(
+    target: str, run_name: str = "", start: str = "", end: str = "", rank_by: str = "total"
+) -> dict:
+    """Information gain per predicted transit, for choosing what to observe.
+
+    The greedy ranking costs a matrix pseudo-inverse per candidate, so the window
+    is the caller's date range rather than the model's full extent.
+    """
+    if rank_by not in ("total", "ttv"):
+        return {"ok": False, "error": "rank_by must be 'total' or 'ttv'"}
+    try:
+        rdir = ttv_output_dir(target, run_name)
+    except ValueError:
+        return {"ok": False, "error": "invalid target"}
+    try:
+        datetime.date.fromisoformat(start)
+        datetime.date.fromisoformat(end)
+    except ValueError:
+        return {"ok": False, "error": "start and end must be YYYY-MM-DD"}
+
+    required = ("samples.csv.gz", "data.csv", "config.ini", "fit_config.json")
+    if not rdir.is_dir() or not all((rdir / name).is_file() for name in required):
+        return {"ok": False, "error": "saved run has no complete TTV model output"}
+    try:
+        version = max((rdir / name).stat().st_mtime_ns for name in required)
+    except OSError:
+        return {"ok": False, "error": "could not inspect saved TTV model output"}
+    return _get_ttv_ranking_cached(target, run_name, start, end, rank_by, version)
+
+
+@_ttv_model_cache
+def _get_ttv_ranking_cached(
+    target: str, run_name: str, start: str, end: str, rank_by: str, _version: int
+) -> dict:
+    rdir = ttv_output_dir(target, run_name)
+    harmonic_python = _conda_env_python("harmonic")
+    if not harmonic_python:
+        return {"ok": False, "error": "harmonic conda environment is unavailable"}
+    helper = pathlib.Path(__file__).with_name("_ttv_rank_helper.py")
+    command = [
+        harmonic_python, str(helper), str(rdir),
+        "--start", f"{start} 00:00:00", "--end", f"{end} 23:59:59",
+        "--rank-by", rank_by,
+    ]
+    env = os.environ.copy()
+    matplotlib_config = pathlib.Path.home() / "temp" / "matplotlib"
+    try:
+        matplotlib_config.mkdir(parents=True, exist_ok=True)
+        env.setdefault("MPLCONFIGDIR", str(matplotlib_config))
+    except OSError:
+        pass
+    try:
+        completed = subprocess.run(
+            command, capture_output=True, text=True, timeout=300, check=False, env=env
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("TTV ranking failed for %s/%s: %s", target, run_name, exc)
+        return {"ok": False, "error": "TTV ranking failed"}
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()
+        logger.warning(
+            "TTV ranking failed for %s/%s: %s",
+            target, run_name, detail[-1] if detail else f"exit {completed.returncode}",
+        )
+        return {"ok": False, "error": "TTV ranking failed"}
+    try:
+        result = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return {"ok": False, "error": "TTV ranking returned invalid output"}
+    result.update({"ok": True, "run_name": slugify_run_name(run_name)})
+    return result
+
+
 def sync_jobs() -> None:
     store = get_job_store()
     with _TTV_LOCK:

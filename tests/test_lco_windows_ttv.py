@@ -161,3 +161,77 @@ def test_observability_failure_does_not_lose_the_windows(monkeypatch):
     body = _post({**_BASE, "ra": 206.9, "dec": -68.0}).json()
     assert len(body["windows"]) == 3
     assert "obs_error" in body
+
+
+# ---------------------------------------------------------------------------
+# Information-gain ranking
+#
+# Which transits are worth observing, not merely which are observable. The rank
+# is advisory and merged onto the windows by epoch, so a ranking failure must
+# leave the windows themselves untouched.
+# ---------------------------------------------------------------------------
+_RANKING = {
+    "ok": True,
+    "rank_by": "ttv",
+    "sigmas": {"b": 0.00112},
+    "rows": [
+        {"planet": "b", "epoch": 100, "greedy_rank": 2, "gain_ttv": 0.80, "gain_total": 1.10},
+        {"planet": "b", "epoch": 101, "greedy_rank": 1, "gain_ttv": 1.40, "gain_total": 1.90},
+        {"planet": "b", "epoch": 102, "greedy_rank": 3, "gain_ttv": 0.20, "gain_total": 0.55},
+    ],
+}
+
+
+def test_ranking_is_merged_onto_the_matching_epochs(monkeypatch):
+    monkeypatch.setattr("muscat_db.web.ttv.get_ttv_model", lambda *a, **k: _MODEL)
+    monkeypatch.setattr("muscat_db.web.ttv.get_ttv_ranking", lambda *a, **k: _RANKING)
+    body = _post({**_BASE, "rank": True}).json()
+
+    ranks = {w["epoch_abs"]: w["rank"] for w in body["windows"]}
+    assert ranks == {100: 2, 101: 1, 102: 3}
+    assert body["windows"][1]["gain_ttv"] == 1.40
+    assert body["rank_by"] == "ttv"
+
+
+def test_ranking_is_opt_in(monkeypatch):
+    """It costs a pseudo-inverse per candidate, so it must not run unasked."""
+    monkeypatch.setattr("muscat_db.web.ttv.get_ttv_model", lambda *a, **k: _MODEL)
+    monkeypatch.setattr(
+        "muscat_db.web.ttv.get_ttv_ranking",
+        lambda *a, **k: pytest.fail("ranking must not run unless requested"),
+    )
+    body = _post(_BASE).json()
+    assert "rank" not in body["windows"][0]
+
+
+def test_ranking_failure_keeps_the_windows(monkeypatch):
+    monkeypatch.setattr("muscat_db.web.ttv.get_ttv_model", lambda *a, **k: _MODEL)
+    monkeypatch.setattr(
+        "muscat_db.web.ttv.get_ttv_ranking",
+        lambda *a, **k: {"ok": False, "error": "harmonic conda environment is unavailable"},
+    )
+    body = _post({**_BASE, "rank": True}).json()
+
+    assert len(body["windows"]) == 3
+    assert "harmonic" in body["rank_error"]
+    assert "rank" not in body["windows"][0]
+
+
+def test_ranking_rows_for_other_planets_are_ignored(monkeypatch):
+    """Rows are keyed by epoch, which repeats across planets."""
+    mixed = {**_RANKING, "rows": [
+        {"planet": "c", "epoch": 100, "greedy_rank": 1, "gain_ttv": 9.9, "gain_total": 9.9},
+        {"planet": "b", "epoch": 100, "greedy_rank": 7, "gain_ttv": 0.1, "gain_total": 0.2},
+    ]}
+    monkeypatch.setattr("muscat_db.web.ttv.get_ttv_model", lambda *a, **k: _MODEL)
+    monkeypatch.setattr("muscat_db.web.ttv.get_ttv_ranking", lambda *a, **k: mixed)
+    body = _post({**_BASE, "rank": True}).json()
+
+    assert body["windows"][0]["rank"] == 7      # planet b's row, not planet c's
+
+
+def test_invalid_rank_by_is_rejected(tmp_path, monkeypatch):
+    from muscat_db import ttv_fit
+    monkeypatch.setenv("MUSCAT_TTV_DIR", str(tmp_path))
+    assert ttv_fit.get_ttv_ranking("HIP 67522", "default", "2025-11-01", "2025-12-31",
+                                   rank_by="bogus")["ok"] is False

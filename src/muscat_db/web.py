@@ -3648,8 +3648,34 @@ def _ttv_windows(payload: dict, duration_h: float) -> dict:
         for w in windows:
             w["epoch"] = w["epoch_abs"] - first
 
-    return {"ok": True, "windows": windows, "planet": planet,
-            "ttv_run": model.get("run_name", ""), "duration": duration_h}
+    result = {"ok": True, "windows": windows, "planet": planet,
+              "ttv_run": model.get("run_name", ""), "duration": duration_h}
+
+    # Information gain per transit: which of these are actually worth observing.
+    # Best-effort, like observability: a ranking failure must not cost the user
+    # their windows, so it is reported and the table simply has no rank column.
+    if windows and payload.get("rank"):
+        ranking = ttv.get_ttv_ranking(
+            target, run_name, str(start_dt), str(end_dt),
+            str(payload.get("rank_by") or "total"),
+        )
+        if ranking.get("ok"):
+            by_epoch = {
+                row["epoch"]: row for row in ranking.get("rows", [])
+                if row.get("planet") == planet
+            }
+            for w in windows:
+                row = by_epoch.get(w["epoch_abs"])
+                if row:
+                    w["rank"] = row.get("greedy_rank")
+                    w["gain_ttv"] = row.get("gain_ttv")
+                    w["gain_total"] = row.get("gain_total")
+            result["rank_by"] = ranking.get("rank_by")
+            result["sigmas"] = ranking.get("sigmas")
+        else:
+            result["rank_error"] = ranking.get("error", "ranking unavailable")
+
+    return result
 
 
 def _attach_observability(result: dict, payload: dict, duration_h: float) -> None:
