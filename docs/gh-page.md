@@ -3,13 +3,20 @@
 **Status:** implemented · **Backlog item:** `docs/TODO.md` — "add a static but
 navigable github-pages version as visual muscat-db documentation"
 
-A browsable, static snapshot of the muscat-db web UI, published as a GitHub Page
-so anyone can see what the tool looks like without running the FastAPI server,
-the 3 GB `muscat.db`, or the conda photometry/transit stack. It documents *what
-the UI looks like*, not a live instance.
+The project's documentation, published as a GitHub Page: the pipeline guide as
+the landing page, plus a browsable static snapshot of the muscat-db web UI, so
+anyone can read how the pipeline works and see what the tool looks like without
+running the FastAPI server, the 3 GB `muscat.db`, or the conda photometry/transit
+stack. The UI pages document *what the UI looks like*, not a live instance.
 
 ## Design decisions
 
+- **The guide is the landing page.** `/guide` is written to the site root and the
+  app's own landing page moves to `targets/`, one navbar click away. A visitor
+  arriving at the Pages URL is reading documentation, not looking at a table of
+  observation targets they cannot query. Every internal link is rewritten through
+  the route map and every page's `../` prefix is derived from its output
+  directory, so both moves propagate without any hand-maintained paths.
 - **Real host snapshot.** The build runs where `muscat.db`, the `data/` CSVs, and
   the `~/ql/*` figure trees live (CI runners have none of these), so pages carry
   real data and real figures.
@@ -18,8 +25,10 @@ the UI looks like*, not a live instance.
   figures on disk). Keeps the published site small.
 - **Figures + shells with a banner.** Referenced photometry / transit-fit figure
   PNGs/GIFs are copied so those pages show real plots; live-API pages (ephemeris,
-  fov, exposure, lco) render as static shells. Every page carries a banner:
-  *"Static documentation snapshot — live data & actions are disabled."*
+  fov, exposure, lco) render as static shells. Every UI page carries a banner:
+  *"Static documentation snapshot — live data & actions are disabled."* The
+  landing guide does not, since it documents the pipeline rather than showing
+  live data, so the caveat answers a question that page never raises.
 
 ## How it works
 

@@ -403,9 +403,10 @@ muscat-db serve --port 8080  # custom port
 
 ### Build & publish the static documentation site (GitHub Pages)
 
-Capture a static, navigable snapshot of the web UI (nav pages + representative
-example detail pages, with real figures) and publish it to GitHub Pages. Build
-on the host, where the real `muscat.db` and figure trees live:
+Publish the project's documentation to GitHub Pages: the pipeline guide as the
+landing page, followed by a static, navigable snapshot of the web UI (nav pages
++ representative example detail pages, with real figures) reachable from it.
+Build on the host, where the real `muscat.db` and figure trees live:
 
 ```bash
 # Preview locally, exactly as Pages serves it:

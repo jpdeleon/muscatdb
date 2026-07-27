@@ -158,10 +158,47 @@ def test_static_cache_buster_stripped_and_depth_relative(tiny_db, tmp_path):
     assert "../static/styles.css" in logs_html
 
 
-def test_snapshot_banner_injected(tiny_db, tmp_path):
+def test_snapshot_banner_on_ui_pages_but_not_the_landing_guide(tiny_db, tmp_path):
     out = tmp_path / "site"
     build_site(out, db_path=tiny_db, n_examples=1, include_figures=False, log=lambda _m: None)
-    assert "snapshot-banner" in _read(out / "index.html")
+    # Every captured UI page still warns that it is a frozen snapshot ...
+    assert "snapshot-banner" in _read(out / "logs" / "index.html")
+    assert "snapshot-banner" in _read(out / "targets" / "index.html")
+    # ... but the landing page is the written guide, which documents the
+    # pipeline rather than showing live data, so the caveat does not apply.
+    assert "snapshot-banner" not in _read(out / "index.html")
+
+
+def test_guide_is_the_site_root_and_app_home_moves(tiny_db, tmp_path):
+    """The published tree is documentation, so ``/guide`` is served at the root
+    and the app's own landing page keeps its own directory."""
+    out = tmp_path / "site"
+    build_site(out, db_path=tiny_db, n_examples=1, include_figures=False, log=lambda _m: None)
+
+    root = _read(out / "index.html")
+    assert "<title>Pipeline Guide" in root
+    # The app landing page is still published, one click away.
+    assert "<title>Targets" in _read(out / "targets" / "index.html")
+    # ``guide/`` must not also exist, or the two would drift apart.
+    assert not (out / "guide" / "index.html").exists()
+
+
+def test_navbar_links_resolve_after_the_root_swap(tiny_db, tmp_path):
+    """Both moved routes are reachable from a nested page at the right depth."""
+    out = tmp_path / "site"
+    build_site(out, db_path=tiny_db, n_examples=1, include_figures=False, log=lambda _m: None)
+
+    logs = _read(out / "logs" / "index.html")
+    assert 'href="../"' in logs, "guide (site root) unreachable from a nested page"
+    assert 'href="../targets/"' in logs, "app home unreachable from a nested page"
+
+    root = _read(out / "index.html")
+    assert 'href="targets/"' in root
+    assert 'href="logs/"' in root
+    # The guide's own navbar entry, on the guide page, must be an explicit
+    # self-link rather than the empty href the bare prefix would produce.
+    assert 'href="./"' in root
+    assert 'href=""' not in root
 
 
 def test_no_live_data_notice_only_on_live_api_pages(tiny_db, tmp_path):
