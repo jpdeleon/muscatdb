@@ -163,6 +163,9 @@
           <input type="date" id="ttv-model-end-date" style="font: inherit; padding: 0.25rem 0.4rem; height: 30px;">
         </label>
         <span id="ttv-model-status" style="font-size: 0.8rem; color: var(--text-dim);"></span>
+        <span id="ttv-dbic" style="font-size: 0.8rem;" title="Bayesian evidence that the TTV model is a better description than a linear ephemeris. Positive favours TTVs; harmonic reports the Kass and Raftery evidence level."></span>
+        <button type="button" id="ttv-dbic-btn" class="btn" style="display: none; font-size: 0.85rem; padding: 0.3rem 0.75rem;"
+                title="This run has no stored fit_stats.json, which harmonic writes only when it samples. Recompute the comparison from the saved posterior.">Compute ΔBIC</button>
       </div>
       <span style="border-left: 1px solid var(--border); height: 16px; margin: 0 0.5rem;"></span>
       <div style="display: flex; align-items: center; gap: 0.35rem;">
@@ -3945,7 +3948,7 @@
     
     container.innerHTML = html;
     container.style.display = 'block';
-    updateTTVModelControls(Boolean(outputs.has_model), runName);
+    updateTTVModelControls(Boolean(outputs.has_model), runName, outputs.fit_stats);
 
     container.querySelectorAll('.site-chip').forEach(chip => {
       chip.addEventListener('click', () => {
@@ -3971,7 +3974,7 @@
     if (fitResults) drawPlot();
   }
 
-  function updateTTVModelControls(hasModel, runName) {
+  function updateTTVModelControls(hasModel, runName, fitStats) {
     const controls = document.getElementById('ttv-model-controls');
     const checkbox = document.getElementById('show-ttv-model-checkbox');
     const status = document.getElementById('ttv-model-status');
@@ -3982,9 +3985,64 @@
     ttvModelRun = null;
     ttvModelRequestSeq += 1;
     status.textContent = hasModel ? `Run: ${runName}` : '';
+    renderDeltaBic(fitStats, hasModel);
     if (hasModel && checkbox.checked) loadSelectedTTVModel();
     else if (fitResults) drawPlot();
   }
+
+  // ΔBIC compares the fitted TTV model against a linear ephemeris. It is
+  // advisory: it says whether the extra TTV parameters are justified by the
+  // data, and never gates what the observer may choose.
+  function renderDeltaBic(fitStats, hasModel) {
+    const out = document.getElementById('ttv-dbic');
+    const btn = document.getElementById('ttv-dbic-btn');
+    if (!out || !btn) return;
+    if (!hasModel) {
+      out.textContent = '';
+      btn.style.display = 'none';
+      return;
+    }
+    if (!fitStats || typeof fitStats.delta_bic !== 'number') {
+      // harmonic only writes fit_stats.json when it samples, so a resumed or
+      // older run legitimately has none. Offer to derive it instead.
+      out.textContent = '';
+      btn.style.display = '';
+      return;
+    }
+    btn.style.display = 'none';
+    const dbic = fitStats.delta_bic;
+    // Positive favours the TTV model; harmonic's own label carries the strength.
+    const favoursTtv = dbic > 0;
+    out.style.color = favoursTtv ? 'var(--accent)' : 'var(--text-dim)';
+    out.textContent = `ΔBIC ${dbic > 0 ? '+' : ''}${dbic.toFixed(1)} — ${fitStats.evidence || ''}`;
+  }
+
+  document.getElementById('ttv-dbic-btn')?.addEventListener('click', function () {
+    const target = loadedTargets[0] || '';
+    const runName = selectedTTVRun || '';
+    const out = document.getElementById('ttv-dbic');
+    if (!target || !runName || !out) return;
+    this.disabled = true;
+    out.style.color = 'var(--text-dim)';
+    out.textContent = 'computing ΔBIC…';
+    const qs = new URLSearchParams({ target: target, run_name: runName });
+    fetch('/api/ttv-fit/delta-bic?' + qs)
+      .then(r => r.json())
+      .then(d => {
+        this.disabled = false;
+        if (!d.ok) {
+          out.style.color = 'var(--red)';
+          out.textContent = d.error || 'ΔBIC unavailable';
+          return;
+        }
+        renderDeltaBic(d.stats, true);
+      })
+      .catch(e => {
+        this.disabled = false;
+        out.style.color = 'var(--red)';
+        out.textContent = String(e);
+      });
+  });
 
   function loadSelectedTTVModel() {
     const target = loadedTargets[0] || '';
