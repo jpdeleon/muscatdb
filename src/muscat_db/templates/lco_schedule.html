@@ -115,6 +115,11 @@
     <button class="btn" type="button" id="btn-fetch-ephem">Fetch ephemeris</button>
     <button class="btn" type="button" id="btn-fov" title="Optimize field-of-view pointing for this target">Show FOV</button>
     <button class="btn primary" type="button" id="btn-gen-windows">Generate windows</button>
+    <label class="lco-field" style="flex-direction: row; align-items: center; gap: 0.4rem;"
+           title="Rank transits by how much observing each one would tighten the TTV model. Applies to the TTV model source only; costs extra computation.">
+      <input id="sch-rank" type="checkbox">
+      <span style="font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase;">Rank by info gain</span>
+    </label>
     <label class="lco-field" style="flex-direction: row; align-items: center; gap: 0.4rem;">
       <span style="font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase;">Show</span>
       <select id="win-filter" style="padding: 0.35rem 0.5rem;">
@@ -128,7 +133,7 @@
   </div>
   <div class="lco-table-wrap" style="margin-top: 0.75rem;">
     <table class="lco-table" id="windows-table" style="display: none;">
-      <thead><tr><th><input type="checkbox" id="win-all" checked></th><th>Epoch</th><th>Start (UTC)</th><th>Mid (UTC)</th><th>Mid unc</th><th>End (UTC)</th><th>Transit obs</th><th>Visibility</th></tr></thead>
+      <thead><tr><th><input type="checkbox" id="win-all" checked></th><th>Epoch</th><th>Start (UTC)</th><th>Mid (UTC)</th><th>Mid unc</th><th>End (UTC)</th><th>Transit obs</th><th>Rank</th><th>Gain</th><th>Visibility</th></tr></thead>
       <tbody id="windows-body"></tbody>
     </table>
   </div>
@@ -481,7 +486,7 @@
     'sch-obs-airmass','sch-moon-sep','sch-max-lunar-phase','sch-ipp','sch-test-budget'
   ];
 
-  var CHECK_IDS = ['sch-include-padding'];
+  var CHECK_IDS = ['sch-include-padding', 'sch-rank'];
 
   // Every value that contributes to /api/lco/windows. Editing any of these
   // invalidates the rendered prediction; win-filter is deliberately absent
@@ -490,7 +495,7 @@
     'sch-target','sch-planet','sch-source','sch-coords',
     'sch-range-start','sch-range-end','sch-t0','sch-period','sch-duration',
     'sch-pad-before','sch-pad-after','sch-include-padding',
-    'sch-sites','sch-twilight','sch-obs-airmass','sch-moon-sep','sch-max-lunar-phase'
+    'sch-sites','sch-twilight','sch-obs-airmass','sch-moon-sep','sch-max-lunar-phase','sch-rank'
   ];
 
   // Site chosen for the Transit obs column; '' (All sites) => full LCO network.
@@ -1275,6 +1280,8 @@
       tr.innerHTML = '<td><input type="checkbox" data-i="' + i + '"' + (checked ? ' checked' : '') + '></td>' +
         '<td>' + w.epoch + '</td><td>' + fmtWindowTime(w.start) + '</td><td>' + fmtWindowTime(w.mid) + '</td><td>' + uncText + '</td><td>' + fmtWindowTime(w.end) + '</td>' +
         '<td>' + obsCellHtml(o) + '</td>' +
+        '<td>' + (w.rank ? '<strong>' + w.rank + '</strong>' : '-') + '</td>' +
+        '<td>' + (typeof w.gain_ttv === 'number' ? w.gain_ttv.toFixed(2) : '-') + '</td>' +
         '<td><a href="#" class="vis-link" data-i="' + i + '" title="Show the astropy visibility plot for this transit below the table">show plot</a></td>';
       tb.appendChild(tr);
     });
@@ -1796,6 +1803,7 @@
       moon_sep_min: num('sch-moon-sep') || 0,
       max_lunar_phase: num('sch-max-lunar-phase') || 1.0,
       include_padding: chk('sch-include-padding'),
+      rank: isTtv && chk('sch-rank'), rank_by: 'ttv',
       sites: selectedSites()
     };
     fetch('/api/lco/windows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -1806,8 +1814,12 @@
         renderWindows();
         saveScheduleState();
         var nObs = lastWindows.filter(function (w) { return w.observability && w.observability.rating !== 'none'; }).length;
-        var extra = d.obs_error ? ' — obs: ' + d.obs_error : (lastWindows.length ? ' — ' + nObs + ' observable' : '');
-        msg('msg-windows', lastWindows.length + ' windows (t0=' + d.t0 + ', P=' + d.period + ' d)' + extra, 'ok');
+        var extra = d.obs_error ? ', obs: ' + d.obs_error : (lastWindows.length ? ', ' + nObs + ' observable' : '');
+        if (d.rank_error) extra += ', ranking unavailable: ' + d.rank_error;
+        else if (d.rank_by) extra += ', ranked by ' + d.rank_by + ' info gain';
+        var provenance = d.ttv_run ? 'TTV model: ' + d.ttv_run
+                                   : 't0=' + d.t0 + ', P=' + d.period + ' d';
+        msg('msg-windows', lastWindows.length + ' windows (' + provenance + ')' + extra, 'ok');
       }).catch(function (e) { clearWindows(); msg('msg-windows', String(e), 'err'); });
   });
 
