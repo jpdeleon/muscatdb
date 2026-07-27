@@ -27,6 +27,19 @@ from harmonic.predict import scan_transits
 _RANK_COLS = ("sigma", "gain_total", "gain_ttv", "greedy_rank", "greedy_gain")
 
 
+def _planet_key(key: str) -> str:
+    """Planet letter for one ``[T14]`` entry, accepting either spelling.
+
+    ``scan_transits`` indexes its duration mapping by bare planet letter, but the
+    two writers disagree: muscat-db's ephemeris page emits ``t14_b = ...`` while
+    harmonic's own configs use ``b = ...``. Passing the prefixed form straight
+    through raises ``KeyError`` on every run this application has written, so the
+    prefix is stripped here rather than relying on the caller's config style.
+    """
+    key = key.strip().lower()
+    return key[4:] if key.startswith("t14_") else key
+
+
 def evaluate(run_dir: Path, window: list[str], rank_by: str) -> dict:
     config = json.loads((run_dir / "fit_config.json").read_text())
     ttv = Harmonic(
@@ -43,7 +56,7 @@ def evaluate(run_dir: Path, window: list[str], rank_by: str) -> dict:
     parser.read(run_dir / "config.ini")
     if "T14" not in parser:
         raise ValueError("config.ini has no [T14] section, required to predict transits")
-    t14s = {key: float(value) for key, value in parser["T14"].items()}
+    t14s = {_planet_key(key): float(value) for key, value in parser["T14"].items()}
 
     t_offset = float(config.get("t_offset") or 0.0)
     transits = scan_transits(
