@@ -583,6 +583,13 @@ def _rewrite_link(
         if target != path.strip("/"):
             return prefix + target.rstrip("/") + "/"
 
+    # The bare root "/" always resolves to the site root (the guide landing
+    # page), regardless of which route_map entry claims it.  In the published
+    # tree the guide lives at the root and the app's own landing page is in
+    # targets/; a brand link or "Back" link must not silently redirect there.
+    if path == "/":
+        return prefix or "./"
+
     # Known page routes → their generated example/detail directory.
     if key in route_map:
         target = route_map[key]
