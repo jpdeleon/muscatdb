@@ -12,6 +12,7 @@ the same trust check as HTTP requests. It is the sole basis for message
 attribution and for edit/delete/react authorization — the client cannot forge
 who it is.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -33,8 +34,8 @@ logger = logging.getLogger(__name__)
 # ----- limits & tokens -----------------------------------------------------
 _MAX_TEXT_LEN = 2000
 _MAX_EMOJI_LEN = 16
-_RATE_MAX = 12           # messages ...
-_RATE_WINDOW_S = 10.0    # ... per this many seconds, per connection
+_RATE_MAX = 12  # messages ...
+_RATE_WINDOW_S = 10.0  # ... per this many seconds, per connection
 # @-tokens that are commands or noise, never real usernames to notify. The
 # codebase assistant's name is reserved too: @bot triggers the agent (below) and
 # must never be resolved as a person to nudge.
@@ -48,7 +49,7 @@ _BROADCAST_MENTION_RE = re.compile(r"(?<![\w@])@(?:all|everyone|channel)\b", re.
 # ----- live (in-memory) connection state -----------------------------------
 # Single-worker deployment: these live in one process. A multi-worker/multi-host
 # rollout would move presence + fan-out to the socket.io Redis manager.
-_users_by_sid: dict[str, str | None] = {}   # sid -> username (None = anonymous)
+_users_by_sid: dict[str, str | None] = {}  # sid -> username (None = anonymous)
 _rate: dict[str, deque] = {}
 _LOOP: asyncio.AbstractEventLoop | None = None
 _known_cache: dict = {"ts": 0.0, "map": {}}
@@ -59,6 +60,19 @@ def set_event_loop(loop: asyncio.AbstractEventLoop) -> None:
     can schedule broadcasts onto it."""
     global _LOOP
     _LOOP = loop
+
+
+def _clear_loop() -> None:
+    global _LOOP
+    _LOOP = None
+
+
+def _valid_loop() -> asyncio.AbstractEventLoop | None:
+    """Return ``_LOOP`` if it is still open, otherwise clear the stale ref."""
+    global _LOOP
+    if _LOOP is not None and _LOOP.is_closed():
+        _LOOP = None
+    return _LOOP
 
 
 # ----- helpers -------------------------------------------------------------
@@ -215,28 +229,50 @@ async def message(sid, data):
     # @test → ephemeral: broadcast live, never persisted, not editable.
     if _TEST_PREFIX_RE.match(text):
         body = _TEST_PREFIX_RE.sub("", text, count=1) or "(test message)"
-        await sio.emit("message", {
-            "id": None, "user": display, "text": body, "kind": "ephemeral",
-            "ephemeral": True, "ts": time.time(), "sid": sid,
-            "mentions": [], "reactions": [], "edited": False,
-        })
+        await sio.emit(
+            "message",
+            {
+                "id": None,
+                "user": display,
+                "text": body,
+                "kind": "ephemeral",
+                "ephemeral": True,
+                "ts": time.time(),
+                "sid": sid,
+                "mentions": [],
+                "reactions": [],
+                "edited": False,
+            },
+        )
         return
 
     # @bot → private exchange: neither the question nor the reply is persisted or
     # broadcast; both are delivered only to the asker (all their tabs + pop-out).
     if chat_agent.addressed(text):
-        await sio.emit("message", {
-            "id": None, "user": display, "text": text, "kind": "user",
-            "ephemeral": False, "private": True, "ts": time.time(), "sid": sid,
-            "mentions": [], "reactions": [], "edited": False,
-        }, **_private_target(user, sid))
+        await sio.emit(
+            "message",
+            {
+                "id": None,
+                "user": display,
+                "text": text,
+                "kind": "user",
+                "ephemeral": False,
+                "private": True,
+                "ts": time.time(),
+                "sid": sid,
+                "mentions": [],
+                "reactions": [],
+                "edited": False,
+            },
+            **_private_target(user, sid),
+        )
         _spawn_agent(sid, user, chat_agent.extract_question(text))
         return
 
     # /me <action> → IRC-style status line, attributed and broadcast.
     m = _ME_PREFIX_RE.match(text)
     if m:
-        action = text[m.end():].strip()
+        action = text[m.end() :].strip()
         if not action:
             return
         mentions = _parse_mentions(action)
@@ -399,7 +435,7 @@ def _agent_ctx_clear(key: str) -> None:
 def _spawn_agent(sid: str, user: str | None, question: str) -> None:
     """Answer in the background so the message handler returns at once (the model
     call can take many seconds)."""
-    if _LOOP is None:  # no running loop captured yet; nothing to schedule onto
+    if _valid_loop() is None:  # no running loop captured yet; nothing to schedule onto
         return
     task = asyncio.create_task(_run_agent(sid, user, question))
     _agent_tasks.add(task)
@@ -412,10 +448,17 @@ def _private_agent_payload(text: str) -> dict:
     attaches no edit/delete/react controls; ``private`` drives the 'only you'
     badge."""
     return {
-        "id": None, "user": chat_agent.DISPLAY_NAME, "text": text,
-        "kind": "agent", "ephemeral": False, "private": True,
-        "ts": time.time(), "sid": None,
-        "mentions": [], "reactions": [], "edited": False,
+        "id": None,
+        "user": chat_agent.DISPLAY_NAME,
+        "text": text,
+        "kind": "agent",
+        "ephemeral": False,
+        "private": True,
+        "ts": time.time(),
+        "sid": None,
+        "mentions": [],
+        "reactions": [],
+        "edited": False,
     }
 
 
@@ -436,8 +479,8 @@ async def _run_agent(sid: str, user: str | None, question: str) -> None:
         intro = (
             f"Hi! I'm @{chat_agent.AGENT_NAME}, the muscat-db codebase assistant. "
             "This chat is private to you — nobody else sees it. Ask me things like "
-            f"\"@{chat_agent.AGENT_NAME} how does the photometry job lifecycle work?\" "
-            f"(\"@{chat_agent.AGENT_NAME} /reset\" starts a fresh conversation.)"
+            f'"@{chat_agent.AGENT_NAME} how does the photometry job lifecycle work?" '
+            f'("@{chat_agent.AGENT_NAME} /reset" starts a fresh conversation.)'
         )
         await sio.emit("message", _private_agent_payload(intro), **target)
         return
@@ -493,14 +536,25 @@ def _job_user_name(job_key: str) -> str | None:
         return None
 
 
-def on_job_finished(job_key: str, type_: str = "", target: str = "", inst: str = "",
-                    date: str = "", state: str = "", **_) -> None:
+def on_job_finished(
+    job_key: str,
+    type_: str = "",
+    target: str = "",
+    inst: str = "",
+    date: str = "",
+    state: str = "",
+    **_,
+) -> None:
     """jobs.fire_job_finished hook (runs in the job-sync thread). Persists a
     system message scoped to the job's owner and schedules its delivery."""
-    label = {"photometry": "Photometry", "transit_fit": "Transit fit", "archive": "LCO download"}.get(type_, type_ or "Job")
+    label = {
+        "photometry": "Photometry",
+        "transit_fit": "Transit fit",
+        "archive": "LCO download",
+    }.get(type_, type_ or "Job")
     verb = {"done": "finished", "error": "failed", "cancelled": "was cancelled"}.get(state, state)
     where = " ".join(p for p in (inst, date) if p)
-    target_link = f"http://localhost:8000/target?name={urllib.parse.quote(target)}" if target else ""
+    target_link = f"/target?name={urllib.parse.quote(target)}" if target else ""
     parts = [f"{label} for {target}" if target else label, f"({where})" if where else "", verb]
     text = " ".join(p for p in parts if p)
     if target_link:
@@ -511,15 +565,14 @@ def on_job_finished(job_key: str, type_: str = "", target: str = "", inst: str =
     except Exception:
         logger.exception("failed to persist job-finished chat message")
         return
-    if _LOOP is None:
+    loop = _valid_loop()
+    if loop is None:
         return
     payload = {**msg, "sid": None}
     if owner:
-        asyncio.run_coroutine_threadsafe(
-            sio.emit("message", payload, room=f"user:{owner}"), _LOOP
-        )
+        asyncio.run_coroutine_threadsafe(sio.emit("message", payload, room=f"user:{owner}"), loop)
     else:
-        asyncio.run_coroutine_threadsafe(sio.emit("message", payload), _LOOP)
+        asyncio.run_coroutine_threadsafe(sio.emit("message", payload), loop)
 
 
 # Register once at import so both pipelines' sync loops notify chat.
