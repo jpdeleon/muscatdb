@@ -119,8 +119,36 @@ The **linchpin assumption** for multi-host workers: `/ut2` and everything under 
 ### Verified accessible on workers
 - Conda environments: `$HOME/miniconda3/envs/prose`, `$HOME/miniconda3/envs/timer`, `$HOME/miniconda3/envs/harmonic`
 - External tools: `$HOME/github/research/project/ext_tools/{prose2,timer,harmonic}`
+  (see [Engine checkouts](#engine-checkouts) for the remote each must track)
 - Repo: `$HOME/github/research/project/muscat-db/`
 - Database: `$HOME/github/research/project/muscat-db/muscat.db` (**3,066,445,824 bytes** — same size on ut2, ut3, ut4, ut6)
+
+### Engine checkouts
+
+Each pipeline engine must track its owner's repository. Forks exist, so a checkout
+pointing somewhere else is not obvious from the directory name alone:
+
+| Engine | Required remote |
+|---|---|
+| prose2 | `github.com/jpdeleon/prose2` |
+| timer | `github.com/john-livingston/timer` |
+| harmonic | `github.com/john-livingston/harmonic` |
+
+Verify before trusting a pipeline result, since a fork can be behind upstream or
+carry a patch that exists in no release:
+
+```bash
+for e in prose2 timer harmonic; do
+  d="$HOME/github/research/project/ext_tools/$e"
+  printf '%-9s %s @ %s\n' "$e" "$(git -C "$d" remote get-url origin)" "$(git -C "$d" rev-parse --short HEAD)"
+  git -C "$d" status --short | head -3
+done
+```
+
+A dirty working tree here is a defect, not a convenience. An engine patched only on
+this host is reverted by the next `git pull`, and until then both repositories behave
+differently from their source. Commit and push the fix, or revert it and adapt
+muscat-db instead. `AGENTS.md` has the rule for deciding which.
 
 ### Cross-mounted raids
 Three NFS servers auto-mount each other's storage:
