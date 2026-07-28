@@ -9,6 +9,13 @@ backend, database, or conda stack.
 
 Design notes
 ------------
+* **The guide is the site root.** This tree is published as the project's
+  documentation, so a visitor lands on the written pipeline guide, not on the
+  application's target table. The app's landing page keeps its own directory
+  (``targets/``). The masthead resolves to the site root rather than following
+  the route map there, so ``targets/`` is currently published but unlinked until
+  the navbar gains its own Targets entry. The UI capture below is then
+  what it has always been: a tour reached from the documentation.
 * **Representative subset, not a full mirror.** All navigation pages plus a few
   example detail / drill-down pages (chosen from what actually has data and
   figures on disk). This keeps the published site small while still documenting
@@ -47,6 +54,11 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 # table.  Keeps large listing pages (targets, obslog, TOI) small and fast while
 # still illustrating every table's structure and column layout.
 _TABLE_ROW_LIMIT = 10
+
+# The published tree is documentation first, so the guide is served at the site
+# root and the application's landing page moves into its own directory.
+_LANDING_ROUTE = "/guide"
+_APP_HOME_SITEDIR = "targets"
 
 # Pages captured with no query parameters. Order controls nothing here; the
 # navbar defines the visible order. The three parametric parents
@@ -159,9 +171,15 @@ def _banner_html(dismissible: bool = True) -> str:
     )
 
 
-def _inject_banner(html: str) -> str:
-    """Insert the banner immediately after the opening ``<body>`` tag."""
-    if _BANNER_MARKER in html:
+def _inject_banner(html: str, sitedir: str) -> str:
+    """Insert the banner immediately after the opening ``<body>`` tag.
+
+    The landing page is skipped. It is the written guide, which documents the
+    pipeline rather than displaying live data, so warning that live data is
+    disabled there is answering a question the page never raises. Every UI page
+    reached from it still carries the banner, which is where the caveat lands.
+    """
+    if not sitedir or _BANNER_MARKER in html:
         return html
     m = re.search(r"<body[^>]*>", html, re.I)
     if not m:
@@ -215,13 +233,22 @@ def _inject_no_live_data(html: str, sitedir: str) -> str:
 def _url_to_sitedir(path: str, query: str = "") -> str:
     """Map a captured URL to its output directory (relative, no leading slash).
 
-    ``/`` → ``""`` (site root), ``/logs`` → ``logs``,
+    ``/guide`` → ``""`` (site root), ``/`` → ``targets``, ``/logs`` → ``logs``,
     ``/muscat/231201/ccd0`` → ``muscat/231201/ccd0``,
     ``/target?name=X`` → ``target/<slug>``,
     ``/photometry?inst=&date=&target=`` → ``photometry/<inst>/<date>/<slug>``.
+
+    The guide, not the application's own landing page, is the site root: this
+    tree is published as the project's documentation, so a visitor should arrive
+    at the written guide rather than at a table of observation targets they
+    cannot query. The app's landing page keeps its own directory. Every internal
+    link is rewritten through ``route_map`` and every page's ``../`` prefix is
+    derived from its output directory, so both moves propagate on their own.
     """
     p = path.strip("/")
     if not p:
+        return _APP_HOME_SITEDIR
+    if p == _LANDING_ROUTE.strip("/"):
         return ""
     qs = parse_qs(query)
     if p == "target":
@@ -558,10 +585,23 @@ def _rewrite_link(
         if target != path.strip("/"):
             return prefix + target.rstrip("/") + "/"
 
+    # The bare root "/" always resolves to the site root (the guide landing
+    # page), regardless of which route_map entry claims it.  In the published
+    # tree the guide lives at the root and the app's own landing page is in
+    # targets/; a brand link or "Back" link must not silently redirect there.
+    if path == "/":
+        return prefix or "./"
+
     # Known page routes → their generated example/detail directory.
     if key in route_map:
         target = route_map[key]
-        return prefix + (target + "/" if target else "")
+        if target:
+            return prefix + target + "/"
+        # The route lives at the site root. From the root page itself the
+        # relative path to the root is empty, and an empty href resolves to the
+        # current document only by RFC 3986 convention, which link checkers flag
+        # and which is easy to misread as an unset link. Emit "./" instead.
+        return prefix or "./"
 
     # Any other internal absolute link: keep it inside the site tree (it may be
     # an out-of-snapshot detail page and simply 404 locally, which is preferable
@@ -703,7 +743,7 @@ def _rewrite_html(
     )
     html = pattern.sub(repl, html)
     html = _truncate_tables(html)
-    html = _inject_banner(html)
+    html = _inject_banner(html, sitedir)
     return _inject_no_live_data(html, sitedir)
 
 

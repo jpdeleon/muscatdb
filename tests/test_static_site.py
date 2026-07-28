@@ -158,10 +158,72 @@ def test_static_cache_buster_stripped_and_depth_relative(tiny_db, tmp_path):
     assert "../static/styles.css" in logs_html
 
 
-def test_snapshot_banner_injected(tiny_db, tmp_path):
+def test_snapshot_banner_on_ui_pages_but_not_the_landing_guide(tiny_db, tmp_path):
     out = tmp_path / "site"
     build_site(out, db_path=tiny_db, n_examples=1, include_figures=False, log=lambda _m: None)
-    assert "snapshot-banner" in _read(out / "index.html")
+    # Every captured UI page still warns that it is a frozen snapshot ...
+    assert "snapshot-banner" in _read(out / "logs" / "index.html")
+    assert "snapshot-banner" in _read(out / "targets" / "index.html")
+    # ... but the landing page is the written guide, which documents the
+    # pipeline rather than showing live data, so the caveat does not apply.
+    assert "snapshot-banner" not in _read(out / "index.html")
+
+
+def test_guide_is_the_site_root_and_app_home_moves(tiny_db, tmp_path):
+    """The published tree is documentation, so ``/guide`` is served at the root
+    and the app's own landing page keeps its own directory."""
+    out = tmp_path / "site"
+    build_site(out, db_path=tiny_db, n_examples=1, include_figures=False, log=lambda _m: None)
+
+    root = _read(out / "index.html")
+    assert "<title>Pipeline Guide" in root
+    # The app landing page is still published, one click away.
+    assert "<title>Targets" in _read(out / "targets" / "index.html")
+    # ``guide/`` must not also exist, or the two would drift apart.
+    assert not (out / "guide" / "index.html").exists()
+
+
+def test_navbar_links_resolve_after_the_root_swap(tiny_db, tmp_path):
+    """A bare "/" resolves to the site root at whatever depth the page sits.
+
+    The masthead posts ``href="/"``, and on a documentation site that has to mean
+    the landing page. It must not follow the route map into ``targets/``, which is
+    where the application's own landing page now lives.
+    """
+    out = tmp_path / "site"
+    build_site(out, db_path=tiny_db, n_examples=1, include_figures=False, log=lambda _m: None)
+
+    logs = _read(out / "logs" / "index.html")
+    assert 'href="../"' in logs, "site root unreachable from a nested page"
+    assert 'href="../targets/"' not in logs, "masthead redirects into the app's target table"
+    assert 'href="../logs/"' in logs or 'href="./"' in logs
+
+    root = _read(out / "index.html")
+    assert 'href="logs/"' in root
+    # On the root page the relative path to the root is empty, which browsers
+    # resolve as the current document only by convention. Emit "./" instead.
+    assert 'href="./"' in root
+    assert 'href=""' not in root
+
+
+def test_app_landing_page_is_published_but_currently_unlinked(tiny_db, tmp_path):
+    """Records a known gap rather than letting it pass silently.
+
+    The masthead was the only link to the application's landing page, so routing
+    it to the site root leaves ``targets/`` built and reachable by URL but absent
+    from every page's navigation. Closing that needs a Targets entry in the navbar
+    (muscat-team/muscatdb#40). When it lands this assertion should flip.
+    """
+    out = tmp_path / "site"
+    build_site(out, db_path=tiny_db, n_examples=1, include_figures=False, log=lambda _m: None)
+
+    assert (out / "targets" / "index.html").is_file(), "app landing page should still be published"
+    linking = [
+        page.relative_to(out).as_posix()
+        for page in out.rglob("index.html")
+        if 'href="targets/"' in _read(page) or 'href="../targets/"' in _read(page)
+    ]
+    assert linking == [], f"targets/ is linked again, update #40 and this test: {linking}"
 
 
 def test_no_live_data_notice_only_on_live_api_pages(tiny_db, tmp_path):
