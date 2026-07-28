@@ -28,6 +28,14 @@
 * do not duplicate functions between muscat-db and prose2. all photometry functions should live in prose2.
 * do not use /tmp. use $HOME/temp
 
+## external engines (prose2, timer, harmonic)
+* upstream is the owner's repo: prose2 = jpdeleon, timer and harmonic = john-livingston. never fork an engine you do not own in order to carry a local patch
+* when an engine blocks you, fix muscat-db so it is unblocked, then open an issue on the engine with a reproduction. leave the engine's own fix to its owner
+* the exception is a change you would want even if muscat-db did not exist, e.g. an undocumented contract or an unhelpful error. that is a genuine upstream fix and is still the owner's to make
+* widening an engine's behaviour so it tolerates something only muscat-db does is always the wrong fix. adapt muscat-db instead
+* never leave an engine patched only on the deploy host. an uncommitted fix there is reverted by the next git pull, and both repos then behave differently from their source
+* when an engine is updated on the host, record the remote and commit in docs/DEPLOYMENT.md so a fork checkout is detectable
+
 ## frontend and GUI
 * GUI settings should be consistent with the arguments in run_photometry.py
 * maintian design consistency across all pages based on styles.css
