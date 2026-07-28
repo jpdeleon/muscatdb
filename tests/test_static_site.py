@@ -184,21 +184,46 @@ def test_guide_is_the_site_root_and_app_home_moves(tiny_db, tmp_path):
 
 
 def test_navbar_links_resolve_after_the_root_swap(tiny_db, tmp_path):
-    """Both moved routes are reachable from a nested page at the right depth."""
+    """A bare "/" resolves to the site root at whatever depth the page sits.
+
+    The masthead posts ``href="/"``, and on a documentation site that has to mean
+    the landing page. It must not follow the route map into ``targets/``, which is
+    where the application's own landing page now lives.
+    """
     out = tmp_path / "site"
     build_site(out, db_path=tiny_db, n_examples=1, include_figures=False, log=lambda _m: None)
 
     logs = _read(out / "logs" / "index.html")
-    assert 'href="../"' in logs, "guide (site root) unreachable from a nested page"
-    assert 'href="../targets/"' in logs, "app home unreachable from a nested page"
+    assert 'href="../"' in logs, "site root unreachable from a nested page"
+    assert 'href="../targets/"' not in logs, "masthead redirects into the app's target table"
+    assert 'href="../logs/"' in logs or 'href="./"' in logs
 
     root = _read(out / "index.html")
-    assert 'href="targets/"' in root
     assert 'href="logs/"' in root
-    # The guide's own navbar entry, on the guide page, must be an explicit
-    # self-link rather than the empty href the bare prefix would produce.
+    # On the root page the relative path to the root is empty, which browsers
+    # resolve as the current document only by convention. Emit "./" instead.
     assert 'href="./"' in root
     assert 'href=""' not in root
+
+
+def test_app_landing_page_is_published_but_currently_unlinked(tiny_db, tmp_path):
+    """Records a known gap rather than letting it pass silently.
+
+    The masthead was the only link to the application's landing page, so routing
+    it to the site root leaves ``targets/`` built and reachable by URL but absent
+    from every page's navigation. Closing that needs a Targets entry in the navbar
+    (muscat-team/muscatdb#40). When it lands this assertion should flip.
+    """
+    out = tmp_path / "site"
+    build_site(out, db_path=tiny_db, n_examples=1, include_figures=False, log=lambda _m: None)
+
+    assert (out / "targets" / "index.html").is_file(), "app landing page should still be published"
+    linking = [
+        page.relative_to(out).as_posix()
+        for page in out.rglob("index.html")
+        if 'href="targets/"' in _read(page) or 'href="../targets/"' in _read(page)
+    ]
+    assert linking == [], f"targets/ is linked again, update #40 and this test: {linking}"
 
 
 def test_no_live_data_notice_only_on_live_api_pages(tiny_db, tmp_path):

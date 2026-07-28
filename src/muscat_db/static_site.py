@@ -12,7 +12,9 @@ Design notes
 * **The guide is the site root.** This tree is published as the project's
   documentation, so a visitor lands on the written pipeline guide, not on the
   application's target table. The app's landing page keeps its own directory
-  (``targets/``) and stays one navbar click away. The UI capture below is then
+  (``targets/``). The masthead resolves to the site root rather than following
+  the route map there, so ``targets/`` is currently published but unlinked until
+  the navbar gains its own Targets entry. The UI capture below is then
   what it has always been: a tour reached from the documentation.
 * **Representative subset, not a full mirror.** All navigation pages plus a few
   example detail / drill-down pages (chosen from what actually has data and

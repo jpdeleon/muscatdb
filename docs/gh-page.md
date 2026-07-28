@@ -12,7 +12,7 @@ stack. The UI pages document *what the UI looks like*, not a live instance.
 ## Design decisions
 
 - **The guide is the landing page.** `/guide` is written to the site root and the
-  app's own landing page moves to `targets/`, one navbar click away. A visitor
+  app's own landing page moves to `targets/`. A visitor
   arriving at the Pages URL is reading documentation, not looking at a table of
   observation targets they cannot query. Every internal link is rewritten through
   the route map and every page's `../` prefix is derived from its output
