@@ -18,6 +18,7 @@ import asyncio
 import logging
 import os
 import re
+import urllib.parse
 import time
 from collections import deque
 
@@ -496,10 +497,14 @@ def on_job_finished(job_key: str, type_: str = "", target: str = "", inst: str =
                     date: str = "", state: str = "", **_) -> None:
     """jobs.fire_job_finished hook (runs in the job-sync thread). Persists a
     system message scoped to the job's owner and schedules its delivery."""
-    label = {"photometry": "Photometry", "transit_fit": "Transit fit"}.get(type_, type_ or "Job")
+    label = {"photometry": "Photometry", "transit_fit": "Transit fit", "archive": "LCO download"}.get(type_, type_ or "Job")
     verb = {"done": "finished", "error": "failed", "cancelled": "was cancelled"}.get(state, state)
     where = " ".join(p for p in (inst, date) if p)
-    text = f"{label} for {target} ({where}) {verb}".strip()
+    target_link = f"http://localhost:8000/target?name={urllib.parse.quote(target)}" if target else ""
+    parts = [f"{label} for {target}" if target else label, f"({where})" if where else "", verb]
+    text = " ".join(p for p in parts if p)
+    if target_link:
+        text += f" {target_link}"
     owner = _job_user_name(job_key)
     try:
         msg = db.save_chat_message("system", text, kind="system", visible_to=owner)
