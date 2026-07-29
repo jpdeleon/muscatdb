@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -22,6 +23,7 @@ def chat_db(monkeypatch, tmp_path):
     monkeypatch.setenv("MUSCAT_DB_PATH", path)
     # Force per-path schema ensure to run against this fresh file.
     import muscat_db.database as db
+
     db._chat_migrated_paths.discard(path)
     return path
 
@@ -78,7 +80,7 @@ def test_toggle_reaction_add_and_remove(chat_db):
     assert r["reactions"][0]["count"] == 1
     r = toggle_chat_reaction(m["id"], "bob", "👍")
     assert r["reactions"][0]["count"] == 2
-    r = toggle_chat_reaction(m["id"], "alice", "👍")   # toggle off
+    r = toggle_chat_reaction(m["id"], "alice", "👍")  # toggle off
     assert r["reactions"][0]["count"] == 1
     assert r["reactions"][0]["users"] == ["bob"]
 
@@ -111,7 +113,8 @@ def test_test_prefix_matches_ephemeral():
 
 def test_parse_mentions_resolves_known_and_skips_reserved(monkeypatch):
     monkeypatch.setattr(
-        chat, "_known_cache",
+        chat,
+        "_known_cache",
         {"ts": time.time() + 9999, "map": {"alice": "alice", "bob": "Bob"}},
     )
     found = chat._parse_mentions("hey @alice and @Bob, ignore @here @test @nobody")
@@ -184,9 +187,7 @@ def test_connect_allows_anonymous_when_auth_not_required(monkeypatch):
     emitted = []
     monkeypatch.setattr(chat.sio, "save_session", _async_noop)
     monkeypatch.setattr(chat.sio, "enter_room", _async_noop)
-    monkeypatch.setattr(
-        chat.sio, "emit", lambda *a, **k: _record_async(emitted, *a, **k)
-    )
+    monkeypatch.setattr(chat.sio, "emit", lambda *a, **k: _record_async(emitted, *a, **k))
     env = {"asgi.scope": {"client": ("127.0.0.1", 5)}}
     asyncio.run(chat.connect("sid-open", env))
     assert any(event == "history" for event, *_ in emitted)
@@ -213,14 +214,33 @@ def test_on_job_finished_persists_system_message(chat_db, monkeypatch):
     monkeypatch.setattr(chat, "_LOOP", None)  # no event loop -> skip emit, just persist
     chat.on_job_finished(
         job_key="photometry:muscat3/2026-07-18/TOI-1234",
-        type_="photometry", target="TOI-1234", inst="muscat3",
-        date="2026-07-18", state="done",
+        type_="photometry",
+        target="TOI-1234",
+        inst="muscat3",
+        date="2026-07-18",
+        state="done",
     )
     msgs = get_recent_chat_messages(days=7)
     assert len(msgs) == 1
     assert msgs[0]["kind"] == "system"
     assert "TOI-1234" in msgs[0]["text"]
     assert "finished" in msgs[0]["text"]
+    assert "/target?name=TOI-1234" in msgs[0]["text"]
+    assert "localhost" not in msgs[0]["text"]
+
+
+def test_set_event_loop_and_valid_loop():
+    loop = asyncio.new_event_loop()
+    try:
+        chat.set_event_loop(loop)
+        assert chat._LOOP is loop
+        assert chat._valid_loop() is loop
+        # Close the loop — _valid_loop should detect and clear the stale ref
+        loop.close()
+        assert chat._valid_loop() is None
+        assert chat._LOOP is None
+    finally:
+        chat._LOOP = None
 
 
 # --------------------------------------------------------------------------
@@ -237,9 +257,9 @@ def _clear_agent_ctx():
 def test_agent_ctx_roundtrips_user_and_assistant_turns():
     key = chat._ctx_key("alice", "sid1")
     assert chat._agent_ctx_get(key) == []
-    chat._agent_ctx_add(key,
-                        {"role": "user", "content": "alice: q1"},
-                        {"role": "assistant", "content": "a1"})
+    chat._agent_ctx_add(
+        key, {"role": "user", "content": "alice: q1"}, {"role": "assistant", "content": "a1"}
+    )
     turns = chat._agent_ctx_get(key)
     assert turns == [
         {"role": "user", "content": "alice: q1"},
@@ -250,9 +270,9 @@ def test_agent_ctx_roundtrips_user_and_assistant_turns():
 def test_agent_ctx_caps_at_history_turns():
     key = chat._ctx_key("alice", "sid1")
     for i in range(20):
-        chat._agent_ctx_add(key,
-                            {"role": "user", "content": f"q{i}"},
-                            {"role": "assistant", "content": f"a{i}"})
+        chat._agent_ctx_add(
+            key, {"role": "user", "content": f"q{i}"}, {"role": "assistant", "content": f"a{i}"}
+        )
     # The deque keeps only the most recent _AGENT_HISTORY_TURNS entries.
     assert len(chat._agent_ctx_get(key)) == chat._AGENT_HISTORY_TURNS
 
@@ -260,24 +280,26 @@ def test_agent_ctx_caps_at_history_turns():
 def test_agent_ctx_drops_after_idle_ttl(monkeypatch):
     monkeypatch.setenv("MUSCAT_AGENT_HISTORY_TTL_S", "600")
     key = chat._ctx_key("alice", "sid1")
-    chat._agent_ctx_add(key,
-                        {"role": "user", "content": "q"},
-                        {"role": "assistant", "content": "a"})
+    chat._agent_ctx_add(
+        key, {"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}
+    )
     # Age the last-activity stamp past the TTL; the next read resets it.
     _, turns = chat._agent_ctx[key]
     chat._agent_ctx[key] = (time.time() - 1000, turns)
     assert chat._agent_ctx_get(key) == []
-    assert key not in chat._agent_ctx   # auto-cleared
+    assert key not in chat._agent_ctx  # auto-cleared
 
 
 def test_agent_ctx_reset_clears_only_that_conversation():
     a = chat._ctx_key("alice", "s1")
     b = chat._ctx_key("bob", "s2")
     for k in (a, b):
-        chat._agent_ctx_add(k, {"role": "user", "content": "q"}, {"role": "assistant", "content": "a"})
+        chat._agent_ctx_add(
+            k, {"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}
+        )
     chat._agent_ctx_clear(a)
     assert chat._agent_ctx_get(a) == []
-    assert chat._agent_ctx_get(b) != []   # bob's private thread is untouched
+    assert chat._agent_ctx_get(b) != []  # bob's private thread is untouched
 
 
 def test_private_target_routes_to_user_room_or_sid():
@@ -289,37 +311,44 @@ def test_private_target_routes_to_user_room_or_sid():
 
 def test_private_agent_payload_is_unsaved_and_flagged():
     p = chat._private_agent_payload("hello")
-    assert p["id"] is None            # no edit/delete/react controls client-side
-    assert p["private"] is True       # drives the 'only you' badge
+    assert p["id"] is None  # no edit/delete/react controls client-side
+    assert p["private"] is True  # drives the 'only you' badge
     assert p["kind"] == "agent"
 
 
-@pytest.mark.parametrize("text, matches", [
-    ("/me observing TOI-1234", True),
-    ("  /ME waves", True),
-    ("/media query", False),          # word boundary: not the /me command
-    ("hi /me", False),                # only at the start of the message
-])
+@pytest.mark.parametrize(
+    "text, matches",
+    [
+        ("/me observing TOI-1234", True),
+        ("  /ME waves", True),
+        ("/media query", False),  # word boundary: not the /me command
+        ("hi /me", False),  # only at the start of the message
+    ],
+)
 def test_me_command_prefix(text, matches):
     assert bool(chat._ME_PREFIX_RE.match(text)) is matches
 
 
-@pytest.mark.parametrize("text, matches", [
-    ("heads up @everyone", True),
-    ("@all please check", True),
-    ("posting to @channel", True),
-    ("email me at a@everyone.com", False),   # not preceded by word/@ char
-    ("ping @allen", False),                  # word boundary: @allen is a name
-    ("no ping here", False),
-])
+@pytest.mark.parametrize(
+    "text, matches",
+    [
+        ("heads up @everyone", True),
+        ("@all please check", True),
+        ("posting to @channel", True),
+        ("email me at a@everyone.com", False),  # not preceded by word/@ char
+        ("ping @allen", False),  # word boundary: @allen is a name
+        ("no ping here", False),
+    ],
+)
 def test_broadcast_mention_detection(text, matches):
     assert bool(chat._BROADCAST_MENTION_RE.search(text)) is matches
 
 
 def test_online_usernames_excludes_anonymous(monkeypatch):
-    monkeypatch.setattr(chat, "_users_by_sid",
-                        {"s1": "alice", "s2": "alice", "s3": None, "s4": "bob"})
-    assert chat._online_usernames() == {"alice", "bob"}   # de-duped, no anonymous
+    monkeypatch.setattr(
+        chat, "_users_by_sid", {"s1": "alice", "s2": "alice", "s3": None, "s4": "bob"}
+    )
+    assert chat._online_usernames() == {"alice", "bob"}  # de-duped, no anonymous
 
 
 # --------------------------------------------------------------------------
@@ -367,7 +396,8 @@ def test_message_ignores_malformed_payloads(sio_harness, monkeypatch, payload):
 
     _as_user(monkeypatch, "alice")
     monkeypatch.setattr(
-        chat.db, "save_chat_message",
+        chat.db,
+        "save_chat_message",
         lambda *a, **k: pytest.fail("malformed payload must not be persisted"),
     )
     asyncio.run(chat.message("sid-1", payload))
@@ -380,8 +410,11 @@ def test_message_rate_limit_drops_the_burst(sio_harness, monkeypatch):
     _as_user(monkeypatch, "alice")
     saved = []
     monkeypatch.setattr(
-        chat.db, "save_chat_message",
-        lambda user, text, **k: saved.append(text) or {"id": len(saved), "user": user, "text": text},
+        chat.db,
+        "save_chat_message",
+        lambda user, text, **k: (
+            saved.append(text) or {"id": len(saved), "user": user, "text": text}
+        ),
     )
     for i in range(chat._RATE_MAX + 5):
         asyncio.run(chat.message("sid-1", {"text": f"m{i}"}))
@@ -394,7 +427,8 @@ def test_test_prefixed_message_is_ephemeral_and_never_persisted(sio_harness, mon
 
     _as_user(monkeypatch, "alice")
     monkeypatch.setattr(
-        chat.db, "save_chat_message",
+        chat.db,
+        "save_chat_message",
         lambda *a, **k: pytest.fail("an @test message must not be persisted"),
     )
     asyncio.run(chat.message("sid-1", {"text": "@test hello"}))
@@ -412,7 +446,8 @@ def test_message_notifies_each_mentioned_user(sio_harness, monkeypatch):
     _as_user(monkeypatch, "alice")
     monkeypatch.setattr(chat, "_known_users_map", lambda: {"bob": "bob", "carol": "carol"})
     monkeypatch.setattr(
-        chat.db, "save_chat_message",
+        chat.db,
+        "save_chat_message",
         lambda user, text, **k: {"id": 1, "user": user, "text": text},
     )
     asyncio.run(chat.message("sid-1", {"text": "@bob @carol look at this"}))
@@ -427,11 +462,13 @@ def test_edit_and_delete_require_an_identity(sio_harness, monkeypatch):
 
     _as_user(monkeypatch, None)
     monkeypatch.setattr(
-        chat.db, "edit_chat_message",
+        chat.db,
+        "edit_chat_message",
         lambda *a, **k: pytest.fail("anonymous edit must not reach the database"),
     )
     monkeypatch.setattr(
-        chat.db, "delete_chat_message",
+        chat.db,
+        "delete_chat_message",
         lambda *a, **k: pytest.fail("anonymous delete must not reach the database"),
     )
     asyncio.run(chat.edit_message("sid-1", {"id": 1, "text": "hi"}))
@@ -478,7 +515,8 @@ def test_reaction_requires_identity_and_valid_emoji(sio_harness, monkeypatch):
     import asyncio
 
     monkeypatch.setattr(
-        chat.db, "toggle_chat_reaction",
+        chat.db,
+        "toggle_chat_reaction",
         lambda *a, **k: pytest.fail("must not reach the database"),
     )
     _as_user(monkeypatch, None)

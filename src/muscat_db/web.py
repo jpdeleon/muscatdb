@@ -4295,7 +4295,7 @@ def api_lco_archive_download(request: Request, payload: dict = Body(...)):
         frames = payload.get("frames")
         if not isinstance(frames, list) or not frames:
             return JSONResponse({"ok": False, "error": "no frames selected"}, status_code=400)
-        if len(frames) > lco._ARCHIVE_DOWNLOAD_MAX_FRAMES:
+        if lco._ARCHIVE_DOWNLOAD_MAX_FRAMES > 0 and len(frames) > lco._ARCHIVE_DOWNLOAD_MAX_FRAMES:
             return JSONResponse(
                 {"ok": False, "error": f"At most {lco._ARCHIVE_DOWNLOAD_MAX_FRAMES} frames are allowed per download"},
                 status_code=413,
