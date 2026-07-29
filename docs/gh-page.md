@@ -120,8 +120,8 @@ pushed ref).
   optimize) is non-functional by design — shells + banner.
 - Detail pages outside the representative subset are inert links (resolve within
   the site tree, may 404 locally) rather than fully navigable.
-- The snapshot is regenerated on the host via `scripts/deploy_static_site.sh`; it
-  could later become a cron target alongside the daily `build-db`.
+- The snapshot is regenerated on the host via `scripts/deploy_static_site.sh`
+  and runs daily in `cronjob.txt` following `build-db`.
 
 ## Key files
 
