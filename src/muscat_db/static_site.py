@@ -585,17 +585,6 @@ def _rewrite_link(
         if target != path.strip("/"):
             return prefix + target.rstrip("/") + "/"
 
-    # Known page routes → their generated example/detail directory.
-    if key in route_map:
-        target = route_map[key]
-        if target:
-            return prefix + target + "/"
-        # The route lives at the site root. From the root page itself the
-        # relative path to the root is empty, and an empty href resolves to the
-        # current document only by RFC 3986 convention, which link checkers flag
-        # and which is easy to misread as an unset link. Emit "./" instead.
-        return prefix or "./"
-
     # The bare root "/" always resolves to the site root (the guide landing
     # page), regardless of which route_map entry claims it.  In the published
     # tree the guide lives at the root and the app's own landing page is in
