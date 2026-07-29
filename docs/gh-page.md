@@ -121,7 +121,7 @@ pushed ref).
 - Detail pages outside the representative subset are inert links (resolve within
   the site tree, may 404 locally) rather than fully navigable.
 - The snapshot is regenerated on the host via `scripts/deploy_static_site.sh`
-  and runs daily in `cronjob.txt` following `build-db`.
+  when releasing UI or documentation updates.
 
 ## Key files
 
