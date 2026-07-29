@@ -1,0 +1,60 @@
+name: Pages
+
+# Builds and deploys the static documentation snapshot directly in GitHub Actions.
+# Whenever main or test is updated, this workflow builds a snapshot using a
+# synthetic test database and publishes it to GitHub Pages.
+
+on:
+  push:
+    branches: [main, test]
+  workflow_dispatch:
+
+# Allow one concurrent deployment; let an in-progress run finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    name: Build & Deploy Static Site
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Sync dependencies
+        run: uv sync --dev
+
+      - name: Download catalog CSVs
+        run: bash scripts/download_catalogs.sh
+
+      - name: Build static site with tiny mock DB
+        run: |
+          uv run python -c "from tests.test_static_site import _build_tiny_db; _build_tiny_db('mock_muscat.db')"
+          uv run muscat-db build-static-site --out site --db mock_muscat.db --no-figures
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
