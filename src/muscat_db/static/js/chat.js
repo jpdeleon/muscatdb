@@ -85,7 +85,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const shortenUrl = (href) => {
         let label = href;
         try {
-            const u = new URL(href);
+            const u = new URL(href, window.location.origin);
             label = (u.origin === window.location.origin)
                 ? (u.pathname + u.search + u.hash) || "/"
                 : u.hostname + u.pathname;

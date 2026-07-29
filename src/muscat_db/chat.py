@@ -62,11 +62,6 @@ def set_event_loop(loop: asyncio.AbstractEventLoop) -> None:
     _LOOP = loop
 
 
-def _clear_loop() -> None:
-    global _LOOP
-    _LOOP = None
-
-
 def _valid_loop() -> asyncio.AbstractEventLoop | None:
     """Return ``_LOOP`` if it is still open, otherwise clear the stale ref."""
     global _LOOP
