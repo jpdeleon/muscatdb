@@ -579,11 +579,22 @@ def _rewrite_link(
     # link for a different target/dataset should resolve to its own static-tree
     # location (which may be outside the representative snapshot and 404) rather
     # than silently showing the wrong example.
+    # Query-bearing detail links: if the specific target directory exists in route_map,
+    # use it; otherwise fall back to the captured example for that parent route to avoid 404s.
     key = path.rstrip("/") or "/"
-    if split.query and key in _PARAM_PARENTS:
-        target = _url_to_sitedir(path, split.query)
-        if target != path.strip("/"):
-            return prefix + target.rstrip("/") + "/"
+    if key in route_map:
+        if split.query and key in _PARAM_PARENTS:
+            target = _url_to_sitedir(path, split.query)
+            if target in route_map.values():
+                return prefix + target.rstrip("/") + "/"
+            # Fall back to parent example directory in route_map
+            parent_target = route_map[key]
+            if parent_target:
+                return prefix + parent_target + "/"
+        target = route_map[key]
+        if target:
+            return prefix + target + "/"
+        return prefix or "./"
 
     # The bare root "/" always resolves to the site root (the guide landing
     # page), regardless of which route_map entry claims it.  In the published
