@@ -470,17 +470,17 @@
               </select>
             </div>
             <div class="opt">
-              <label for="opt-aper_radii">Aperture radii (min,max,dr) <span class="help-tooltip" title="Radius grid search parameters as min,max,dr (corresponds to --aper_radii). Required if annulus is set. Empty means use Gaia heuristic.">?</span></label>
+              <label for="opt-aper_radii">Aperture radii (min,max,dr) <span class="help-tooltip" title="Radius grid search parameters as min,max,dr (corresponds to --aper_radii). Empty means use Gaia heuristic.">?</span></label>
               <input type="text" id="opt-aper_radii" placeholder="e.g. 10,30,2" style="width: 100%;">
               <span class="hint" id="hint-aper_radii">blank → auto from Gaia (in pix)</span>
             </div>
             <div class="opt">
-              <label for="opt-annulus">Sky annulus (Rin,Rout) <span class="help-tooltip" title="Inner and outer radii of background sky subtraction annulus (corresponds to --annulus). Required if aperture radii is set.">?</span></label>
+              <label for="opt-annulus">Sky annulus (Rin,Rout) <span class="help-tooltip" title="Inner and outer radii of background sky subtraction annulus (corresponds to --annulus). Empty means auto.">?</span></label>
               <input type="text" id="opt-annulus" placeholder="e.g. 25,40" style="width: 100%;">
-              <span class="hint" id="hint-annulus">required with aperture radii (in pix)</span>
+              <span class="hint" id="hint-annulus">blank → auto (in pix)</span>
             </div>
             <div class="opt">
-              <label for="opt-cutout_size">Cutout size (pix) <span class="help-tooltip" title="Postage stamp cutout size around each star (corresponds to --cutout_size).">?</span></label>
+              <label for="opt-cutout_size">Cutout size (pix) <span class="help-tooltip" title="Postage stamp cutout size around each star (corresponds to --cutout_size). Automatically adjusted if sky annulus exceeds stamp dimensions.">?</span></label>
               <input type="number" id="opt-cutout_size" value="{{ run_defaults.cutout_size }}" min="1" style="width: 100%;">
             </div>
             <div class="opt">
@@ -895,12 +895,12 @@
       if (radiiEl) radiiEl.placeholder = 'e.g. 0.5,3.0,0.5';
       if (annulusEl) annulusEl.placeholder = 'e.g. 6,10';
       if (radiiHint) radiiHint.textContent = 'blank → auto from Gaia (always in pix); FWHM unit applies only to values you enter';
-      if (annulusHint) annulusHint.textContent = 'required with aperture radii (in FWHM)';
+      if (annulusHint) annulusHint.textContent = 'blank → auto (in FWHM)';
     } else {
       if (radiiEl) radiiEl.placeholder = 'e.g. 1.5,6.0,0.5';
       if (annulusEl) annulusEl.placeholder = 'e.g. 25,40';
       if (radiiHint) radiiHint.textContent = 'blank → auto from Gaia (in pix)';
-      if (annulusHint) annulusHint.textContent = 'required with aperture radii (in pix)';
+      if (annulusHint) annulusHint.textContent = 'blank → auto (in pix)';
     }
   }
 

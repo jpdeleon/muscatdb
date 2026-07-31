@@ -874,11 +874,22 @@ class TestRunOptions:
         )
         assert err and "required in custom mode" in err.lower()
 
-    def test_validate_aper_requires_annulus(self):
-        err = phot.validate_run_options(
-            phot.normalize_run_options({"aper_radii": "10,20,2"})
-        )
-        assert err and "annulus" in err
+    def test_validate_aper_without_annulus_is_valid(self):
+        opts = phot.normalize_run_options({"aper_radii": "10,20,2"})
+        err = phot.validate_run_options(opts)
+        assert err is None
+
+    def test_validate_annulus_without_aper_is_valid(self):
+        opts = phot.normalize_run_options({"annulus": "25,40"})
+        err = phot.validate_run_options(opts)
+        assert err is None
+        # Verify cutout_size is auto-adjusted for 40px outer radius (ceil(2 * 40 + 5) = 85)
+        assert opts["cutout_size"] == 85
+
+    def test_validate_fwhm_unit_requires_aper_radii(self):
+        opts = phot.normalize_run_options({"aper_unit": "fwhm"})
+        err = phot.validate_run_options(opts)
+        assert err and "fwhm" in err.lower() and "aperture radii" in err.lower()
 
     def test_validate_bad_aper_format(self):
         err = phot.validate_run_options(
@@ -1765,10 +1776,10 @@ class TestRoutes:
     def test_command_route_reports_validation_error(self, client):
         r = client.post("/api/photometry/command", json={
             "inst": INST, "date": DATE, "target": TARGET,
-            "options": {"aper_radii": "10,20,2"},  # missing annulus
+            "options": {"aper_unit": "fwhm"},  # missing aper_radii
         })
         assert r.status_code == 200
-        assert "annulus" in r.json()["error"]
+        assert "fwhm" in r.json()["error"].lower()
 
     def test_page_has_options_form(self, client):
         r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")
