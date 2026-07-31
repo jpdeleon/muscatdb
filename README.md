@@ -5,7 +5,7 @@
 #[![PyPI](https://img.shields.io/pypi/v/muscat-db)](https://pypi.org/project/muscatdb/)
 #[![Python](https://img.shields.io/pypi/pyversions/muscat-db)](https://pypi.org/project/muscatdb/)
 -->
-[![CI](https://github.com/muscat-team/muscatdb/actions/workflows/ci.yml/badge.svg)](https://github.com/muscat-team/muscatdb/actions/workflows/ci.yml)
+[![CI](https://github.com/muscat-team/muscatdb/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/muscat-team/muscatdb/actions/workflows/ci.yml)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/muscat-team/muscatdb)
 
 `muscat-db` is a web-based, closed-loop exoplanet observing and analysis workflow
