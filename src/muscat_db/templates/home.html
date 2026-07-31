@@ -1,0 +1,753 @@
+{% extends "base.html" %}
+{% block title %}Home — MuSCAT-db Analysis & Scheduling Pipeline{% endblock %}
+{% block content %}
+
+<!-- Hero Banner & Platform Overview -->
+<div class="home-hero">
+  <h1>MuSCAT + LCOGT Data Analysis &amp; Scheduling Pipeline</h1>
+  <p class="home-hero-desc">
+    Welcome to <strong>MuSCAT-db</strong>, the central astronomical data platform for target database, automated multi-color exoplanet photometry with <code>prose2</code>, transit fitting with <code>timer</code>, ephemeris and transit timing variation (TTV) analysis with <code>harmonic</code>, LCO observation window scheduling, and field-of-view optimization. For details, see the <a href="/guide">pipeline guide</a>.
+  </p>
+
+  <!-- Quick Access Tool Tiles -->
+  <div class="quick-nav-grid">
+    <a href="/targets" class="quick-nav-card">
+      <div class="quick-nav-header">
+        <div class="quick-nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="22" y1="12" x2="18" y2="12"/><line x1="6" y1="12" x2="2" y2="12"/><line x1="12" y1="6" x2="12" y2="2"/><line x1="12" y1="22" x2="12" y2="18"/></svg>
+        </div>
+        <span class="quick-nav-title">Target Catalog</span>
+      </div>
+      <div class="quick-nav-desc">Database cross-matched via SIMBAD and local archives with dataset counts.</div>
+    </a>
+
+    <a href="/photometry" class="quick-nav-card">
+      <div class="quick-nav-header">
+        <div class="quick-nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M14.31 8l5.74 9.94M9.69 8h11.48M7.38 12l5.74-9.94M9.69 16L3.95 6.06M14.31 16H2.83M16.62 12l-5.74 9.94"/></svg>
+        </div>
+        <span class="quick-nav-title">Photometry</span>
+      </div>
+      <div class="quick-nav-desc">Automated multi-band light curve reduction &amp; aperture extraction with <code>prose2</code>.</div>
+    </a>
+
+    <a href="/transit-fit" class="quick-nav-card">
+      <div class="quick-nav-header">
+        <div class="quick-nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 7h4.5l2.5 10h6l2.5-10H22"/></svg>
+        </div>
+        <span class="quick-nav-title">Transit Fitting</span>
+      </div>
+      <div class="quick-nav-desc">MCMC light curve transit parameter estimation powered by <code>timer</code>.</div>
+    </a>
+
+    <a href="/ephemeris" class="quick-nav-card">
+      <div class="quick-nav-header">
+        <div class="quick-nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        </div>
+        <span class="quick-nav-title">Ephemeris &amp; TTV</span>
+      </div>
+      <div class="quick-nav-desc">Transit Timing Variation modeling and ephemeris calculation with <code>harmonic</code>.</div>
+    </a>
+
+    <a href="/lco" class="quick-nav-card">
+      <div class="quick-nav-header">
+        <div class="quick-nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        </div>
+        <span class="quick-nav-title">LCOGT Schedule</span>
+      </div>
+      <div class="quick-nav-desc">Live visibility windows, proposal requests, and LCOGT telescope scheduling.</div>
+    </a>
+
+    <a href="/fov" class="quick-nav-card">
+      <div class="quick-nav-header">
+        <div class="quick-nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </div>
+        <span class="quick-nav-title">FOV Optimizer</span>
+      </div>
+      <div class="quick-nav-desc">Interactive field-of-view finder for target orientation &amp; comparison stars.</div>
+    </a>
+  </div>
+</div>
+
+<!-- Section: Global Telescope Network Status -->
+<div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;">
+  <h2 style="margin: 0; color: var(--text); font-size: 1.25rem; font-weight: 600;">Global Telescope Network Status</h2>
+  <div style="display: flex; align-items: center; gap: 1.25rem; font-size: 0.88rem;">
+    <a href="https://schedule.lco.global/" target="_blank" rel="noopener noreferrer" style="color: var(--accent); font-weight: 500; text-decoration: none; display: inline-flex; align-items: center; gap: 0.35rem;">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+      Live LCO Schedule
+    </a>
+    <span id="live-utc-clock" style="font-family: var(--font-mono, monospace); color: var(--accent); font-weight: 600; padding: 0.2rem 0.6rem; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px;"></span>
+  </div>
+</div>
+
+<div class="globe-weather-container" style="display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: 1.5rem; margin-bottom: 3rem; align-items: start;">
+  <!-- Left Column: Interactive 3D D3 Globe -->
+  <div class="card" style="padding: 1.25rem; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; text-align: center; position: relative;">
+    <div id="globe-container" style="position: relative; width: 100%; max-width: 350px; margin: 0 auto; cursor: grab; user-select: none;">
+      <!-- SVG dynamic globe rendered via D3 -->
+    </div>
+
+    <!-- Preset Navigation Buttons for Observatory Sites -->
+    <div style="display: flex; gap: 0.35rem; justify-content: center; margin-top: 1rem; flex-wrap: wrap;" id="site-selector-btns">
+      <button class="site-btn" data-lat="34.5768" data-lon="133.5962" title="Okayama, Japan">MuSCAT (OAO)</button>
+      <button class="site-btn" data-lat="28.3003" data-lon="-16.5101" title="Teide, Canary Is.">MuSCAT2 (TFN)</button>
+      <button class="site-btn" data-lat="20.7082" data-lon="-156.2570" title="Haleakala, Hawaii">MuSCAT3 (OGG)</button>
+      <button class="site-btn" data-lat="-31.2729" data-lon="149.0617" title="Siding Spring, AU">MuSCAT4 (COJ)</button>
+      <button class="site-btn" data-lat="-30.1691" data-lon="-70.8063" title="Cerro Tololo, Chile">Sinistro (LSC)</button>
+      <button class="site-btn" data-lat="-31.2729" data-lon="149.0617" title="Siding Spring, AU">Sinistro (COJ)</button>
+      <button class="site-btn" data-lat="-32.3783" data-lon="20.8108" title="Sutherland, South Africa">Sinistro (CPT)</button>
+      <button class="site-btn" data-lat="30.6783" data-lon="-104.0151" title="McDonald, Texas">Sinistro (ELP)</button>
+    </div>
+  </div>
+
+  <!-- Right Column: Live LCO Weather & Observatory Status -->
+  <div class="card" style="padding: 1.25rem; background: var(--surface); border: 1px solid var(--border); border-radius: 12px;">
+    <div id="weather-cards-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 0.85rem;">
+      <div style="color: var(--text-dim); font-size: 0.85rem;">Connecting to LCO Weather API…</div>
+    </div>
+  </div>
+</div>
+
+<!-- Section: Instruments Specifications Summary -->
+<div style="margin-bottom: 3rem;">
+  <h2 style="margin-bottom: 1rem; color: var(--text); font-size: 1.25rem; font-weight: 600;">Instruments Summary</h2>
+
+  <div class="table-container" style="overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface);">
+    <table style="width: 100%; border-collapse: collapse; margin: 0;">
+      <thead>
+        <tr>
+          <th style="text-align: left; padding: 0.75rem 1rem;">Instrument</th>
+          <th style="text-align: left; padding: 0.75rem 1rem;">Telescope &amp; Site</th>
+          <th style="text-align: center; padding: 0.75rem 1rem;">Aperture (m)</th>
+          <th style="text-align: center; padding: 0.75rem 1rem;">Bands</th>
+          <th style="text-align: center; padding: 0.75rem 1rem;">Field of View</th>
+          <th style="text-align: center; padding: 0.75rem 1rem;">Pixel Scale</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for name, params in instruments.items() %}
+        <tr>
+          <td style="font-weight: 600; padding: 0.65rem 1rem;">
+            {% if params.url %}
+            <a href="{{ params.url }}" target="_blank" rel="noopener noreferrer" style="color: var(--accent);">{{ name }}</a>
+            {% else %}
+            <a href="/{{ name }}" style="color: var(--accent);">{{ name }}</a>
+            {% endif %}
+          </td>
+          <td style="padding: 0.65rem 1rem; color: var(--text-dim);">{{ params.site }}</td>
+          <td style="text-align: center; padding: 0.65rem 1rem;" class="mono">{{ params.aperture_m }}</td>
+          <td style="text-align: center; padding: 0.65rem 1rem;">{{ params.bands }}</td>
+          <td style="text-align: center; padding: 0.65rem 1rem;" class="mono">{{ params.fov }}</td>
+          <td style="text-align: center; padding: 0.65rem 1rem;" class="mono">{{ params.pixel_scale }}"/px</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div style="font-size: 0.82rem; color: var(--text-dim); margin-top: 0.5rem;">
+    * Includes custom narrow-band filters: <code>g_narrow</code>, <code>Na_D</code>, <code>i_narrow</code>, <code>z_narrow</code> (Ref: <a href="https://ui.adsabs.harvard.edu/abs/2024SPIE13096E..3UF/abstract" target="_blank" rel="noopener noreferrer">Fukui et al. 2024</a>).
+  </div>
+</div>
+
+<!-- Section: About the Team -->
+<div style="margin-bottom: 3rem;">
+  <h2 style="margin-bottom: 0.4rem; color: var(--text); font-size: 1.25rem; font-weight: 600;">About the Team</h2>
+  <p style="color: var(--text-dim); margin-bottom: 1.5rem; font-size: 0.9rem;">
+    First light milestones, telescope configurations, and optical logos of the global MuSCAT multi-band imager series.
+  </p>
+
+  <div class="card-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.25rem;">
+    <!-- MuSCAT (2014) -->
+    <div class="fleet-card">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; min-height: 32px;">
+        <h3 style="margin: 0; font-size: 1.05rem; color: var(--text); font-weight: 600;">MuSCAT (2014)</h3>
+        <img src="/static/img/m1logo.png" alt="MuSCAT Logo" class="expandable-image" loading="lazy" style="height: 28px; max-width: 90px; object-fit: contain; cursor: pointer;" title="Click to enlarge logo">
+      </div>
+      <div class="fleet-img-wrap">
+        <img src="/static/img/m1.jpg" alt="MuSCAT First Light (2014) — OAO 1.88m, Japan" class="expandable-image" loading="lazy" title="Click to enlarge">
+      </div>
+      <div style="font-size: 0.85rem; color: var(--text-dim); line-height: 1.45;">
+        <strong>First Light:</strong> 2014 at Okayama Astrophysical Observatory (OAO 1.88m, Japan). 3-band simultaneous optical imager.
+      </div>
+    </div>
+
+    <!-- MuSCAT2 (2017) -->
+    <div class="fleet-card">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; min-height: 32px;">
+        <h3 style="margin: 0; font-size: 1.05rem; color: var(--text); font-weight: 600;">MuSCAT2 (2017)</h3>
+        <img src="/static/img/m2logo.png" alt="MuSCAT2 Logo" class="expandable-image" loading="lazy" style="height: 28px; max-width: 90px; object-fit: contain; cursor: pointer;" title="Click to enlarge logo">
+      </div>
+      <div class="fleet-img-wrap">
+        <img src="/static/img/m2.jpg" alt="MuSCAT2 First Light (2017) — TCS 1.52m, Teide Observatory, Spain" class="expandable-image" loading="lazy" title="Click to enlarge">
+      </div>
+      <div style="font-size: 0.85rem; color: var(--text-dim); line-height: 1.45;">
+        <strong>First Light:</strong> 2017 at Telescopio Carlos Sánchez (TCS 1.52m, Teide Observatory, Spain). 4-band optical imager.
+      </div>
+    </div>
+
+    <!-- MuSCAT3 (2020) -->
+    <div class="fleet-card">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; min-height: 32px;">
+        <h3 style="margin: 0; font-size: 1.05rem; color: var(--text); font-weight: 600;">MuSCAT3 (2020)</h3>
+        <img src="/static/img/m3logo.png" alt="MuSCAT3 Logo" class="expandable-image" loading="lazy" style="height: 28px; max-width: 90px; object-fit: contain; cursor: pointer;" title="Click to enlarge logo">
+      </div>
+      <div class="fleet-img-wrap">
+        <img src="/static/img/m3.jpg" alt="MuSCAT3 First Light (2020) — FTN 2.0m, Haleakalā, Hawaii" class="expandable-image" loading="lazy" title="Click to enlarge">
+      </div>
+      <div style="font-size: 0.85rem; color: var(--text-dim); line-height: 1.45;">
+        <strong>First Light:</strong> 2020 at Faulkes Telescope North (FTN 2.0m, Haleakalā, Hawaii). 4-band optical imager on LCOGT.
+      </div>
+    </div>
+
+    <!-- MuSCAT4 (2023) -->
+    <div class="fleet-card">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; min-height: 32px;">
+        <h3 style="margin: 0; font-size: 1.05rem; color: var(--text); font-weight: 600;">MuSCAT4 (2023)</h3>
+        <img src="/static/img/m4logo.png" alt="MuSCAT4 Logo" class="expandable-image" loading="lazy" style="height: 28px; max-width: 90px; object-fit: contain; cursor: pointer;" title="Click to enlarge logo">
+      </div>
+      <div class="fleet-img-wrap">
+        <img src="/static/img/m4.jpg" alt="MuSCAT4 First Light (2023) — FTS 2.0m, Siding Spring, Australia" class="expandable-image" loading="lazy" title="Click to enlarge">
+      </div>
+      <div style="font-size: 0.85rem; color: var(--text-dim); line-height: 1.45;">
+        <strong>First Light:</strong> 2023 at Faulkes Telescope South (FTS 2.0m, Siding Spring, Australia). 4-band optical imager on LCOGT.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Image Lightbox Modal -->
+<div id="image-modal" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:rgba(0,0,0,0.88); z-index:9999; align-items:center; justify-content:center; backdrop-filter:blur(4px);" onclick="this.style.display='none'">
+  <div style="position:relative; max-width:92vw; max-height:92vh; text-align:center; display:flex; flex-direction:column; align-items:center;" onclick="event.stopPropagation()">
+    <img id="modal-img" src="" alt="Enlarged view" style="max-width:90vw; max-height:82vh; border-radius:8px; border:1px solid rgba(255,255,255,0.2); box-shadow:0 0 35px rgba(0,0,0,0.9); object-fit:contain;">
+    <div id="modal-caption" style="margin-top:0.75rem; color:#f8fafc; font-size:0.95rem; font-weight:500;"></div>
+    <button onclick="document.getElementById('image-modal').style.display='none'" style="position:absolute; top:-14px; right:-14px; background:#f87171; color:#ffffff; border:none; border-radius:50%; width:32px; height:32px; font-weight:bold; cursor:pointer; font-size:1.2rem; line-height:1; display:flex; align-items:center; justify-content:center; box-shadow:0 2px 8px rgba(0,0,0,0.5);">&times;</button>
+  </div>
+</div>
+
+<!-- D3 & TopoJSON Libraries for Interactive Globe -->
+<script src="/static/js/d3.v5.min.js"></script>
+<script src="/static/js/d3-queue.v3.min.js"></script>
+<script src="/static/js/topojson.v3.min.js"></script>
+
+<script>
+  (function () {
+    const SITES = [
+      { id: 'muscat3', code: 'ogg', name: 'MuSCAT3 (OGG)', loc: 'Haleakala, Hawaii', lat: 20.7082, lon: -156.2570 },
+      { id: 'muscat2', code: 'tfn', name: 'MuSCAT2 (TFN)', loc: 'Teide, Canary Is.', lat: 28.3003, lon: -16.5101 },
+      { id: 'muscat4', code: 'coj', name: 'MuSCAT4 (COJ)', loc: 'Siding Spring, AU', lat: -31.2729, lon: 149.0617 },
+      { id: 'muscat',  code: 'oao', name: 'MuSCAT (OAO)', loc: 'Okayama, Japan', lat: 34.5768, lon: 133.5962 },
+      { id: 'lsc',     code: 'lsc', name: 'Sinistro (LSC)', loc: 'Cerro Tololo, Chile', lat: -30.1691, lon: -70.8063 },
+      { id: 'coj',     code: 'coj', name: 'Sinistro (COJ)', loc: 'Siding Spring, AU', lat: -31.2729, lon: 149.0617 },
+      { id: 'cpt',     code: 'cpt', name: 'Sinistro (CPT)', loc: 'Sutherland, South Africa', lat: -32.3783, lon: 20.8108 },
+      { id: 'elp',     code: 'elp', name: 'Sinistro (ELP)', loc: 'McDonald, Texas', lat: 30.6783, lon: -104.0151 },
+    ];
+
+    let weatherDataByCode = {};
+
+    // ── Live UTC Clock ────────────────────────────────────────────────────────
+    function updateClock() {
+      const el = document.getElementById('live-utc-clock');
+      if (!el) return;
+      const now = new Date();
+      el.textContent = 'UTC: ' + now.toISOString().replace('T', ' ').substring(0, 19);
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // ── NOAA Astronomical Solar Position Equations ─────────────────────────────
+    const π = Math.PI, radians = π / 180, degrees = 180 / π;
+
+    function utc(time) {
+      return new Date(Date.UTC(
+        time.getUTCFullYear(), time.getUTCMonth(), time.getUTCDate(),
+        time.getUTCHours(), time.getUTCMinutes(), time.getUTCSeconds()
+      ));
+    }
+
+    function antipode(position) {
+      let lon = position[0] + 180;
+      if (lon > 180) lon -= 360;
+      return [lon, -position[1]];
+    }
+
+    function solarPosition(time) {
+      var timeOfDay = time.getUTCHours() * 3600 + time.getUTCMinutes() * 60 + time.getUTCSeconds(),
+        longitude = 180 - timeOfDay / 86400 * 360,
+        centuries = (time - Date.UTC(2000, 0, 1, 12)) / 864e5 / 36525;
+      var subLon = longitude - equationOfTime(centuries) * degrees;
+      subLon = ((subLon + 180) % 360) - 180;
+      return [
+        subLon,
+        solarDeclination(centuries) * degrees
+      ];
+    }
+
+    function equationOfTime(centuries) {
+      var e = eccentricityEarthOrbit(centuries),
+        m = solarGeometricMeanAnomaly(centuries),
+        l = solarGeometricMeanLongitude(centuries),
+        y = Math.tan(obliquityCorrection(centuries) / 2);
+      y *= y;
+      return y * Math.sin(2 * l) -
+        2 * e * Math.sin(m) +
+        4 * e * y * Math.sin(m) * Math.cos(2 * l) -
+        0.5 * y * y * Math.sin(4 * l) -
+        1.25 * e * e * Math.sin(2 * m);
+    }
+
+    function solarDeclination(centuries) {
+      return Math.asin(Math.sin(obliquityCorrection(centuries)) * Math.sin(solarApparentLongitude(centuries)));
+    }
+
+    function solarApparentLongitude(centuries) {
+      return solarTrueLongitude(centuries) - (0.00569 + 0.00478 * Math.sin((125.04 - 1934.136 * centuries) * radians)) * radians;
+    }
+
+    function solarTrueLongitude(centuries) {
+      return solarGeometricMeanLongitude(centuries) + solarEquationOfCenter(centuries);
+    }
+
+    function solarGeometricMeanAnomaly(centuries) {
+      return (357.52911 + centuries * (35999.05029 - 0.0001537 * centuries)) * radians;
+    }
+
+    function solarGeometricMeanLongitude(centuries) {
+      var l = (280.46646 + centuries * (36000.76983 + centuries * 0.0003032)) % 360;
+      return (l < 0 ? l + 360 : l) / 180 * π;
+    }
+
+    function solarEquationOfCenter(centuries) {
+      var m = solarGeometricMeanAnomaly(centuries);
+      return (Math.sin(m) * (1.914602 - centuries * (0.004817 + 0.000014 * centuries)) +
+        Math.sin(m + m) * (0.019993 - 0.000101 * centuries) +
+        Math.sin(m + m + m) * 0.000289) * radians;
+    }
+
+    function obliquityCorrection(centuries) {
+      return meanObliquityOfEcliptic(centuries) + 0.00256 * Math.cos((125.04 - 1934.136 * centuries) * radians) * radians;
+    }
+
+    function meanObliquityOfEcliptic(centuries) {
+      return (23 + (26 + (21.448 - centuries * (46.8150 + centuries * (0.00059 - centuries * 0.001813))) / 60) / 60) * radians;
+    }
+
+    function eccentricityEarthOrbit(centuries) {
+      return 0.016708634 - centuries * (0.000042037 + 0.0000001267 * centuries);
+    }
+
+    function getSolarElevation(siteLat, siteLon, sunPos) {
+      const phi1 = siteLat * radians;
+      const phi2 = sunPos[1] * radians;
+      const deltaLon = (siteLon - sunPos[0]) * radians;
+      const sinAlt = Math.sin(phi1) * Math.sin(phi2) + Math.cos(phi1) * Math.cos(phi2) * Math.cos(deltaLon);
+      return Math.asin(Math.max(-1, Math.min(1, sinAlt))) * degrees;
+    }
+
+    // ── D3.js SVG Globe Implementation ─────────────────────────────────────────
+    const container = document.getElementById('globe-container');
+    if (container && typeof d3 !== 'undefined') {
+      const size = 350;
+      const width = size, height = size, radius = size / 2 - 10;
+      const offsetX = width / 2, offsetY = height / 2;
+
+      container.innerHTML = `
+        <svg viewBox="0 0 ${width} ${height}" style="width:100%; height:auto; display:block; border-radius:50%; box-shadow:0 0 35px rgba(56,189,248,0.22);">
+          <defs>
+            <clipPath id="globe_clip">
+              <circle cx="${offsetX}" cy="${offsetY}" r="${radius}" />
+            </clipPath>
+          </defs>
+        </svg>
+      `;
+
+      const svg = d3.select(container).select("svg");
+      const projection = d3.geoOrthographic()
+        .scale(radius)
+        .rotate([0, -20])
+        .translate([offsetX, offsetY])
+        .clipAngle(90);
+
+      const path = d3.geoPath().projection(projection).pointRadius(2);
+      const graticule = d3.geoGraticule();
+      const nightCircle1 = d3.geoCircle().radius(105);
+      const nightCircle2 = d3.geoCircle().radius(98);
+      const nightCircle3 = d3.geoCircle().radius(92);
+      const nightCircle4 = d3.geoCircle().radius(86);
+      const nightCircle5 = d3.geoCircle().radius(80);
+      const nightTerminatorCircle = d3.geoCircle().radius(90);
+
+      let solarTime = utc(new Date());
+      let sunPos = solarPosition(solarTime);
+      let solarAntipode = antipode(sunPos);
+
+      let targetRotate = null;
+      let timer = null;
+      let isDragging = false;
+
+      // Master clipped globe group
+      const gGlobe = svg.append("g").attr("clip-path", "url(#globe_clip)");
+
+      // Base layers inside clipped globe
+      const oceanCircle = gGlobe.append("circle")
+        .attr("class", "ocean-circle")
+        .attr("cx", offsetX)
+        .attr("cy", offsetY)
+        .attr("r", radius)
+        .style("fill", "#0f172a");
+
+      const gLand = gGlobe.append("g").attr("class", "land-group");
+      const gGrat = gGlobe.append("g").attr("class", "graticule-group");
+      const gNight = gGlobe.append("g").attr("class", "night-group");
+      const gSites = gGlobe.append("g").attr("class", "sites-group");
+
+      // Atmosphere rim (unclipped overlay)
+      const gAtmosphere = svg.append("g").attr("class", "atmosphere-group");
+
+      const gratPath = gGrat.append("path")
+        .datum(graticule)
+        .attr("fill", "none")
+        .attr("stroke", "rgba(255,255,255,0.12)")
+        .attr("stroke-width", 0.7);
+
+      // Twilight layers
+      const tw1 = gNight.append("path").attr("class", "twilight-layer-1").attr("stroke", "none");
+      const tw2 = gNight.append("path").attr("class", "twilight-layer-2").attr("stroke", "none");
+      const tw3 = gNight.append("path").attr("class", "twilight-layer-3").attr("stroke", "none");
+      const tw4 = gNight.append("path").attr("class", "twilight-layer-4").attr("stroke", "none");
+      const tw5 = gNight.append("path").attr("class", "twilight-layer-5").attr("stroke", "none");
+
+      // Night terminator line
+      const termPath = gNight.append("path")
+        .attr("class", "night-terminator")
+        .attr("fill", "none")
+        .attr("stroke", "#38bdf8")
+        .attr("stroke-width", 1.2)
+        .attr("stroke-opacity", 0.7);
+
+      const atmoRim = gAtmosphere.append("circle")
+        .attr("class", "atmosphere-rim")
+        .attr("cx", offsetX)
+        .attr("cy", offsetY)
+        .attr("r", radius)
+        .attr("fill", "none")
+        .attr("stroke", "#38bdf8")
+        .attr("stroke-width", 2)
+        .style("pointer-events", "none");
+
+      let landPathSel = null;
+
+      function updateSitePins() {
+        gSites.selectAll("*").remove();
+        const center = projection.invert([offsetX, offsetY]);
+        const countAtPos = {};
+
+        SITES.forEach(s => {
+          const pt = projection([s.lon, s.lat]);
+          if (pt && center && d3.geoDistance(center, [s.lon, s.lat]) < Math.PI / 2) {
+            const posKey = `${s.lat.toFixed(2)},${s.lon.toFixed(2)}`;
+            const idxAtPos = countAtPos[posKey] || 0;
+            countAtPos[posKey] = idxAtPos + 1;
+
+            let textY = 4;
+            if (idxAtPos === 0) textY = -3;
+            else if (idxAtPos === 1) textY = 12;
+            else textY = 4 + idxAtPos * 12;
+
+            const alt = getSolarElevation(s.lat, s.lon, sunPos);
+            const isNight = alt < 0;
+            const w = weatherDataByCode[s.code];
+
+            let color = '#38bdf8';
+            let statusText = isNight ? '🌙 Night' : '☀️ Day';
+
+            if (w && w.okOpen === 'true') color = '#34d399';
+            else if (w && w.okOpen === 'false') color = '#f87171';
+            else if (isNight) color = '#818cf8';
+            else color = '#fde047';
+
+            const g = gSites.append("g")
+              .attr("transform", `translate(${pt[0]},${pt[1]})`)
+              .attr("style", "cursor: pointer;");
+
+            g.append("title")
+              .text(`${s.name} (${s.loc})\nSolar Alt: ${alt.toFixed(1)}° (${statusText})\nWeather: ${w ? (w.okOpen === 'true' ? 'Open' : 'Closed') : 'Unknown'}`);
+
+            if (idxAtPos === 0) {
+              g.append("circle")
+                .attr("r", 9)
+                .attr("fill", color)
+                .attr("fill-opacity", 0.25);
+
+              g.append("circle")
+                .attr("r", 4.5)
+                .attr("fill", color)
+                .attr("stroke", "#ffffff")
+                .attr("stroke-width", 1.5);
+            }
+
+            g.append("text")
+              .attr("x", 8)
+              .attr("y", textY)
+              .text(s.name)
+              .attr("fill", "#f8fafc")
+              .attr("font-size", "11px")
+              .attr("font-weight", "600")
+              .attr("font-family", "system-ui, sans-serif")
+              .attr("style", "text-shadow: 0 1px 3px rgba(0,0,0,0.8);");
+          }
+        });
+      }
+
+      function refresh() {
+        const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+
+        oceanCircle.style("fill", isDark ? "#0f172a" : "#e0f2fe");
+
+        if (landPathSel) {
+          landPathSel
+            .attr("fill", isDark ? "#334155" : "#cbd5e1")
+            .attr("stroke", isDark ? "#38bdf8" : "#0284c7")
+            .attr("d", path);
+        }
+
+        gratPath
+          .attr("stroke", isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.12)")
+          .attr("d", path);
+
+        atmoRim.attr("stroke", isDark ? "#38bdf8" : "#0284c7");
+
+        solarTime = utc(new Date());
+        sunPos = solarPosition(solarTime);
+        solarAntipode = antipode(sunPos);
+
+        tw1.datum(nightCircle1.center(solarAntipode)())
+          .attr("fill", isDark ? "rgba(245, 158, 11, 0.08)" : "rgba(217, 119, 6, 0.12)")
+          .attr("d", path);
+
+        tw2.datum(nightCircle2.center(solarAntipode)())
+          .attr("fill", isDark ? "rgba(15, 23, 42, 0.15)" : "rgba(30, 41, 59, 0.15)")
+          .attr("d", path);
+
+        tw3.datum(nightCircle3.center(solarAntipode)())
+          .attr("fill", isDark ? "rgba(2, 6, 23, 0.20)" : "rgba(15, 23, 42, 0.20)")
+          .attr("d", path);
+
+        tw4.datum(nightCircle4.center(solarAntipode)())
+          .attr("fill", isDark ? "rgba(2, 6, 23, 0.22)" : "rgba(15, 23, 42, 0.22)")
+          .attr("d", path);
+
+        tw5.datum(nightCircle5.center(solarAntipode)())
+          .attr("fill", isDark ? "rgba(2, 6, 23, 0.15)" : "rgba(2, 6, 23, 0.25)")
+          .attr("d", path);
+
+        termPath.datum(nightTerminatorCircle.center(solarAntipode)())
+          .attr("stroke", isDark ? "#38bdf8" : "#0284c7")
+          .attr("d", path);
+
+        updateSitePins();
+      }
+
+      // Drag handling
+      const lambda = d3.scaleLinear().domain([0, width]).range([-180, 180]);
+      const phi = d3.scaleLinear().domain([0, height]).range([90, -90]);
+
+      svg.call(
+        d3.drag()
+          .subject(() => {
+            const r = projection.rotate();
+            return { x: lambda.invert(r[0]), y: phi.invert(r[1]) };
+          })
+          .on("start", () => { isDragging = true; })
+          .on("drag", () => {
+            projection.rotate([lambda(d3.event.x), phi(d3.event.y)]);
+            refresh();
+          })
+          .on("end", () => { isDragging = false; })
+      );
+
+      // Fetch World Topology
+      d3.json("/static/js/world-110m.v1.json")
+        .then(world => {
+          if (!world) return;
+          const land = topojson.feature(world, world.objects.land);
+
+          landPathSel = gLand.append("path")
+            .datum(land)
+            .attr("class", "land-path")
+            .attr("fill", "#334155")
+            .attr("stroke", "#38bdf8")
+            .attr("stroke-width", 0.6)
+            .attr("d", path);
+
+          refresh();
+
+          let time = Date.now();
+          timer = d3.timer(() => {
+            if (targetRotate) {
+              const r = projection.rotate();
+              const d0 = targetRotate[0] - r[0];
+              const d1 = targetRotate[1] - r[1];
+              projection.rotate([r[0] + d0 * 0.08, r[1] + d1 * 0.08]);
+              if (Math.abs(d0) < 0.1 && Math.abs(d1) < 0.1) targetRotate = null;
+              refresh();
+            } else if (!isDragging) {
+              const r = projection.rotate();
+              projection.rotate([r[0] + 0.12, r[1]]);
+              refresh();
+            }
+          });
+        }).catch(_ => {});
+
+      // Preset Site Buttons
+      document.querySelectorAll('#site-selector-btns .site-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('#site-selector-btns .site-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          const lat = parseFloat(btn.dataset.lat);
+          const lon = parseFloat(btn.dataset.lon);
+          targetRotate = [-lon, -lat];
+        });
+      });
+    }
+
+    // ── Fetch & Render LCO Weather Cards ─────────────────────────────────────
+    const grid = document.getElementById('weather-cards-grid');
+
+    async function fetchSiteDatum(code, datum) {
+      try {
+        const url = `https://weather-api.lco.global/query?site=${code}&datumname=${encodeURIComponent(datum)}${datum === 'Weather Ok To Open' ? '&agg=False' : ''}`;
+        const res = await fetch(url);
+        if (!res.ok) return null;
+        const data = await res.json();
+        return Array.isArray(data) && data.length > 0 ? data[data.length - 1] : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    let lastSiteResults = null;
+
+    function renderWeatherCards(siteResults) {
+      if (!grid || !siteResults) return;
+      const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+
+      grid.innerHTML = '';
+      siteResults.forEach(r => {
+        const card = document.createElement('div');
+        card.className = 'weather-card';
+
+        const nightBg = isDark ? '#1e293b' : '#e0e7ff';
+        const nightFg = isDark ? '#818cf8' : '#3730a3';
+        const nightBorder = isDark ? '#3730a3' : '#c7d2fe';
+
+        const dayBg = isDark ? '#451a03' : '#fef3c7';
+        const dayFg = isDark ? '#fde047' : '#92400e';
+        const dayBorder = isDark ? '#854d0e' : '#fde68a';
+
+        const dayNightBadge = r.isNight
+          ? `<span class="badge" style="background:${nightBg}; color:${nightFg}; font-size:0.7rem; border:1px solid ${nightBorder};">🌙 Night (${r.solarAlt.toFixed(0)}°)</span>`
+          : `<span class="badge" style="background:${dayBg}; color:${dayFg}; font-size:0.7rem; border:1px solid ${dayBorder};">☀️ Day (${r.solarAlt.toFixed(0)}°)</span>`;
+
+        let openBadge = '';
+        if (r.okOpen === 'true') {
+          const openBg = isDark ? '#064e3b' : '#dcfce7';
+          const openFg = isDark ? '#34d399' : '#15803d';
+          const openBorder = isDark ? '#065f46' : '#bbf7d0';
+          openBadge = `<span class="badge" style="background:${openBg}; color:${openFg}; font-size:0.7rem; border:1px solid ${openBorder};">🟢 Open</span>`;
+        } else if (r.okOpen === 'false') {
+          const closedBg = isDark ? '#4c0519' : '#ffe4e6';
+          const closedFg = isDark ? '#f87171' : '#be123c';
+          const closedBorder = isDark ? '#881337' : '#fecdd3';
+          openBadge = `<span class="badge" style="background:${closedBg}; color:${closedFg}; font-size:0.7rem; border:1px solid ${closedBorder};">🔴 Closed</span>`;
+        } else {
+          const sbBg = isDark ? '#1e293b' : '#f1f5f9';
+          const sbFg = isDark ? '#94a3b8' : '#475569';
+          const sbBorder = isDark ? '#334155' : '#e2e8f0';
+          openBadge = `<span class="badge" style="background:${sbBg}; color:${sbFg}; font-size:0.7rem; border:1px solid ${sbBorder};">⚪ Standby</span>`;
+        }
+
+        card.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.4rem;">
+            <div>
+              <strong style="color:var(--text); font-size:0.88rem;">${r.site.name}</strong>
+              <div style="color:var(--text-dim); font-size:0.73rem;">${r.site.loc}</div>
+            </div>
+            <div style="display:flex; flex-direction:column; align-items:flex-end; gap:0.2rem;">
+              ${dayNightBadge}
+              ${openBadge}
+            </div>
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.3rem; margin-top:0.5rem; font-family:var(--font-mono, monospace); font-size:0.78rem; color:var(--text-dim);">
+            <div>Temp: <span style="color:var(--text);">${r.temp !== null ? r.temp.toFixed(1) + '°C' : '—'}</span></div>
+            <div>Wind: <span style="color:var(--text);">${r.wind !== null ? r.wind.toFixed(1) + ' m/s' : '—'}</span></div>
+            <div>Hum: <span style="color:var(--text);">${r.hum !== null ? r.hum.toFixed(0) + '%' : '—'}</span></div>
+          </div>
+        `;
+        grid.appendChild(card);
+      });
+    }
+
+    async function loadWeather() {
+      if (!grid) return;
+      grid.innerHTML = '<div style="color:var(--text-dim);font-size:0.85rem;">Updating live observatory metrics…</div>';
+      
+      const sun = solarPosition(utc(new Date()));
+      const siteResults = await Promise.all(SITES.map(async (s) => {
+        const solarAlt = getSolarElevation(s.lat, s.lon, sun);
+        const isNight = solarAlt < 0;
+
+        let okOpen = null, temp = null, wind = null, hum = null;
+        if (s.code !== 'oao' && s.code !== 'spm') {
+          const [openRes, tempRes, windRes, humRes] = await Promise.all([
+            fetchSiteDatum(s.code, 'Weather Ok To Open'),
+            fetchSiteDatum(s.code, 'Weather Air Temperature Value'),
+            fetchSiteDatum(s.code, 'Weather Wind Speed Value'),
+            fetchSiteDatum(s.code, 'Weather Humidity Value'),
+          ]);
+          okOpen = openRes ? openRes.ValueString : null;
+          temp = tempRes ? tempRes.Value : null;
+          wind = windRes ? windRes.Value : null;
+          hum = humRes ? humRes.Value : null;
+        }
+
+        weatherDataByCode[s.code] = { okOpen, temp, wind, hum, isNight };
+        return { site: s, isNight, solarAlt, okOpen, temp, wind, hum };
+      }));
+
+      lastSiteResults = siteResults;
+      renderWeatherCards(siteResults);
+    }
+
+    const refreshBtn = document.getElementById('refresh-weather-btn');
+    if (refreshBtn) refreshBtn.addEventListener('click', loadWeather);
+
+    loadWeather();
+
+    // Expandable Image Lightbox Modal
+    document.querySelectorAll('.expandable-image').forEach(img => {
+      img.addEventListener('click', () => {
+        const modal = document.getElementById('image-modal');
+        const modalImg = document.getElementById('modal-img');
+        const modalCaption = document.getElementById('modal-caption');
+        if (modal && modalImg) {
+          modalImg.src = img.src;
+          modalCaption.textContent = img.alt || 'Enlarged View';
+          modal.style.display = 'flex';
+        }
+      });
+    });
+
+    // Dynamic Light / Dark mode observer
+    const themeObserver = new MutationObserver(() => {
+      if (typeof refresh === 'function') refresh();
+      if (lastSiteResults) renderWeatherCards(lastSiteResults);
+    });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  })();
+</script>
+{% endblock %}

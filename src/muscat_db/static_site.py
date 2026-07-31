@@ -68,6 +68,7 @@ _APP_HOME_SITEDIR = "targets"
 # (see ``_PARAM_PARENTS`` handling in ``_enumerate``).
 _NAV_PAGES: tuple[str, ...] = (
     "/",
+    "/targets",
     "/logs",
     "/guide",
     "/jobs",
@@ -760,6 +761,9 @@ def _copy_static(web, out_dir: Path) -> None:
     src = Path(web.STATIC_DIR)
     if src.is_dir():
         shutil.copytree(src, out_dir / "static", dirs_exist_ok=True)
+    img_src = Path(web.HERE).parent.parent / "data" / "img"
+    if img_src.is_dir():
+        shutil.copytree(img_src, out_dir / "data" / "img", dirs_exist_ok=True)
 
 
 def _validate_output_dir(out: Path, db_path: str) -> None:

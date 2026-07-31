@@ -25,6 +25,32 @@
   {% endfor %}
 </div>
 
+<script>
+  (function() {
+    try {
+      var s = localStorage.getItem('home:search');
+      var c = localStorage.getItem('home:cols');
+      var i = localStorage.getItem('home:inst');
+      var hasFilter = (s && s.trim() !== '') || (i && i.trim() !== '');
+      if (!hasFilter && c) {
+        var obj = JSON.parse(c);
+        if (Object.values(obj).some(function(v) { return v && v.trim() !== ''; })) {
+          hasFilter = true;
+        }
+      }
+      if (hasFilter) {
+        document.documentElement.classList.add('filtering-active');
+      }
+    } catch(e){}
+  })();
+</script>
+<style>
+  html.filtering-active #targets-table tbody tr,
+  html.filtering-active #unidentified-table tbody tr {
+    display: none;
+  }
+</style>
+
 {% macro target_table(rows, table_id) %}
 <div class="csv-wrap">
 <table id="{{ table_id }}">
@@ -166,6 +192,10 @@
     const rows = Array.from(document.querySelectorAll(
       '#targets-table tbody tr, #unidentified-table tbody tr'
     ));
+    rows.forEach(r => {
+      r._searchStr = r.dataset.search || '';
+      r._insts = (r.dataset.instruments || '').toLowerCase().split(',').map(t => t.trim()).filter(Boolean);
+    });
     const total = rows.length;
     const colInputs = Array.from(document.querySelectorAll('tr.filter-row input'));
     const instBadges = Array.from(document.querySelectorAll('.instrument-badge'));
@@ -380,6 +410,7 @@
         } catch (err) {
           status.textContent = 'Invalid regex: ' + err.message;
           status.className = 'invalid';
+          document.documentElement.classList.remove('filtering-active');
           return;
         }
       }
@@ -387,15 +418,15 @@
       const colPreds = buildColPredicates();
       let visible = 0;
       rows.forEach(r => {
-        let ok = textTest(r.dataset.search || '');
+        let ok = textTest(r._searchStr);
         for (let i = 0; ok && i < colPreds.length; i++) ok = colPreds[i](r);
         if (ok && activeInstrument) {
-          const tokens = (r.dataset.instruments || '').toLowerCase().split(',').map(t => t.trim()).filter(Boolean);
-          ok = tokens.includes(activeInstrument.toLowerCase());
+          ok = r._insts.includes(activeInstrument.toLowerCase());
         }
         r.style.display = ok ? '' : 'none';
         if (ok) visible++;
       });
+      document.documentElement.classList.remove('filtering-active');
       if (q || colPreds.length || activeInstrument) {
         status.textContent = visible + ' / ' + total + ' matching';
       } else {

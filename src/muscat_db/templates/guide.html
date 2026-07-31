@@ -57,6 +57,9 @@
   }
 
   /* Collapsible Cards Styling */
+  .workflow-card {
+    scroll-margin-top: 100px;
+  }
   .workflow-card.collapsible {
     transition: all 0.3s ease-in-out;
   }
@@ -2142,15 +2145,40 @@ erDiagram
 </script>
 <script>
   document.addEventListener('DOMContentLoaded', function() {
+    function focusCard(targetId) {
+      if (!targetId) return;
+      const targetElem = document.getElementById(targetId);
+      if (!targetElem) return;
+
+      const parentCard = targetElem.closest('.workflow-card, #faq-card') || targetElem;
+      if (parentCard.classList.contains('collapsed')) {
+        toggleCard(parentCard.id);
+      }
+
+      setTimeout(() => {
+        const navOffset = 100; // Account for sticky navbar height
+        const rect = targetElem.getBoundingClientRect();
+        const targetY = window.pageYOffset + rect.top - navOffset;
+        window.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' });
+      }, 50);
+    }
+
     document.querySelectorAll('.workflow-toc .toc-link').forEach(link => {
       link.addEventListener('click', function(e) {
-        const targetId = this.getAttribute('href').substring(1); // Remove '#'
-        const targetCard = document.getElementById(targetId);
-        if (targetCard && targetCard.classList.contains('collapsed')) {
-          toggleCard(targetId);
+        const href = this.getAttribute('href');
+        if (href && href.startsWith('#')) {
+          e.preventDefault();
+          const targetId = href.substring(1);
+          focusCard(targetId);
+          history.pushState(null, null, '#' + targetId);
         }
       });
     });
+
+    if (window.location.hash) {
+      const hashId = window.location.hash.substring(1);
+      focusCard(hashId);
+    }
   });
 </script>
 {% endblock %}
