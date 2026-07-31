@@ -307,10 +307,6 @@ app.include_router(proxy_router)
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-DATA_IMG_DIR = HERE.parent.parent / "data" / "img"
-if DATA_IMG_DIR.is_dir():
-    app.mount("/data/img", StaticFiles(directory=str(DATA_IMG_DIR)), name="data_img")
-
 
 @app.get("/healthz", include_in_schema=False)
 def healthz():
