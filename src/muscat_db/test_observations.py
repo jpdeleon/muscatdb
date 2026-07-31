@@ -151,7 +151,7 @@ def request_configurations(plan: dict, base: dict) -> list[dict]:
 
 
 def _connect(path=None):
-    conn = sqlite3.connect(path or db_path())
+    conn = sqlite3.connect(path or db_path(), timeout=30)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     return conn
