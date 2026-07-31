@@ -2012,6 +2012,15 @@
     const importable = transitCSVPreview.rows.filter(row => !row.blocked).length;
     const button = document.getElementById('transit-csv-import-btn');
     button.disabled = importable === 0 || !instrument || (needsConfirmation && !confirmed);
+    if (importable === 0) {
+      button.title = 'No valid importable transit rows found in CSV';
+    } else if (!instrument) {
+      button.title = 'Select an instrument before importing';
+    } else if (needsConfirmation && !confirmed) {
+      button.title = 'Check the time system confirmation box before importing';
+    } else {
+      button.title = '';
+    }
     button.textContent = `Import ${importable} transit center${importable === 1 ? '' : 's'}`;
   }
 
