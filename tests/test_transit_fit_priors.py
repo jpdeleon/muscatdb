@@ -326,13 +326,14 @@ def test_fit_yaml_normalizes_sinistro_site_bands(tmp_path):
     fit._write_fit_inputs(tmp_path, inst, date, target, csvs, {"planets": "b"})
     fit_yaml = yaml.safe_load((tmp_path / "fit.yaml").read_text())
 
-    # The keys in 'data' should match the extracted raw bands (e.g. cpt_gp, cpt_zs)
-    # but the nested 'band' fields must be mapped to their normalized equivalents:
-    # cpt_gp -> g, cpt_zs -> z, lsc_gp -> g, lsc_zs -> z
-    assert fit_yaml["data"]["cpt_gp"]["band"] == "g"
-    assert fit_yaml["data"]["cpt_zs"]["band"] == "z"
-    assert fit_yaml["data"]["lsc_gp"]["band"] == "g"
-    assert fit_yaml["data"]["lsc_zs"]["band"] == "z"
+    # The nested 'band' fields must be mapped to their normalized equivalents:
+    # cpt_gp -> g, cpt_zs -> z, lsc_gp -> g, lsc_zs -> z. The keys are the plot
+    # labels timer renders, so each band carries its site here because two sites
+    # contribute the same band.
+    assert fit_yaml["data"]["g_cpt"]["band"] == "g"
+    assert fit_yaml["data"]["z_cpt"]["band"] == "z"
+    assert fit_yaml["data"]["g_lsc"]["band"] == "g"
+    assert fit_yaml["data"]["z_lsc"]["band"] == "z"
 
 
 def test_write_log_banner_cleans_html_refs():

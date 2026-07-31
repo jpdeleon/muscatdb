@@ -724,6 +724,65 @@ def _band_sort_key(band: str) -> tuple:
     return order.get(band, (9, 9))
 
 
+# timer's ``read_afphot`` maps these three to time/flux/error and treats *every*
+# remaining column as a detrending covariate (``timer/io.py`` ``read_generic``).
+_TIMER_RESERVED_COLUMNS: tuple[str, ...] = ("BJD_TDB", "Flux", "Err")
+
+# The columns that are genuinely useful as detrending vectors. This is an
+# allow-list rather than a drop-list on purpose: because timer promotes any
+# unrecognised column to a covariate, a new prose2 output column would otherwise
+# silently join the design matrix. The one this excludes today is ``GJD_UTC``,
+# a second time axis that is very nearly collinear with the ``trend`` block
+# (``np.vander`` of centred time), which leaves the fit degenerate along that
+# direction.
+_TIMER_COVARIATE_COLUMNS: tuple[str, ...] = (
+    "Bkg(ADU)", "Airmass", "Dx(pix)", "Dy(pix)", "Peak(ADU)", "FWHM(pix)",
+)
+
+_MISSING_CELL = {"", "nan", "-nan", "none", "null", "na"}
+
+
+def _copy_lightcurve_for_timer(src: pathlib.Path, dst: pathlib.Path) -> None:
+    """Copy one light-curve CSV, keeping only the columns timer should model.
+
+    Anything outside the reserved and covariate lists is dropped, as is any
+    covariate that is empty for every row: timer's ``bin_df`` ends with
+    ``dropna()``, so a single all-NaN column would otherwise delete every binned
+    row and yield an empty fit.
+
+    Falls back to a verbatim copy when the header cannot be read or does not
+    look like an afphot light curve, so an unexpected format fails inside timer
+    with its own error rather than here.
+    """
+    try:
+        with open(src, newline="") as fh:
+            rows = list(csv.reader(fh))
+    except (OSError, csv.Error):
+        shutil.copy2(src, dst)
+        return
+
+    if not rows or not all(c in rows[0] for c in _TIMER_RESERVED_COLUMNS):
+        shutil.copy2(src, dst)
+        return
+
+    header, body = rows[0], rows[1:]
+    keep = []
+    for idx, name in enumerate(header):
+        if name in _TIMER_RESERVED_COLUMNS:
+            keep.append(idx)
+        elif name in _TIMER_COVARIATE_COLUMNS and any(
+            (r[idx].strip().lower() if idx < len(r) else "") not in _MISSING_CELL
+            for r in body
+        ):
+            keep.append(idx)
+
+    with open(dst, "w", newline="") as fh:
+        writer = csv.writer(fh)
+        writer.writerow([header[i] for i in keep])
+        for r in body:
+            writer.writerow([r[i] if i < len(r) else "" for i in keep])
+
+
 def _write_fit_inputs(
     rdir: pathlib.Path,
     inst: str,
@@ -747,7 +806,7 @@ def _write_fit_inputs(
     name.
     """
     for c in csvs:
-        shutil.copy2(c, rdir / c.name)
+        _copy_lightcurve_for_timer(c, rdir / c.name)
 
     # fit.yaml
     trend_val = 1 if options.get("trend", "true") == "true" else 0
@@ -787,20 +846,40 @@ def _write_fit_inputs(
 
     # Sort CSVs by canonical band order so chromatic plots always appear
     # g→r→i→z (broadband) or g_narrow→Na_D→i_narrow→z_narrow (narrowband).
-    def _csv_band_key(c: pathlib.Path) -> tuple:
+    def _csv_band(c: pathlib.Path) -> str:
         parts = c.name.split(f"_{inst}_")
         raw_band = parts[1].split(f"_{date}")[0] if len(parts) > 1 else "gp"
-        return _band_sort_key(_normalize_band(raw_band))
+        return _normalize_band(raw_band)
+
+    def _csv_band_key(c: pathlib.Path) -> tuple:
+        return _band_sort_key(_csv_band(c))
+
+    # timer uses this key as the light-curve's legend label, so it has to read
+    # well in a finished figure; parsing it out of the filename produced things
+    # like "g_c234578_r36.csv". The band alone is unique for every instrument
+    # except sinistro, where validate_no_duplicate_datasets allows the same band
+    # from a different site/telescope/mode. When a band repeats, every dataset
+    # sharing it takes the distinguishing token, so the legend never mixes a
+    # bare "g" with a "g_lsc" and leaves the first one ambiguous.
+    ordered = sorted(csvs, key=_csv_band_key)
+    repeated = {b for b in (_csv_band(c) for c in ordered)
+                if sum(_csv_band(o) == b for o in ordered) > 1}
 
     fit_data: dict = {"data": {}}
-    for c in sorted(csvs, key=_csv_band_key):
+    for c in ordered:
         fname = c.name
-        parts = fname.split(f"_{inst}_")
-        band = parts[1].split(f"_{date}")[0] if len(parts) > 1 else "gp"
+        mapped_band = _csv_band(c)
 
-        mapped_band = _normalize_band(band)
+        key = mapped_band
+        if mapped_band in repeated:
+            site_, telescope_, mode_ = csv_site_mode(fname)
+            token = next((t for t in (telescope_, site_, mode_) if t), "")
+            if token:
+                key = f"{mapped_band}_{token}"
+        while key in fit_data["data"]:
+            key = f"{key}_{len(fit_data['data'])}"
 
-        fit_data["data"][band] = {
+        fit_data["data"][key] = {
             "file": fname,
             "band": mapped_band,
             "trend": trend_val,
