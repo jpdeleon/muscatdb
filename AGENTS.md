@@ -66,6 +66,8 @@ If agent restarts the muscat-db by itself, make sure do it inside tmux session m
 * no direct pushes to test or main. everything goes through a PR
 * merged branches are deleted automatically, so short-lived feature branches are expected
 * never rename the head branch of an open PR. GitHub closes the PR instead of retargeting it, so pick the name before opening
+* test is the default branch, so a new PR targets it without being told to, and `Closes #N` in a feature PR body fires when that PR merges. main stays the release branch and is what deploy.yml checks out
+* branch protection names main and test explicitly rather than tracking the default branch. a ruleset scoped to `~DEFAULT_BRANCH` would follow the default and leave the other branch unprotected
 
 ## Photometry job lifecycle
 The pipeline is launched with `start_new_session=True` and prose spawns multiprocessing workers (SequenceParallel) that keep appending to the per-target log (`_webrun_<digest>.log`) **after** the tracked parent process has exited. Do not declare a job terminal the instant `job.proc.poll()` returns: `_resolve_job_state` keeps it in a non-terminal `finalizing` state until the log mtime has been quiescent for `_FINALIZE_GRACE_S` (env `MUSCAT_PHOT_FINALIZE_GRACE_S`), so the photometry page's live log keeps streaming the trailing output instead of freezing at parent-exit. `finalizing` is a live-view-only state; `sync_jobs` persists it to the DB as `running` so the Jobs page (which reads state from the DB) stays consistent. Cancelled jobs bypass the grace window and go terminal immediately.
