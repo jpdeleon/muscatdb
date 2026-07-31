@@ -861,6 +861,7 @@ def build_db(db_path: str, progress=None) -> int:
         _remove_sqlite_tmp(tmp_path)
         raise
 
+    _remove_sqlite_tmp(db_path)
     os.replace(tmp_path, db_path)
     clear_all_caches()
     return count
