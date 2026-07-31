@@ -415,7 +415,12 @@
   }
 
   function updateGenWindowsButtonState() {
-    el('btn-gen-windows').disabled = !val('sch-coords');
+    var hasCoords = !!val('sch-coords');
+    var btn = el('btn-gen-windows');
+    if (btn) {
+      btn.disabled = !hasCoords;
+      btn.title = hasCoords ? '' : 'Target coordinates required to generate visibility windows';
+    }
   }
   el('sch-coords').addEventListener('input', updateGenWindowsButtonState);
 
