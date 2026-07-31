@@ -195,7 +195,7 @@ def test_navbar_links_resolve_after_the_root_swap(tiny_db, tmp_path):
 
     logs = _read(out / "logs" / "index.html")
     assert 'href="../"' in logs, "site root unreachable from a nested page"
-    assert 'href="../targets/"' not in logs, "masthead redirects into the app's target table"
+    assert 'href="../targets/"' in logs, "Targets link should be present in navbar"
     assert 'href="../logs/"' in logs or 'href="./"' in logs
 
     root = _read(out / "index.html")
@@ -206,24 +206,18 @@ def test_navbar_links_resolve_after_the_root_swap(tiny_db, tmp_path):
     assert 'href=""' not in root
 
 
-def test_app_landing_page_is_published_but_currently_unlinked(tiny_db, tmp_path):
-    """Records a known gap rather than letting it pass silently.
-
-    The masthead was the only link to the application's landing page, so routing
-    it to the site root leaves ``targets/`` built and reachable by URL but absent
-    from every page's navigation. Closing that needs a Targets entry in the navbar
-    (muscat-team/muscatdb#40). When it lands this assertion should flip.
-    """
+def test_targets_page_is_published_and_linked(tiny_db, tmp_path):
+    """Verify that targets/ is published and linked from navbar (#40)."""
     out = tmp_path / "site"
     build_site(out, db_path=tiny_db, n_examples=1, include_figures=False, log=lambda _m: None)
 
-    assert (out / "targets" / "index.html").is_file(), "app landing page should still be published"
+    assert (out / "targets" / "index.html").is_file(), "targets page should be published"
     linking = [
         page.relative_to(out).as_posix()
         for page in out.rglob("index.html")
         if 'href="targets/"' in _read(page) or 'href="../targets/"' in _read(page)
     ]
-    assert linking == [], f"targets/ is linked again, update #40 and this test: {linking}"
+    assert len(linking) > 0, "targets/ should be linked in navigation"
 
 
 def test_no_live_data_notice_only_on_live_api_pages(tiny_db, tmp_path):

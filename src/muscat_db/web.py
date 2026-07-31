@@ -305,9 +305,11 @@ async def _nginx_auth_middleware(request: Request, call_next):
 # instrument/date page and returns HTML where the QuickLook client expects JSON.
 app.include_router(proxy_router)
 
-# Mount static assets (shared stylesheet, etc.) before the dynamic routes so a
-# request like /static/styles.css is not captured by the /{inst}/{date} route.
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+DATA_IMG_DIR = HERE.parent.parent / "data" / "img"
+if DATA_IMG_DIR.is_dir():
+    app.mount("/data/img", StaticFiles(directory=str(DATA_IMG_DIR)), name="data_img")
 
 
 @app.get("/healthz", include_in_schema=False)
@@ -445,6 +447,11 @@ _index_cache = LRUCache(maxsize=_INDEX_CACHE_MAX)
 
 
 @app.get("/", response_class=HTMLResponse)
+def home_page():
+    return _render("home.html", instruments=exp_calc.INSTRUMENT_PARAMS)
+
+
+@app.get("/targets", response_class=HTMLResponse)
 def index():
     db = _db_path()
     tpl_path = TEMPLATE_DIR / "index.html"

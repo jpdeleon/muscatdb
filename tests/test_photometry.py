@@ -1968,7 +1968,7 @@ class TestRoutes:
         assert "(broadband)" not in r.text
 
     def test_index_page(self, client):
-        r = client.get("/")
+        r = client.get("/targets")
         assert r.status_code == 200
         assert "MuSCAT + LCO database (Last updated on" in r.text
 
