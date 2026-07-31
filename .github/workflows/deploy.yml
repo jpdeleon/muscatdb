@@ -2,15 +2,16 @@ name: Deploy
 
 on:
   push:
-    branches: [main]
+    branches: [main, test]
 
 concurrency:
   group: deploy-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  deploy:
-    name: Deploy to production
+  deploy-production:
+    name: Deploy Production (main)
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -38,21 +39,82 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Pull and restart
+      - name: Pull and restart production
         if: steps.check.outputs.configured == 'true'
         run: |
           ssh -i ~/.ssh/deploy_key "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" << 'EOF'
             set -e
             DEPLOY_PATH='${{ vars.DEPLOY_PATH }}'
-            DEPLOY_PATH="${DEPLOY_PATH:-$HOME/github/research/project/muscat-db}"
+            DEPLOY_PATH="${DEPLOY_PATH:-$HOME/deploy/main/app}"
             TMUX_SESSION='${{ vars.DEPLOY_TMUX_SESSION }}'
-            TMUX_SESSION="${TMUX_SESSION:-muscatdbgui}"
+            TMUX_SESSION="${TMUX_SESSION:-muscatdb-main}"
             cd "$DEPLOY_PATH"
             git fetch origin main
             git reset --hard origin/main
             uv sync --dev
             tmux send-keys -t "$TMUX_SESSION" "" C-c || true
             sleep 2
-            tmux send-keys -t "$TMUX_SESSION" "uv run uvicorn muscat_db.web:sio_app --host 127.0.0.1 --port 8001 --reload" Enter || \
-              tmux new-session -d -s "$TMUX_SESSION" "uv run uvicorn muscat_db.web:sio_app --host 127.0.0.1 --port 8001 --reload"
+            CMD="export MUSCAT_PROSE_DIR=\$HOME/deploy/main/prose && \
+                 export MUSCAT_TIMER_DIR=\$HOME/deploy/main/timer && \
+                 export MUSCAT_TTV_DIR=\$HOME/deploy/main/harmonic && \
+                 uv run uvicorn muscat_db.web:sio_app --host 127.0.0.1 --port 8000"
+            tmux send-keys -t "$TMUX_SESSION" "$CMD" Enter || \
+              tmux new-session -d -s "$TMUX_SESSION" "$CMD"
+          EOF
+
+  deploy-staging:
+    name: Deploy Staging (test)
+    if: github.ref == 'refs/heads/test'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check deploy secrets
+        id: check
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          if [ -z "$DEPLOY_SSH_KEY" ] || [ -z "$DEPLOY_HOST" ] || [ -z "$DEPLOY_USER" ]; then
+            echo "::notice::DEPLOY_SSH_KEY, DEPLOY_HOST, or DEPLOY_USER not set — skipping deploy"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install SSH key
+        if: steps.check.outputs.configured == 'true'
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Pull and restart staging
+        if: steps.check.outputs.configured == 'true'
+        run: |
+          ssh -i ~/.ssh/deploy_key "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" << 'EOF'
+            set -e
+            DEPLOY_PATH='${{ vars.DEPLOY_STAGING_PATH }}'
+            DEPLOY_PATH="${DEPLOY_PATH:-$HOME/deploy/test/app}"
+            TMUX_SESSION='${{ vars.DEPLOY_STAGING_TMUX_SESSION }}'
+            TMUX_SESSION="${TMUX_SESSION:-muscatdb-test}"
+            cd "$DEPLOY_PATH"
+            git fetch origin test
+            git reset --hard origin/test
+            uv sync --dev
+            tmux send-keys -t "$TMUX_SESSION" "" C-c || true
+            sleep 2
+            CMD="export MUSCAT_DB_PATH=\$HOME/deploy/test/muscat_test.db && \
+                 export MUSCAT_PROSE_DIR=\$HOME/deploy/test/prose && \
+                 export MUSCAT_TIMER_DIR=\$HOME/deploy/test/timer && \
+                 export MUSCAT_TTV_DIR=\$HOME/deploy/test/harmonic && \
+                 export MUSCAT_MAX_FULL_JOBS=0 && \
+                 export MUSCAT_LCO_MONITOR_ENABLED=0 && \
+                 unset MUSCAT_LCO_ALLOW_SUBMIT && \
+                 uv run uvicorn muscat_db.web:sio_app --host 127.0.0.1 --port 8001"
+            tmux send-keys -t "$TMUX_SESSION" "$CMD" Enter || \
+              tmux new-session -d -s "$TMUX_SESSION" "$CMD"
           EOF
