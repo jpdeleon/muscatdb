@@ -29,14 +29,15 @@ document.addEventListener("DOMContentLoaded", () => {
     const PRESET_EMOJI = ["👍", "🎉", "👀", "✅", "❤️", "😄"];
     const HERE_TOKEN = /@here\b/gi;
 
-    // URLs | target names (TOI-1234 / TIC 12345678) | @mentions. Built at runtime
-    // so an environment lacking lookbehind falls back instead of a parse error.
+    // URLs | relative target links (/target?name=…) | target names (TOI-1234 / TIC 12345678) | @mentions.
+    // Built at runtime so an environment lacking lookbehind falls back instead
+    // of a parse error.
     let TOKEN_SRC;
     try {
         new RegExp("(?<!x)");
-        TOKEN_SRC = "(https?://[^\\s]+)|(\\bTOI[-\\s]?\\d+(?:\\.\\d+)?\\b|\\bTIC[-\\s]?\\d+\\b)|(?<![\\w@])@([A-Za-z0-9._-]+)";
+        TOKEN_SRC = "(https?://[^\\s]+)|(/target\\?name=[^\\s]+)|(\\bTOI[-\\s]?\\d+(?:\\.\\d+)?\\b|\\bTIC[-\\s]?\\d+\\b)|(?<![\\w@])@([A-Za-z0-9._-]+)";
     } catch (e) {
-        TOKEN_SRC = "(https?://[^\\s]+)|(\\bTOI[-\\s]?\\d+(?:\\.\\d+)?\\b|\\bTIC[-\\s]?\\d+\\b)|@([A-Za-z0-9._-]+)";
+        TOKEN_SRC = "(https?://[^\\s]+)|(/target\\?name=[^\\s]+)|(\\bTOI[-\\s]?\\d+(?:\\.\\d+)?\\b|\\bTIC[-\\s]?\\d+\\b)|@([A-Za-z0-9._-]+)";
     }
 
     let isMinimized = false;
@@ -84,7 +85,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const shortenUrl = (href) => {
         let label = href;
         try {
-            const u = new URL(href);
+            const u = new URL(href, window.location.origin);
             label = (u.origin === window.location.origin)
                 ? (u.pathname + u.search + u.hash) || "/"
                 : u.hostname + u.pathname;
@@ -117,14 +118,16 @@ document.addEventListener("DOMContentLoaded", () => {
             if (m[1]) {
                 container.appendChild(makeLink(m[1], shortenUrl(m[1]), m[1]));
             } else if (m[2]) {
-                container.appendChild(makeLink("/target?name=" + encodeURIComponent(m[2]), m[2], "Open " + m[2]));
-            } else if (m[3] !== undefined) {
+                container.appendChild(makeLink(m[2], shortenUrl(m[2]), m[2]));
+            } else if (m[3]) {
+                container.appendChild(makeLink("/target?name=" + encodeURIComponent(m[3]), m[3], "Open " + m[3]));
+            } else if (m[4] !== undefined) {
                 const span = document.createElement("span");
                 span.className = "chat-mention";
-                if (currentUser && m[3].toLowerCase() === currentUser.toLowerCase()) {
+                if (currentUser && m[4].toLowerCase() === currentUser.toLowerCase()) {
                     span.classList.add("mention-self");
                 }
-                span.textContent = "@" + m[3];
+                span.textContent = "@" + m[4];
                 container.appendChild(span);
             }
             last = re.lastIndex;

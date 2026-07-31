@@ -272,8 +272,8 @@
           rejected before launch.
         </p>
         <p>
-          <strong><code>[T14]</code> — optional.</strong> Transit durations in days, as
-          <code>t14_b</code>, <code>t14_c</code>, … <em>This section is rebuilt from the
+          <strong><code>[T14]</code> — optional.</strong> Transit durations in days, keyed by
+          bare planet letter: <code>b</code>, <code>c</code>, … <em>This section is rebuilt from the
           Transit Duration T14 fields in <a href="#planet-cards-section">Planetary
           Reference Ephemerides</a> above every time you edit one</em>, so change a
           duration there rather than here. Planets with a blank or zero duration are
@@ -4166,7 +4166,9 @@
       t14Section = '\n[T14]\n';
       for (const pl of letters) {
         if (t14Values[pl]) {
-          t14Section += `t14_${pl} = ${t14Values[pl]}\n`;
+          // Bare planet letter: harmonic's predict() rejects any other spelling,
+          // since scan_transits indexes this section by letter.
+          t14Section += `${pl} = ${t14Values[pl]}\n`;
         }
       }
     }

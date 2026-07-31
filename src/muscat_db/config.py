@@ -141,6 +141,7 @@ ENV_VARS: tuple[EnvVar, ...] = (
     EnvVar("MUSCAT_LCO_ARCHIVE_FOREGROUND_MAX_FRAMES", "10", "Frames allowed in a foreground LCO download"),
     EnvVar("MUSCAT_LCO_ARCHIVE_MAX_ACTIVE_PER_USER", "2", "Active LCO archive jobs allowed per user"),
     EnvVar("MUSCAT_LCO_ARCHIVE_DOWNLOAD_MAX_JOBS", "200", "Tracked LCO archive queue/history entries"),
+    EnvVar("MUSCAT_LCO_ARCHIVE_FRAME_RETRIES", "3", "Retry attempts per frame on transient download errors"),
     EnvVar(
         "MUSCAT_LCO_ALLOW_SUBMIT",
         "0",

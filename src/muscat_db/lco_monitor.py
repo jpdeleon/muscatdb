@@ -313,10 +313,11 @@ def _download_rows(conn, request_id: int) -> list[dict]:
     most one batch; the stable ``filename`` ordering means successive polls walk
     the remainder as each batch is marked downloaded.
     """
+    frame_limit = lco._ARCHIVE_DOWNLOAD_MAX_FRAMES if lco._ARCHIVE_DOWNLOAD_MAX_FRAMES > 0 else -1
     cursor = conn.execute(
         "SELECT frame_id, metadata_json FROM lco_observation_frames "
         "WHERE request_id=? AND state IN ('pending','error') ORDER BY filename LIMIT ?",
-        (request_id, lco._ARCHIVE_DOWNLOAD_MAX_FRAMES),
+        (request_id, frame_limit),
     )
     return [{"frame_id": row[0], "metadata": json.loads(row[1])} for row in cursor.fetchall()]
 

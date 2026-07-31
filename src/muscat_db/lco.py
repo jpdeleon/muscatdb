@@ -986,9 +986,10 @@ _ARCHIVE_DOWNLOAD_FRAME_WORKERS = max(1, int(os.environ.get("MUSCAT_LCO_ARCHIVE_
 _ARCHIVE_FUNPACK_WORKERS = max(1, int(os.environ.get("MUSCAT_LCO_ARCHIVE_FUNPACK_WORKERS", "2")))
 _ARCHIVE_DOWNLOAD_JOB_TTL_S = max(60, int(os.environ.get("MUSCAT_LCO_ARCHIVE_DOWNLOAD_JOB_TTL_S", "86400")))
 _ARCHIVE_DOWNLOAD_MAX_JOBS = max(10, int(os.environ.get("MUSCAT_LCO_ARCHIVE_DOWNLOAD_MAX_JOBS", "200")))
-_ARCHIVE_DOWNLOAD_MAX_FRAMES = max(1, int(os.environ.get("MUSCAT_LCO_ARCHIVE_MAX_FRAMES", "500")))
+_ARCHIVE_DOWNLOAD_MAX_FRAMES = int(os.environ.get("MUSCAT_LCO_ARCHIVE_MAX_FRAMES", "0"))
 _ARCHIVE_DOWNLOAD_MAX_PAYLOAD_BYTES = max(1024, int(os.environ.get("MUSCAT_LCO_ARCHIVE_MAX_PAYLOAD_BYTES", "2097152")))
 _ARCHIVE_DOWNLOAD_MAX_PER_USER = max(1, int(os.environ.get("MUSCAT_LCO_ARCHIVE_MAX_ACTIVE_PER_USER", "2")))
+_ARCHIVE_DOWNLOAD_FRAME_RETRIES = max(1, int(os.environ.get("MUSCAT_LCO_ARCHIVE_FRAME_RETRIES", "3")))
 _ARCHIVE_DOWNLOAD_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=_ARCHIVE_DOWNLOAD_WORKERS,
     thread_name_prefix="lco-archive-download",
@@ -1149,6 +1150,54 @@ def _prune_archive_download_jobs(now: float | None = None, reserve_slots: int = 
             _ARCHIVE_DOWNLOAD_JOBS.pop(jid, None)
 
 
+_TRANSIENT_DOWNLOAD_RE = re.compile(
+    r"503|502|500|429|timeout|timed out|connection reset|connection refused|"
+    r"connection aborted|network is unreachable|temporary failure",
+    re.IGNORECASE,
+)
+
+
+def _is_transient_download_error(error: str) -> bool:
+    return bool(_TRANSIENT_DOWNLOAD_RE.search(error))
+
+
+def _download_frame_with_retry(frame: dict, overwrite: bool = False) -> dict:
+    """Download a frame with retry + exponential backoff for transient errors."""
+    max_attempts = _ARCHIVE_DOWNLOAD_FRAME_RETRIES
+    last_result: dict | None = None
+    for attempt in range(max_attempts):
+        result = _download_frame(frame, overwrite=overwrite)
+        if result.get("status") != "error":
+            return result
+        last_result = result
+        error_msg = result.get("error", "")
+        if not _is_transient_download_error(error_msg):
+            return result
+        if attempt < max_attempts - 1:
+            time.sleep(min(2 ** attempt, 30))
+    return last_result
+
+
+def _notify_archive_download_finished(job: dict) -> None:
+    """Fire the job-finished hook so chat notifies the owner."""
+    from muscat_db import jobs as _jobs
+
+    job_id = job.get("job_id") or ""
+    if not job_id:
+        return
+    instruments = job.get("instruments") or []
+    obsdates = job.get("obsdates") or []
+    objects = job.get("objects") or []
+    _jobs.fire_job_finished(
+        job_key=f"lco_archive_download:{job_id}",
+        type_="archive",
+        target=", ".join(objects) if objects else "LCO archive",
+        inst=",".join(instruments) if instruments else "lco",
+        date=",".join(obsdates) if obsdates else "mixed",
+        state=job.get("state") or "done",
+    )
+
+
 def _run_archive_download_job(job_id: str) -> None:
     with _ARCHIVE_DOWNLOAD_LOCK:
         job = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
@@ -1165,7 +1214,7 @@ def _run_archive_download_job(job_id: str) -> None:
             max_workers=max_workers,
             thread_name_prefix=f"lco-archive-frame-{job_id}",
         ) as pool:
-            futures = [pool.submit(_download_frame, frame, overwrite=overwrite) for frame in frames]
+            futures = [pool.submit(_download_frame_with_retry, frame, overwrite=overwrite) for frame in frames]
             for future in concurrent.futures.as_completed(futures):
                 result = future.result()
                 with _ARCHIVE_DOWNLOAD_LOCK:
@@ -1240,6 +1289,7 @@ def _run_archive_download_job(job_id: str) -> None:
                     current["error"] = "One or more funpack commands failed"
                 current["finished_at"] = time.time()
                 _prune_archive_download_jobs(current["finished_at"])
+                _notify_archive_download_finished(current)
     except Exception as exc:
         with _ARCHIVE_DOWNLOAD_LOCK:
             current = _ARCHIVE_DOWNLOAD_JOBS.get(job_id)
@@ -1248,6 +1298,7 @@ def _run_archive_download_job(job_id: str) -> None:
                 current["error"] = str(exc)
                 current["finished_at"] = time.time()
                 _prune_archive_download_jobs(current["finished_at"])
+                _notify_archive_download_finished(current)
 
 
 def _compact_archive_frames(frames: list[dict]) -> list[dict]:
@@ -1276,7 +1327,8 @@ def download_batch(frames: list[dict]) -> list[dict]:
     on every retry, which wedges that request forever, so such callers queue this
     prefix and pick the remainder up on their next pass.
     """
-    batch = [frame for frame in frames if isinstance(frame, dict)][:_ARCHIVE_DOWNLOAD_MAX_FRAMES]
+    max_frames = _ARCHIVE_DOWNLOAD_MAX_FRAMES if _ARCHIVE_DOWNLOAD_MAX_FRAMES > 0 else len(frames)
+    batch = [frame for frame in frames if isinstance(frame, dict)][:max_frames]
     # Long presigned archive URLs can breach the byte cap before the frame cap.
     # Halve until it fits; a lone oversized frame is returned as-is so the caller
     # still gets the real 413 rather than an empty, silently-skipped batch.
@@ -1292,7 +1344,7 @@ def start_archive_download(
     """Queue an LCO archive download in a dedicated worker and return its state."""
     if not isinstance(frames, list) or not frames:
         raise LcoError("no frames selected", status=400)
-    if len(frames) > _ARCHIVE_DOWNLOAD_MAX_FRAMES:
+    if _ARCHIVE_DOWNLOAD_MAX_FRAMES > 0 and len(frames) > _ARCHIVE_DOWNLOAD_MAX_FRAMES:
         raise LcoError(
             f"At most {_ARCHIVE_DOWNLOAD_MAX_FRAMES} frames are allowed per download",
             status=413,

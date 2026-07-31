@@ -65,6 +65,7 @@
       <input type="checkbox" id="dl-overwrite"> <span style="font-size: 0.82rem;">Overwrite existing</span>
     </label>
     <span class="lco-msg" id="msg-download" style="margin: 0;"></span>
+    <a id="link-to-jobs" href="/jobs" class="btn" style="display: none; margin-left: 0.4rem; font-size: 0.82rem;">To Jobs</a>
   </div>
   <div id="frames-groups" style="display: none;"></div>
 </details>
@@ -473,6 +474,8 @@
         if (!d.ok) { msg('msg-download', d.error || 'failed', 'err'); return; }
         if (d.job_id) {
           msg('msg-download', 'Download queued — 0/' + (d.frames_total || picked.length) + ' frames…' + locText);
+          var link = el('link-to-jobs');
+          if (link) link.style.display = '';
           pollArchiveDownload(d.job_id, locText);
           return;
         }
@@ -483,6 +486,8 @@
           'Done: ' + summary.ok + ' downloaded, ' + summary.exists + ' already present, ' + summary.errors + ' errors' + summary.savedTo,
           summary.errors ? 'err' : 'ok'
         );
+        var linkFg = el('link-to-jobs');
+        if (linkFg) linkFg.style.display = '';
       }).catch(function (e) { msg('msg-download', String(e), 'err'); });
   });
 
