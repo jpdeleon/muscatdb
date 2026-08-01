@@ -1815,6 +1815,8 @@ def transit_fit_page(inst: str = "", date: str = "", target: str = "", site: str
             outputs = fit.get_fit_outputs(inst, date, target, run_id=sel_run or None)
         else:
             outputs = None
+
+    if target:
         target_params = fit.get_target_parameters(target)
 
     # Collect all runs for this target across all instruments/dates,

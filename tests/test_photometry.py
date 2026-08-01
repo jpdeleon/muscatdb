@@ -875,10 +875,24 @@ class TestRunOptions:
         assert err and "required in custom mode" in err.lower()
 
     def test_validate_aper_requires_annulus(self):
-        err = phot.validate_run_options(
-            phot.normalize_run_options({"aper_radii": "10,20,2"})
-        )
+        opts = phot.normalize_run_options({"bands": ["gp"], "aper_radii": "10,20,2"})
+        err = phot.validate_run_options(opts)
         assert err and "annulus" in err
+
+    def test_validate_annulus_requires_aper(self):
+        opts = phot.normalize_run_options({"bands": ["gp"], "annulus": "25,40"})
+        err = phot.validate_run_options(opts)
+        assert err and "aperture radii" in err
+
+    def test_validate_cutout_size_too_small(self):
+        opts = phot.normalize_run_options({"bands": ["gp"], "aper_radii": "10,20,2", "annulus": "25,40", "cutout_size": 35})
+        err = phot.validate_run_options(opts)
+        assert err and "cutout size (35) is too small" in err and "minimum is 85" in err
+
+    def test_validate_fwhm_unit_requires_aper_radii(self):
+        opts = phot.normalize_run_options({"bands": ["gp"], "aper_unit": "fwhm"})
+        err = phot.validate_run_options(opts)
+        assert err and "fwhm" in err.lower() and "aperture radii" in err.lower()
 
     def test_validate_bad_aper_format(self):
         err = phot.validate_run_options(
@@ -1765,10 +1779,10 @@ class TestRoutes:
     def test_command_route_reports_validation_error(self, client):
         r = client.post("/api/photometry/command", json={
             "inst": INST, "date": DATE, "target": TARGET,
-            "options": {"aper_radii": "10,20,2"},  # missing annulus
+            "options": {"aper_unit": "fwhm"},  # missing aper_radii
         })
         assert r.status_code == 200
-        assert "annulus" in r.json()["error"]
+        assert "fwhm" in r.json()["error"].lower()
 
     def test_page_has_options_form(self, client):
         r = client.get(f"/photometry?inst={INST}&date={DATE}&target={TARGET}")

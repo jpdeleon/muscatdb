@@ -3321,3 +3321,13 @@ def test_ttv_fit_stuck_job_sync_and_cancel(monkeypatch, tmp_path):
     jobs_in_db = store.all()
     target_job = next(j for j in jobs_in_db if j["key"] == "ttv_fit:sinistro/250710/HIP67522/default")
     assert target_job["state"] == "cancelled"
+
+
+def test_transit_fit_target_params_populates_without_inst_date(mock_db):
+    from muscat_db.web import app
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    r = client.get("/transit-fit?target=TOI-1234", follow_redirects=True)
+    assert r.status_code == 200
+    assert "DEFAULTS" in r.text
+    assert '"teff": 5778.0' in r.text
