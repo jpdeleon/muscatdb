@@ -61,3 +61,27 @@ def test_defaults_to_env_db_path(monkeypatch, tmp_path):
         conn.execute("CREATE TABLE x (a)")
         conn.commit()
     assert target.exists()
+
+
+def test_build_db_preserves_destination_file(tmp_path, monkeypatch):
+    from muscat_db.database import build_db
+    target = tmp_path / "muscat.db"
+    monkeypatch.setenv("MUSCAT_DB_PATH", str(target))
+    
+    # Initialize empty target DB with valid schema
+    with get_conn(str(target)) as conn:
+        conn.execute("CREATE TABLE db_meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.commit()
+    
+    # Pre-create a sidecar file
+    sidecar = tmp_path / "muscat.db-wal"
+    sidecar.write_text("dummy")
+
+    assert target.exists()
+    assert sidecar.exists()
+
+    build_db(str(target))
+
+    assert target.exists()
+    assert not sidecar.exists()
+

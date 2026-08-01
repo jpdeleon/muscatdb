@@ -861,7 +861,11 @@ def build_db(db_path: str, progress=None) -> int:
         _remove_sqlite_tmp(tmp_path)
         raise
 
-    _remove_sqlite_tmp(db_path)
+    for suffix in ("-wal", "-shm"):
+        try:
+            os.remove(db_path + suffix)
+        except OSError:
+            pass
     os.replace(tmp_path, db_path)
     clear_all_caches()
     return count
