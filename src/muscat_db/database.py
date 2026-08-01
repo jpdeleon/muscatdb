@@ -861,6 +861,11 @@ def build_db(db_path: str, progress=None) -> int:
         _remove_sqlite_tmp(tmp_path)
         raise
 
+    for suffix in ("-wal", "-shm"):
+        try:
+            os.remove(db_path + suffix)
+        except OSError:
+            pass
     os.replace(tmp_path, db_path)
     clear_all_caches()
     return count
@@ -897,7 +902,7 @@ def ingest_date(db_path: str, instrument: str, obsdate: str, progress=None) -> i
     try:
         conn.create_aggregate("coord_repr", 2, CoordRepr)
         conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=OFF;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA cache_size=100000;")
         # Keep GROUP BY / sort spills on the DB's own (roomy) volume, not /tmp.
         _set_temp_store_dir(conn, db_path)
