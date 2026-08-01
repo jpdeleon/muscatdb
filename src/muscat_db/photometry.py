@@ -1111,28 +1111,6 @@ def normalize_run_options(raw: dict | None) -> dict:
                 "custom" if str(raw.get("avoid_nearby_star", "")).strip() != "" else "auto"
             )
 
-    # Auto-adjust cutout_size if sky annulus or aperture radii requires a larger stamp
-    an = (o.get("annulus") or "").replace(" ", "")
-    ar = (o.get("aper_radii") or "").replace(" ", "")
-    max_r = 0.0
-    if an and _PAIR_RE.match(an):
-        try:
-            _, rout = [float(x) for x in an.split(",")]
-            max_r = max(max_r, rout)
-        except ValueError:
-            pass
-    if ar and _TRIPLE_RE.match(ar):
-        try:
-            _, rmax, _ = [float(x) for x in ar.split(",")]
-            max_r = max(max_r, rmax)
-        except ValueError:
-            pass
-    if max_r > 0:
-        min_cutout = int(math.ceil(2 * max_r + 5))
-        curr_cutout = o.get("cutout_size")
-        if curr_cutout is None or curr_cutout < min_cutout:
-            o["cutout_size"] = min_cutout
-
     return o
 
 
@@ -1173,8 +1151,30 @@ def validate_run_options(o: dict, inst: str | None = None) -> str | None:
         return "aperture radii must be MIN,MAX,DR (e.g. 10,20,2)"
     if an and not _PAIR_RE.match(an):
         return "annulus must be RIN,ROUT (e.g. 25,40)"
+    if ar and not an:
+        return "annulus (RIN,ROUT) is required when aperture radii is set"
+    if an and not ar:
+        return "aperture radii (MIN,MAX,DR) is required when annulus is set"
     if o.get("aper_unit") == "fwhm" and not ar:
         return "aperture unit 'fwhm' requires specifying aperture radii"
+    max_r = 0.0
+    if an and _PAIR_RE.match(an):
+        try:
+            _, rout = [float(x) for x in an.split(",")]
+            max_r = max(max_r, rout)
+        except ValueError:
+            pass
+    if ar and _TRIPLE_RE.match(ar):
+        try:
+            _, rmax, _ = [float(x) for x in ar.split(",")]
+            max_r = max(max_r, rmax)
+        except ValueError:
+            pass
+    if max_r > 0:
+        min_cutout = int(math.ceil(2 * max_r + 5))
+        curr_cutout = o.get("cutout_size")
+        if curr_cutout is not None and curr_cutout < min_cutout:
+            return f"cutout size ({curr_cutout}) is too small for annulus/aperture radii (minimum is {min_cutout} pix)"
     ct = (o.get("ccd_trim") or "").replace(" ", "")
     if ct and not _INTPAIR_RE.match(ct):
         return "CCD trim must be two integers Y,X (e.g. 10,10)"

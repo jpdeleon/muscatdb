@@ -874,20 +874,23 @@ class TestRunOptions:
         )
         assert err and "required in custom mode" in err.lower()
 
-    def test_validate_aper_without_annulus_is_valid(self):
-        opts = phot.normalize_run_options({"aper_radii": "10,20,2"})
+    def test_validate_aper_requires_annulus(self):
+        opts = phot.normalize_run_options({"bands": ["gp"], "aper_radii": "10,20,2"})
         err = phot.validate_run_options(opts)
-        assert err is None
+        assert err and "annulus" in err
 
-    def test_validate_annulus_without_aper_is_valid(self):
-        opts = phot.normalize_run_options({"annulus": "25,40"})
+    def test_validate_annulus_requires_aper(self):
+        opts = phot.normalize_run_options({"bands": ["gp"], "annulus": "25,40"})
         err = phot.validate_run_options(opts)
-        assert err is None
-        # Verify cutout_size is auto-adjusted for 40px outer radius (ceil(2 * 40 + 5) = 85)
-        assert opts["cutout_size"] == 85
+        assert err and "aperture radii" in err
+
+    def test_validate_cutout_size_too_small(self):
+        opts = phot.normalize_run_options({"bands": ["gp"], "aper_radii": "10,20,2", "annulus": "25,40", "cutout_size": 35})
+        err = phot.validate_run_options(opts)
+        assert err and "cutout size (35) is too small" in err and "minimum is 85" in err
 
     def test_validate_fwhm_unit_requires_aper_radii(self):
-        opts = phot.normalize_run_options({"aper_unit": "fwhm"})
+        opts = phot.normalize_run_options({"bands": ["gp"], "aper_unit": "fwhm"})
         err = phot.validate_run_options(opts)
         assert err and "fwhm" in err.lower() and "aperture radii" in err.lower()
 
