@@ -902,7 +902,7 @@ def ingest_date(db_path: str, instrument: str, obsdate: str, progress=None) -> i
     try:
         conn.create_aggregate("coord_repr", 2, CoordRepr)
         conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=OFF;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA cache_size=100000;")
         # Keep GROUP BY / sort spills on the DB's own (roomy) volume, not /tmp.
         _set_temp_store_dir(conn, db_path)
