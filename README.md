@@ -536,7 +536,9 @@ For an alternative modern documentation interface with client code snippet gener
 ## Cron (daily)
 
 ```cron
-0 6 * * * cd /path/to/muscat-db && uv run muscat-db scan-yesterday && uv run muscat-db build-db
+MUSCAT_OBSLOG_DIR=/ut2/muscat/obslog
+MUSCATDB_ROOT=/ut2/jerome/github/research/project/muscat-db
+30 17 * * * cd $MUSCATDB_ROOT && bash scripts/download_catalogs.sh >> $MUSCATDB_ROOT/logs/download_catalogs.log 2>&1 && /ut2/jerome/.local/bin/uv run muscat-db scan-yesterday >> $MUSCATDB_ROOT/logs/scan.log 2>&1 && /ut2/jerome/.local/bin/uv run muscat-db build-db >> $MUSCATDB_ROOT/logs/build-db.log 2>&1
 ```
 
 The production cron also runs `scripts/download_catalogs.sh` before scanning;

@@ -59,8 +59,6 @@ temp.txt
 # uv Python version pin (local preference)
 .python-version
 
-# Generated static documentation snapshot. Built on the host and published to
-# GitHub Pages via scripts/deploy_static_site.sh (force-pushed to the orphan
-# `pages` branch), so it is deliberately NOT tracked on main/test — this keeps
-# regenerated binary figures out of the repository history.
+# Generated static documentation snapshot output directory. Built during CI
+# or locally with `muscat-db build-static-site`, deliberately NOT tracked.
 /site/

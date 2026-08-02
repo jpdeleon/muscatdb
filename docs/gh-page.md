@@ -85,32 +85,9 @@ cd site && python -m http.server 8080   # browse http://localhost:8080/
 
 ## Deployment
 
-The snapshot is **not** tracked on `main`/`test` (`.gitignore` ignores `/site/`),
-so regenerated binary figures never accumulate in the repository history.
-Instead, `scripts/deploy_static_site.sh` builds the populated site on the host
-and force-pushes it as a single **orphan commit** onto the `pages` branch:
+The static documentation site is built and deployed automatically in GitHub Actions on pushes to `main` and `test` via `.github/workflows/pages.yml`.
 
-```bash
-scripts/deploy_static_site.sh          # build + guard + force-push origin/pages
-scripts/deploy_static_site.sh --no-push   # build + guard only (prints the path)
-```
-
-Because `pages` is always force-pushed (never appended), only the latest
-snapshot is reachable — history does not grow with each publish. The script
-refuses to publish a data-less build (whose Photometry/Transit-fit navbar links
-would 404).
-
-`.github/workflows/pages.yml` then deploys the `pages` branch via
-`actions/upload-pages-artifact` + `actions/deploy-pages` (on push to `pages` or
-manual `workflow_dispatch`). It **does not build** (runners lack the DB and
-figures). The deploy script carries a copy of this workflow onto the `pages`
-branch so the force-push self-triggers it (GitHub reads workflows from the
-pushed ref).
-
-> **Branch policy note:** `pages` is an orphan *deploy-artifact* branch, not a
-> development branch — the "only `main` and `test`" policy applies to dev
-> branches. The alternative that needs no extra branch is a self-hosted Actions
-> runner on the host (which has the data), building and deploying in-workflow.
+In CI, the build runs using a synthetic mock database to generate a lightweight, self-contained documentation snapshot and deploys directly to GitHub Pages via `actions/upload-pages-artifact` and `actions/deploy-pages`.
 
 **One-time setup:** in the repo settings, set Pages → Source → *GitHub Actions*.
 
@@ -120,15 +97,11 @@ pushed ref).
   optimize) is non-functional by design — shells + banner.
 - Detail pages outside the representative subset are inert links (resolve within
   the site tree, may 404 locally) rather than fully navigable.
-- The snapshot is regenerated on the host via `scripts/deploy_static_site.sh`; it
-  could later become a cron target alongside the daily `build-db`.
+- The CI site snapshot runs against a synthetic database and contains representative sample targets.
 
 ## Key files
 
 - `src/muscat_db/static_site.py` — the builder.
 - `src/muscat_db/cli.py` — `build-static-site` command.
-- `.github/workflows/pages.yml` — the Pages deploy workflow (deploys the `pages` branch).
-- `scripts/deploy_static_site.sh` — host-side build + force-push to the orphan `pages` branch.
-- `tests/test_static_site.py` — build against a tiny temp DB; asserts scaffolding,
-  link relativization, cache-buster stripping, banner, and note scrubbing.
-- `pages` branch (`site/**`) — the published snapshot, force-pushed, never tracked on main/test.
+- `.github/workflows/pages.yml` — the GitHub Pages deploy workflow (runs on `main`/`test`).
+- `tests/test_static_site.py` — build test suite and synthetic database helper.
