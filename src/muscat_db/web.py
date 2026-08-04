@@ -1900,6 +1900,11 @@ async def transit_fit_query_archive(target: str, source: str = "nasa", inst: str
         sub = match.group(2)
         return int(match.group(1)), (int(sub) if sub is not None else None)
 
+    # The candidate a query resolves to when it names a star, not a planet, and
+    # the rank given to a row whose designation carries no candidate index.
+    DEFAULT_CANDIDATE = 1
+    _UNRANKED_CANDIDATE = 10**6
+
     def candidate_letter(sub: int | None) -> str:
         """Map a TOI candidate index to a planet letter: ``.01`` -> ``b``."""
         if sub is None or not 1 <= sub <= 25:
@@ -1949,16 +1954,19 @@ async def transit_fit_query_archive(target: str, source: str = "nasa", inst: str
         best_row = None
         best_sub = None
 
-        def prefer(row: dict, sub: int | None) -> None:
-            """Hold the lowest candidate index seen for a star-level query.
+        def prefer(row: dict, sub: int | None) -> bool:
+            """Track the best star-level match; True once it is settled.
 
-            Queries that name a star rather than a planet (a bare host number or
-            a TIC ID) can match several rows, so resolve them to the first
-            candidate deterministically instead of to file order.
+            A query naming a star rather than a planet (a bare host number or a
+            TIC ID) resolves to the ``.01`` candidate, never to whichever row the
+            file lists first -- TOI-1726 and TOI-1772 store ``.02`` ahead of
+            ``.01``. Every host in the catalog has a ``.01``, so the lowest-index
+            fallback only guards against a future one that does not.
             """
             nonlocal best_row, best_sub
             if best_row is None or (sub is not None and (best_sub is None or sub < best_sub)):
                 best_row, best_sub = row, sub
+            return best_sub == DEFAULT_CANDIDATE
 
         with open(csv_path, mode='r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
@@ -1972,17 +1980,15 @@ async def transit_fit_query_archive(target: str, source: str = "nasa", inst: str
                 if toi:
                     toi_num, toi_sub = split_toi(toi)
                     if target_num is not None and toi_num is not None and target_num == toi_num:
-                        if target_sub is not None:
+                        if target_sub is None:
+                            # Bare host number: resolve to the .01 candidate.
+                            if prefer(row, toi_sub):
+                                break
+                        elif target_sub == toi_sub:
                             # An explicit ".NN" must match exactly; a sibling
                             # candidate is a different planet, not a near miss.
-                            if target_sub == toi_sub:
-                                best_row, best_sub = row, toi_sub
-                                break
-                        else:
-                            # Bare host number: settle on the lowest candidate
-                            # rather than whichever row the file happens to list
-                            # first, and keep scanning for a lower one.
-                            prefer(row, toi_sub)
+                            best_row, best_sub = row, toi_sub
+                            break
                         continue
                     # Also try exact prefix match for formats like toi688 or toi-688
                     toi_clean = re.sub(r"[^0-9a-zA-Z]", "", toi.lower())
@@ -2008,7 +2014,8 @@ async def transit_fit_query_archive(target: str, source: str = "nasa", inst: str
                         or (tic_num and target_clean == f"tic{tic_num}")
                     )
                     if matches_tic:
-                        prefer(row, split_toi(toi)[1])
+                        if prefer(row, split_toi(toi)[1]):
+                            break
                         continue
 
         if not best_row:
@@ -2306,7 +2313,7 @@ async def transit_fit_query_archive(target: str, source: str = "nasa", inst: str
             if res:
                 # Sort to prioritize: toi = clean_target (3), toidisplay LIKE target (2), toi LIKE clean_target (1)
                 best_row = None
-                best_score = -1
+                best_key = None
                 for row in res:
                     r_toi = str(row.get("toi", "")).strip()
                     r_toidisplay = str(row.get("toidisplay", "")).strip()
@@ -2324,9 +2331,16 @@ async def transit_fit_query_archive(target: str, source: str = "nasa", inst: str
                     elif clean_target in r_toi:
                         score = 1
 
-                    if score > best_score:
-                        best_score = score
-                        best_row = row
+                    if score < 0:
+                        continue
+
+                    # A star-level LIKE scores every candidate of the host alike,
+                    # so break the tie on the candidate index rather than on the
+                    # order the archive happened to return the rows in.
+                    r_sub = split_toi(r_toi)[1]
+                    key = (score, -(r_sub if r_sub is not None else _UNRANKED_CANDIDATE))
+                    if best_key is None or key > best_key:
+                        best_key, best_row = key, row
                 if best_row:
                     data = [best_row]
         except Exception:

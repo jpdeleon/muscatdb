@@ -2345,6 +2345,86 @@ class TestRoutes:
         monkeypatch.setattr(web, "HERE", tmp_path / "src" / "muscat_db")
         return data_dir
 
+    @pytest.fixture
+    def reordered_toi_csv(self, monkeypatch, tmp_path):
+        """A TOI catalog listing .02 *before* .01, as TOI-1726 and TOI-1772 do."""
+        from muscat_db import web
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        (data_dir / "TOIs.csv").write_text(
+            "TOI,Planet Name,TIC ID,Stellar Eff Temp (K),"
+            "Stellar Eff Temp (K) err,Stellar Log(g) (cm/s^2),"
+            "Stellar Log(g) (cm/s^2) err,Period (days),Period (days) err,"
+            "Epoch (BJD),Epoch (BJD) err,Duration (hours),"
+            "Duration (hours) err\n"
+            "1726.02,TOI-1726.02,130181866,5700,100,4.5,0.1,"
+            "20.54,0.001,2458800.5,0.002,4.1,0.3\n"
+            "1726.01,TOI-1726.01,130181866,5700,100,4.5,0.1,"
+            "7.11,0.0005,2458790.2,0.001,3.2,0.2\n",
+        )
+        monkeypatch.setattr(web, "HERE", tmp_path / "src" / "muscat_db")
+        return data_dir
+
+    @pytest.mark.parametrize("target", ["TOI-1726", "TIC 130181866"])
+    def test_transit_fit_query_archive_toi_star_query_defaults_to_first_candidate(
+        self, client, reordered_toi_csv, target,
+    ):
+        """A star-level query resolves to .01 regardless of catalog row order.
+
+        TOI-1726 and TOI-1772 store .02 ahead of .01, so honouring file order
+        would hand back the wrong planet for a query that names no candidate.
+        """
+        r = client.get(
+            "/api/transit-fit/query-archive", params={"target": target, "source": "toi"},
+        )
+        data = r.json()
+        assert data["ok"] is True
+        assert data["pl_name"] == "TOI-1726.01"
+        assert data["params"]["period"] == 7.11
+        assert data["params"]["planets"] == "b"
+
+    def test_transit_fit_query_archive_toi_reordered_candidate_still_exact(
+        self, client, reordered_toi_csv,
+    ):
+        """Explicit .02 still wins even when it precedes .01 in the file."""
+        r = client.get(
+            "/api/transit-fit/query-archive",
+            params={"target": "TOI-1726.02", "source": "toi"},
+        )
+        data = r.json()
+        assert data["pl_name"] == "TOI-1726.02"
+        assert data["params"]["period"] == 20.54
+        assert data["params"]["planets"] == "c"
+
+    def test_transit_fit_query_archive_toi_remote_star_query_prefers_first_candidate(
+        self, client, mocker,
+    ):
+        """The archive fallback must not inherit response row order either."""
+        import httpx
+
+        async def reversed_rows(url, **kwargs):
+            return httpx.Response(
+                200,
+                json=[
+                    {"toi": "1726.02", "toidisplay": "TOI-1726.02", "pl_orbper": 20.54},
+                    {"toi": "1726.01", "toidisplay": "TOI-1726.01", "pl_orbper": 7.11},
+                ],
+                request=httpx.Request("GET", url),
+            )
+
+        mocker.patch("muscat_db.web._async_get", side_effect=reversed_rows)
+
+        r = client.get(
+            "/api/transit-fit/query-archive",
+            params={"target": "TOI-1726", "source": "toi"},
+        )
+        data = r.json()
+        assert data["ok"] is True
+        assert data["pl_name"] == "TOI-1726.01"
+        assert data["params"]["period"] == 7.11
+        assert data["params"]["planets"] == "b"
+
     @pytest.mark.parametrize(
         "target",
         ["TOI-1404.02", "toi1404.02", "1404.02", "TOI 1404.02", "toi01404.02"],
