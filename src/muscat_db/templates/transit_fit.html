@@ -1548,14 +1548,21 @@
             else { plBadge.textContent = '\u2014'; plBadge.className = 'ephem-src none'; }
           }
 
+          // NASA names carry the letter ("HIP 67522 b"); TOI designations encode
+          // it as a candidate index ("TOI-1404.02"), which the API resolves into
+          // params.planets. Fall back to that so a .02 query lands on planet c.
+          var potentialLetter = '';
           if (data.pl_name && data.pl_name.length > 2 && data.pl_name.indexOf(' ') !== -1) {
             var parts = data.pl_name.split(' ');
-            var potentialLetter = parts[parts.length - 1].toLowerCase();
-            if (potentialLetter.length === 1 && potentialLetter >= 'b' && potentialLetter <= 'z') {
-              letterInput.value = potentialLetter;
-              card.setAttribute('data-planet', potentialLetter);
-              syncPlanetsInput();
-            }
+            potentialLetter = parts[parts.length - 1].toLowerCase();
+          }
+          if (potentialLetter.length !== 1 && params.planets) {
+            potentialLetter = params.planets.trim().toLowerCase();
+          }
+          if (potentialLetter.length === 1 && potentialLetter >= 'b' && potentialLetter <= 'z') {
+            letterInput.value = potentialLetter;
+            card.setAttribute('data-planet', potentialLetter);
+            syncPlanetsInput();
           }
 
           validatePlanetCard(card);
