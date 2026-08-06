@@ -600,6 +600,65 @@ class LcoTest(unittest.TestCase):
         self.assertLess(abs((start - expected_start).total_seconds()), 0.001)
         self.assertLess(abs((end - expected_end).total_seconds()), 0.001)
 
+class FrameDestinationDayobsTest(unittest.TestCase):
+    """The download directory must come from the filename's DAY-OBS token.
+
+    DATE_OBS is the frame's own UTC timestamp, so at sites whose nights straddle
+    00:00 UTC it rolls over mid-night and splits one observing night across two
+    directories. LCO already stamps the night into the filename; that token is
+    constant for the whole night.
+    """
+
+    def setUp(self):
+        self._env = patch.dict(os.environ, {"MUSCAT_LCO_DIR": "/tmp/lco-root"}, clear=False)
+        self._env.start()
+        self.addCleanup(self._env.stop)
+
+    def test_filename_dayobs_wins_over_a_rolled_over_date_obs(self):
+        # The real TOI 6715.01 case: taken 00:01 UTC on 18 Apr, but it belongs
+        # to the night of the 17th and its filename says so.
+        instrument, obsdate, dest = lco.frame_destination({
+            "filename": "lsc1m004-fa03-20240417-0093-e91.fits",
+            "SITEID": "lsc", "TELID": "1m0a", "INSTRUME": "fa03",
+            "DATE_OBS": "2024-04-18T00:01:28.123",
+        })
+        self.assertEqual(instrument, "sinistro")
+        self.assertEqual(obsdate, "240417")
+        self.assertEqual(dest.parent.name, "240417")
+
+    def test_filename_dayobs_agrees_with_date_obs_when_no_rollover(self):
+        _instrument, obsdate, _dest = lco.frame_destination({
+            "filename": "ogg2m001-ep05-20260102-0001-e91.fits.fz",
+            "SITEID": "ogg", "TELID": "2m0a", "INSTRUME": "ep05",
+            "DATE_OBS": "2026-01-02T05:00:00",
+        })
+        self.assertEqual(obsdate, "260102")
+
+    def test_falls_back_to_day_obs_field_without_a_filename_token(self):
+        _instrument, obsdate, _dest = lco.frame_destination({
+            "filename": "hand-copied-frame.fits",
+            "SITEID": "lsc", "TELID": "1m0a", "INSTRUME": "fa03",
+            "DAY_OBS": "2024-04-17",
+            "DATE_OBS": "2024-04-18T00:01:28",
+        })
+        self.assertEqual(obsdate, "240417")
+
+    def test_falls_back_to_date_obs_as_a_last_resort(self):
+        _instrument, obsdate, _dest = lco.frame_destination({
+            "filename": "hand-copied-frame.fits",
+            "SITEID": "lsc", "TELID": "1m0a", "INSTRUME": "fa03",
+            "DATE_OBS": "2024-04-18T00:01:28",
+        })
+        self.assertEqual(obsdate, "240418")
+
+    def test_raises_when_no_date_can_be_determined(self):
+        with self.assertRaises(lco.LcoError):
+            lco.frame_destination({
+                "filename": "hand-copied-frame.fits",
+                "SITEID": "lsc", "TELID": "1m0a", "INSTRUME": "fa03",
+            })
+
+
 class FrameDestSecurityTest(unittest.TestCase):
     """frame_dest / URL validation must block path traversal and SSRF."""
 

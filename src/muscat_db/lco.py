@@ -26,6 +26,7 @@ import uuid
 from zoneinfo import ZoneInfo
 
 from muscat_db.catalog import _angular_sep_arcsec, _normalize_target_name
+from muscat_db.dayobs import dayobs_from_filename
 from muscat_db.coord import (
     CoordRepr,
     unpack as _unpack_coord,
@@ -754,20 +755,33 @@ def frame_dest(instrument: str, obsdate: str, filename: str) -> Path:
 
 
 def frame_destination(frame: dict) -> tuple[str, str, Path]:
-    """Return the inferred instrument, YYMMDD directory, and path for a frame."""
+    """Return the inferred instrument, YYMMDD directory, and path for a frame.
+
+    The directory is the DAY-OBS token LCO stamps into the filename: the UTC
+    date at the *start* of the observing night, which stays constant across
+    local midnight. ``DATE_OBS`` is the frame's own UTC timestamp and rolls over
+    mid-night at sites whose nights straddle 00:00 UTC, filing one continuous
+    night into two directories — see the "UTC-midnight dataset split" section of
+    README.md. It survives only as a last-resort fallback for frames whose names
+    carry no token (hand-copied or non-standard files).
+    """
     filename = frame.get("filename") or frame.get("basename")
     if not filename:
         raise LcoError("Frame metadata has no filename")
     instrument = infer_archive_instrument(frame)
-    date_obs = str(
-        frame.get("DATE_OBS")
-        or frame.get("observation_date")
-        or frame.get("DAY_OBS")
-        or ""
-    ).split("T")[0].replace("-", "")
-    if len(date_obs) < 6:
-        raise LcoError("Could not determine obsdate")
-    obsdate = date_obs[2:]
+    obsdate = dayobs_from_filename(str(filename))
+    if obsdate is None:
+        # DAY_OBS is the archive's own night label, so prefer it over the
+        # per-frame timestamp when the filename cannot be read.
+        raw = str(
+            frame.get("DAY_OBS")
+            or frame.get("DATE_OBS")
+            or frame.get("observation_date")
+            or ""
+        ).split("T")[0].replace("-", "")
+        if len(raw) < 6:
+            raise LcoError("Could not determine obsdate")
+        obsdate = raw[2:]
     return instrument, obsdate, frame_dest(instrument, obsdate, str(filename))
 
 

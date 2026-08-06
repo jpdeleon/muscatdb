@@ -24,6 +24,12 @@ from rich.table import Table
 
 from muscat_db import __version__
 from muscat_db.instruments import INSTRUMENTS, OBSLOG_BASE
+from muscat_db.obsdate_normalize import (
+    LCO_INSTRUMENTS,
+    apply_plan,
+    dedupe_conflicts,
+    plan_all,
+)
 from muscat_db.scanner import scan_date, scan_missing_dates, scan_yesterday
 from muscat_db.summarizer import summarize_csv
 
@@ -347,6 +353,147 @@ def ingest_date(
         console.print(f"[red]Error: {e}[/]")
         raise typer.Exit(1)
     console.print(f"[green]Ingested {count} frames for {instrument} {obsdate} into {db}[/]")
+
+
+_LCO_INST_CHOICES = click.Choice([*LCO_INSTRUMENTS, "all"])
+
+
+def _render_plan(plan) -> None:
+    """Print one instrument's plan; silent when it has nothing to report."""
+    if not plan.moves and not plan.issues:
+        return
+    if plan.moves:
+        by_pair: dict[tuple[str, str], int] = {}
+        for move in plan.moves:
+            key = (move.src_date, move.dst_date)
+            by_pair[key] = by_pair.get(key, 0) + 1
+        table = Table(title=f"{plan.instrument} — frames to relocate")
+        table.add_column("From", style="yellow")
+        table.add_column("To", style="green")
+        table.add_column("Frames", justify="right")
+        for (src, dst), count in sorted(by_pair.items()):
+            table.add_row(src, dst, str(count))
+        console.print(table)
+    for issue in plan.issues:
+        console.print(
+            f"[yellow]skip[/] {issue.instrument} {issue.obsdate} "
+            f"({issue.reason}): {issue.detail}"
+        )
+
+
+@app.command(cls=_Cmd, name="normalize-obsdates")
+def normalize_obsdates(
+    instrument: str = typer.Argument(
+        "all", help="LCO-fed instrument, or 'all'", click_type=_LCO_INST_CHOICES,
+    ),
+    apply: bool = typer.Option(
+        False, "--apply", help="Perform the moves (default is a dry run)",
+    ),
+    dedupe: bool = typer.Option(
+        False, "--dedupe",
+        help="Also delete redundant copies whose destination has the same DATASUM",
+    ),
+    dedupe_only: bool = typer.Option(
+        False, "--dedupe-only",
+        help="Delete verified duplicates and stop; relocate nothing",
+    ),
+    rescan: bool = typer.Option(
+        True, "--rescan/--no-rescan",
+        help="Rescan and re-ingest affected dates after moving",
+    ),
+    db: str = typer.Option("muscat.db", "--db", help="SQLite database path"),
+):
+    """Repair midnight-split date directories in the raw LCO data tree.
+
+    LCO stamps the observing night into every filename; a frame whose directory
+    disagrees with that token belongs to a night that was cut at 00:00 UTC. This
+    moves such frames back together, clears the obslog CSVs they invalidate, and
+    rescans the affected dates.
+
+    Runs as a dry run unless ``--apply`` is passed. Whole-directory relabels and
+    frames more than a day from their directory are reported, never moved.
+    """
+    from muscat_db.database import clear_stale_date as _clear_stale_date
+    from muscat_db.database import ingest_date as _ingest_date
+
+    _log_startup_banner(f"normalize-obsdates {instrument} apply={apply}")
+    names = tuple(LCO_INSTRUMENTS) if instrument == "all" else (instrument,)
+    plans = plan_all(instruments=names)
+
+    for plan in plans:
+        _render_plan(plan)
+
+    total_moves = sum(len(p.moves) for p in plans)
+
+    if dedupe or dedupe_only:
+        # Deleting science data is irreversible, so log exactly what went and
+        # why anything was spared. Runs before the moves: clearing a duplicate
+        # resolves the conflict that blocked its frame.
+        audit = Path.home() / "temp" / f"dedupe-{datetime.now():%Y%m%d-%H%M%S}.log"
+        audit.parent.mkdir(parents=True, exist_ok=True)
+        with audit.open("w") as fh:
+            for plan in plans:
+                result = dedupe_conflicts(plan, dry_run=not apply)
+                verb = "would delete" if not apply else "deleted"
+                console.print(
+                    f"[{'cyan' if not apply else 'green'}]{plan.instrument}: "
+                    f"{verb} {len(result.deleted)} redundant copy(ies); "
+                    f"kept {len(result.kept)}[/]"
+                )
+                kept_reasons: dict[str, int] = {}
+                for path, reason in result.kept:
+                    kept_reasons[reason] = kept_reasons.get(reason, 0) + 1
+                    fh.write(f"KEPT\t{plan.instrument}\t{path}\t{reason}\n")
+                for reason, count in sorted(kept_reasons.items()):
+                    console.print(f"    [yellow]kept[/] {count} × {reason}")
+                for path in result.deleted:
+                    fh.write(f"{verb.upper()}\t{plan.instrument}\t{path}\n")
+        console.print(f"[cyan]Audit log: {audit}[/]")
+        if dedupe_only:
+            if not apply:
+                console.print("[cyan]Dry run: re-run with --apply to delete.[/]")
+            return
+        # Conflicts may now be resolved, so re-plan before moving anything.
+        plans = plan_all(instruments=names)
+        total_moves = sum(len(p.moves) for p in plans)
+
+    if not total_moves:
+        console.print("[green]Nothing to relocate.[/]")
+        return
+    if not apply:
+        console.print(
+            f"[cyan]Dry run: {total_moves} frame(s) would move. "
+            "Re-run with --apply to perform it.[/]"
+        )
+        return
+
+    for plan in plans:
+        if not plan.moves:
+            continue
+        result = apply_plan(plan)
+        console.print(
+            f"[green]{plan.instrument}: moved {result.moved} frame(s); "
+            f"cleared {len(result.removed_csvs)} obslog CSV(s); "
+            f"removed {len(result.removed_dirs)} emptied dir(s)[/]"
+        )
+        if not rescan:
+            continue
+        for obsdate in result.touched_dates:
+            console.print(f"[cyan]Rescanning {plan.instrument} {obsdate}...[/]")
+            scan_date(plan.instrument, obsdate)
+            try:
+                count = _ingest_date(db, plan.instrument, obsdate)
+            except FileNotFoundError:
+                # Every frame that used to live here belonged to a different
+                # night and has moved on; nothing left to ingest, but the
+                # pre-move rows for this date are now stale and must go too.
+                _clear_stale_date(db, plan.instrument, obsdate)
+                console.print(f"[green]  {obsdate}: 0 frames remain (fully consolidated elsewhere)[/]")
+                continue
+            except Exception as e:
+                console.print(f"[red]Ingest failed for {obsdate}: {e}[/]")
+                raise typer.Exit(1)
+            console.print(f"[green]  {obsdate}: {count} frames ingested[/]")
 
 
 def _pids_listening_on(port: int) -> list[int]:
