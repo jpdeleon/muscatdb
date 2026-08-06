@@ -46,6 +46,7 @@ _OBSLOG_MODULES = [
     "muscat_db.scanner",
     "muscat_db.summarizer",
     "muscat_db.database",
+    "muscat_db.obsdate_normalize",
 ]
 # Modules that import INSTRUMENTS from instruments
 _INST_MODULES = _OBSLOG_MODULES + [
@@ -843,6 +844,60 @@ class TestDatabase:
         finally:
             os.unlink(db_path)
 
+    def test_clear_stale_date_removes_rows_and_refreshes_targets(self, tmp_obslog):
+        from muscat_db.database import build_db, clear_stale_date
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+        try:
+            build_db(db_path)
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                "INSERT INTO frames (instrument, obsdate, ccd, filename, object,"
+                " jd_start, ut_start, exptime, read_mode, filter, ra, declination, airmass, focus)"
+                " VALUES ('sinistro', '260619', 0, 'f1.fits', 'TOI-1404.01',"
+                " 60123.5, '00:01:00', 20.0, 'central_2k_2x2', 'ip', 10.0, -5.0, 1.1, 0.0)"
+            )
+            conn.execute(
+                "INSERT INTO summaries (instrument, obsdate, ccd, object, exptime,"
+                " read_mode, telescope, frame_start, frame_end, ut_start, ut_end,"
+                " nframes, filter, ra, declination, airmass_min, airmass_max)"
+                " VALUES ('sinistro', '260619', 0, 'TOI-1404.01', 20.0,"
+                " 'central_2k_2x2', 'lsc1m005', 'f1.fits', 'f1.fits', '00:01:00',"
+                " '00:01:00', 1, 'ip', 10.0, -5.0, 1.1, 1.1)"
+            )
+            conn.execute(
+                "INSERT INTO targets (object, n_dates, n_frames, dates, filters,"
+                " airmass_min, airmass_max, inst_dates, ra, declination)"
+                " VALUES ('TOI-1404.01', 1, 1, '260619', 'ip', 1.1, 1.1,"
+                " 'sinistro:260619', 10.0, -5.0)"
+            )
+            conn.commit()
+            conn.close()
+
+            clear_stale_date(db_path, "sinistro", "260619")
+
+            conn = sqlite3.connect(db_path)
+            frames = conn.execute(
+                "SELECT COUNT(*) FROM frames WHERE instrument = ? AND obsdate = ?",
+                ("sinistro", "260619"),
+            ).fetchone()[0]
+            summaries = conn.execute(
+                "SELECT COUNT(*) FROM summaries WHERE instrument = ? AND obsdate = ?",
+                ("sinistro", "260619"),
+            ).fetchone()[0]
+            target = conn.execute(
+                "SELECT COUNT(*) FROM targets WHERE object = ?",
+                ("TOI-1404.01",),
+            ).fetchone()[0]
+            conn.close()
+
+            assert frames == 0
+            assert summaries == 0
+            # No frames left anywhere for this object, so its target row is gone too.
+            assert target == 0
+        finally:
+            os.unlink(db_path)
+
 
 # ── Tests: CLI ───────────────────────────────────────────────────────────────
 
@@ -910,3 +965,62 @@ class TestCLI:
                       "build-db", "serve"]:
             r = self._invoke(cmd, "--help")
             assert r.exit_code == 0, f"{cmd} --help failed: {r.output}"
+
+    def test_normalize_obsdates_apply_drains_directory_without_crashing(
+        self, tmp_obslog, tmp_data
+    ):
+        """Regression: a directory whose every frame moves out (a genuine
+        midnight split, not just an offset relabel) leaves nothing for
+        scan_date to write a CSV for. ingest_date's "no CSVs" guard used to
+        propagate as a hard CLI failure, aborting the whole normalize-obsdates
+        run — including instruments queued after the one that hit it — and
+        leaving the pre-move DB rows for that date stale forever.
+        """
+        from muscat_db.database import build_db
+
+        sinistro_dir = f"{tmp_data}/sinistro"
+        # Every frame in 260101 actually belongs to 260102 (its DAY-OBS
+        # token); consolidating it should drain 260101 to nothing.
+        os.makedirs(f"{sinistro_dir}/260101", exist_ok=True)
+        os.makedirs(f"{sinistro_dir}/260102", exist_ok=True)
+        _make_fits(
+            f"{sinistro_dir}/260101/lsc1m005-fa15-20260102-0001-e91.fits",
+            {"OBJECT": "TOI-1404.01", "MJD-OBS": 60676.001, "UTSTART": "00:01:00",
+             "EXPTIME": 20.0, "CONFMODE": "central_2k_2x2", "FILTER": "ip",
+             "RA": "10:00:00", "DEC": "-05:00:00", "AIRMASS": 1.1, "FOCPOSN": 0.0},
+        )
+
+        db_path = f"{tmp_obslog}/normalize.db"
+        build_db(db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO frames (instrument, obsdate, ccd, filename, object, exptime)"
+            " VALUES ('sinistro', '260101', 0, 'stale.fits', 'TOI-1404.01', 20.0)"
+        )
+        conn.commit()
+        conn.close()
+
+        r = self._invoke("normalize-obsdates", "sinistro", "--apply", "--db", db_path)
+
+        assert r.exit_code == 0, r.output
+        assert "0 frames remain" in r.output
+
+        conn = sqlite3.connect(db_path)
+        stale = conn.execute(
+            "SELECT COUNT(*) FROM frames WHERE instrument = ? AND obsdate = ?",
+            ("sinistro", "260101"),
+        ).fetchone()[0]
+        moved = conn.execute(
+            "SELECT COUNT(*) FROM frames WHERE instrument = ? AND obsdate = ?",
+            ("sinistro", "260102"),
+        ).fetchone()[0]
+        conn.close()
+
+        assert stale == 0
+        assert moved == 1
+        assert not os.path.exists(
+            f"{sinistro_dir}/260101/lsc1m005-fa15-20260102-0001-e91.fits"
+        )
+        assert os.path.exists(
+            f"{sinistro_dir}/260102/lsc1m005-fa15-20260102-0001-e91.fits"
+        )

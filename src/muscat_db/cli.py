@@ -413,6 +413,7 @@ def normalize_obsdates(
     Runs as a dry run unless ``--apply`` is passed. Whole-directory relabels and
     frames more than a day from their directory are reported, never moved.
     """
+    from muscat_db.database import clear_stale_date as _clear_stale_date
     from muscat_db.database import ingest_date as _ingest_date
 
     _log_startup_banner(f"normalize-obsdates {instrument} apply={apply}")
@@ -482,6 +483,13 @@ def normalize_obsdates(
             scan_date(plan.instrument, obsdate)
             try:
                 count = _ingest_date(db, plan.instrument, obsdate)
+            except FileNotFoundError:
+                # Every frame that used to live here belonged to a different
+                # night and has moved on; nothing left to ingest, but the
+                # pre-move rows for this date are now stale and must go too.
+                _clear_stale_date(db, plan.instrument, obsdate)
+                console.print(f"[green]  {obsdate}: 0 frames remain (fully consolidated elsewhere)[/]")
+                continue
             except Exception as e:
                 console.print(f"[red]Ingest failed for {obsdate}: {e}[/]")
                 raise typer.Exit(1)
