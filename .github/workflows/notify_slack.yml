@@ -1,0 +1,32 @@
+name: Slack Notification Bridge
+
+# Trigger the workflow on multiple repository events
+on:
+  issues:
+    types: [opened, closed]
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [opened, closed]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Rich Slack Notification
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          # Uses your secure Slack Webhook URL stored in GitHub Secrets
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+          # Customizes the message dynamically based on what actually happened
+          SLACK_TITLE: "${{ github.event_name }} notification"
+          SLACK_MESSAGE: |
+            *Event:* `${{ github.event_name }}` (Action: `${{ github.event.action }}`)
+            *Triggered by:* ${{ github.actor }}
+            *Repository:* ${{ github.repository }}
+            *Link to Event:* ${{ github.event.comment.html_url || github.event.issue.html_url || github.event.pull_request.html_url }}
+
+          SLACK_COLOR: '#36A64F'
+          SLACK_USERNAME: 'GitHub Repository Watcher'
+          SLACK_ICON: https://github.githubassets.com/favicons/favicon.png

@@ -63,9 +63,16 @@ If agent restarts the muscat-db by itself, make sure do it inside tmux session m
 ## git branch
 * work goes on a feature branch off test, which PRs into test. never PR a feature branch straight into main
 * features accumulate on test, then test is merged into main as a release
-* no direct pushes to test or main. everything goes through a PR
+* no direct pushes to test or main. everything goes through a PR, except that org admins bypass the review and status-check rules on both branches, so this is a convention rather than something enforced against them
 * merged branches are deleted automatically, so short-lived feature branches are expected
 * never rename the head branch of an open PR. GitHub closes the PR instead of retargeting it, so pick the name before opening
+* test is the default branch, so a new PR targets it without being told to, and `Closes #N` in a feature PR body closes the issue when that PR merges
+* the release PR is the one case needing an explicit base: `gh pr create --base main --head test`, because from test the default base is test itself
+* an issue therefore closes at the test merge, before the fix is deployed. deploy.yml only runs on a push to main. write `Refs #N` instead and close by hand at release when an issue should outlive the merge
+* a bare `#N` resolves inside muscatdb. use `owner/repo#N` for prose2, timer and harmonic
+* main is the release branch. deploy.yml pins production with `git reset --hard origin/main` at line 52; its checkout step is incidental and follows whatever ref triggered the run
+* branch protection is rulesets, not the classic settings page, and names main and test explicitly. a ruleset scoped to `~DEFAULT_BRANCH` would follow the default and leave the other branch unprotected
+* deletion and force-push on both branches come from no-bypass rulesets. everything else is bypassable by org admins. main needed its own such ruleset because a branch is only undeletable by default while it *is* the default
 
 ## Photometry job lifecycle
 The pipeline is launched with `start_new_session=True` and prose spawns multiprocessing workers (SequenceParallel) that keep appending to the per-target log (`_webrun_<digest>.log`) **after** the tracked parent process has exited. Do not declare a job terminal the instant `job.proc.poll()` returns: `_resolve_job_state` keeps it in a non-terminal `finalizing` state until the log mtime has been quiescent for `_FINALIZE_GRACE_S` (env `MUSCAT_PHOT_FINALIZE_GRACE_S`), so the photometry page's live log keeps streaming the trailing output instead of freezing at parent-exit. `finalizing` is a live-view-only state; `sync_jobs` persists it to the DB as `running` so the Jobs page (which reads state from the DB) stays consistent. Cancelled jobs bypass the grace window and go terminal immediately.
