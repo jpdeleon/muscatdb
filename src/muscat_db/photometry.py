@@ -1226,7 +1226,12 @@ def build_command(
     if o.get("target_coord") not in (None, ""):
         parts = o["target_coord"].split(None, 1)
         if len(parts) == 2:
-            args += ["--target_coord", *parts]
+            ra, dec = parts[0].strip(), parts[1].strip()
+            if dec.startswith("-"):
+                # Prepend a space to prevent Python's argparse from misinterpreting
+                # a negative declination (e.g. -45:00:42) as a CLI flag.
+                dec = f" {dec}"
+            args += ["--target_coord", ra, dec]
     if o.get("target_id") not in (None, ""):
         args += ["--tID", o["target_id"]]
     if o.get("comparison_ids") not in (None, ""):
