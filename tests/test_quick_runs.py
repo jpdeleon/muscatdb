@@ -30,11 +30,47 @@ _POLL_INTERVAL_S = 2
 # One representative real-data combination per instrument, discovered from
 # muscat.db and verified to have raw FITS on disk.
 _INST_DATES_TARGETS = [
-    pytest.param("muscat",   "260126", "TOI-1730c",   id="muscat"),
-    pytest.param("muscat2",  "260613", "HD143317",    id="muscat2"),
-    pytest.param("muscat3",  "260613", "TOI-1252",    id="muscat3"),
-    pytest.param("muscat4",  "260512", "TOI-6557",    id="muscat4"),
-    pytest.param("sinistro", "260624", "TIC88297141", id="sinistro"),
+    pytest.param(
+        "muscat",
+        "260126",
+        "TOI-1730c",
+        {"target_coord": "07:13:56 +48:18:35"},
+        id="muscat",
+    ),
+    pytest.param(
+        "muscat2",
+        "260613",
+        "HD143317",
+        {"target_coord": "16:00:58 +03:24:14"},
+        id="muscat2",
+    ),
+    pytest.param(
+        "muscat3",
+        "260613",
+        "TOI-1252",
+        {"target_coord": "17:46:43.7623 +70:47:00.994"},
+        id="muscat3",
+    ),
+    pytest.param(
+        "muscat4",
+        "260512",
+        "TOI-6557",
+        {
+            "target_coord": "15:13:47.515 -45:00:42.12",
+            "bands": ["g_narrow", "Na_D", "i_narrow", "z_narrow"],
+        },
+        id="muscat4",
+    ),
+    pytest.param(
+        "sinistro",
+        "260624",
+        "TIC88297141",
+        {
+            "target_coord": "17:27:09.1164 -25:58:05.210",
+            "telescope": "1m0-09",
+        },
+        id="sinistro",
+    ),
 ]
 
 
@@ -50,9 +86,9 @@ def _poll_to_terminal(status_fn, *, timeout=_POLL_TIMEOUT_S, interval=_POLL_INTE
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("inst,date,target", _INST_DATES_TARGETS)
-def test_photometry_test_run_completes(inst, date, target):
-    res = phot.start_run(inst, date, target, test_run=True)
+@pytest.mark.parametrize("inst,date,target,options", _INST_DATES_TARGETS)
+def test_photometry_test_run_completes(inst, date, target, options):
+    res = phot.start_run(inst, date, target, options=options, test_run=True)
     if not res.get("ok"):
         pytest.skip(f"{inst}/{date}/{target} could not start: {res.get('error')}")
 
